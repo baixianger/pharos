@@ -17,6 +17,14 @@
 
 ---
 
+<div align="center">
+  <img src="site/shots/x1.png" width="760" alt="Pharos — project sidebar and a project's detail view">
+  <br>
+  <sub>One window for every repo and every coding agent.</sub>
+</div>
+
+---
+
 ## Features
 
 ### Organize
