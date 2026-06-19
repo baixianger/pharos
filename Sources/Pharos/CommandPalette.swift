@@ -182,6 +182,10 @@ private struct PaletteRow: View {
             // Quick-action buttons — only visible when this row is highlighted
             if isHighlighted {
                 HStack(spacing: 4) {
+                    // Launching agents and opening a terminal spawn processes, which
+                    // a sandboxed Mac App Store app may not do — those quick actions
+                    // are hidden there; Editor and Finder (NSWorkspace) remain.
+                    #if !APP_STORE
                     QuickActionButton(
                         symbol: "sparkles",
                         label: "Claude",
@@ -213,6 +217,7 @@ private struct PaletteRow: View {
                         onSelect()
                         onAction()
                     }
+                    #endif
 
                     QuickActionButton(
                         symbol: "pencil",

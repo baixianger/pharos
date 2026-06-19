@@ -1,6 +1,24 @@
 import CoreGraphics
 import Foundation
 
+#if APP_STORE
+
+// MARK: - SpacesService (App Store stub)
+
+/// In the Mac App Store (sandboxed) build, Space switching relies on private
+/// SkyLight/CoreGraphics APIs that App Review forbids, so the whole feature is
+/// removed. These stubs let callers compile; the desktop picker UI is hidden.
+enum SpacesService {
+    /// Always reports a single desktop in the sandboxed build.
+    static func spaceCount() -> Int { 1 }
+
+    /// No-op in the sandboxed build (Space switching is unavailable).
+    @discardableResult
+    static func switchToDesktop(_ index: Int) -> Bool { false }
+}
+
+#else
+
 /// Private SkyLight/CoreGraphics symbols for reading and switching macOS Spaces.
 /// All declarations are `@_silgen_name` wrappers — they bind to symbols present
 /// at runtime in the CoreGraphics / SkyLight frameworks linked by AppKit.
@@ -104,3 +122,5 @@ enum SpacesService {
         return arr.first.flatMap { userSpaceIDs(from: $0) }
     }
 }
+
+#endif

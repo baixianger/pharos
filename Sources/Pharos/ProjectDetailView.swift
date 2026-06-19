@@ -28,8 +28,13 @@ struct ProjectDetailView: View {
 
     private enum DetailTab: String, CaseIterable, Identifiable {
         case overview = "Overview"
+        // Git, Sessions, worktrees, and peer tracking all shell out (git/ssh) or
+        // read agent session histories, none of which are allowed in a sandboxed
+        // Mac App Store build, so those tabs are omitted there.
+        #if !APP_STORE
         case git      = "Git"
         case sessions = "Sessions"
+        #endif
         var id: String { rawValue }
     }
 
@@ -41,14 +46,19 @@ struct ProjectDetailView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         header(project)
-                        Picker("Tab", selection: $tab) {
-                            ForEach(DetailTab.allCases) { t in
-                                Text(t.rawValue).tag(t)
+                        // A single-tab picker (the App Store build only has the
+                        // Overview tab) is pointless, so only show the picker when
+                        // there is more than one tab.
+                        if DetailTab.allCases.count > 1 {
+                            Picker("Tab", selection: $tab) {
+                                ForEach(DetailTab.allCases) { t in
+                                    Text(t.rawValue).tag(t)
+                                }
                             }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .fixedSize()
                         }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .fixedSize()
                         GlassEffectContainer(spacing: 18) {
                             VStack(spacing: 18) {
                                 tabContent(project)
@@ -60,12 +70,14 @@ struct ProjectDetailView: View {
                 }
                 .navigationTitle(project.name)
                 .task(id: "\(projectID)|\(store.gitRefreshToken)|\(store.peerHost)") {
+                    #if !APP_STORE
                     await loadGit(project)
                     await loadHeatmap(project)
                     await loadSessions(project)
                     await loadWorktrees(project)
                     await loadPeer(project)
                     await loadGitHubStatus(project)
+                    #endif
                 }
                 .alert("New worktree", isPresented: $newWorktreeShown) {
                     TextField("branch name", text: $newWorktreeName)
@@ -109,10 +121,13 @@ struct ProjectDetailView: View {
             if !project.hasLocal, project.hasGitHub {
                 cloneCard(project)
             }
+            #if !APP_STORE
             if project.hasGitHub {
                 githubStatusCard(project)
             }
             playbooksCard(project)
+            #endif
+        #if !APP_STORE
         case .git:
             if project.hasLocal {
                 gitCard
@@ -130,6 +145,7 @@ struct ProjectDetailView: View {
             }
         case .sessions:
             sessionsCard
+        #endif
         }
     }
 
@@ -180,12 +196,17 @@ struct ProjectDetailView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Actions").font(.headline)
             HStack(spacing: 10) {
+                // Reveal in Finder and Open in Editor use NSWorkspace, which is
+                // App-Store-legal, so they stay in every build.
                 Button { LaunchService.revealInFinder(project.localPath ?? "") } label: {
                     Label("Finder", systemImage: "folder")
                 }
                 Button { LaunchService.openEditor(store.editor, path: project.localPath ?? "") } label: {
                     Label("Editor", systemImage: "curlybraces")
                 }
+                // Opening a terminal and launching agents spawn processes, which a
+                // sandboxed Mac App Store app may not do — hidden in that build.
+                #if !APP_STORE
                 Button { LaunchService.openTerminal(at: project.localPath ?? "", terminal: store.terminal) } label: {
                     Label("Terminal", systemImage: "terminal")
                 }
@@ -195,10 +216,12 @@ struct ProjectDetailView: View {
                 Button { launchAgentWithPreflight(.codex, project: project) } label: {
                     Label("Codex", systemImage: AgentKind.codex.symbol)
                 }
+                #endif
             }
             .buttonStyle(.glass)
             .disabled(!project.hasLocal)
 
+            #if !APP_STORE
             HStack(spacing: 18) {
                 Toggle("yolo", isOn: yoloBinding(project))
                 Toggle("tmux", isOn: tmuxBinding(project))
@@ -208,6 +231,7 @@ struct ProjectDetailView: View {
             .toggleStyle(.switch)
             .font(.system(size: 12, weight: .medium))
             .fixedSize()
+            #endif
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)

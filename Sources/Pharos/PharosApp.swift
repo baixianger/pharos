@@ -3,14 +3,19 @@ import SwiftUI
 /// Real entry point. Dispatches to the headless MCP server when launched with
 /// `--mcp`; otherwise hands off to SwiftUI's synthesized `App` entry point so
 /// the normal GUI launches unchanged.
+///
+/// The Mac App Store (sandboxed) build has no MCP server — a sandboxed app may
+/// not spawn agents — so `main()` always runs the GUI there.
 @main
 enum PharosMain {
     static func main() {
+        #if !APP_STORE
         if CommandLine.arguments.contains("--mcp") {
             MCPServer.run()
-        } else {
-            PharosApp.main()
+            return
         }
+        #endif
+        PharosApp.main()
     }
 }
 
@@ -32,10 +37,13 @@ struct PharosApp: App {
             CommandGroup(replacing: .appInfo) {
                 Button("About Pharos") { openWindow(id: "about") }
             }
+            #if !APP_STORE
             // "Check for Updates…" appears in the app menu (after About Pharos).
+            // Omitted in the Mac App Store build — the App Store delivers updates.
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesView(updater: updaterController.updater)
             }
+            #endif
             CommandGroup(after: .newItem) {
                 Button("Add Project…") { store.requestAdd() }
                     .keyboardShortcut("n", modifiers: [.command])

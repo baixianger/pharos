@@ -86,10 +86,15 @@ final class ProjectStore {
         peerHost   = d.string(forKey: "pharos.peerHost")   ?? ""
         load()
         lastFileMtime = fileModificationDate()
-        refreshRunningAgents()
         requestNotificationAuthorizationIfNeeded()
-        startPolling()
         startFileWatch()
+        // Running-agent awareness polls tmux (a subprocess) and the external-edit
+        // watcher reacts to the MCP server's writes. Neither tmux nor the MCP
+        // server exists in the sandboxed Mac App Store build, so skip the poller.
+        #if !APP_STORE
+        refreshRunningAgents()
+        startPolling()
+        #endif
     }
 
     // MARK: External-edit watcher (live registry sync)

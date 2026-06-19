@@ -56,7 +56,11 @@ struct ContentView: View {
 
                 Menu {
                     Button { store.requestAdd() } label: { Label("Add Local Folder…", systemImage: "folder.badge.plus") }
+                    // Importing from GitHub uses the `gh` CLI (a subprocess),
+                    // which a sandboxed Mac App Store app may not spawn.
+                    #if !APP_STORE
                     Button { store.requestImport() } label: { Label("Import from GitHub…", systemImage: "arrow.down.circle") }
+                    #endif
                 } label: {
                     Label("Add", systemImage: "plus")
                 }
@@ -79,7 +83,9 @@ struct ContentView: View {
         .toolbarBackground(.visible, for: .windowToolbar)
         .background(WindowTabBar(title: tabTitle))
         .sheet(isPresented: $showAdd) { AddProjectSheet() }
+        #if !APP_STORE
         .sheet(isPresented: $showImport) { GitHubImportSheet() }
+        #endif
         .sheet(isPresented: $showPalette) {
             CommandPalette(selectedProject: $selectedProject, isPresented: $showPalette)
                 .environment(store)

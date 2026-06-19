@@ -1,7 +1,10 @@
 import SwiftUI
 
+#if !APP_STORE
+
 /// Lists every GitHub repo (via `gh`), lets you check the ones to import and
 /// assign them to a group, then adds them as GitHub-only projects.
+/// Omitted from the Mac App Store build — it shells out to the `gh` CLI.
 struct GitHubImportSheet: View {
     @Environment(ProjectStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -139,3 +142,5 @@ struct GitHubImportSheet: View {
         dismiss()
     }
 }
+
+#endif

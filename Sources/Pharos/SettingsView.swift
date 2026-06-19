@@ -10,8 +10,13 @@ struct SettingsView: View {
                 .tabItem { Label("Launch", systemImage: "terminal") }
             ProjectsSettingsTab()
                 .tabItem { Label("Projects", systemImage: "folder") }
+            // The Integrations tab configures the peer-machine SSH poller and the
+            // MCP server — both spawn processes / shell out, which a sandboxed Mac
+            // App Store app may not do, so the whole tab is omitted there.
+            #if !APP_STORE
             IntegrationsSettingsTab()
                 .tabItem { Label("Integrations", systemImage: "link") }
+            #endif
         }
         .frame(width: 500, height: 430)
     }
@@ -118,6 +123,7 @@ private struct ProjectsSettingsTab: View {
 
 // MARK: - Integrations
 
+#if !APP_STORE
 private struct IntegrationsSettingsTab: View {
     @Environment(ProjectStore.self) private var store
 
@@ -173,6 +179,7 @@ private struct IntegrationsSettingsTab: View {
         .formStyle(.grouped)
     }
 }
+#endif
 
 extension AppearanceMode {
     var colorScheme: ColorScheme? {

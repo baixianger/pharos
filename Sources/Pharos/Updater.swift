@@ -1,5 +1,21 @@
-import Sparkle
 import SwiftUI
+
+#if APP_STORE
+
+// MARK: - UpdaterController (App Store stub)
+
+/// The Mac App Store delivers updates itself, and bundling Sparkle (which
+/// downloads and launches its own updater) is forbidden in a sandboxed MAS app.
+/// This stub keeps `PharosApp` compiling; the "Check for Updates…" menu command
+/// and `CheckForUpdatesView` are omitted from the App Store build.
+@MainActor
+final class UpdaterController {
+    init() {}
+}
+
+#else
+
+import Sparkle
 
 // MARK: - UpdaterController
 
@@ -75,3 +91,5 @@ private final class CanCheckForUpdatesObserver: ObservableObject {
         }
     }
 }
+
+#endif

@@ -12,6 +12,17 @@ MENU_BAR_APP=${MENU_BAR_APP:-0}
 SIGNING_MODE=${SIGNING_MODE:-}
 APP_IDENTITY=${APP_IDENTITY:-}
 
+# APP_STORE=1 builds the sandboxed Mac App Store variant: it passes
+# -DAPP_STORE to the compiler (gating out private APIs, process spawning,
+# Sparkle, the MCP server, and session reads) and signs with the sandbox
+# entitlements. See docs/MAC_APP_STORE.md. Default (APP_STORE unset) is
+# unchanged: the full Developer ID direct build.
+APP_STORE=${APP_STORE:-0}
+EXTRA_SWIFT_FLAGS=()
+if [[ "$APP_STORE" == "1" ]]; then
+  EXTRA_SWIFT_FLAGS=(-Xswiftc -DAPP_STORE)
+fi
+
 if [[ -f "$ROOT/version.env" ]]; then
   source "$ROOT/version.env"
 else
@@ -26,7 +37,7 @@ if [[ ${#ARCH_LIST[@]} -eq 0 ]]; then
 fi
 
 for ARCH in "${ARCH_LIST[@]}"; do
-  swift build -c "$CONF" --arch "$ARCH"
+  swift build -c "$CONF" --arch "$ARCH" "${EXTRA_SWIFT_FLAGS[@]}"
 done
 
 APP="$ROOT/${APP_NAME}.app"
@@ -178,6 +189,11 @@ find "$APP" -name '._*' -delete
 ENTITLEMENTS_DIR="$ROOT/.build/entitlements"
 DEFAULT_ENTITLEMENTS="$ENTITLEMENTS_DIR/${APP_NAME}.entitlements"
 mkdir -p "$ENTITLEMENTS_DIR"
+
+# The App Store variant must be signed with the sandbox entitlements.
+if [[ "$APP_STORE" == "1" ]]; then
+  DEFAULT_ENTITLEMENTS="$ROOT/Pharos-AppStore.entitlements"
+fi
 
 APP_ENTITLEMENTS=${APP_ENTITLEMENTS:-$DEFAULT_ENTITLEMENTS}
 if [[ ! -f "$APP_ENTITLEMENTS" ]]; then

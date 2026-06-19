@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Mac App Store builds must run inside the App Sandbox. -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!-- Read folders the user explicitly selects via the open panel
+         (Add Local Folder…, clone destination). Read-only is sufficient:
+         the App Store build only reveals/opens folders, it never writes to them. -->
+    <key>com.apple.security.files.user-selected.read-only</key>
+    <true/>
+
+    <!-- Allow outbound network connections (opening URLs, future App Store
+         networking). No server entitlement — the app never listens. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>

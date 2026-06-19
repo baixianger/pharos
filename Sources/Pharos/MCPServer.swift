@@ -1,5 +1,7 @@
 import Foundation
 
+#if !APP_STORE
+
 /// A minimal, hand-rolled MCP (Model Context Protocol) server over stdio.
 ///
 /// Speaks JSON-RPC 2.0 with newline-delimited JSON. `stdout` is the protocol
@@ -966,3 +968,5 @@ private extension Data {
         return subdata(in: start..<end)
     }
 }
+
+#endif

@@ -21,6 +21,9 @@ struct MenuBarView: View {
             Menu {
                 let disabled = !project.hasLocal
 
+                // Launching agents and opening a terminal spawn processes, which a
+                // sandboxed Mac App Store app may not do — only "Finder" remains.
+                #if !APP_STORE
                 Button {
                     LaunchService.launchAgent(.claude, project: project, terminal: store.terminal)
                 } label: {
@@ -43,6 +46,7 @@ struct MenuBarView: View {
                     Label("Terminal", systemImage: "terminal")
                 }
                 .disabled(disabled)
+                #endif
 
                 Button {
                     if let path = project.localPath { LaunchService.revealInFinder(path) }

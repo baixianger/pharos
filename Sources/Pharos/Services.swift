@@ -12,6 +12,11 @@ enum Shell {
 
     @discardableResult
     static func run(_ launchPath: String, _ args: [String], cwd: String? = nil) -> Result {
+        #if APP_STORE
+        // Spawning subprocesses is forbidden in a sandboxed Mac App Store build.
+        // Return a non-zero "unavailable" result so callers degrade gracefully.
+        return Result(out: "", err: "process execution unavailable (sandboxed build)", code: -1)
+        #else
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = args
@@ -41,6 +46,7 @@ enum Shell {
             err: String(decoding: errData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),
             code: process.terminationStatus
         )
+        #endif
     }
 
     static func git(_ args: [String], at path: String) -> Result {
@@ -155,7 +161,18 @@ enum LaunchService {
     }
 
     static func openEditor(_ editor: EditorApp, path: String) {
+        #if APP_STORE
+        // `open -a` spawns a process; in the sandbox use NSWorkspace, which is
+        // App-Store-legal, to open the (user-selected) folder in the editor.
+        guard let appURL = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: editor.bundleID) else { return }
+        let config = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.open([URL(fileURLWithPath: path)],
+                                withApplicationAt: appURL,
+                                configuration: config)
+        #else
         Shell.run("/usr/bin/open", ["-a", editor.appName, path])
+        #endif
     }
 
     static func openTerminal(at path: String, terminal: TerminalApp) {

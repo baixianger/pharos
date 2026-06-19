@@ -151,6 +151,20 @@ enum EditorApp: String, CaseIterable, Identifiable, Codable {
         case .sublime: return "Sublime Text"
         }
     }
+
+    #if APP_STORE
+    /// Bundle identifier used to launch the editor via NSWorkspace in the
+    /// sandboxed build (where `open -a` is unavailable).
+    var bundleID: String {
+        switch self {
+        case .vscode: return "com.microsoft.VSCode"
+        case .cursor: return "com.todesktop.230313mzl4w4u92"  // Cursor
+        case .zed: return "dev.zed.Zed"
+        case .xcode: return "com.apple.dt.Xcode"
+        case .sublime: return "com.sublimetext.4"
+        }
+    }
+    #endif
 }
 
 /// App appearance preference.

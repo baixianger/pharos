@@ -14,6 +14,15 @@ enum SessionsService {
         String(path.map { ($0 == "/" || $0 == ".") ? "-" : $0 })
     }
 
+    #if APP_STORE
+
+    /// Reading `~/.claude` / `~/.codex` is forbidden in a sandboxed Mac App Store
+    /// build, so session history is unavailable. The Sessions tab is hidden.
+    static func claudeSessions(for path: String) async -> [AgentSession] { [] }
+    static func codexSessions(for path: String) async -> [AgentSession] { [] }
+
+    #else
+
     static func claudeSessions(for path: String) async -> [AgentSession] {
         await Task.detached(priority: .utility) {
             // Claude encodes the project path by replacing "/" and "." with "-".
@@ -108,4 +117,6 @@ enum SessionsService {
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
         return t.count > 80 ? String(t.prefix(80)) + "…" : t
     }
+
+    #endif
 }
