@@ -6,6 +6,207 @@ import Observation
 struct StoreData: Codable {
     var projects: [Project] = []
     var groups: [String] = []   // user-defined groups (may be empty)
+    var trash: [TrashedItem] = []   // soft-deleted items awaiting restore/purge
+
+    init(projects: [Project] = [], groups: [String] = [], trash: [TrashedItem] = []) {
+        self.projects = projects
+        self.groups = groups
+        self.trash = trash
+    }
+
+    /// Tolerant decode — missing keys fall back to empty rather than failing the
+    /// whole decode. Without this, adding the `trash` key would make every
+    /// pre-existing `{projects, groups}` registry fail `decode(StoreData.self)`
+    /// and silently reset to an empty store on upgrade. A top-level JSON *array*
+    /// (the legacy flat format) still throws here, so the caller's `[Project]`
+    /// fallback continues to handle migration.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        projects = try c.decodeIfPresent([Project].self, forKey: .projects) ?? []
+        groups = try c.decodeIfPresent([String].self, forKey: .groups) ?? []
+        trash = try c.decodeIfPresent([TrashedItem].self, forKey: .trash) ?? []
+    }
+}
+
+extension StoreData {
+    /// Restore window: trashed items older than this are auto-purged (30 days).
+    static let trashRetention: TimeInterval = 30 * 24 * 60 * 60
+
+    /// Soft-delete a project: move it (with its full metadata) to Trash.
+    /// Returns the new trash item's id (for an Undo token), or nil if absent.
+    @discardableResult
+    mutating func softDeleteProject(id: Project.ID, now: Date = Date()) -> TrashedItem.ID? {
+        guard let idx = projects.firstIndex(where: { $0.id == id }) else { return nil }
+        let project = projects.remove(at: idx)
+        let item = TrashedItem(deletedAt: now, payload: .project(project))
+        trash.insert(item, at: 0)
+        return item.id
+    }
+
+    /// Soft-delete a group: capture which projects held the tag, strip it, trash it.
+    @discardableResult
+    mutating func softDeleteGroup(_ name: String, now: Date = Date()) -> TrashedItem.ID? {
+        let members = projects.filter { $0.tags.contains(name) }.map { $0.id }
+        guard groups.contains(name) || !members.isEmpty else { return nil }
+        groups.removeAll { $0 == name }
+        for i in projects.indices { projects[i].tags.removeAll { $0 == name } }
+        let item = TrashedItem(deletedAt: now, payload: .group(name: name, memberProjectIDs: members))
+        trash.insert(item, at: 0)
+        return item.id
+    }
+
+    /// Soft-delete a playbook from a project.
+    @discardableResult
+    mutating func softDeletePlaybook(projectID: Project.ID, playbookID: Playbook.ID,
+                                     now: Date = Date()) -> TrashedItem.ID? {
+        guard let pi = projects.firstIndex(where: { $0.id == projectID }),
+              let bi = projects[pi].playbooks.firstIndex(where: { $0.id == playbookID }) else { return nil }
+        let pb = projects[pi].playbooks.remove(at: bi)
+        let item = TrashedItem(deletedAt: now,
+                               payload: .playbook(projectID: projectID,
+                                                  projectName: projects[pi].name, playbook: pb))
+        trash.insert(item, at: 0)
+        return item.id
+    }
+
+    /// Restore a trashed item back into the live registry. No-op if the id is
+    /// unknown; idempotent against duplicates (won't double-add).
+    mutating func restoreTrash(_ id: TrashedItem.ID) {
+        guard let idx = trash.firstIndex(where: { $0.id == id }) else { return }
+        let item = trash.remove(at: idx)
+        switch item.payload {
+        case .project(let p):
+            if !projects.contains(where: { $0.id == p.id }) { projects.append(p) }
+        case .group(let name, let members):
+            if !groups.contains(name) { groups.append(name) }
+            for memberID in members {
+                guard let i = projects.firstIndex(where: { $0.id == memberID }) else { continue }
+                if !projects[i].tags.contains(name) { projects[i].tags.append(name) }
+            }
+        case .playbook(let projectID, _, let pb):
+            guard let i = projects.firstIndex(where: { $0.id == projectID }) else { break }
+            if !projects[i].playbooks.contains(where: { $0.id == pb.id }) {
+                projects[i].playbooks.append(pb)
+            }
+        case .issue(let projectID, _, let issue):
+            guard let i = projects.firstIndex(where: { $0.id == projectID }) else { break }
+            if !projects[i].issues.contains(where: { $0.id == issue.id }) {
+                projects[i].issues.append(issue)
+            }
+        }
+        ensureGroupsForTags()
+    }
+
+    /// Drop trash items older than `retention`.
+    mutating func purgeExpiredTrash(now: Date = Date(),
+                                    retention: TimeInterval = StoreData.trashRetention) {
+        trash.removeAll { now.timeIntervalSince($0.deletedAt) > retention }
+    }
+
+    // MARK: Issues & project-update feed (single-user; no human assignees)
+
+    /// Create an issue under a project, assigning the next per-project number.
+    /// Returns the created issue, or nil if the project is unknown.
+    @discardableResult
+    mutating func addIssue(projectID: Project.ID, title: String,
+                           priority: IssuePriority = .none, body: String = "",
+                           now: Date = Date()) -> Issue? {
+        guard let i = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
+        let issue = Issue(number: projects[i].nextIssueNumber, title: title,
+                          status: .todo, priority: priority, body: body,
+                          createdAt: now, updatedAt: now)
+        projects[i].issues.append(issue)
+        return issue
+    }
+
+    /// Mutate one issue (by per-project number) in place. Returns false if absent.
+    @discardableResult
+    mutating func updateIssue(projectID: Project.ID, number: Int, now: Date = Date(),
+                              _ body: (inout Issue) -> Void) -> Bool {
+        guard let pi = projects.firstIndex(where: { $0.id == projectID }),
+              let ii = projects[pi].issues.firstIndex(where: { $0.number == number }) else { return false }
+        body(&projects[pi].issues[ii])
+        projects[pi].issues[ii].updatedAt = now
+        return true
+    }
+
+    @discardableResult
+    mutating func setIssueStatus(projectID: Project.ID, number: Int, status: IssueStatus,
+                                 now: Date = Date()) -> Bool {
+        updateIssue(projectID: projectID, number: number, now: now) { $0.status = status }
+    }
+
+    @discardableResult
+    mutating func setIssuePriority(projectID: Project.ID, number: Int, priority: IssuePriority,
+                                   now: Date = Date()) -> Bool {
+        updateIssue(projectID: projectID, number: number, now: now) { $0.priority = priority }
+    }
+
+    /// Link an agent session/worktree to an issue and move it to In Progress.
+    @discardableResult
+    mutating func linkIssueSession(projectID: Project.ID, number: Int, session: String,
+                                   worktreePath: String? = nil, now: Date = Date()) -> Bool {
+        updateIssue(projectID: projectID, number: number, now: now) {
+            $0.status = .inProgress
+            $0.activeSession = session
+            $0.worktreePath = worktreePath
+        }
+    }
+
+    /// Soft-delete an issue: move it to Trash. Returns the trash item id.
+    @discardableResult
+    mutating func softDeleteIssue(projectID: Project.ID, number: Int, now: Date = Date()) -> TrashedItem.ID? {
+        guard let pi = projects.firstIndex(where: { $0.id == projectID }),
+              let ii = projects[pi].issues.firstIndex(where: { $0.number == number }) else { return nil }
+        let issue = projects[pi].issues.remove(at: ii)
+        let item = TrashedItem(deletedAt: now,
+                               payload: .issue(projectID: projectID,
+                                               projectName: projects[pi].name, issue: issue))
+        trash.insert(item, at: 0)
+        return item.id
+    }
+
+    /// Append an entry to a project's update feed. Returns the created update.
+    @discardableResult
+    mutating func addUpdate(projectID: Project.ID, body: String, kind: UpdateKind = .note,
+                            issueNumber: Int? = nil, now: Date = Date()) -> ProjectUpdate? {
+        guard let i = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
+        let update = ProjectUpdate(createdAt: now, body: body, kind: kind, issueNumber: issueNumber)
+        projects[i].updates.insert(update, at: 0)   // newest first
+        return update
+    }
+
+    /// When an agent's tmux session finishes, post an auto-update on any issue it
+    /// was linked to and clear the link. Status is intentionally left unchanged
+    /// (an agent finishing doesn't mean the issue is resolved). Returns the names
+    /// of projects that got an update (for downstream notification/UI refresh).
+    @discardableResult
+    mutating func postAgentFinished(session: String, now: Date = Date()) -> [String] {
+        var touched: [String] = []
+        for pi in projects.indices {
+            for ii in projects[pi].issues.indices where projects[pi].issues[ii].activeSession == session {
+                let number = projects[pi].issues[ii].number
+                let title = projects[pi].issues[ii].title
+                projects[pi].issues[ii].activeSession = nil
+                projects[pi].issues[ii].updatedAt = now
+                let update = ProjectUpdate(createdAt: now,
+                                           body: "Agent finished on #\(number) \(title).",
+                                           kind: .agent, issueNumber: number)
+                projects[pi].updates.insert(update, at: 0)
+                touched.append(projects[pi].name)
+            }
+        }
+        return touched
+    }
+
+    /// Ensure every tag used by a project exists as a group, then sort groups —
+    /// mirrors `ProjectStore.backfillGroups()`.
+    mutating func ensureGroupsForTags() {
+        for tag in projects.flatMap({ $0.tags }) where !groups.contains(tag) {
+            groups.append(tag)
+        }
+        groups.sort { $0.lowercased() < $1.lowercased() }
+    }
 }
 
 /// Owns projects + groups, persists to Application Support, and exposes the
@@ -15,10 +216,17 @@ struct StoreData: Codable {
 final class ProjectStore {
     var projects: [Project] = []
     var groups: [String] = []
+    /// Soft-deleted items awaiting restore or auto-purge (the Trash).
+    var trash: [TrashedItem] = []
+    /// The most recent reversible delete, surfaced as an "Undo" toast. Cleared
+    /// when undone, when the item is restored/purged another way, or when the
+    /// toast times out.
+    var lastUndo: UndoToken?
     var selection: GroupSelection = .all
     var addRequested = false
     var importRequested = false
     var paletteRequested = false
+    var trashRequested = false
     var lastError: String?
     var terminal: TerminalApp = .ghostty {
         didSet { UserDefaults.standard.set(terminal.rawValue, forKey: "pharos.terminal") }
@@ -94,9 +302,10 @@ final class ProjectStore {
 
     // MARK: External-edit watcher (live registry sync)
 
-    /// The MCP server writes to the same `projects.json` from a separate process.
-    /// Poll its modification date every ~2s and reload when it changes underneath
-    /// us, so MCP-driven edits show up in the running GUI without a relaunch.
+    /// The `pharos` CLI writes to the same `projects.json` from a separate
+    /// process. Poll its modification date every ~2s and reload when it changes
+    /// underneath us, so CLI-driven edits show up in the running GUI without a
+    /// relaunch.
     private func startFileWatch() {
         fileWatchTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -108,7 +317,7 @@ final class ProjectStore {
     }
 
     /// Reloads the registry whenever the on-disk mtime DIFFERS from the one we
-    /// last loaded/wrote — not only when it's strictly greater. An external (MCP)
+    /// last loaded/wrote — not only when it's strictly greater. An external (CLI)
     /// write that lands within the same mtime tick as, or even slightly "before",
     /// our last-seen value would be missed by a `>`-only check; `!=` catches any
     /// change. We never loop on our own saves because `save()` records the
@@ -149,10 +358,22 @@ final class ProjectStore {
             LaunchService.runningSessions()
         }.value
 
+        let finished = runningSessions.subtracting(newSessions)
         if notifyOnFinish {
-            let finished = runningSessions.subtracting(newSessions)
             for sessionName in finished {
                 postFinishedNotification(sessionName: sessionName)
+            }
+        }
+
+        // Agent-loop: when an agent that was launched ON an issue finishes, post
+        // an update to that project's log and clear the link. Only touch the
+        // store if some live issue is actually linked to a finished session.
+        if !finished.isEmpty {
+            let hasLinked = projects.contains { p in
+                p.issues.contains { ($0.activeSession).map(finished.contains) ?? false }
+            }
+            if hasLinked {
+                mutateStore { s in for name in finished { _ = s.postAgentFinished(session: name) } }
             }
         }
 
@@ -206,20 +427,25 @@ final class ProjectStore {
         if let store = try? decoder.decode(StoreData.self, from: data) {
             projects = store.projects
             groups = store.groups
+            trash = store.trash
         } else if let legacy = try? decoder.decode([Project].self, from: data) {
             projects = legacy   // migrate older flat-array format
+            trash = []
         }
+        // Drop expired trash from the in-memory view; persistence catches up on
+        // the next save (we don't write here to avoid churning the file watcher).
+        trash.removeAll { Date().timeIntervalSince($0.deletedAt) > StoreData.trashRetention }
         backfillGroups()
     }
 
     func save() {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? encoder.encode(StoreData(projects: projects, groups: groups)) {
+        if let data = try? encoder.encode(StoreData(projects: projects, groups: groups, trash: trash)) {
             try? data.write(to: fileURL, options: .atomic)
             // Stamp the file with an mtime WE choose and record that exact value,
-            // rather than re-stat'ing (which could capture a concurrent MCP
-            // write's mtime and then be mistaken for our own save). Any later MCP
+            // rather than re-stat'ing (which could capture a concurrent CLI
+            // write's mtime and then be mistaken for our own save). Any later CLI
             // write gets a different mtime, which the `==` watcher reloads.
             let stamp = Date()
             try? FileManager.default.setAttributes([.modificationDate: stamp],
@@ -244,7 +470,18 @@ final class ProjectStore {
         guard let idx = projects.firstIndex(where: { $0.id == project.id }) else { return }
         projects[idx] = project; backfillGroups(); save()
     }
-    func remove(_ project: Project) { projects.removeAll { $0.id == project.id }; save() }
+    /// Forget a project (reversible). Its repo on disk is untouched — only
+    /// Pharos's metadata moves to Trash, recoverable via Undo or the Trash view.
+    func remove(_ project: Project) {
+        var token: TrashedItem.ID?
+        mutateStore { s in
+            token = s.softDeleteProject(id: project.id)
+            s.purgeExpiredTrash()
+        }
+        if let token { setUndo("Removed “\(project.name)”", itemID: token) }
+        AuditLog.record(actor: .ui, action: "remove_project", detail: project.name)
+    }
+
     func project(_ id: Project.ID) -> Project? { projects.first { $0.id == id } }
     func contains(name: String) -> Bool { projects.contains { $0.name == name } }
     func contains(remote: String) -> Bool { projects.contains { $0.githubRemote == remote } }
@@ -259,12 +496,121 @@ final class ProjectStore {
         save()
     }
 
+    /// Delete a group (reversible). Membership is captured so a restore re-tags
+    /// exactly the projects that were in it.
     func removeGroup(_ name: String) {
-        groups.removeAll { $0 == name }
-        for i in projects.indices { projects[i].tags.removeAll { $0 == name } }
+        var token: TrashedItem.ID?
+        mutateStore { s in
+            token = s.softDeleteGroup(name)
+            s.purgeExpiredTrash()
+        }
         if selection == .group(name) { selection = .all }
+        if let token {
+            setUndo("Deleted group “\(name)”", itemID: token)
+            AuditLog.record(actor: .ui, action: "delete_group", detail: name)
+        }
+    }
+
+    /// Delete a project's playbook (reversible).
+    func removePlaybook(projectID: Project.ID, playbook: Playbook) {
+        var token: TrashedItem.ID?
+        mutateStore { s in
+            token = s.softDeletePlaybook(projectID: projectID, playbookID: playbook.id)
+            s.purgeExpiredTrash()
+        }
+        if let token { setUndo("Deleted playbook “\(playbook.name)”", itemID: token) }
+    }
+
+    // MARK: Issues & project log
+
+    func addIssue(_ projectID: Project.ID, title: String, priority: IssuePriority = .none) {
+        let t = title.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return }
+        mutateStore { _ = $0.addIssue(projectID: projectID, title: t, priority: priority) }
+    }
+
+    func setIssueStatus(_ projectID: Project.ID, number: Int, status: IssueStatus) {
+        mutateStore { _ = $0.setIssueStatus(projectID: projectID, number: number, status: status) }
+    }
+
+    func setIssuePriority(_ projectID: Project.ID, number: Int, priority: IssuePriority) {
+        mutateStore { _ = $0.setIssuePriority(projectID: projectID, number: number, priority: priority) }
+    }
+
+    func removeIssue(_ projectID: Project.ID, number: Int, title: String) {
+        var token: TrashedItem.ID?
+        mutateStore {
+            token = $0.softDeleteIssue(projectID: projectID, number: number)
+            $0.purgeExpiredTrash()
+        }
+        if let token { setUndo("Removed #\(number) “\(title)”", itemID: token) }
+    }
+
+    func addUpdate(_ projectID: Project.ID, body: String) {
+        let b = body.trimmingCharacters(in: .whitespaces)
+        guard !b.isEmpty else { return }
+        mutateStore { _ = $0.addUpdate(projectID: projectID, body: b, kind: .note) }
+    }
+
+    /// Launch an agent ON an issue: link the session, move the issue to In
+    /// Progress, then launch. When launched in tmux, `pollSessions` auto-posts an
+    /// update to the project log once the session ends.
+    func startAgentOnIssue(_ project: Project, number: Int, kind: AgentKind) {
+        guard let path = project.localPath, !path.isEmpty else {
+            reportError("'\(project.name)' has no local path."); return
+        }
+        let tmuxName = LaunchService.tmuxSessionName(project, kind)
+        mutateStore { _ = $0.linkIssueSession(projectID: project.id, number: number, session: tmuxName) }
+        let extra = kind == .claude ? claudeArgs : codexArgs
+        LaunchService.launchAgent(kind, atPath: path, yolo: project.yolo, tmux: project.tmux,
+                                  tmuxName: tmuxName, terminal: terminal, extraArgs: extra, source: .ui)
+        refreshRunningAgents()
+    }
+
+    // MARK: Trash / undo
+
+    /// Snapshot the registry into a `StoreData`, apply `body`, write the result
+    /// back to the published arrays, and persist. All delete/restore paths funnel
+    /// through here so the GUI and the CLI share one mutation implementation.
+    private func mutateStore(_ body: (inout StoreData) -> Void) {
+        var s = StoreData(projects: projects, groups: groups, trash: trash)
+        body(&s)
+        projects = s.projects
+        groups = s.groups
+        trash = s.trash
         save()
     }
+
+    private func setUndo(_ message: String, itemID: TrashedItem.ID) {
+        lastUndo = UndoToken(message: message, itemID: itemID)
+    }
+
+    /// Restore the most recently deleted item (the active Undo toast).
+    func undoLastDelete() {
+        guard let token = lastUndo else { return }
+        restoreTrash(token.itemID)
+    }
+
+    /// Restore a specific trashed item back into the live registry.
+    func restoreTrash(_ id: TrashedItem.ID) {
+        mutateStore { $0.restoreTrash(id) }
+        if lastUndo?.itemID == id { lastUndo = nil }
+    }
+
+    /// Permanently drop one trashed item.
+    func purgeTrash(_ id: TrashedItem.ID) {
+        mutateStore { s in s.trash.removeAll { $0.id == id } }
+        if lastUndo?.itemID == id { lastUndo = nil }
+    }
+
+    /// Permanently drop everything in the Trash.
+    func emptyTrash() {
+        mutateStore { $0.trash.removeAll() }
+        lastUndo = nil
+    }
+
+    func requestTrash() { trashRequested = true }
+    func dismissUndo() { lastUndo = nil }
 
     func toggleMembership(_ id: Project.ID, group: String) {
         guard let i = projects.firstIndex(where: { $0.id == id }) else { return }

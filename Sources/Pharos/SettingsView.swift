@@ -124,17 +124,8 @@ private struct IntegrationsSettingsTab: View {
     private static var executablePath: String {
         Bundle.main.executablePath ?? "<Pharos.app>/Contents/MacOS/Pharos"
     }
-    private static var mcpConfigSnippet: String {
-        """
-        {
-          "mcpServers": {
-            "pharos": {
-              "command": "\(executablePath)",
-              "args": ["--mcp"]
-            }
-          }
-        }
-        """
+    private static var cliSymlinkSnippet: String {
+        "ln -s \"\(executablePath)\" /usr/local/bin/pharos"
     }
 
     var body: some View {
@@ -149,21 +140,21 @@ private struct IntegrationsSettingsTab: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Section("MCP server") {
-                Text("Other AI agents can drive Pharos over MCP — list projects, open terminals/editors, and launch agents. The server runs on demand via stdio, so add the config below to your agent.")
+            Section("Command line") {
+                Text("Pharos is scriptable from the command line — and it's how agents drive it: a Claude Code or Codex session can shell out to update issues and post progress. Symlink it onto your PATH, then run `pharos help` (e.g. `pharos list --json`, `pharos issue start <project> 3 claude`).")
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(Self.mcpConfigSnippet)
+                Text(Self.cliSymlinkSnippet)
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
                 HStack {
-                    Button("Copy config") {
+                    Button("Copy command") {
                         let pb = NSPasteboard.general
                         pb.clearContents()
-                        pb.setString(Self.mcpConfigSnippet, forType: .string)
+                        pb.setString(Self.cliSymlinkSnippet, forType: .string)
                     }
                     Spacer()
                 }

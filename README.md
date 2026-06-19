@@ -47,11 +47,11 @@
 
 **Per-project yolo and tmux defaults.** Toggle yolo mode (passes `--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`) and tmux mode (wraps the agent in a persistent tmux session) per project — set them once, launch fast forever.
 
-**Terminal and editor choice.** Pharos respects your preference: choose Ghostty, macOS Terminal, iTerm, Warp, or WezTerm as your terminal, and VS Code, Cursor, Zed, Xcode, or Sublime Text as your editor. The same preference drives both GUI launches and MCP-triggered launches.
+**Terminal and editor choice.** Pharos respects your preference: choose Ghostty, macOS Terminal, iTerm, Warp, or WezTerm as your terminal, and VS Code, Cursor, Zed, Xcode, or Sublime Text as your editor. The same preference drives both GUI launches and CLI launches.
 
 **Desktop and Space placement.** Configure which macOS desktop Space agent windows should land on, so your agent never hijacks the wrong Space.
 
-**Per-project playbooks.** Save named shell commands ("run tests", "deploy staging", etc.) as playbooks attached to a project. Run them in one click from the UI or via the `run_playbook` MCP tool.
+**Per-project playbooks.** Save named shell commands ("run tests", "deploy staging", etc.) as playbooks attached to a project. Run them in one click from the UI or via the `pharos playbook` CLI command.
 
 ### Resume and Parallelize
 
@@ -106,78 +106,47 @@ No Xcode project required — Pharos is a pure SwiftPM app.
 
 ---
 
-## MCP Server
+## CLI — how agents drive Pharos
 
-Pharos ships a built-in stdio JSON-RPC MCP server. Run `Pharos --mcp` and any MCP-capable client (Claude Code, Codex, or any other agent) can drive the full Pharos registry: read project state, launch agents, resume sessions, manage worktrees, and mutate project metadata — all 21 tools. The GUI live-reloads within ~2 seconds whenever a tool call writes to the registry, so changes are immediately visible in the running app.
-
-### Config for Claude Code
-
-Add a project-level `.mcp.json` at the root of your repo:
-
-```json
-{
-  "mcpServers": {
-    "pharos": {
-      "command": "/Applications/Pharos.app/Contents/MacOS/Pharos",
-      "args": ["--mcp"]
-    }
-  }
-}
-```
-
-Or register it globally with the CLI:
+Pharos is scriptable from the command line, and the CLI is the interface coding
+agents use: a Claude Code or Codex session can shell out to `pharos` to read
+project state, manage issues, and post progress — no separate server to run, and
+nothing preloaded into the agent's context. The CLI ships **inside the app
+bundle** — the binary at `Pharos.app/Contents/MacOS/Pharos` *is* the CLI; symlink
+it onto your `PATH` as `pharos`:
 
 ```bash
-claude mcp add pharos -- /Applications/Pharos.app/Contents/MacOS/Pharos --mcp
+ln -s /Applications/Pharos.app/Contents/MacOS/Pharos /usr/local/bin/pharos
+pharos help                              # discover every command
+pharos list --json                       # machine-readable project list
+pharos launch myrepo claude --tmux       # launch an agent
+pharos issue add myrepo "Fix login bug" --priority high
+pharos issue start myrepo 3 claude       # launch an agent ON issue #3
+pharos update add myrepo "shipped the fix" --issue 3
+pharos remove myrepo                     # reversible — see `pharos trash`
 ```
 
-### Config for Codex
+Every read command accepts `--json`. Deletes (`remove`, `group delete`,
+`issue rm`) are reversible via the Trash for 30 days. Set
+`PHAROS_REGISTRY=/path/to/projects.json` to target an alternate store. The GUI
+live-reloads within ~2 seconds whenever the CLI writes, so changes show up in the
+running app immediately.
 
-Add to `~/.codex/config.toml`:
+### Command reference
 
-```toml
-[mcp_servers.pharos]
-command = "/Applications/Pharos.app/Contents/MacOS/Pharos"
-args = ["--mcp"]
-```
+Run `pharos help` for the authoritative list. Summary:
 
-### Tool reference
+| Group | Commands |
+|-------|----------|
+| Read | `list` · `groups` · `git <project>` · `worktrees <project>` · `sessions <project> <agent>` · `issue list <project> [--all]` · `update list <project>` · `trash [list]` |
+| Agents | `launch <project> <agent> [--no-yolo] [--tmux]` · `resume <project> <agent> <session_id>` · `playbook <project> <name>` · `open`/`editor`/`reveal <project>` |
+| Issues & log | `issue add <project> "<title>" [--priority …] [--body …]` · `issue status <project> <#> <status>` · `issue priority <project> <#> <priority>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `update add <project> "<text>" [--issue <#>]` |
+| Registry | `add <name> [--path] [--remote] [--tag]… [--notes]` · `remove <project>` · `rename <project> <new>` · `describe <project> <text…>` · `group create\|delete\|add\|remove …` · `yolo`/`tmux <project> <on\|off>` · `trash restore <id>` · `trash empty` |
 
-#### Read tools
-
-| Tool | Arguments | Description |
-|------|-----------|-------------|
-| `list_projects` | _(none)_ | List all projects Pharos manages: name, local path, GitHub remote, tags, notes, yolo, and tmux defaults. |
-| `list_groups` | _(none)_ | List all groups with the number of projects in each. |
-| `git_status` | `project` | Git status for a project: branch, dirty flag, commits ahead/behind remote, and last commit (hash, subject, relative time). |
-| `list_worktrees` | `project` | List a project's git worktrees: name, branch, path, and whether it is the main worktree. |
-| `list_sessions` | `project`, `agent` (`"claude"` or `"codex"`) | List past agent sessions for a project, newest first: session id and title. |
-
-#### Action tools
-
-| Tool | Arguments | Description |
-|------|-----------|-------------|
-| `launch_agent` | `project`, `agent`, `yolo` (bool, default `true`), `tmux` (bool, default `false`) | Launch Claude Code or Codex in a project's local directory using the configured terminal. |
-| `resume_session` | `project`, `agent`, `session_id` | Resume a past agent session by id in a project's local directory. |
-| `run_playbook` | `project`, `playbook` | Run one of a project's saved playbooks (a named shell command) in the configured terminal. |
-| `open_terminal` | `project` | Open the configured terminal at a project's local directory. |
-| `open_editor` | `project` | Open the configured editor at a project's local directory. |
-| `reveal_in_finder` | `project` | Reveal a project's local directory in Finder. |
-
-#### Write tools
-
-| Tool | Arguments | Description |
-|------|-----------|-------------|
-| `add_project` | `name` (required); `localPath`, `githubRemote`, `tags` (array), `notes` (optional) | Add a new project to the registry. |
-| `remove_project` | `project` | Remove a project from the registry by name. |
-| `rename_project` | `name`, `new_name` | Rename a project. |
-| `set_description` | `name`, `description` | Set (or replace) a project's notes/description. |
-| `add_to_group` | `name`, `group` | Add a project to a group; creates the group if it does not exist. |
-| `remove_from_group` | `name`, `group` | Remove a project from a group. |
-| `create_group` | `name` | Create an empty group. |
-| `delete_group` | `name` | Delete a group and strip its tag from all projects. |
-| `set_yolo` | `name`, `value` (bool) | Set a project's yolo default (skip agent permission prompts on launch). |
-| `set_tmux` | `name`, `value` (bool) | Set a project's tmux default (wrap agent launches in a persistent tmux session). |
+The headline differentiator — **issues wired to the agent loop**: `pharos issue
+start` moves an issue to *In Progress* and links the agent session; when that
+agent finishes (tmux), Pharos auto-posts an update to the project log. Agents can
+also post their own progress with `pharos update add`.
 
 ---
 

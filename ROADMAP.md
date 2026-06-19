@@ -46,7 +46,7 @@ and track agent work — in yolo mode, in parallel, at speed.
 - [ ] Cache git info across launches — **not done** (only the concurrency cap landed).
 
 ### v0.5 — Open & Connected
-- [x] MCP server (`Pharos --mcp`, stdio JSON-RPC): list_projects / launch_agent / open_terminal / open_editor; Settings shows the agent config snippet.
+- [x] ~~MCP server (`Pharos --mcp`, stdio JSON-RPC)~~ — **superseded in v1.1 by the `pharos` CLI** (one front door; agents shell out, nothing preloaded into context). Removed 2026-06-20.
 - [x] Multi-machine over SSH (peer-host git drift per project). *needs SSH host config + on-device test*
 
 ### v1.0 — Market
@@ -65,3 +65,42 @@ and track agent work — in yolo mode, in parallel, at speed.
 - Cache git/status across launches + debounce refresh.
 - Localization if/when distributed.
 - "Needs input" agent detection (not just "finished").
+
+### v1.1 — Next (requested 2026-06-19)
+
+**Design principle:** Pharos is **single-user** — a solo "vibe coder" driving AI
+agents. Borrow Linear's *UX*, NOT its multi-user machinery: no teams, no
+human assignees, no permissions/members, no collaboration. The only "who" that
+matters is which **agent / session / worktree** is working an item.
+
+- [x] **MCP → CLI tool (CLI is the core).** Logic lives in `PharosCore.swift`;
+  the `pharos` CLI (`CLI.swift`) is the headless front door over it (the GUI is
+  the other). Discoverable (`pharos help`), scriptable, `--json`-capable,
+  testable (`PHAROS_REGISTRY` override), ships inside the app bundle.
+  **MCP was then removed entirely (2026-06-20)** — the CLI is a superset, agents
+  shell out to it, and dropping the server means nothing is preloaded into an
+  agent's context (token savings). The roadmap originally said "don't drop MCP";
+  this decision overrode that.
+
+- [x] **Native issues & project log (Linear-style UX, single-user).** Shipped:
+  per-project **issues** (number, title, status backlog/todo/in_progress/done/
+  canceled, priority none→urgent, body — NO human assignees/teams) on `Project`,
+  plus a **project-update feed** (notes + agent auto-posts). Logic on `StoreData`
+  (pure, tested); GUI "Issues" tab + "Project Log"; full CLI (`pharos issue
+  add|list|status|priority|start|rm`, `pharos update add|list`). Headline
+  differentiator wired: `issue start` moves the issue to In Progress + links the
+  agent session, and `ProjectStore.postAgentFinished` auto-posts an update when
+  that tmux session ends. Issue deletes are soft (Trash, 30-day restore). Model
+  kept clean for a possible future one-way Linear export (not built).
+
+- [x] **Safe deletes — undo first, confirm by blast radius (safety).** Prefer
+  reversible **soft-delete / trash with a restore window** over interruptive
+  dialogs (blanket confirms cause click-through fatigue). Scale friction to
+  consequence: "forget a project" (reversible) needs nothing; deleting files on
+  disk or removing a worktree with uncommitted changes needs a strong confirm
+  that **shows what's lost** (or type-to-confirm). Distinguish "forget" from
+  "destroy." Pharos's OWN destructive ops (incl. yolo agents) should be
+  reversible/auditable, not just guarded by a UI prompt. Audit all delete paths
+  (`MCPServer.swift`, `ProjectStore.swift`, UI actions, issues).
+
+**Suggested order:** safety → CLI → issues.

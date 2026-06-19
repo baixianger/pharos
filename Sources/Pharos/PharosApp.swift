@@ -1,16 +1,19 @@
 import SwiftUI
 
-/// Real entry point. Dispatches to the headless MCP server when launched with
-/// `--mcp`; otherwise hands off to SwiftUI's synthesized `App` entry point so
-/// the normal GUI launches unchanged.
+/// Real entry point. Two front doors share one binary:
+///   • a CLI subcommand   → the `pharos` CLI (e.g. `Pharos list`, `Pharos launch …`)
+///   • anything else      → the SwiftUI GUI, unchanged
+/// The CLI is only entered for a bare-word subcommand (or `--help`/`--version`),
+/// so GUI launch arguments from LaunchServices (`-psn_…`, `-NSDocument…`) still
+/// open the app normally.
 @main
 enum PharosMain {
     static func main() {
-        if CommandLine.arguments.contains("--mcp") {
-            MCPServer.run()
-        } else {
-            PharosApp.main()
+        let args = Array(CommandLine.arguments.dropFirst())
+        if let first = args.first, CLI.isCommand(first) {
+            exit(CLI.run(args))
         }
+        PharosApp.main()
     }
 }
 
