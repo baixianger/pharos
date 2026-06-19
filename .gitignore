@@ -1,0 +1,37 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Build artifacts
+*.app/
+*.dmg
+Icon.icns
+DerivedData/
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+.keys/
+*.p8
+secrets/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Claude Code local settings + per-project skill copies
+.claude/
+
+# Logs
+*.log

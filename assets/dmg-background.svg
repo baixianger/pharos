@@ -1,0 +1,32 @@
+<svg width="660" height="400" viewBox="0 0 660 400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F7F3EB"/>
+      <stop offset="0.55" stop-color="#E5EFF8"/>
+      <stop offset="1" stop-color="#C7DBEC"/>
+    </linearGradient>
+    <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#A9CBE6" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#7FAAD2" stop-opacity="0.6"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#AEC8DF"/>
+      <stop offset="1" stop-color="#6E9BC6"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="660" height="400" fill="url(#bg)"/>
+  <!-- faint sea band echoing the app icon -->
+  <path d="M0 366 Q165 352 330 366 T660 366 L660 400 L0 400 Z" fill="url(#sea)"/>
+
+  <!-- title -->
+  <text x="330" y="64" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="32" font-weight="700" fill="#2C3F54">Pharos</text>
+  <text x="330" y="92" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="15" font-weight="500" fill="#5B7790">Your vibe coding project manager</text>
+
+  <!-- arrow: app (left) -> Applications (right) -->
+  <rect x="250" y="204" width="148" height="11" rx="5.5" fill="url(#arrow)"/>
+  <path d="M392 192 L426 209.5 L392 227 Z" fill="#6E9BC6"/>
+
+  <!-- install hint -->
+  <text x="330" y="128" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="13" font-weight="500" fill="#7B93A6">Drag Pharos onto the Applications folder</text>
+</svg>

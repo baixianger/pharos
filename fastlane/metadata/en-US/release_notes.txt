@@ -1,0 +1,7 @@
+Phase 0 scaffold: SwiftUI + Liquid Glass (macOS 26) project manager built as a pure SwiftPM app (no Xcode project).
+
+- Project registry for local folders and GitHub repos with groups and JSON persistence
+- Git status panel: branch, uncommitted changes, recent commits
+- Launch Claude Code or Codex with a project-level YOLO toggle
+- GitHub clone-to-local
+- Lighthouse app icon

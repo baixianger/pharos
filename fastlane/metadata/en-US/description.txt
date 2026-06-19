@@ -1,0 +1,12 @@
+Pharos is a macOS mission-control dashboard for AI-assisted development. Add local folders and GitHub repos, group them by project or team, see live git activity at a glance, and launch Claude Code or Codex into any project in one click — YOLO mode, tmux, or your preferred terminal.
+
+Built native for macOS 26 (Tahoe) with SwiftUI Liquid Glass. No Xcode project, no sandbox — Pharos reads your ~/.claude and ~/.codex directories, spawns terminal sessions, and uses window management APIs that sandboxed apps cannot touch.
+
+— Sidebar watchlist with group switcher: create, rename, and delete project groups
+— Import from GitHub with checkbox multi-select and group assignment
+— Local repos auto-detect their git origin remote on add
+— Launch Claude Code or Codex with a per-project YOLO toggle
+— Git status panel: branch, uncommitted changes, recent commits
+— JSON persistence in ~/Library/Application Support/Pharos/
+— Developer ID signed and notarized for direct download (not Mac App Store)
+— Sparkle auto-update: get new versions in-app without re-downloading manually

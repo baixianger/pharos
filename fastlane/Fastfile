@@ -1,0 +1,275 @@
+# Pharos — Fastfile
+#
+# Pharos ships via Developer ID + notarization + Sparkle (direct download).
+# It is NOT sandboxed and CANNOT go to the Mac App Store.
+# These lanes wrap the existing shell scripts in Scripts/.
+#
+# All lanes run under:  platform :mac
+# Invoke with:          bundle exec fastlane mac <lane>
+
+APP_IDENTIFIER    = "me.pai.pharos"
+TEAM_ID           = "TN7ZDD72P2"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Parse key=value pairs from version.env (shell-sourceable, no subshell needed).
+def load_version_env
+  env_path = File.expand_path("../version.env", __dir__)
+  UI.user_error!("version.env not found at #{env_path}") unless File.exist?(env_path)
+
+  vars = {}
+  File.readlines(env_path).each do |line|
+    stripped = line.strip
+    next if stripped.empty? || stripped.start_with?("#")
+    key, _sep, value = stripped.partition("=")
+    vars[key.strip] = value.strip unless key.strip.empty?
+  end
+  vars
+end
+
+# Write a key=value pair back into version.env (in-place, preserves other keys).
+def write_version_env_key(key, value)
+  env_path = File.expand_path("../version.env", __dir__)
+  lines = File.readlines(env_path)
+  found = false
+  lines = lines.map do |line|
+    if line.strip.start_with?("#{key}=")
+      found = true
+      "#{key}=#{value}\n"
+    else
+      line
+    end
+  end
+  lines << "#{key}=#{value}\n" unless found
+  File.write(env_path, lines.join)
+end
+
+# ---------------------------------------------------------------------------
+# Platform
+# ---------------------------------------------------------------------------
+
+default_platform(:mac)
+
+platform :mac do
+
+  # ── bump_build ──────────────────────────────────────────────────────────────
+
+  desc "Set BUILD_NUMBER in version.env to the current git commit count. " \
+       "Mirrors the hetznerly convention (build = commit count, always " \
+       "monotonically increasing on the main branch)."
+  lane :bump_build do
+    commit_count = sh("git rev-list --count HEAD").strip
+    write_version_env_key("BUILD_NUMBER", commit_count)
+    UI.success("BUILD_NUMBER set to #{commit_count} in version.env")
+  end
+
+  # ── icon ────────────────────────────────────────────────────────────────────
+
+  desc "Generate Icon.icns from assets/icon-source.png via Scripts/make_icns.sh. " \
+       "Requires sips and iconutil (both bundled with macOS)."
+  lane :icon do
+    sh("cd .. && ./Scripts/make_icns.sh")
+    UI.success("Icon.icns regenerated")
+  end
+
+  # ── build ───────────────────────────────────────────────────────────────────
+
+  desc "Build Pharos.app via Scripts/package_app.sh (release config). " \
+       "Ad-hoc signs if APP_IDENTITY is unset; Developer ID signs when set. " \
+       "Pass APP_IDENTITY env var to produce a distributable bundle."
+  lane :build do
+    sh("cd .. && ./Scripts/package_app.sh release")
+    UI.success("Pharos.app assembled")
+  end
+
+  # ── notarize ────────────────────────────────────────────────────────────────
+
+  desc "Developer ID sign, notarize, staple, and zip Pharos.app via " \
+       "Scripts/sign-and-notarize.sh. Requires env vars:\n" \
+       "  APP_IDENTITY          — 'Developer ID Application: Your Name (TN7ZDD72P2)'\n" \
+       "  NOTARYTOOL_PROFILE    — keychain profile name (Option A, recommended)\n" \
+       "  — OR —\n" \
+       "  NOTARYTOOL_APPLE_ID   — Apple ID email\n" \
+       "  NOTARYTOOL_TEAM_ID    — defaults to TN7ZDD72P2\n" \
+       "  NOTARYTOOL_APP_PASSWORD — app-specific password from appleid.apple.com"
+  lane :sign_and_notarize do
+    # Guard: APP_IDENTITY must be set.
+    identity = ENV["APP_IDENTITY"].to_s.strip
+    UI.user_error!(
+      "APP_IDENTITY is not set.\n" \
+      "Export it before running this lane:\n" \
+      "  export APP_IDENTITY=\"Developer ID Application: Your Name (TN7ZDD72P2)\"\n" \
+      "Find your cert name with:\n" \
+      "  security find-identity -v -p codesigning | grep 'Developer ID Application'"
+    ) if identity.empty?
+
+    # Guard: notarytool credentials must be set (profile OR inline).
+    has_profile = ENV["NOTARYTOOL_PROFILE"].to_s.strip.length > 0
+    has_inline  = ENV["NOTARYTOOL_APPLE_ID"].to_s.strip.length > 0 &&
+                  ENV["NOTARYTOOL_APP_PASSWORD"].to_s.strip.length > 0
+
+    unless has_profile || has_inline
+      UI.user_error!(
+        "Notarytool credentials are not set. Provide one of:\n\n" \
+        "Option A — stored keychain profile (recommended):\n" \
+        "  export NOTARYTOOL_PROFILE=\"pharos-notary\"\n" \
+        "  (Created via: xcrun notarytool store-credentials pharos-notary)\n\n" \
+        "Option B — inline credentials:\n" \
+        "  export NOTARYTOOL_APPLE_ID=\"you@apple.com\"\n" \
+        "  export NOTARYTOOL_TEAM_ID=\"TN7ZDD72P2\"  # default; override if needed\n" \
+        "  export NOTARYTOOL_APP_PASSWORD=\"xxxx-xxxx-xxxx-xxxx\"  # from appleid.apple.com"
+      )
+    end
+
+    # Default NOTARYTOOL_TEAM_ID to TN7ZDD72P2 if not set.
+    ENV["NOTARYTOOL_TEAM_ID"] ||= TEAM_ID
+
+    sh("cd .. && ./Scripts/sign-and-notarize.sh")
+    UI.success("Notarization and stapling complete")
+  end
+
+  # ── appcast ─────────────────────────────────────────────────────────────────
+
+  desc "Generate the Sparkle appcast (appcast.xml). Calls Sparkle's " \
+       "generate_appcast tool if it can be found in the SPM cache, " \
+       "otherwise prints the manual instructions from docs/SPARKLE.md. " \
+       "Expects the notarized zip to already exist (run `notarize` first)."
+  lane :appcast do
+    # Locate Sparkle's generate_appcast in the SPM resolved cache.
+    sparkle_cache = Dir.glob(
+      File.expand_path("~/.cache/org.swift.swiftpm/repositories/Sparkle-*.git")
+    ).first
+
+    tool = sparkle_cache ? File.join(sparkle_cache, "bin", "generate_appcast") : nil
+
+    if tool && File.executable?(tool)
+      UI.message("Using Sparkle generate_appcast at: #{tool}")
+      sh("cd .. && #{tool.shellescape} .")
+      UI.success("appcast.xml generated")
+    else
+      UI.important(
+        "Sparkle's `generate_appcast` was not found in the SPM cache.\n" \
+        "Generate the appcast manually:\n\n" \
+        "  1. Find sign_update next to generate_appcast in your Sparkle SPM checkout:\n" \
+        "       SPARKLE_CACHE=$(swift package show-dependencies --format json \\\n" \
+        "         | python3 -c \"import sys,json; \\\n" \
+        "           [print(d['path']) for d in json.load(sys.stdin)['dependencies'] \\\n" \
+        "           if 'sparkle' in d['name'].lower()]\")\n\n" \
+        "  2. Sign the release zip:\n" \
+        "       \"$SPARKLE_CACHE/bin/sign_update\" Pharos-<version>.zip\n\n" \
+        "  3. Build appcast.xml using the template in docs/SPARKLE.md (Section 4).\n\n" \
+        "  4. Upload appcast.xml + the zip to https://me.pai/pharos/\n\n" \
+        "See docs/SPARKLE.md for the full reference."
+      )
+    end
+  end
+
+  # ── dmg ───────────────────────────────────────────────────────────────────────
+
+  desc "Build a styled Pharos-<version>.dmg (branded background + drag-to-" \
+       "Applications layout) via Scripts/make_dmg.sh. Expects Pharos.app to " \
+       "exist (run build / sign_and_notarize first). For distribution the DMG " \
+       "should also be codesigned + notarized + stapled (see docs/RELEASE.md)."
+  lane :dmg do
+    sh("cd .. && ./Scripts/make_dmg.sh")
+    UI.success("Pharos disk image built")
+  end
+
+  # ── release ─────────────────────────────────────────────────────────────────
+
+  desc "Full release orchestration: bump_build → build → sign_and_notarize → appcast → " \
+       "create GitHub release (gh release create) attaching the notarized zip " \
+       "and appcast.xml with notes from CHANGELOG.md. Reads MARKETING_VERSION " \
+       "from version.env. Requires the same env vars as the `notarize` lane plus " \
+       "`gh` (GitHub CLI) to be authenticated."
+  lane :release do
+    env = load_version_env
+    marketing_version = env["MARKETING_VERSION"] || UI.user_error!("MARKETING_VERSION missing from version.env")
+
+    UI.message("==> Release: Pharos v#{marketing_version}")
+
+    # Step 1: bump BUILD_NUMBER.
+    UI.message("--- Step 1/6: bump_build")
+    bump_build
+
+    # Re-read env after bump so BUILD_NUMBER is fresh.
+    env = load_version_env
+    build_number = env["BUILD_NUMBER"]
+    UI.success("Build number: #{build_number}")
+
+    # Step 2: build the app bundle.
+    UI.message("--- Step 2/6: build")
+    build
+
+    # Step 3: sign, notarize, staple → produces Pharos-<version>.zip.
+    UI.message("--- Step 3/6: sign_and_notarize")
+    sign_and_notarize
+
+    # Step 4: build the styled DMG from the signed app.
+    UI.message("--- Step 4/6: dmg")
+    dmg
+
+    # Step 5: generate / describe the appcast.
+    UI.message("--- Step 5/6: appcast")
+    appcast
+
+    # Step 6: create a GitHub release.
+    UI.message("--- Step 6/6: gh release create")
+
+    zip_name  = "Pharos-#{marketing_version}.zip"
+    repo_root = File.expand_path("..", __dir__)
+    zip_path  = File.join(repo_root, zip_name)
+
+    UI.user_error!("Expected zip not found at #{zip_path} — did notarize succeed?") unless File.exist?(zip_path)
+
+    # Extract the latest CHANGELOG entry as release notes.
+    changelog_path = File.join(repo_root, "CHANGELOG.md")
+    release_notes  = ""
+    if File.exist?(changelog_path)
+      lines = File.readlines(changelog_path)
+      # Find the first versioned heading (## v...) and collect until the next.
+      in_section = false
+      section_lines = []
+      lines.each do |line|
+        if line.start_with?("## v") || line.start_with?("## V")
+          break if in_section
+          in_section = true
+        elsif line.start_with?("## Unreleased")
+          # Skip the unreleased section header but collect its body if there's
+          # no versioned section yet — use it as notes for an unreleased build.
+          in_section = true
+        elsif in_section && line.start_with?("## ")
+          break
+        end
+        section_lines << line if in_section
+      end
+      release_notes = section_lines.join.strip
+    end
+    release_notes = "Pharos v#{marketing_version}" if release_notes.empty?
+
+    # Build gh command. Attach zip; attach appcast.xml if it exists.
+    appcast_path = File.join(repo_root, "appcast.xml")
+    dmg_path     = File.join(repo_root, "Pharos-#{marketing_version}.dmg")
+    attachments  = [zip_path.shellescape]
+    attachments << dmg_path.shellescape if File.exist?(dmg_path)
+    attachments << appcast_path.shellescape if File.exist?(appcast_path)
+
+    gh_cmd = [
+      "gh release create",
+      "\"v#{marketing_version}\"",
+      "--title \"Pharos v#{marketing_version}\"",
+      "--notes #{release_notes.shellescape}",
+      *attachments
+    ].join(" ")
+
+    sh("cd .. && #{gh_cmd}")
+    UI.success("GitHub release v#{marketing_version} created")
+  end
+
+  error do |lane, exception|
+    UI.error("Lane `#{lane}` failed: #{exception.message}")
+  end
+
+end
