@@ -20,14 +20,17 @@ struct Project: Identifiable, Codable, Hashable {
     var playbooks: [Playbook] = []
     var notes: String = ""      // human-written description shown in Pharos
     var peerPath: String?       // override for this project's directory on the peer host; nil/empty = same as localPath
+    var issues: [Issue] = []    // native, single-user issues (no human assignees)
+    var updates: [ProjectUpdate] = []   // project-update feed / personal changelog
 
     init(id: UUID = UUID(), name: String, localPath: String? = nil, githubRemote: String? = nil,
          tags: [String] = [], yolo: Bool = true, tmux: Bool = false,
          addedAt: Date = Date(), playbooks: [Playbook] = [], notes: String = "",
-         peerPath: String? = nil) {
+         peerPath: String? = nil, issues: [Issue] = [], updates: [ProjectUpdate] = []) {
         self.id = id; self.name = name; self.localPath = localPath; self.githubRemote = githubRemote
         self.tags = tags; self.yolo = yolo; self.tmux = tmux; self.addedAt = addedAt
         self.playbooks = playbooks; self.notes = notes; self.peerPath = peerPath
+        self.issues = issues; self.updates = updates
     }
 
     /// Tolerant decoding — missing keys (older registries) fall back to defaults,
@@ -45,7 +48,13 @@ struct Project: Identifiable, Codable, Hashable {
         playbooks = try c.decodeIfPresent([Playbook].self, forKey: .playbooks) ?? []
         notes = try c.decodeIfPresent(String.self, forKey: .notes) ?? ""
         peerPath = try c.decodeIfPresent(String.self, forKey: .peerPath)
+        issues = try c.decodeIfPresent([Issue].self, forKey: .issues) ?? []
+        updates = try c.decodeIfPresent([ProjectUpdate].self, forKey: .updates) ?? []
     }
+
+    /// Next per-project issue number (#1, #2, …). Based on current issues only;
+    /// good enough for a single user.
+    var nextIssueNumber: Int { (issues.map(\.number).max() ?? 0) + 1 }
 
     var hasLocal: Bool { (localPath?.isEmpty == false) }
     var hasGitHub: Bool { (githubRemote?.isEmpty == false) }
@@ -56,6 +65,147 @@ struct Project: Identifiable, Codable, Hashable {
         guard let localPath, !localPath.isEmpty else { return nil }
         return URL(fileURLWithPath: localPath).deletingLastPathComponent().lastPathComponent
     }
+}
+
+/// A native issue. Single-user by design: there are no human assignees or teams —
+/// the only "who" is which agent session (`activeSession`) is working it.
+struct Issue: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
+    var number: Int                       // per-project, human-facing (#1, #2, …)
+    var title: String
+    var status: IssueStatus = .todo
+    var priority: IssuePriority = .none
+    var body: String = ""
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
+    /// tmux session name of an agent currently working this issue (nil = none).
+    var activeSession: String?
+    /// Worktree path an agent is running in for this issue, if any.
+    var worktreePath: String?
+}
+
+/// Linear-style workflow states. `in_progress` is wire-stable as a raw value.
+enum IssueStatus: String, Codable, CaseIterable, Identifiable {
+    case backlog, todo
+    case inProgress = "in_progress"
+    case done, canceled
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .backlog: return "Backlog"
+        case .todo: return "Todo"
+        case .inProgress: return "In Progress"
+        case .done: return "Done"
+        case .canceled: return "Canceled"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .backlog: return "circle.dashed"
+        case .todo: return "circle"
+        case .inProgress: return "circle.lefthalf.filled"
+        case .done: return "checkmark.circle.fill"
+        case .canceled: return "xmark.circle"
+        }
+    }
+    /// Board/sort order.
+    var order: Int { Self.allCases.firstIndex(of: self) ?? 0 }
+    /// Open = still actionable (drives default list filtering).
+    var isOpen: Bool { self != .done && self != .canceled }
+}
+
+/// Issue priority. `none` sorts last visually but ranks lowest.
+enum IssuePriority: String, Codable, CaseIterable, Identifiable {
+    case none, low, medium, high, urgent
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .none: return "No priority"
+        case .low: return "Low"
+        case .medium: return "Medium"
+        case .high: return "High"
+        case .urgent: return "Urgent"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .none: return "minus"
+        case .low: return "chevron.down"
+        case .medium: return "equal"
+        case .high: return "chevron.up"
+        case .urgent: return "exclamationmark.triangle.fill"
+        }
+    }
+    var rank: Int { Self.allCases.firstIndex(of: self) ?? 0 }
+}
+
+/// One entry in a project's update feed — a personal progress log / changelog.
+/// Either a hand-written `note` or an `agent`-posted line (e.g. when an agent
+/// launched on an issue finishes).
+struct ProjectUpdate: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
+    var createdAt: Date = Date()
+    var body: String
+    var kind: UpdateKind = .note
+    var issueNumber: Int?            // links the update to an issue, if any
+}
+
+enum UpdateKind: String, Codable { case note, agent }
+
+/// An item the user removed that can still be restored from Trash.
+///
+/// Soft-delete is the heart of Pharos's "forget, don't destroy" safety model:
+/// removing a project, group, or playbook moves its *full* payload here so a
+/// restore is lossless, and records when it was deleted so a restore window can
+/// auto-purge it. The recovery logic lives on `StoreData` (a value type) so the
+/// GUI and the `pharos` CLI share one implementation.
+struct TrashedItem: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
+    var deletedAt: Date = Date()
+    var payload: TrashPayload
+
+    /// Display name for the Trash list.
+    var title: String {
+        switch payload {
+        case .project(let p):         return p.name
+        case .group(let name, _):     return name
+        case .playbook(_, _, let pb): return pb.name
+        case .issue(_, _, let issue): return "#\(issue.number) \(issue.title)"
+        }
+    }
+
+    /// Short kind label for the Trash list, e.g. "Project" or "Playbook · Pharos".
+    var kindLabel: String {
+        switch payload {
+        case .project:                         return "Project"
+        case .group:                           return "Group"
+        case .playbook(_, let projectName, _): return "Playbook · \(projectName)"
+        case .issue(_, let projectName, _):    return "Issue · \(projectName)"
+        }
+    }
+}
+
+/// The recoverable contents of a `TrashedItem`.
+enum TrashPayload: Codable, Hashable {
+    /// A forgotten project — registry metadata only; the repo on disk is untouched.
+    case project(Project)
+    /// A deleted group plus the ids of the projects that were tagged with it, so
+    /// membership is restored exactly.
+    case group(name: String, memberProjectIDs: [UUID])
+    /// A deleted issue plus the project (id + name) it belonged to.
+    case issue(projectID: UUID, projectName: String, issue: Issue)
+    /// A deleted playbook plus the project (id + name) it belonged to.
+    case playbook(projectID: UUID, projectName: String, playbook: Playbook)
+}
+
+/// A transient "Undo" affordance shown after a reversible delete. Points at the
+/// `TrashedItem` that an undo would restore.
+struct UndoToken: Identifiable, Equatable {
+    let id = UUID()
+    var message: String
+    var itemID: TrashedItem.ID
 }
 
 /// Sidebar group selection — like a stock-app watchlist selector.

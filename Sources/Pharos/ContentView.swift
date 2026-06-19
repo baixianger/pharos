@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var showAdd = false
     @State private var showImport = false
     @State private var showPalette = false
+    @State private var showTrash = false
     @State private var showOnboarding = false
     @State private var searchText = ""
 
@@ -63,15 +64,21 @@ struct ContentView: View {
                 .help("Add a project")
                 .accessibilityLabel("Add project")
 
-                Button(role: .destructive) {
+                Button { showTrash = true } label: {
+                    Label("Trash", systemImage: "clock.arrow.circlepath")
+                }
+                .help("Recently deleted — restore or purge")
+                .accessibilityLabel("Show recently deleted")
+
+                Button {
                     if let id = selectedProject, let p = store.project(id) {
                         store.remove(p)
                         selectedProject = nil
                     }
                 } label: {
-                    Label("Remove", systemImage: "trash")
+                    Label("Remove", systemImage: "minus.circle")
                 }
-                .help("Remove the selected project from Pharos")
+                .help("Forget the selected project (its files stay on disk; undo from Trash)")
                 .accessibilityLabel("Remove selected project")
                 .disabled(selectedProject == nil)
             }
@@ -83,6 +90,9 @@ struct ContentView: View {
         .sheet(isPresented: $showPalette) {
             CommandPalette(selectedProject: $selectedProject, isPresented: $showPalette)
                 .environment(store)
+        }
+        .sheet(isPresented: $showTrash) {
+            TrashView().environment(store)
         }
         .sheet(isPresented: $showOnboarding) {
             OnboardingView {
@@ -111,6 +121,9 @@ struct ContentView: View {
         .onChange(of: store.paletteRequested) { _, requested in
             if requested { showPalette = true; store.paletteRequested = false }
         }
+        .onChange(of: store.trashRequested) { _, requested in
+            if requested { showTrash = true; store.trashRequested = false }
+        }
         .onChange(of: store.projects) { _, projects in
             // Mark onboarded once the user has at least one project
             if !projects.isEmpty { onboarded = true }
@@ -120,6 +133,15 @@ struct ContentView: View {
                 .environment(store)
                 .animation(.spring(duration: 0.35), value: launchCount)
         }
+        .overlay(alignment: .bottom) {
+            if let undo = store.lastUndo {
+                UndoToast(token: undo)
+                    .environment(store)
+                    .padding(.bottom, 56)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(duration: 0.3), value: store.lastUndo)
         .onAppear {
             if !onboarded && store.projects.isEmpty {
                 showOnboarding = true

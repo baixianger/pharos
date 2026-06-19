@@ -185,9 +185,11 @@ enum LaunchService {
         }
     }
 
-    /// Launch an agent at an arbitrary path (e.g. a worktree).
+    /// Launch an agent at an arbitrary path (e.g. a worktree). `source` records
+    /// who initiated a yolo launch in the audit log (defaults to the GUI).
     static func launchAgent(_ kind: AgentKind, atPath path: String, yolo: Bool, tmux: Bool,
-                            tmuxName: String, terminal: TerminalApp, extraArgs: String = "") {
+                            tmuxName: String, terminal: TerminalApp, extraArgs: String = "",
+                            source: AuditLog.Source = .ui) {
         let cmd = kind.command(yolo: yolo, extraArgs: extraArgs)
         let command: String
         if tmux {
@@ -201,6 +203,12 @@ enum LaunchService {
             command = cmd
         }
         openInTerminal(terminal, path: path, command: command)
+        // Yolo agents can delete files unattended — leave an audit trail (the
+        // roadmap's "reversible/auditable, not just guarded by a UI prompt").
+        if yolo {
+            AuditLog.record(actor: source, action: "launch_agent_yolo",
+                            detail: "\(kind.rawValue) @ \(path)")
+        }
     }
 
     /// Resume a past agent session in the chosen terminal (honoring tmux + yolo).
@@ -389,9 +397,26 @@ extension GitService {
         return Shell.git(["worktree", "add", "-b", name, dest], at: repo).ok
     }
 
+    /// Count of pending changes (`git status --porcelain` lines, incl. untracked)
+    /// in a worktree — used to show "what's lost" before removal. 0 = clean.
+    static func worktreeDirtyCount(path: String) -> Int {
+        let out = Shell.git(["status", "--porcelain"], at: path).out
+        return out.isEmpty ? 0 : out.split(separator: "\n").count
+    }
+
+    /// Remove a worktree the recoverable way: move its working directory to the
+    /// macOS Trash, then prune git's now-stale bookkeeping. The branch is left
+    /// intact. Returns false if the directory could not be trashed — in which
+    /// case git state is left untouched, so nothing is half-removed.
     @discardableResult
-    static func removeWorktree(repo: String, path: String) -> Bool {
-        Shell.git(["worktree", "remove", path, "--force"], at: repo).ok
+    static func trashWorktree(repo: String, path: String) -> Bool {
+        do {
+            try FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
+        } catch {
+            return false
+        }
+        _ = Shell.git(["worktree", "prune"], at: repo)
+        return true
     }
 }
 

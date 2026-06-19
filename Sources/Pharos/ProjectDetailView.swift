@@ -25,13 +25,23 @@ struct ProjectDetailView: View {
     @State private var peerLoading = false
     @State private var ghStatus: GitHubStatus? = nil
     @State private var ghLoading = false
+    @State private var worktreeToRemove: Worktree?
+    @State private var worktreeDirtyCount = 0
+    @State private var worktreeConfirmText = ""
+    @State private var worktreeRemoving = false
 
     private enum DetailTab: String, CaseIterable, Identifiable {
         case overview = "Overview"
+        case issues   = "Issues"
         case git      = "Git"
         case sessions = "Sessions"
         var id: String { rawValue }
     }
+
+    // Issue/update composer state.
+    @State private var newIssueTitle = ""
+    @State private var newIssuePriority: IssuePriority = .none
+    @State private var newUpdateText = ""
 
     private var project: Project? { store.project(projectID) }
 
@@ -92,6 +102,9 @@ struct ProjectDetailView: View {
                         newPlaybookName = ""; newPlaybookCommand = ""
                     }
                 }
+                .sheet(item: $worktreeToRemove) { wt in
+                    worktreeRemoveSheet(wt)
+                }
             } else {
                 ContentUnavailableView("Project not found", systemImage: "questionmark.folder")
             }
@@ -113,6 +126,9 @@ struct ProjectDetailView: View {
                 githubStatusCard(project)
             }
             playbooksCard(project)
+        case .issues:
+            issuesCard(project)
+            logCard(project)
         case .git:
             if project.hasLocal {
                 gitCard
@@ -462,7 +478,7 @@ struct ProjectDetailView: View {
                         Button { LaunchService.revealInFinder(wt.path) } label: { Label("Finder", systemImage: "folder") }
                         if !wt.isMain {
                             Divider()
-                            Button(role: .destructive) { removeWorktree(wt) } label: { Label("Remove worktree", systemImage: "trash") }
+                            Button(role: .destructive) { beginRemoveWorktree(wt) } label: { Label("Remove worktree…", systemImage: "trash") }
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
@@ -476,6 +492,159 @@ struct ProjectDetailView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    // MARK: Issues + project log (single-user; no human assignees)
+
+    @ViewBuilder
+    private func issuesCard(_ project: Project) -> some View {
+        let sorted = project.issues.sorted { a, b in
+            if a.status.order != b.status.order { return a.status.order < b.status.order }
+            if a.priority.rank != b.priority.rank { return a.priority.rank > b.priority.rank }
+            return a.number < b.number
+        }
+        let openCount = project.issues.filter { $0.status.isOpen }.count
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Issues (\(openCount) open)").font(.headline)
+            HStack(spacing: 8) {
+                TextField("New issue title…", text: $newIssueTitle)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { addIssueFromComposer(project) }
+                Menu {
+                    ForEach(IssuePriority.allCases) { p in
+                        Button { newIssuePriority = p } label: { Label(p.label, systemImage: p.symbol) }
+                    }
+                } label: { Label(newIssuePriority.label, systemImage: newIssuePriority.symbol) }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .help("Priority for the new issue")
+                Button { addIssueFromComposer(project) } label: { Label("Add", systemImage: "plus") }
+                    .disabled(newIssueTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            if sorted.isEmpty {
+                Text("No issues yet.").font(.callout).foregroundStyle(.secondary)
+            } else {
+                ForEach(sorted) { issue in
+                    issueRow(project, issue)
+                    if issue.id != sorted.last?.id { Divider() }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func issueRow(_ project: Project, _ issue: Issue) -> some View {
+        HStack(spacing: 10) {
+            Menu {
+                ForEach(IssueStatus.allCases) { s in
+                    Button { store.setIssueStatus(project.id, number: issue.number, status: s) } label: {
+                        Label(s.label, systemImage: s.symbol)
+                    }
+                }
+            } label: {
+                Image(systemName: issue.status.symbol).foregroundStyle(.secondary).frame(width: 18)
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .help("Status: \(issue.status.label)")
+
+            Text("#\(issue.number)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(issue.title)
+                    .font(.callout)
+                    .strikethrough(issue.status == .canceled)
+                    .foregroundStyle(issue.status.isOpen ? .primary : .secondary)
+                    .lineLimit(1)
+                if let session = issue.activeSession, store.runningSessions.contains(session) {
+                    Label("agent running", systemImage: "circle.fill")
+                        .font(.caption2).foregroundStyle(.green).labelStyle(.titleAndIcon)
+                }
+            }
+            Spacer()
+            Menu {
+                ForEach(IssuePriority.allCases) { p in
+                    Button { store.setIssuePriority(project.id, number: issue.number, priority: p) } label: {
+                        Label(p.label, systemImage: p.symbol)
+                    }
+                }
+            } label: {
+                Image(systemName: issue.priority.symbol)
+                    .foregroundStyle(issue.priority == .urgent ? .orange : .secondary)
+                    .frame(width: 16)
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .help("Priority: \(issue.priority.label)")
+
+            Menu {
+                if project.hasLocal {
+                    Button { store.startAgentOnIssue(project, number: issue.number, kind: .claude) } label: {
+                        Label("Start Claude Code", systemImage: AgentKind.claude.symbol)
+                    }
+                    Button { store.startAgentOnIssue(project, number: issue.number, kind: .codex) } label: {
+                        Label("Start Codex", systemImage: AgentKind.codex.symbol)
+                    }
+                    Divider()
+                }
+                Button(role: .destructive) {
+                    store.removeIssue(project.id, number: issue.number, title: issue.title)
+                } label: { Label("Delete issue", systemImage: "trash") }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            .accessibilityLabel("Actions for issue \(issue.number)")
+        }
+        .padding(.vertical, 3)
+    }
+
+    @ViewBuilder
+    private func logCard(_ project: Project) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Project Log").font(.headline)
+            HStack(spacing: 8) {
+                TextField("Log a progress note…", text: $newUpdateText)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { addUpdateFromComposer(project) }
+                Button { addUpdateFromComposer(project) } label: { Label("Post", systemImage: "paperplane") }
+                    .disabled(newUpdateText.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            if project.updates.isEmpty {
+                Text("No updates yet. Agents finishing on an issue post here automatically.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else {
+                ForEach(project.updates) { u in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: u.kind == .agent ? "sparkles" : "text.bubble")
+                            .foregroundStyle(u.kind == .agent ? Color.blue : Color.secondary)
+                            .frame(width: 16)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(u.body).font(.callout)
+                            Text(u.createdAt.formatted(.relative(presentation: .named))
+                                 + (u.issueNumber.map { " · #\($0)" } ?? ""))
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 2)
+                    if u.id != project.updates.last?.id { Divider() }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func addIssueFromComposer(_ project: Project) {
+        store.addIssue(project.id, title: newIssueTitle, priority: newIssuePriority)
+        newIssueTitle = ""
+        newIssuePriority = .none
+    }
+
+    private func addUpdateFromComposer(_ project: Project) {
+        store.addUpdate(project.id, body: newUpdateText)
+        newUpdateText = ""
     }
 
     // MARK: Clone card (GitHub-only project)
@@ -614,10 +783,7 @@ struct ProjectDetailView: View {
                         .padding(.vertical, 6)
                         .contextMenu {
                             Button(role: .destructive) {
-                                if var p = store.project(projectID) {
-                                    p.playbooks.removeAll { $0.id == pb.id }
-                                    store.update(p)
-                                }
+                                store.removePlaybook(projectID: projectID, playbook: pb)
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
@@ -799,12 +965,84 @@ struct ProjectDetailView: View {
                                   extraArgs: extra)
     }
 
-    private func removeWorktree(_ wt: Worktree) {
-        guard let p = store.project(projectID), let repo = p.localPath else { return }
+    /// Open the worktree-removal confirm sheet and asynchronously load how many
+    /// uncommitted changes would be lost (shown so the confirm is informed).
+    private func beginRemoveWorktree(_ wt: Worktree) {
+        worktreeConfirmText = ""
+        worktreeDirtyCount = 0
+        worktreeRemoving = false
+        worktreeToRemove = wt
         Task {
-            _ = await Task.detached { GitService.removeWorktree(repo: repo, path: wt.path) }.value
-            await loadWorktrees(p)
+            let count = await Task.detached { GitService.worktreeDirtyCount(path: wt.path) }.value
+            if worktreeToRemove?.id == wt.id { worktreeDirtyCount = count }
         }
+    }
+
+    /// Actually remove the pending worktree: move its directory to the macOS
+    /// Trash and prune git's record. The branch is left intact, and the files
+    /// remain recoverable from the Finder Trash.
+    private func confirmRemoveWorktree(_ wt: Worktree) {
+        guard let p = store.project(projectID), let repo = p.localPath else { return }
+        worktreeRemoving = true
+        Task {
+            let ok = await Task.detached { GitService.trashWorktree(repo: repo, path: wt.path) }.value
+            AuditLog.record(actor: .ui, action: "remove_worktree", detail: wt.path)
+            if !ok { store.reportError("Couldn't move “\(wt.name)” to the Trash. The worktree was left in place.") }
+            await loadWorktrees(p)
+            worktreeRemoving = false
+            worktreeToRemove = nil
+        }
+    }
+
+    /// Confirm sheet for removing a worktree, with friction scaled to blast
+    /// radius: a clean worktree needs only a tap; a dirty one shows the count of
+    /// changes that would be trashed and requires typing the worktree name.
+    @ViewBuilder
+    private func worktreeRemoveSheet(_ wt: Worktree) -> some View {
+        let isDirty = worktreeDirtyCount > 0
+        let canRemove = !isDirty || worktreeConfirmText.trimmingCharacters(in: .whitespaces) == wt.name
+        VStack(alignment: .leading, spacing: 16) {
+            Label("Remove worktree “\(wt.name)”?", systemImage: "trash")
+                .font(.title3).bold()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("The branch **\(wt.branch)** is kept. Its working directory is moved to the Trash (recoverable in Finder):")
+                    .font(.callout).foregroundStyle(.secondary)
+                Text(wt.path)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            if isDirty {
+                Label("\(worktreeDirtyCount) uncommitted change\(worktreeDirtyCount == 1 ? "" : "s") will be trashed with it.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Type the worktree name to confirm:").font(.caption).foregroundStyle(.secondary)
+                    TextField(wt.name, text: $worktreeConfirmText)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { worktreeToRemove = nil }
+                    .keyboardShortcut(.cancelAction)
+                Button(role: .destructive) { confirmRemoveWorktree(wt) } label: {
+                    if worktreeRemoving {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("Move to Trash")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canRemove || worktreeRemoving)
+            }
+        }
+        .padding(22)
+        .frame(width: 440)
     }
 
     /// Known binary locations for agent tools (best-effort; user may have custom installs).
