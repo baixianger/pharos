@@ -371,7 +371,7 @@ struct ProjectDetailView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Label("Not found on \(host)", systemImage: "questionmark.folder")
                             .font(.callout.weight(.medium))
-                        let effectivePath = (project.peerPath?.isEmpty == false) ? project.peerPath! : localPath
+                        let effectivePath = project.peerPath ?? localPath
                         Text("No git repo at \(effectivePath) — update the directory above.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -773,7 +773,7 @@ struct ProjectDetailView: View {
             peer = nil; return
         }
         // Use the project-specific peer path when set; fall back to the local path.
-        let effectivePath = (project.peerPath?.isEmpty == false) ? project.peerPath! : localPath
+        let effectivePath = project.peerPath ?? localPath
         peerLoading = true
         peer = await PeerService.status(host: host, path: effectivePath)
         peerLoading = false

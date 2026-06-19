@@ -24,8 +24,17 @@ enum Shell {
         do { try process.run() } catch {
             return Result(out: "", err: "\(error)", code: -1)
         }
+        // Drain both pipes concurrently. If we read stdout fully before touching
+        // stderr, a child that fills the stderr pipe (>~64KB) before closing
+        // stdout would deadlock. Read stderr on a background queue while we read
+        // stdout here, then join before waiting on exit.
+        var errData = Data()
+        let errQueue = DispatchQueue(label: "Shell.stderr")
+        errQueue.async {
+            errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        }
         let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        errQueue.sync {}   // barrier: wait for the stderr read to finish
         process.waitUntilExit()
         return Result(
             out: String(decoding: outData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),
@@ -160,10 +169,20 @@ enum LaunchService {
     static func launchAgent(_ kind: AgentKind, project: Project, terminal: TerminalApp,
                             desktop: Int? = nil, extraArgs: String = "") {
         guard let path = project.localPath, !path.isEmpty else { return }
-        if let d = desktop { SpacesService.switchToDesktop(d) }
-        launchAgent(kind, atPath: path, yolo: project.yolo, tmux: project.tmux,
-                    tmuxName: tmuxSessionName(project, kind), terminal: terminal,
-                    extraArgs: extraArgs)
+        let yolo = project.yolo, tmux = project.tmux
+        let tmuxName = tmuxSessionName(project, kind)
+        let launch = {
+            launchAgent(kind, atPath: path, yolo: yolo, tmux: tmux,
+                        tmuxName: tmuxName, terminal: terminal, extraArgs: extraArgs)
+        }
+        guard let d = desktop else { launch(); return }
+        // Switch Spaces, let it settle, then open the terminal — all off the
+        // main thread so `SpacesService.switchToDesktop`'s settle sleep never
+        // freezes the UI. Order is preserved within the detached task.
+        Task.detached(priority: .userInitiated) {
+            SpacesService.switchToDesktop(d)   // performs the switch + settle delay
+            await MainActor.run { launch() }
+        }
     }
 
     /// Launch an agent at an arbitrary path (e.g. a worktree).
@@ -172,7 +191,12 @@ enum LaunchService {
         let cmd = kind.command(yolo: yolo, extraArgs: extraArgs)
         let command: String
         if tmux {
-            command = "tmux new-session -A -s \(tmuxName) -c \(shellQuote(path)) \"zsh -lc '\(cmd); exec zsh -l'\""
+            // `cmd` (carrying user `extraArgs`) sits inside the single-quoted
+            // `zsh -lc '…'` body, so its single quotes must be escaped for that
+            // context; the session name is quoted so odd characters can't break
+            // the tmux command line.
+            let inner = singleQuoteBody("\(cmd); exec zsh -l")
+            command = "tmux new-session -A -s \(shellQuote(tmuxName)) -c \(shellQuote(path)) \"zsh -lc '\(inner)'\""
         } else {
             command = cmd
         }
@@ -198,7 +222,8 @@ enum LaunchService {
         let command: String
         if project.tmux {
             let s = tmuxSessionName(project, session.kind) + "-resume"
-            command = "tmux new-session -A -s \(s) -c \(shellQuote(path)) \"zsh -lc '\(base); exec zsh -l'\""
+            let inner = singleQuoteBody("\(base); exec zsh -l")
+            command = "tmux new-session -A -s \(shellQuote(s)) -c \(shellQuote(path)) \"zsh -lc '\(inner)'\""
         } else {
             command = base
         }
@@ -256,7 +281,7 @@ enum LaunchService {
 
     /// Attach to an existing tmux session in the chosen terminal.
     static func attach(sessionName: String, terminal: TerminalApp) {
-        let cmd = "/opt/homebrew/bin/tmux attach -t \(sessionName)"
+        let cmd = "/opt/homebrew/bin/tmux attach -t \(shellQuote(sessionName))"
         // We don't have a meaningful cwd; use home dir as fallback.
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         openInTerminal(terminal, path: home, command: cmd)
@@ -269,6 +294,13 @@ enum LaunchService {
 
     private static func shellQuote(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Escapes a string for use *inside* an already-open single-quoted shell
+    /// context (i.e. the caller supplies the surrounding `'…'`). A literal `'`
+    /// becomes `'\''` — close the quote, an escaped quote, reopen the quote.
+    private static func singleQuoteBody(_ s: String) -> String {
+        s.replacingOccurrences(of: "'", with: "'\\''")
     }
 
     private static func appleString(_ s: String) -> String {
@@ -398,10 +430,12 @@ enum PeerService {
                 gitCmd
             ])
 
-            // Exit code 255 = SSH connection failure.
-            if r.code == 255 || (!r.ok && r.out.isEmpty && r.code != 0) {
-                // Distinguish: if exit != 255 but output is empty the path is probably absent.
-                if r.code == 255 { return .unreachable }
+            // SSH-level failure: exit code 255 is ssh's own connect/auth error,
+            // and any non-zero exit with no stdout means we never got past ssh to
+            // a git result. Either way the peer is effectively unreachable — do
+            // NOT misreport it as "repo missing".
+            if r.code == 255 || (!r.ok && r.out.isEmpty) {
+                return .unreachable
             }
 
             // SSH connected but git may have errored (path not a repo, etc.)

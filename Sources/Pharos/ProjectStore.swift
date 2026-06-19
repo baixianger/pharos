@@ -107,11 +107,15 @@ final class ProjectStore {
         }
     }
 
-    /// Reloads the registry if the file's mtime is newer than what we last saw.
-    /// Saves update `lastFileMtime`, so this never reacts to our own writes.
+    /// Reloads the registry whenever the on-disk mtime DIFFERS from the one we
+    /// last loaded/wrote — not only when it's strictly greater. An external (MCP)
+    /// write that lands within the same mtime tick as, or even slightly "before",
+    /// our last-seen value would be missed by a `>`-only check; `!=` catches any
+    /// change. We never loop on our own saves because `save()` records the
+    /// post-write mtime into `lastFileMtime`, so the next poll sees them equal.
     private func reloadIfChangedExternally() {
         guard let mtime = fileModificationDate() else { return }
-        if let last = lastFileMtime, mtime <= last { return }
+        if let last = lastFileMtime, mtime == last { return }
         load()
         lastFileMtime = mtime
     }
@@ -213,9 +217,14 @@ final class ProjectStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(StoreData(projects: projects, groups: groups)) {
             try? data.write(to: fileURL, options: .atomic)
-            // Record the post-write mtime so the external-edit watcher doesn't
-            // mistake our own save for an MCP write and reload in a loop.
-            lastFileMtime = fileModificationDate()
+            // Stamp the file with an mtime WE choose and record that exact value,
+            // rather than re-stat'ing (which could capture a concurrent MCP
+            // write's mtime and then be mistaken for our own save). Any later MCP
+            // write gets a different mtime, which the `==` watcher reloads.
+            let stamp = Date()
+            try? FileManager.default.setAttributes([.modificationDate: stamp],
+                                                   ofItemAtPath: fileURL.path)
+            lastFileMtime = fileModificationDate() ?? stamp
         }
     }
 

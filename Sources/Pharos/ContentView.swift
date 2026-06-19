@@ -1,5 +1,12 @@
 import SwiftUI
 
+/// Guards the launch-count increment so it fires once per PROCESS, not once per
+/// `ContentView` lifetime. SwiftUI can recreate `ContentView` (window reopen,
+/// state restoration) within the same app launch; a per-`@State` flag would
+/// re-fire and inflate the count, making the star prompt appear too early.
+/// Only touched from the main actor (`onAppear`), so the unchecked access is safe.
+private nonisolated(unsafe) var launchCountedThisProcess = false
+
 struct ContentView: View {
     @Environment(ProjectStore.self) private var store
     @AppStorage("pharos.onboarded")    private var onboarded  = false
@@ -10,7 +17,6 @@ struct ContentView: View {
     @State private var showPalette = false
     @State private var showOnboarding = false
     @State private var searchText = ""
-    @State private var launchCounted = false
 
     /// Native window-tab label — the current project's name, so each tab reads
     /// the project it shows.
@@ -118,9 +124,10 @@ struct ContentView: View {
             if !onboarded && store.projects.isEmpty {
                 showOnboarding = true
             }
-            // Increment the launch counter once per process launch.
-            if !launchCounted {
-                launchCounted = true
+            // Increment the launch counter once per process launch — gated on a
+            // process-wide flag so a recreated ContentView can't re-increment it.
+            if !launchCountedThisProcess {
+                launchCountedThisProcess = true
                 launchCount += 1
             }
         }

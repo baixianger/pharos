@@ -58,17 +58,26 @@ struct WindowTabBar: NSViewRepresentable {
             installObserver(on: window)
         }
 
-        private func installObserver(on window: NSWindow) {
+        /// Cap on how many times `installObserver` re-schedules itself waiting
+        /// for the window's tab group to form. Bounded so a window that never
+        /// joins a group can't spin on the main queue forever.
+        private static let maxInstallRetries = 20
+
+        private func installObserver(on window: NSWindow, attempt: Int = 0) {
             guard let group = window.tabGroup else {
-                // The group forms slightly later; retry on the next runloop.
+                // The group forms slightly later; retry on the next runloop,
+                // but give up after a bounded number of attempts.
+                guard attempt < Self.maxInstallRetries else { return }
                 DispatchQueue.main.async { [weak self, weak window] in
                     guard let self, let window, self.bound === window else { return }
-                    self.installObserver(on: window)
+                    self.installObserver(on: window, attempt: attempt + 1)
                 }
                 return
             }
             observation = group.observe(\.isTabBarVisible, options: [.new]) { [weak self] _, _ in
-                MainActor.assumeIsolated {
+                // KVO may be delivered on a non-main thread; hop to main rather
+                // than asserting isolation (which would trap off-main).
+                DispatchQueue.main.async {
                     guard let self, let window = self.bound else { return }
                     self.ensureVisible(window)
                 }
