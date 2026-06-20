@@ -94,6 +94,10 @@ enum CLI {
                 return try runIssue(p)
             case "update":
                 return try runUpdate(p)
+            case "path":
+                return ok(try PharosCore.setLocalPath(project: p.arg(0), path: p.arg(1), clear: p.has("clear")))
+            case "host":
+                return emit(PharosCore.hostInfo(), json: p.has("json"))
             case "yolo":
                 return ok(try PharosCore.setFlag(name: p.arg(0), flag: "yolo", value: try boolArg(p.arg(1), label: "on|off")))
             case "tmux":
@@ -150,7 +154,8 @@ enum CLI {
             return emit(try PharosCore.issueList(project: p.arg(1), all: p.has("all")), json: p.has("json"))
         case "add":
             return ok(try PharosCore.issueAdd(project: p.arg(1), title: p.arg(2),
-                                              priority: p.opt("priority"), body: p.opt("body")))
+                                              priority: p.opt("priority"), body: p.opt("body"),
+                                              attach: p.all("attach")))
         case "status":
             return ok(try PharosCore.issueSetStatus(project: p.arg(1), number: number, status: p.arg(3)))
         case "priority":
@@ -226,7 +231,7 @@ enum CLI {
     }
 
     /// Flags that never take a value.
-    private static let knownFlags: Set<String> = ["json", "tmux", "yolo", "no-yolo"]
+    private static let knownFlags: Set<String> = ["json", "tmux", "yolo", "no-yolo", "all", "clear"]
 
     static func parse(_ tokens: [String]) -> Parsed {
         var p = Parsed()
@@ -302,7 +307,7 @@ enum CLI {
           trash [list]                 List soft-deleted items
 
         ISSUES & PROJECT LOG (single-user — no human assignees)
-          issue add <project> "<title>" [--priority none|low|medium|high|urgent] [--body "…"]
+          issue add <project> "<title>" [--priority none|low|medium|high|urgent] [--body "…"] [--attach <file>]…
           issue status <project> <#> <backlog|todo|in_progress|done|canceled>
           issue priority <project> <#> <none|low|medium|high|urgent>
           issue start <project> <#> <agent> [--no-yolo] [--tmux]   Launch an agent ON an issue
@@ -330,6 +335,11 @@ enum CLI {
           tmux <project> <on|off>
           trash restore <id>           Restore a soft-deleted item
           trash empty                  Permanently purge the Trash
+
+        MULTI-MACHINE (project data syncs; local paths are per-host)
+          host                         Show this machine's host key
+          path <project> <path>        Set THIS machine's local folder for a project
+          path <project> --clear       Forget this machine's local folder
 
         OTHER
           help, version

@@ -27,10 +27,7 @@ enum PharosCore {
         if let override = ProcessInfo.processInfo.environment["PHAROS_REGISTRY"], !override.isEmpty {
             return URL(fileURLWithPath: override)
         }
-        return FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Pharos", isDirectory: true)
-            .appendingPathComponent("projects.json")
+        return DataLocation.current.appendingPathComponent("projects.json")
     }
 
     // MARK: Registry IO
@@ -40,13 +37,17 @@ enum PharosCore {
     static func loadStore() -> StoreData {
         guard let data = try? Data(contentsOf: registryURL) else { return StoreData() }
         let decoder = JSONDecoder()
-        if let store = try? decoder.decode(StoreData.self, from: data) {
-            return store
+        var store = StoreData()
+        if let decoded = try? decoder.decode(StoreData.self, from: data) {
+            store = decoded
+        } else if let legacy = try? decoder.decode([Project].self, from: data) {
+            store = StoreData(projects: legacy, groups: [])
+        } else {
+            return StoreData()
         }
-        if let legacy = try? decoder.decode([Project].self, from: data) {
-            return StoreData(projects: legacy, groups: [])
-        }
-        return StoreData()
+        // Resolve each project's localPath to THIS machine's checkout (per-host map).
+        store.resolveHostPaths(host: HostIdentity.current)
+        return store
     }
 
     static func loadProjects() -> [Project] { loadStore().projects }
@@ -56,9 +57,11 @@ enum PharosCore {
     static func saveStore(_ store: StoreData) {
         let dir = registryURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var out = store
+        out.captureHostPaths(host: HostIdentity.current)   // record this host's paths
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? encoder.encode(store) {
+        if let data = try? encoder.encode(out) {
             try? data.write(to: registryURL, options: .atomic)
         }
     }
@@ -356,13 +359,22 @@ enum PharosCore {
         let n = store.trash.count
         store.trash.removeAll()
         saveStore(store)
+        sweepAttachments(store)   // delete attachment files for purged issues
         return n == 0 ? "Trash was already empty." : "Emptied Trash (\(n) item\(n == 1 ? "" : "s"))."
+    }
+
+    /// Delete attachment directories whose issue is neither live nor in the Trash.
+    static func sweepAttachments(_ store: StoreData) {
+        var keep = Set<UUID>()
+        for p in store.projects { for issue in p.issues { keep.insert(issue.id) } }
+        for item in store.trash { if case .issue(_, _, let issue) = item.payload { keep.insert(issue.id) } }
+        AttachmentStore.sweepOrphans(keepingIssueIDs: keep)
     }
 
     // MARK: Issues & project-update feed
 
     static func issueAdd(project name: String?, title: String?,
-                         priority: String?, body: String?) throws -> String {
+                         priority: String?, body: String?, attach: [String] = []) throws -> String {
         guard let title = title?.trimmingCharacters(in: .whitespaces), !title.isEmpty else {
             throw CoreError(message: "Missing required argument: title")
         }
@@ -371,11 +383,21 @@ enum PharosCore {
         let idx = try projectIndexOrThrow(name, in: store)
         let pid = store.projects[idx].id
         let pname = store.projects[idx].name
-        guard let issue = store.addIssue(projectID: pid, title: title, priority: prio, body: body ?? "") else {
+        // Stage attachments under the issue's id before creating it.
+        let issueID = UUID()
+        var attachments: [IssueAttachment] = []
+        for path in attach {
+            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            do { attachments.append(try AttachmentStore.add(fileAt: url, toIssue: issueID)) }
+            catch { throw CoreError(message: "Couldn't attach '\(path)': \(error.localizedDescription)") }
+        }
+        guard let issue = store.addIssue(projectID: pid, title: title, priority: prio,
+                                         body: body ?? "", id: issueID, attachments: attachments) else {
             throw CoreError(message: "Project not found: \(name ?? "")")
         }
         saveStore(store)
-        return "Created \(pname)#\(issue.number): \(issue.title)"
+        let note = attachments.isEmpty ? "" : " (+\(attachments.count) attachment\(attachments.count == 1 ? "" : "s"))"
+        return "Created \(pname)#\(issue.number): \(issue.title)\(note)"
     }
 
     static func issueList(project name: String?, all: Bool) throws -> CoreOutcome {
@@ -610,6 +632,35 @@ enum PharosCore {
         let (project, path) = try resolveLocalProject(name)
         runOnMain { LaunchService.revealInFinder(path) }
         return "Revealed '\(project.name)' (\(path)) in Finder."
+    }
+
+    // MARK: Per-host local path (multi-machine)
+
+    /// Set (or clear) the current host's local checkout path for a project. The
+    /// project's *data* is shared across machines; only this machine's path
+    /// changes, stored under its host key.
+    static func setLocalPath(project name: String?, path: String?, clear: Bool) throws -> String {
+        var store = loadStore()
+        let idx = try projectIndexOrThrow(name, in: store)
+        let pname = store.projects[idx].name
+        if clear {
+            store.projects[idx].localPath = nil
+            saveStore(store)
+            return "Cleared '\(pname)' local path on \(HostIdentity.current)."
+        }
+        guard let raw = path?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else {
+            throw CoreError(message: "Missing required argument: path")
+        }
+        let expanded = (raw as NSString).expandingTildeInPath
+        store.projects[idx].localPath = expanded
+        saveStore(store)
+        return "Set '\(pname)' local path on \(HostIdentity.current) → \(expanded)."
+    }
+
+    /// Report the current host key (used to key per-host local paths).
+    static func hostInfo() -> CoreOutcome {
+        let host = HostIdentity.current
+        return CoreOutcome(text: "host: \(host)", json: ["host": host])
     }
 
     // MARK: Resolution helpers

@@ -22,15 +22,21 @@ struct Project: Identifiable, Codable, Hashable {
     var peerPath: String?       // override for this project's directory on the peer host; nil/empty = same as localPath
     var issues: [Issue] = []    // native, single-user issues (no human assignees)
     var updates: [ProjectUpdate] = []   // project-update feed / personal changelog
+    /// Per-host local checkout paths (computer name → absolute path). The shared
+    /// project data syncs across machines; this map keeps each machine's own
+    /// path so iCloud sync never clobbers it. `localPath` above is the resolved
+    /// path for the *current* host (set on load).
+    var localPaths: [String: String] = [:]
 
     init(id: UUID = UUID(), name: String, localPath: String? = nil, githubRemote: String? = nil,
          tags: [String] = [], yolo: Bool = true, tmux: Bool = false,
          addedAt: Date = Date(), playbooks: [Playbook] = [], notes: String = "",
-         peerPath: String? = nil, issues: [Issue] = [], updates: [ProjectUpdate] = []) {
+         peerPath: String? = nil, issues: [Issue] = [], updates: [ProjectUpdate] = [],
+         localPaths: [String: String] = [:]) {
         self.id = id; self.name = name; self.localPath = localPath; self.githubRemote = githubRemote
         self.tags = tags; self.yolo = yolo; self.tmux = tmux; self.addedAt = addedAt
         self.playbooks = playbooks; self.notes = notes; self.peerPath = peerPath
-        self.issues = issues; self.updates = updates
+        self.issues = issues; self.updates = updates; self.localPaths = localPaths
     }
 
     /// Tolerant decoding — missing keys (older registries) fall back to defaults,
@@ -50,11 +56,22 @@ struct Project: Identifiable, Codable, Hashable {
         peerPath = try c.decodeIfPresent(String.self, forKey: .peerPath)
         issues = try c.decodeIfPresent([Issue].self, forKey: .issues) ?? []
         updates = try c.decodeIfPresent([ProjectUpdate].self, forKey: .updates) ?? []
+        localPaths = try c.decodeIfPresent([String: String].self, forKey: .localPaths) ?? [:]
     }
 
     /// Next per-project issue number (#1, #2, …). Based on current issues only;
     /// good enough for a single user.
     var nextIssueNumber: Int { (issues.map(\.number).max() ?? 0) + 1 }
+
+    /// Resolve the local checkout path for a given host:
+    ///  • the host's own entry, if present;
+    ///  • else, for legacy single-machine data (empty map), the bare `localPath`;
+    ///  • else nil — the project is known on other machines but not checked out here.
+    func resolvedLocalPath(forHost host: String) -> String? {
+        if let p = localPaths[host], !p.isEmpty { return p }
+        if localPaths.isEmpty { return (localPath?.isEmpty == false) ? localPath : nil }
+        return nil
+    }
 
     var hasLocal: Bool { (localPath?.isEmpty == false) }
     var hasGitHub: Bool { (githubRemote?.isEmpty == false) }
@@ -82,6 +99,39 @@ struct Issue: Identifiable, Codable, Hashable {
     var activeSession: String?
     /// Worktree path an agent is running in for this issue, if any.
     var worktreePath: String?
+    /// Images / files attached to the issue. The bytes live on disk under
+    /// `<dataDir>/attachments/<issue.id>/`; this holds only metadata.
+    var attachments: [IssueAttachment] = []
+}
+
+extension Issue {
+    /// Tolerant decode (in an extension to keep the memberwise initializer) so
+    /// adding fields like `attachments` never drops previously-saved issues.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        number = try c.decodeIfPresent(Int.self, forKey: .number) ?? 0
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        status = try c.decodeIfPresent(IssueStatus.self, forKey: .status) ?? .todo
+        priority = try c.decodeIfPresent(IssuePriority.self, forKey: .priority) ?? .none
+        body = try c.decodeIfPresent(String.self, forKey: .body) ?? ""
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        activeSession = try c.decodeIfPresent(String.self, forKey: .activeSession)
+        worktreePath = try c.decodeIfPresent(String.self, forKey: .worktreePath)
+        attachments = try c.decodeIfPresent([IssueAttachment].self, forKey: .attachments) ?? []
+    }
+}
+
+/// Metadata for an image or file attached to an issue. The bytes live on disk
+/// (synced with the rest of the data dir); this is what travels in the registry.
+struct IssueAttachment: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
+    var storedName: String     // filename on disk within the issue's attachment dir
+    var originalName: String   // display name shown in the UI
+    var isImage: Bool
+    var byteSize: Int
+    var addedAt: Date = Date()
 }
 
 /// Linear-style workflow states. `in_progress` is wire-stable as a raw value.

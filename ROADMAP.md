@@ -103,4 +103,24 @@ matters is which **agent / session / worktree** is working an item.
   reversible/auditable, not just guarded by a UI prompt. Audit all delete paths
   (`MCPServer.swift`, `ProjectStore.swift`, UI actions, issues).
 
-**Suggested order:** safety → CLI → issues.
+**Suggested order:** safety → CLI → issues. *(All three done.)*
+
+### v1.2 — Multi-machine & rich issues (requested 2026-06-20)
+
+- [x] **Multi-machine sync (iCloud Drive) with per-host path auto-adapt.**
+  Settings → Data location moves the registry into iCloud Drive (plain
+  CloudDocs folder — no entitlement, any signing). Project *data* (issues, log,
+  notes, tags) syncs; the machine-specific local checkout path becomes a
+  **per-host map** (`Project.localPaths`, keyed by computer name via
+  `HostIdentity`), resolved on load / captured on save in both `ProjectStore`
+  and `PharosCore`. A project not checked out on this host shows "Set local
+  folder…" (GUI) / `pharos path <project> <path>` (CLI); `pharos host` prints the
+  key. Each Mac reads only its own path, so sync never clobbers it.
+
+- [x] **Rich issue composer + attachments.** Modal composer (`IssueComposer`):
+  title, multi-line body, priority, **image/file attachments** (drag-drop / file
+  picker / paste; image thumbnails). `IssueAttachment` model; bytes stored via
+  `AttachmentStore` under `<registry dir>/attachments/<issueID>/` (syncs with the
+  rest of the data dir). CLI `issue add … --attach <file>` (repeatable). Trash
+  parity: attachment files are retained while the issue sits in the Trash and
+  swept only when it's permanently purged (orphan sweep on load / empty).

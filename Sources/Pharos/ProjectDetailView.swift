@@ -42,6 +42,7 @@ struct ProjectDetailView: View {
     @State private var newIssueTitle = ""
     @State private var newIssuePriority: IssuePriority = .none
     @State private var newUpdateText = ""
+    @State private var showIssueComposer = false
 
     private var project: Project? { store.project(projectID) }
 
@@ -118,6 +119,7 @@ struct ProjectDetailView: View {
         switch tab {
         case .overview:
             actionsCard(project)
+            if project.localPath == nil { localFolderCard(project) }
             notesCard(project)
             if !project.hasLocal, project.hasGitHub {
                 cloneCard(project)
@@ -505,9 +507,16 @@ struct ProjectDetailView: View {
         }
         let openCount = project.issues.filter { $0.status.isOpen }.count
         VStack(alignment: .leading, spacing: 10) {
-            Text("Issues (\(openCount) open)").font(.headline)
+            HStack {
+                Text("Issues (\(openCount) open)").font(.headline)
+                Spacer()
+                Button { showIssueComposer = true } label: {
+                    Label("New issue…", systemImage: "square.and.pencil")
+                }
+                .buttonStyle(.borderless).controlSize(.small)
+            }
             HStack(spacing: 8) {
-                TextField("New issue title…", text: $newIssueTitle)
+                TextField("Quick add a title…", text: $newIssueTitle)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { addIssueFromComposer(project) }
                 Menu {
@@ -532,6 +541,9 @@ struct ProjectDetailView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .sheet(isPresented: $showIssueComposer) {
+            IssueComposer(projectID: projectID).environment(store)
+        }
     }
 
     @ViewBuilder
@@ -562,6 +574,11 @@ struct ProjectDetailView: View {
                 }
             }
             Spacer()
+            if !issue.attachments.isEmpty {
+                Label("\(issue.attachments.count)", systemImage: "paperclip")
+                    .font(.caption2).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
+                    .help("\(issue.attachments.count) attachment(s)")
+            }
             Menu {
                 ForEach(IssuePriority.allCases) { p in
                     Button { store.setIssuePriority(project.id, number: issue.number, priority: p) } label: {
@@ -584,6 +601,12 @@ struct ProjectDetailView: View {
                     Button { store.startAgentOnIssue(project, number: issue.number, kind: .codex) } label: {
                         Label("Start Codex", systemImage: AgentKind.codex.symbol)
                     }
+                    Divider()
+                }
+                if !issue.attachments.isEmpty {
+                    Button {
+                        LaunchService.revealInFinder(AttachmentStore.directory(forIssue: issue.id).path)
+                    } label: { Label("Reveal attachments in Finder", systemImage: "folder") }
                     Divider()
                 }
                 Button(role: .destructive) {
@@ -645,6 +668,37 @@ struct ProjectDetailView: View {
     private func addUpdateFromComposer(_ project: Project) {
         store.addUpdate(project.id, body: newUpdateText)
         newUpdateText = ""
+    }
+
+    // MARK: Local-folder card (project synced but not checked out on this host)
+
+    private func localFolderCard(_ project: Project) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Not checked out on \(HostIdentity.current)", systemImage: "externaldrive.badge.questionmark")
+                .font(.headline)
+            Text("This project's data syncs across your Macs, but it has no local folder on this machine. Set one — it's saved per-host, so it won't affect your other Macs.")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button { chooseLocalFolder(project) } label: {
+                Label("Set local folder…", systemImage: "folder.badge.plus")
+            }
+            .buttonStyle(.glassProminent)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func chooseLocalFolder(_ project: Project) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Set Folder"
+        panel.message = "Choose this project's local folder on \(HostIdentity.current)"
+        if panel.runModal() == .OK, let url = panel.url {
+            store.setLocalPath(project.id, path: url.path)
+        }
     }
 
     // MARK: Clone card (GitHub-only project)

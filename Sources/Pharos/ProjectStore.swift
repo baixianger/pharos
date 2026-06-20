@@ -110,11 +110,12 @@ extension StoreData {
     @discardableResult
     mutating func addIssue(projectID: Project.ID, title: String,
                            priority: IssuePriority = .none, body: String = "",
+                           id: UUID = UUID(), attachments: [IssueAttachment] = [],
                            now: Date = Date()) -> Issue? {
         guard let i = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
-        let issue = Issue(number: projects[i].nextIssueNumber, title: title,
+        let issue = Issue(id: id, number: projects[i].nextIssueNumber, title: title,
                           status: .todo, priority: priority, body: body,
-                          createdAt: now, updatedAt: now)
+                          createdAt: now, updatedAt: now, attachments: attachments)
         projects[i].issues.append(issue)
         return issue
     }
@@ -199,6 +200,34 @@ extension StoreData {
         return touched
     }
 
+    // MARK: Per-host local paths (multi-machine sync)
+
+    /// On load: set each project's `localPath` to the value for `host`, so all the
+    /// code that reads `localPath` transparently gets this machine's checkout.
+    /// Legacy single-machine data (empty map) is adopted into the host's slot.
+    mutating func resolveHostPaths(host: String) {
+        for i in projects.indices {
+            if projects[i].localPaths.isEmpty,
+               let lp = projects[i].localPath, !lp.isEmpty {
+                projects[i].localPaths[host] = lp   // adopt legacy path under this host
+            }
+            projects[i].localPath = projects[i].resolvedLocalPath(forHost: host)
+        }
+    }
+
+    /// Before save: capture this machine's current `localPath` back into the
+    /// per-host map (or clear its slot if the path was removed), so the synced
+    /// file carries every host's own path without clobbering the others.
+    mutating func captureHostPaths(host: String) {
+        for i in projects.indices {
+            if let lp = projects[i].localPath, !lp.isEmpty {
+                projects[i].localPaths[host] = lp
+            } else {
+                projects[i].localPaths.removeValue(forKey: host)
+            }
+        }
+    }
+
     /// Ensure every tag used by a project exists as a group, then sort groups —
     /// mirrors `ProjectStore.backfillGroups()`.
     mutating func ensureGroupsForTags() {
@@ -264,7 +293,10 @@ final class ProjectStore {
         didSet { UserDefaults.standard.set(peerHost, forKey: "pharos.peerHost") }
     }
 
-    private let fileURL: URL
+    /// The registry file. Resolved from the shared `DataLocation` (honoring the
+    /// `pharos.dataDir` pref + `PHAROS_REGISTRY`) so the GUI and CLI always agree,
+    /// and so switching to iCloud Drive re-points it live.
+    private var fileURL: URL { PharosCore.registryURL }
     private var pollTask: Task<Void, Never>?
     /// Last modification date of projects.json we've observed/written, used by the
     /// external-edit watcher to avoid reloading our own saves in a loop.
@@ -272,11 +304,8 @@ final class ProjectStore {
     private var fileWatchTask: Task<Void, Never>?
 
     init() {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Pharos", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        fileURL = base.appendingPathComponent("projects.json")
+        try? FileManager.default.createDirectory(
+            at: PharosCore.registryURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let d = UserDefaults.standard
         terminal = TerminalApp(rawValue: d.string(forKey: "pharos.terminal") ?? "") ?? .ghostty
         editor = EditorApp(rawValue: d.string(forKey: "pharos.editor") ?? "") ?? .vscode
@@ -424,24 +453,30 @@ final class ProjectStore {
     func load() {
         guard let data = try? Data(contentsOf: fileURL) else { return }
         let decoder = JSONDecoder()
-        if let store = try? decoder.decode(StoreData.self, from: data) {
-            projects = store.projects
-            groups = store.groups
-            trash = store.trash
+        var store = StoreData()
+        if let decoded = try? decoder.decode(StoreData.self, from: data) {
+            store = decoded
         } else if let legacy = try? decoder.decode([Project].self, from: data) {
-            projects = legacy   // migrate older flat-array format
-            trash = []
+            store = StoreData(projects: legacy, groups: [])   // migrate older flat-array format
         }
+        // Resolve each project's localPath to THIS machine's checkout (per-host map).
+        store.resolveHostPaths(host: HostIdentity.current)
+        projects = store.projects
+        groups = store.groups
+        trash = store.trash
         // Drop expired trash from the in-memory view; persistence catches up on
         // the next save (we don't write here to avoid churning the file watcher).
         trash.removeAll { Date().timeIntervalSince($0.deletedAt) > StoreData.trashRetention }
         backfillGroups()
+        sweepAttachments()
     }
 
     func save() {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? encoder.encode(StoreData(projects: projects, groups: groups, trash: trash)) {
+        var store = StoreData(projects: projects, groups: groups, trash: trash)
+        store.captureHostPaths(host: HostIdentity.current)   // record this host's paths
+        if let data = try? encoder.encode(store) {
             try? data.write(to: fileURL, options: .atomic)
             // Stamp the file with an mtime WE choose and record that exact value,
             // rather than re-stat'ing (which could capture a concurrent CLI
@@ -483,6 +518,48 @@ final class ProjectStore {
     }
 
     func project(_ id: Project.ID) -> Project? { projects.first { $0.id == id } }
+
+    /// Set (or clear) THIS machine's local checkout path for a project. Persists
+    /// into the per-host map so it never clobbers another machine's path.
+    func setLocalPath(_ projectID: Project.ID, path: String?) {
+        mutateStore { s in
+            guard let i = s.projects.firstIndex(where: { $0.id == projectID }) else { return }
+            let trimmed = path?.trimmingCharacters(in: .whitespaces)
+            s.projects[i].localPath = (trimmed?.isEmpty == false) ? trimmed : nil
+        }
+    }
+
+    // MARK: Data location (local ↔ iCloud Drive)
+
+    var dataLocationIsICloud: Bool { DataLocation.usingICloud }
+    var dataDirectoryPath: String { DataLocation.current.path }
+    var iCloudAvailable: Bool { DataLocation.iCloudAvailable }
+
+    /// Move Pharos's data between Application Support and iCloud Drive. Seeds the
+    /// target with the current registry only if it has none yet (so a second Mac
+    /// *adopts* the already-synced data instead of overwriting it), then repoints
+    /// and reloads. The source is left as a backup.
+    func relocateData(toICloud: Bool) {
+        guard let target = toICloud ? DataLocation.iCloudDirectory : DataLocation.appSupportDirectory else {
+            reportError("iCloud Drive isn't enabled on this Mac (turn it on in System Settings).")
+            return
+        }
+        let source = DataLocation.current
+        guard target.standardizedFileURL != source.standardizedFileURL else { return }
+        let fm = FileManager.default
+        try? fm.createDirectory(at: target, withIntermediateDirectories: true)
+        let sourceRegistry = source.appendingPathComponent("projects.json")
+        let targetRegistry = target.appendingPathComponent("projects.json")
+        if !fm.fileExists(atPath: targetRegistry.path), fm.fileExists(atPath: sourceRegistry.path) {
+            try? fm.copyItem(at: sourceRegistry, to: targetRegistry)
+        }
+        DataLocation.setDirectory(toICloud ? target : nil)
+        // Re-point and reload from the new location.
+        lastFileMtime = nil
+        load()
+        lastFileMtime = fileModificationDate()
+        refreshAllGit()
+    }
     func contains(name: String) -> Bool { projects.contains { $0.name == name } }
     func contains(remote: String) -> Bool { projects.contains { $0.githubRemote == remote } }
 
@@ -523,10 +600,15 @@ final class ProjectStore {
 
     // MARK: Issues & project log
 
-    func addIssue(_ projectID: Project.ID, title: String, priority: IssuePriority = .none) {
+    func addIssue(_ projectID: Project.ID, id: UUID = UUID(), title: String,
+                  body: String = "", priority: IssuePriority = .none,
+                  attachments: [IssueAttachment] = []) {
         let t = title.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty else { return }
-        mutateStore { _ = $0.addIssue(projectID: projectID, title: t, priority: priority) }
+        mutateStore {
+            _ = $0.addIssue(projectID: projectID, title: t, priority: priority,
+                            body: body, id: id, attachments: attachments)
+        }
     }
 
     func setIssueStatus(_ projectID: Project.ID, number: Int, status: IssueStatus) {
@@ -601,12 +683,23 @@ final class ProjectStore {
     func purgeTrash(_ id: TrashedItem.ID) {
         mutateStore { s in s.trash.removeAll { $0.id == id } }
         if lastUndo?.itemID == id { lastUndo = nil }
+        sweepAttachments()
     }
 
     /// Permanently drop everything in the Trash.
     func emptyTrash() {
         mutateStore { $0.trash.removeAll() }
         lastUndo = nil
+        sweepAttachments()
+    }
+
+    /// Delete attachment directories for issues that no longer exist anywhere
+    /// (neither live nor in the Trash) — orphan cleanup after a purge.
+    func sweepAttachments() {
+        var keep = Set<UUID>()
+        for p in projects { for issue in p.issues { keep.insert(issue.id) } }
+        for item in trash { if case .issue(_, _, let issue) = item.payload { keep.insert(issue.id) } }
+        AttachmentStore.sweepOrphans(keepingIssueIDs: keep)
     }
 
     func requestTrash() { trashRequested = true }
