@@ -131,6 +131,33 @@ private struct IntegrationsSettingsTab: View {
     var body: some View {
         @Bindable var store = store
         Form {
+            Section("Data location") {
+                Picker("Store project data in", selection: Binding(
+                    get: { store.dataLocationIsICloud },
+                    set: { store.relocateData(toICloud: $0) }
+                )) {
+                    Text("This Mac (Application Support)").tag(false)
+                    Text("iCloud Drive").tag(true)
+                }
+                .pickerStyle(.radioGroup)
+                .disabled(!store.iCloudAvailable && !store.dataLocationIsICloud)
+                Text(store.iCloudAvailable
+                     ? "iCloud Drive syncs your projects, issues, and logs across your Macs. Each Mac keeps its own local checkout path, so paths never clobber each other."
+                     : "Turn on iCloud Drive in System Settings to sync across Macs.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                LabeledContent("Current") {
+                    Text(store.dataDirectoryPath.replacingOccurrences(
+                        of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                LabeledContent("This host") {
+                    Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("Peer machine") {
                 LabeledContent("SSH host") {
                     TextField("e.g. home-ts", text: $store.peerHost)

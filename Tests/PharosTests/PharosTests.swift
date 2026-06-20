@@ -526,3 +526,121 @@ final class CoreIssueTests: XCTestCase {
         XCTAssertThrowsError(try PharosCore.parsePriority("p7"))
     }
 }
+
+// MARK: - Per-host local paths (multi-machine sync)
+
+final class HostPathTests: XCTestCase {
+
+    func testResolvePicksCurrentHostEntryElseNil() {
+        var s = StoreData(projects: [Project(name: "x", localPaths: ["A": "/a", "B": "/b"])])
+        s.resolveHostPaths(host: "A")
+        XCTAssertEqual(s.projects[0].localPath, "/a")
+
+        var s2 = StoreData(projects: [Project(name: "x", localPaths: ["A": "/a"])])
+        s2.resolveHostPaths(host: "B")
+        XCTAssertNil(s2.projects[0].localPath)   // known on A, not checked out on B
+    }
+
+    func testLegacyPathAdoptedUnderCurrentHost() {
+        var s = StoreData(projects: [Project(name: "x", localPath: "/legacy")])
+        s.resolveHostPaths(host: "A")
+        XCTAssertEqual(s.projects[0].localPath, "/legacy")
+        XCTAssertEqual(s.projects[0].localPaths["A"], "/legacy")
+    }
+
+    func testCaptureWritesCurrentHostAndLeavesOthers() {
+        var s = StoreData(projects: [Project(name: "x", localPaths: ["A": "/a"])])
+        s.resolveHostPaths(host: "B")          // B sees nil
+        s.projects[0].localPath = "/bnew"
+        s.captureHostPaths(host: "B")
+        XCTAssertEqual(s.projects[0].localPaths["B"], "/bnew")
+        XCTAssertEqual(s.projects[0].localPaths["A"], "/a")   // A's path untouched
+
+        s.projects[0].localPath = nil
+        s.captureHostPaths(host: "B")
+        XCTAssertNil(s.projects[0].localPaths["B"])           // B's slot cleared
+        XCTAssertEqual(s.projects[0].localPaths["A"], "/a")   // A still intact
+    }
+
+    func testTwoMachineRoundTrip() {
+        // hostA adds at /a, saves (capture).
+        var a = StoreData(projects: [Project(name: "x", localPath: "/a")])
+        a.captureHostPaths(host: "mac-mini")
+        let onDisk = a.projects[0].localPaths
+
+        // hostB loads the same data, resolves → not checked out, sets /b, saves.
+        var b = StoreData(projects: [Project(name: "x", localPaths: onDisk)])
+        b.resolveHostPaths(host: "macbook-air")
+        XCTAssertNil(b.projects[0].localPath)
+        b.projects[0].localPath = "/b"
+        b.captureHostPaths(host: "macbook-air")
+
+        // hostA reloads → still its own /a.
+        var a2 = StoreData(projects: [Project(name: "x", localPaths: b.projects[0].localPaths)])
+        a2.resolveHostPaths(host: "mac-mini")
+        XCTAssertEqual(a2.projects[0].localPath, "/a")
+    }
+
+    func testProjectDecodeTolerantOfMissingLocalPaths() throws {
+        let p = try JSONDecoder().decode(Project.self, from: Data(#"{"name":"x","localPath":"/x"}"#.utf8))
+        XCTAssertEqual(p.localPath, "/x")
+        XCTAssertTrue(p.localPaths.isEmpty)
+    }
+}
+
+// MARK: - Attachments
+
+final class AttachmentTests: XCTestCase {
+    private var dir = ""
+
+    override func setUp() {
+        super.setUp()
+        dir = NSTemporaryDirectory() + "pharos-att-" + UUID().uuidString
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        setenv("PHAROS_REGISTRY", dir + "/projects.json", 1)   // attachments live beside it
+    }
+    override func tearDown() {
+        unsetenv("PHAROS_REGISTRY")
+        try? FileManager.default.removeItem(atPath: dir)
+        super.tearDown()
+    }
+
+    func testAddCopiesFileAndDetectsImage() throws {
+        let src = URL(fileURLWithPath: dir).appendingPathComponent("pic.png")
+        try Data("x".utf8).write(to: src)
+        let id = UUID()
+        let att = try AttachmentStore.add(fileAt: src, toIssue: id)
+        XCTAssertEqual(att.originalName, "pic.png")
+        XCTAssertTrue(att.isImage)
+        XCTAssertEqual(att.byteSize, 1)
+        XCTAssertNotEqual(att.storedName, "pic.png")   // unique stored name
+        XCTAssertTrue(FileManager.default.fileExists(atPath: AttachmentStore.fileURL(att, issueID: id).path))
+    }
+
+    func testSweepDeletesOrphansKeepsListed() throws {
+        let src = URL(fileURLWithPath: dir).appendingPathComponent("f.txt")
+        try Data("x".utf8).write(to: src)
+        let keepID = UUID(), dropID = UUID()
+        _ = try AttachmentStore.add(fileAt: src, toIssue: keepID)
+        _ = try AttachmentStore.add(fileAt: src, toIssue: dropID)
+        AttachmentStore.sweepOrphans(keepingIssueIDs: [keepID])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: AttachmentStore.directory(forIssue: keepID).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: AttachmentStore.directory(forIssue: dropID).path))
+    }
+
+    func testIssueDecodeTolerantOfMissingAttachments() throws {
+        let issue = try JSONDecoder().decode(Issue.self, from: Data(#"{"number":1,"title":"x"}"#.utf8))
+        XCTAssertEqual(issue.title, "x")
+        XCTAssertTrue(issue.attachments.isEmpty)
+    }
+
+    func testCoreIssueAddWithAttachment() throws {
+        let src = URL(fileURLWithPath: dir).appendingPathComponent("log.txt")
+        try Data("boom".utf8).write(to: src)
+        _ = try PharosCore.addProject(name: "app", localPath: nil, githubRemote: nil, tags: [], notes: nil)
+        _ = try PharosCore.issueAdd(project: "app", title: "crash", priority: nil, body: nil, attach: [src.path])
+        let issue = PharosCore.loadStore().projects.first?.issues.first
+        XCTAssertEqual(issue?.attachments.count, 1)
+        XCTAssertEqual(issue?.attachments.first?.originalName, "log.txt")
+    }
+}

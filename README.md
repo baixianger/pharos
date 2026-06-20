@@ -140,13 +140,26 @@ Run `pharos help` for the authoritative list. Summary:
 |-------|----------|
 | Read | `list` · `groups` · `git <project>` · `worktrees <project>` · `sessions <project> <agent>` · `issue list <project> [--all]` · `update list <project>` · `trash [list]` |
 | Agents | `launch <project> <agent> [--no-yolo] [--tmux]` · `resume <project> <agent> <session_id>` · `playbook <project> <name>` · `open`/`editor`/`reveal <project>` |
-| Issues & log | `issue add <project> "<title>" [--priority …] [--body …]` · `issue status <project> <#> <status>` · `issue priority <project> <#> <priority>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `update add <project> "<text>" [--issue <#>]` |
+| Issues & log | `issue add <project> "<title>" [--priority …] [--body …] [--attach <file>]…` · `issue status <project> <#> <status>` · `issue priority <project> <#> <priority>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `update add <project> "<text>" [--issue <#>]` |
 | Registry | `add <name> [--path] [--remote] [--tag]… [--notes]` · `remove <project>` · `rename <project> <new>` · `describe <project> <text…>` · `group create\|delete\|add\|remove …` · `yolo`/`tmux <project> <on\|off>` · `trash restore <id>` · `trash empty` |
+| Multi-machine | `host` · `path <project> <path>` · `path <project> --clear` |
 
 The headline differentiator — **issues wired to the agent loop**: `pharos issue
 start` moves an issue to *In Progress* and links the agent session; when that
 agent finishes (tmux), Pharos auto-posts an update to the project log. Agents can
 also post their own progress with `pharos update add`.
+
+## Multi-machine sync (iCloud)
+
+Settings → **Data location** can move Pharos's data into **iCloud Drive**, so
+your projects, issues, and logs sync across your Macs (plain iCloud Drive — no
+entitlement, works with any signing). The catch iCloud alone can't solve: a
+project's local checkout path differs per machine (`~/dev/x` vs `~/personal/x`).
+Pharos handles it with a **per-host path map** — each Mac stores and reads only
+its own path (keyed by computer name), so syncing never clobbers it. A project
+synced from another Mac shows "not checked out on *this* host" until you point it
+at a local folder (GUI **Set local folder…**, or `pharos path <project> <path>`).
+`pharos host` prints this machine's key.
 
 ---
 
