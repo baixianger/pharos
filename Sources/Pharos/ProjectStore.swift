@@ -111,13 +111,19 @@ extension StoreData {
     mutating func addIssue(projectID: Project.ID, title: String,
                            priority: IssuePriority = .none, body: String = "",
                            id: UUID = UUID(), attachments: [IssueAttachment] = [],
-                           now: Date = Date()) -> Issue? {
+                           labels: [String] = [], now: Date = Date()) -> Issue? {
         guard let i = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
         let issue = Issue(id: id, number: projects[i].nextIssueNumber, title: title,
                           status: .todo, priority: priority, body: body,
-                          createdAt: now, updatedAt: now, attachments: attachments)
+                          createdAt: now, updatedAt: now, attachments: attachments, labels: labels)
         projects[i].issues.append(issue)
         return issue
+    }
+
+    /// All distinct labels used across a project's issues (sorted).
+    func issueLabels(projectID: Project.ID) -> [String] {
+        guard let p = projects.first(where: { $0.id == projectID }) else { return [] }
+        return Array(Set(p.issues.flatMap(\.labels))).sorted { $0.lowercased() < $1.lowercased() }
     }
 
     /// Mutate one issue (by per-project number) in place. Returns false if absent.
@@ -609,12 +615,32 @@ final class ProjectStore {
 
     func addIssue(_ projectID: Project.ID, id: UUID = UUID(), title: String,
                   body: String = "", priority: IssuePriority = .none,
-                  attachments: [IssueAttachment] = []) {
+                  attachments: [IssueAttachment] = [], labels: [String] = []) {
         let t = title.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty else { return }
         mutateStore {
             _ = $0.addIssue(projectID: projectID, title: t, priority: priority,
-                            body: body, id: id, attachments: attachments)
+                            body: body, id: id, attachments: attachments, labels: labels)
+        }
+    }
+
+    func addIssueLabel(_ projectID: Project.ID, number: Int, label: String) {
+        let l = label.trimmingCharacters(in: .whitespaces)
+        guard !l.isEmpty else { return }
+        mutateStore {
+            _ = $0.updateIssue(projectID: projectID, number: number) { issue in
+                if !issue.labels.contains(where: { $0.caseInsensitiveCompare(l) == .orderedSame }) {
+                    issue.labels.append(l)
+                }
+            }
+        }
+    }
+
+    func removeIssueLabel(_ projectID: Project.ID, number: Int, label: String) {
+        mutateStore {
+            _ = $0.updateIssue(projectID: projectID, number: number) { issue in
+                issue.labels.removeAll { $0.caseInsensitiveCompare(label) == .orderedSame }
+            }
         }
     }
 
@@ -747,6 +773,20 @@ final class ProjectStore {
 
     func requestTrash() { trashRequested = true }
     func dismissUndo() { lastUndo = nil }
+
+    /// A request (from ⌘K) to open a specific issue. The owning project's detail
+    /// view observes this and opens the issue. The nonce makes repeated requests
+    /// to the same issue distinct so `onChange` fires every time.
+    struct IssueRequest: Equatable {
+        let projectID: Project.ID
+        let number: Int
+        let nonce: UUID
+    }
+    var requestedIssue: IssueRequest?
+
+    func requestIssue(_ projectID: Project.ID, number: Int) {
+        requestedIssue = IssueRequest(projectID: projectID, number: number, nonce: UUID())
+    }
 
     func toggleMembership(_ id: Project.ID, group: String) {
         guard let i = projects.firstIndex(where: { $0.id == id }) else { return }

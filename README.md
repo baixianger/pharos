@@ -63,7 +63,7 @@
 
 ### Cockpit
 
-**⌘K command palette.** A fuzzy-search palette lets you jump to any project or trigger any quick action (launch, open terminal, open editor, reveal in Finder) from the keyboard, from anywhere in the app.
+**⌘K command palette.** A fuzzy-search palette lets you jump to any project, trigger any quick action (launch, open terminal, open editor, reveal in Finder), or jump straight to an issue (by number, title, or label) from the keyboard, anywhere in the app.
 
 **Menu-bar quick launch.** The Pharos menu-bar item shows a per-project submenu, letting you launch an agent or open a terminal without switching to the main window.
 
@@ -140,7 +140,7 @@ Run `pharos help` for the authoritative list. Summary:
 |-------|----------|
 | Read | `list` · `groups` · `git <project>` · `worktrees <project>` · `sessions <project> <agent>` · `issue list <project> [--all]` · `update list <project>` · `trash [list]` |
 | Agents | `launch <project> <agent> [--no-yolo] [--tmux]` · `resume <project> <agent> <session_id>` · `playbook <project> <name>` · `open`/`editor`/`reveal <project>` |
-| Issues & log | `issue add <project> "<title>" [--priority …] [--body …] [--attach <file>]…` · `issue status <project> <#> <status>` · `issue priority <project> <#> <priority>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `attach add\|list\|rm <project> <#> …` · `update add <project> "<text>" [--issue <#>]` |
+| Issues & log | `issue add <project> "<title>" [--priority …] [--body …] [--attach <file>]… [--label L]…` · `issue list <project> [--all] [--status S] [--priority P] [--label L]` · `issue status\|priority <project> <#> <value>` · `issue label add\|rm <project> <#> <label>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `attach add\|list\|rm <project> <#> …` · `update add <project> "<text>" [--issue <#>]` |
 | Registry | `add <name> [--path] [--remote] [--tag]… [--notes]` · `remove <project>` · `rename <project> <new>` · `describe <project> <text…>` · `group create\|delete\|add\|remove …` · `yolo`/`tmux <project> <on\|off>` · `trash restore <id>` · `trash empty` |
 | Multi-machine | `host` · `path <project> <path>` · `path <project> --clear` |
 

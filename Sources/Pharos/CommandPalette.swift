@@ -1,5 +1,20 @@
 import SwiftUI
 
+// MARK: - PaletteItem
+
+/// A ⌘K result: either a project or one of its issues.
+enum PaletteItem: Identifiable, Equatable {
+    case project(Project)
+    case issue(projectID: Project.ID, projectName: String, issue: Issue)
+
+    var id: String {
+        switch self {
+        case .project(let p):        return "p:\(p.id.uuidString)"
+        case .issue(_, _, let i):    return "i:\(i.id.uuidString)"
+        }
+    }
+}
+
 // MARK: - CommandPalette
 
 struct CommandPalette: View {
@@ -8,7 +23,7 @@ struct CommandPalette: View {
     @Binding var isPresented: Bool
 
     @State private var query = ""
-    @State private var highlighted: Project.ID? = nil
+    @State private var highlighted: String? = nil
     @FocusState private var fieldFocused: Bool
 
     @ViewBuilder
@@ -20,52 +35,64 @@ struct CommandPalette: View {
                     highlighted = new.first?.id
                     if let h = new.first?.id { proxy.scrollTo(h, anchor: .center) }
                 }
-                .onChange(of: highlightedString) { _, newH in
+                .onChange(of: highlighted ?? "") { _, newH in
                     proxy.scrollTo(newH, anchor: .center)
                 }
         }
     }
 
-    /// String-wrapped highlighted ID so onChange uses the two-arg overload cleanly.
-    private var highlightedString: String { highlighted?.uuidString ?? "" }
-
     @ViewBuilder
     private var rowList: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                ForEach(results) { project in
-                    let isHL = highlighted == project.id
-                    PaletteRow(
-                        project: project,
-                        isHighlighted: isHL,
-                        onSelect: { jump(to: project) },
-                        onAction: { dismiss() }
-                    )
-                    .id(project.id)
+                ForEach(results) { item in
+                    let isHL = highlighted == item.id
+                    switch item {
+                    case .project(let project):
+                        PaletteRow(project: project, isHighlighted: isHL,
+                                   onSelect: { select(item) }, onAction: { dismiss() })
+                            .id(item.id)
+                    case .issue(_, let projectName, let issue):
+                        PaletteIssueRow(projectName: projectName, issue: issue, isHighlighted: isHL,
+                                        onSelect: { select(item) })
+                            .id(item.id)
+                    }
                 }
             }
             .padding(.vertical, 4)
         }
     }
 
-    private var results: [Project] {
+    private var results: [PaletteItem] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return store.projects.sorted { $0.name.lowercased() < $1.name.lowercased() } }
-        return store.projects.filter {
+        let projects = store.projects.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        guard !q.isEmpty else { return projects.map { .project($0) } }
+
+        let projectMatches: [PaletteItem] = projects.filter {
             $0.name.lowercased().contains(q) ||
             ($0.localPath?.lowercased().contains(q) == true) ||
             ($0.githubRemote?.lowercased().contains(q) == true)
-        }.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        }.map { .project($0) }
+
+        var issueMatches: [PaletteItem] = []
+        for p in projects {
+            for issue in p.issues where
+                issue.title.lowercased().contains(q)
+                || "#\(issue.number)".contains(q)
+                || issue.labels.contains(where: { $0.lowercased().contains(q) }) {
+                issueMatches.append(.issue(projectID: p.id, projectName: p.name, issue: issue))
+            }
+        }
+        return projectMatches + Array(issueMatches.prefix(30))
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // ── Search field ──────────────────────────────────────────────
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
                     .font(.system(size: 15, weight: .medium))
-                TextField("Jump to a project or action…", text: $query)
+                TextField("Jump to a project, action, or issue…", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
                     .focused($fieldFocused)
@@ -86,9 +113,8 @@ struct CommandPalette: View {
 
             Divider().opacity(0.4)
 
-            // ── Results list ──────────────────────────────────────────────
             if results.isEmpty {
-                Text("No projects match \"\(query)\"")
+                Text("No matches for \"\(query)\"")
                     .foregroundStyle(.secondary)
                     .font(.callout)
                     .padding(.vertical, 32)
@@ -101,10 +127,8 @@ struct CommandPalette: View {
         .glassEffect()
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .shadow(color: .black.opacity(0.25), radius: 32, x: 0, y: 12)
-        // Keyboard navigation
         .onKeyPress(.upArrow) { moveHighlight(by: -1); return .handled }
         .onKeyPress(.downArrow) { moveHighlight(by: 1); return .handled }
-        // Esc to dismiss (also handled by .sheet dismiss, but belt-and-suspenders)
         .onKeyPress(.escape) { dismiss(); return .handled }
         .onAppear {
             fieldFocused = true
@@ -117,14 +141,20 @@ struct CommandPalette: View {
 
     // MARK: – Helpers
 
-    private func jump(to project: Project) {
-        selectedProject = project.id
+    private func select(_ item: PaletteItem) {
+        switch item {
+        case .project(let p):
+            selectedProject = p.id
+        case .issue(let pid, _, let issue):
+            selectedProject = pid
+            store.requestIssue(pid, number: issue.number)
+        }
         dismiss()
     }
 
     private func activateHighlighted() {
-        guard let h = highlighted, let project = store.project(h) else { return }
-        jump(to: project)
+        guard let h = highlighted, let item = results.first(where: { $0.id == h }) else { return }
+        select(item)
     }
 
     private func moveHighlight(by delta: Int) {
@@ -139,6 +169,48 @@ struct CommandPalette: View {
 
     private func dismiss() {
         isPresented = false
+    }
+}
+
+// MARK: - PaletteIssueRow
+
+private struct PaletteIssueRow: View {
+    let projectName: String
+    let issue: Issue
+    let isHighlighted: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: issue.status.symbol)
+                .font(.system(size: 13)).foregroundStyle(.secondary).frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("#\(issue.number)  \(issue.title)")
+                    .font(.system(size: 13, weight: .medium)).lineLimit(1)
+                Text(subtitle)
+                    .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+            }
+            Spacer()
+            if issue.priority != .none {
+                Image(systemName: issue.priority.symbol)
+                    .font(.system(size: 11))
+                    .foregroundStyle(issue.priority == .urgent ? .orange : .secondary)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(isHighlighted ? Color.accentColor.opacity(0.12) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.horizontal, 6)
+        .contentShape(Rectangle())
+        .onTapGesture { onSelect() }
+        .animation(.easeInOut(duration: 0.12), value: isHighlighted)
+    }
+
+    private var subtitle: String {
+        var parts = ["\(projectName) · \(issue.status.label)"]
+        if !issue.labels.isEmpty { parts.append(issue.labels.joined(separator: ", ")) }
+        return parts.joined(separator: " · ")
     }
 }
 

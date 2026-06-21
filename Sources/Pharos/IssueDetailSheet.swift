@@ -17,6 +17,7 @@ struct IssueDetailSheet: View {
     @State private var editedTitle = ""
     @State private var editedBody = ""
     @State private var quickLookURL: URL?
+    @State private var newLabel = ""
 
     private var issue: Issue? { store.project(projectID)?.issues.first { $0.number == number } }
 
@@ -28,6 +29,7 @@ struct IssueDetailSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         bodySection(issue)
+                        labelsSection(issue)
                         attachmentsSection(issue)
                     }
                     .padding(20)
@@ -105,6 +107,46 @@ struct IssueDetailSheet: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func labelsSection(_ issue: Issue) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Labels").font(.caption).foregroundStyle(.secondary)
+            if !issue.labels.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(issue.labels, id: \.self) { label in
+                            HStack(spacing: 4) {
+                                Text(label).font(.caption)
+                                Button { store.removeIssueLabel(projectID, number: number, label: label) } label: {
+                                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(.tint.opacity(0.15), in: Capsule())
+                            .foregroundStyle(.tint)
+                        }
+                    }
+                }
+            }
+            HStack(spacing: 8) {
+                TextField("Add a label…", text: $newLabel)
+                    .textFieldStyle(.roundedBorder).frame(maxWidth: 200)
+                    .onSubmit { commitLabel() }
+                Button("Add") { commitLabel() }
+                    .controlSize(.small)
+                    .disabled(newLabel.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func commitLabel() {
+        let l = newLabel.trimmingCharacters(in: .whitespaces)
+        guard !l.isEmpty else { return }
+        store.addIssueLabel(projectID, number: number, label: l)
+        newLabel = ""
     }
 
     private func attachmentsSection(_ issue: Issue) -> some View {

@@ -153,11 +153,24 @@ enum CLI {
         let number = p.arg(2).flatMap { Int($0) }
         switch p.arg(0) {
         case "list", nil:
-            return emit(try PharosCore.issueList(project: p.arg(1), all: p.has("all")), json: p.has("json"))
+            return emit(try PharosCore.issueList(project: p.arg(1), all: p.has("all"),
+                                                 label: p.opt("label"), status: p.opt("status"),
+                                                 priority: p.opt("priority")), json: p.has("json"))
         case "add":
             return ok(try PharosCore.issueAdd(project: p.arg(1), title: p.arg(2),
                                               priority: p.opt("priority"), body: p.opt("body"),
-                                              attach: p.all("attach")))
+                                              attach: p.all("attach"), labels: p.all("label")))
+        case "label":
+            // issue label add|rm <project> <#> <label>
+            let labelNumber = p.arg(3).flatMap { Int($0) }
+            switch p.arg(1) {
+            case "add":
+                return ok(try PharosCore.issueLabel(project: p.arg(2), number: labelNumber, add: true, label: p.arg(4)))
+            case "rm", "remove":
+                return ok(try PharosCore.issueLabel(project: p.arg(2), number: labelNumber, add: false, label: p.arg(4)))
+            default:
+                return usageError("Usage: pharos issue label <add|rm> <project> <#> <label>")
+            }
         case "status":
             return ok(try PharosCore.issueSetStatus(project: p.arg(1), number: number, status: p.arg(3)))
         case "priority":
@@ -320,12 +333,13 @@ enum CLI {
           git <project>                Git status for a project
           worktrees <project>          List a project's git worktrees
           sessions <project> <agent>   List past sessions (agent: claude|codex)
-          issue list <project> [--all] List issues (open only unless --all)
+          issue list <project> [--all] [--status S] [--priority P] [--label L]   List/filter issues
           update list <project>        Show the project-update feed
           trash [list]                 List soft-deleted items
 
         ISSUES & PROJECT LOG (single-user — no human assignees)
-          issue add <project> "<title>" [--priority none|low|medium|high|urgent] [--body "…"] [--attach <file>]…
+          issue add <project> "<title>" [--priority none|low|medium|high|urgent] [--body "…"] [--attach <file>]… [--label L]…
+          issue label add|rm <project> <#> <label>
           issue status <project> <#> <backlog|todo|in_progress|done|canceled>
           issue priority <project> <#> <none|low|medium|high|urgent>
           issue start <project> <#> <agent> [--no-yolo] [--tmux]   Launch an agent ON an issue

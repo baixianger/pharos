@@ -44,6 +44,10 @@ struct ProjectDetailView: View {
     @State private var newUpdateText = ""
     @State private var showIssueComposer = false
     @State private var detailIssueNumber: Int?
+    // Issue filters.
+    @State private var issueSearch = ""
+    @State private var issueStatusFilter: IssueStatus?
+    @State private var issueLabelFilter: String?
 
     private var project: Project? { store.project(projectID) }
 
@@ -107,6 +111,8 @@ struct ProjectDetailView: View {
                 .sheet(item: $worktreeToRemove) { wt in
                     worktreeRemoveSheet(wt)
                 }
+                .onChange(of: store.requestedIssue) { _, req in openRequestedIssue(req) }
+                .onAppear { openRequestedIssue(store.requestedIssue) }
             } else {
                 ContentUnavailableView("Project not found", systemImage: "questionmark.folder")
             }
@@ -501,11 +507,16 @@ struct ProjectDetailView: View {
 
     @ViewBuilder
     private func issuesCard(_ project: Project) -> some View {
-        let sorted = project.issues.sorted { a, b in
-            if a.status.order != b.status.order { return a.status.order < b.status.order }
-            if a.priority.rank != b.priority.rank { return a.priority.rank > b.priority.rank }
-            return a.number < b.number
-        }
+        let knownLabels = Array(Set(project.issues.flatMap(\.labels))).sorted { $0.lowercased() < $1.lowercased() }
+        let filtered = project.issues
+            .filter { issueStatusFilter == nil || $0.status == issueStatusFilter }
+            .filter { issueLabelFilter == nil || $0.labels.contains { $0.caseInsensitiveCompare(issueLabelFilter!) == .orderedSame } }
+            .filter { matchesIssueSearch($0) }
+            .sorted { a, b in
+                if a.status.order != b.status.order { return a.status.order < b.status.order }
+                if a.priority.rank != b.priority.rank { return a.priority.rank > b.priority.rank }
+                return a.number < b.number
+            }
         let openCount = project.issues.filter { $0.status.isOpen }.count
         VStack(alignment: .leading, spacing: 10) {
             HStack {
@@ -530,12 +541,15 @@ struct ProjectDetailView: View {
                 Button { addIssueFromComposer(project) } label: { Label("Add", systemImage: "plus") }
                     .disabled(newIssueTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            if sorted.isEmpty {
+            if !project.issues.isEmpty { issueFilterBar(knownLabels) }
+            if project.issues.isEmpty {
                 Text("No issues yet.").font(.callout).foregroundStyle(.secondary)
+            } else if filtered.isEmpty {
+                Text("No issues match the filter.").font(.callout).foregroundStyle(.secondary)
             } else {
-                ForEach(sorted) { issue in
+                ForEach(filtered) { issue in
                     issueRow(project, issue)
-                    if issue.id != sorted.last?.id { Divider() }
+                    if issue.id != filtered.last?.id { Divider() }
                 }
             }
         }
@@ -553,6 +567,57 @@ struct ProjectDetailView: View {
                 IssueDetailSheet(projectID: projectID, number: n).environment(store)
             }
         }
+    }
+
+    private func matchesIssueSearch(_ issue: Issue) -> Bool {
+        let q = issueSearch.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return true }
+        return issue.title.localizedCaseInsensitiveContains(q)
+            || "#\(issue.number)".contains(q)
+            || issue.labels.contains { $0.localizedCaseInsensitiveContains(q) }
+    }
+
+    @ViewBuilder
+    private func issueFilterBar(_ knownLabels: [String]) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal.decrease.circle").foregroundStyle(.secondary)
+            TextField("Filter…", text: $issueSearch)
+                .textFieldStyle(.roundedBorder).frame(maxWidth: 160)
+            Menu {
+                Button { issueStatusFilter = nil } label: { Label("All statuses", systemImage: issueStatusFilter == nil ? "checkmark" : "") }
+                ForEach(IssueStatus.allCases) { s in
+                    Button { issueStatusFilter = s } label: {
+                        Label(s.label, systemImage: issueStatusFilter == s ? "checkmark" : s.symbol)
+                    }
+                }
+            } label: { Label(issueStatusFilter?.label ?? "Status", systemImage: "circle.lefthalf.filled") }
+                .menuStyle(.borderlessButton).fixedSize()
+            if !knownLabels.isEmpty {
+                Menu {
+                    Button { issueLabelFilter = nil } label: { Label("All labels", systemImage: issueLabelFilter == nil ? "checkmark" : "") }
+                    ForEach(knownLabels, id: \.self) { l in
+                        Button { issueLabelFilter = l } label: { Label(l, systemImage: issueLabelFilter == l ? "checkmark" : "tag") }
+                    }
+                } label: { Label(issueLabelFilter ?? "Label", systemImage: "tag") }
+                    .menuStyle(.borderlessButton).fixedSize()
+            }
+            if issueStatusFilter != nil || issueLabelFilter != nil || !issueSearch.isEmpty {
+                Button { issueSearch = ""; issueStatusFilter = nil; issueLabelFilter = nil } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain).help("Clear filters")
+            }
+            Spacer()
+        }
+        .font(.caption)
+    }
+
+    private func labelChip(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2)
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(.tint.opacity(0.15), in: Capsule())
+            .foregroundStyle(.tint)
     }
 
     @ViewBuilder
@@ -573,15 +638,18 @@ struct ProjectDetailView: View {
             Button { detailIssueNumber = issue.number } label: {
                 HStack(spacing: 8) {
                     Text("#\(issue.number)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                    VStack(alignment: .leading, spacing: 1) {
+                    VStack(alignment: .leading, spacing: 2) {
                         Text(issue.title)
                             .font(.callout)
                             .strikethrough(issue.status == .canceled)
                             .foregroundStyle(issue.status.isOpen ? .primary : .secondary)
                             .lineLimit(1)
-                        if let session = issue.activeSession, store.runningSessions.contains(session) {
-                            Label("agent running", systemImage: "circle.fill")
-                                .font(.caption2).foregroundStyle(.green).labelStyle(.titleAndIcon)
+                        HStack(spacing: 4) {
+                            ForEach(issue.labels.prefix(4), id: \.self) { labelChip($0) }
+                            if let session = issue.activeSession, store.runningSessions.contains(session) {
+                                Label("agent running", systemImage: "circle.fill")
+                                    .font(.caption2).foregroundStyle(.green).labelStyle(.titleAndIcon)
+                            }
                         }
                     }
                 }
@@ -672,6 +740,14 @@ struct ProjectDetailView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    /// Open an issue requested from ⌘K, if it belongs to this project.
+    private func openRequestedIssue(_ req: ProjectStore.IssueRequest?) {
+        guard let req, req.projectID == projectID else { return }
+        tab = .issues
+        detailIssueNumber = req.number
+        store.requestedIssue = nil
     }
 
     private func addIssueFromComposer(_ project: Project) {
