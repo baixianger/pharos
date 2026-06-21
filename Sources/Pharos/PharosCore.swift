@@ -504,6 +504,73 @@ enum PharosCore {
         return "Logged update for '\(store.projects[idx].name)'."
     }
 
+    // MARK: Attachments on existing issues
+
+    static func attachAdd(project name: String?, number: Int?, paths: [String]) throws -> String {
+        guard let number else { throw CoreError(message: "Missing required argument: number") }
+        guard !paths.isEmpty else { throw CoreError(message: "No files to attach (use --file <path>).") }
+        var store = loadStore()
+        let idx = try projectIndexOrThrow(name, in: store)
+        guard let issue = store.projects[idx].issues.first(where: { $0.number == number }) else {
+            throw CoreError(message: "No issue #\(number) in '\(store.projects[idx].name)'.")
+        }
+        let issueID = issue.id
+        var added: [IssueAttachment] = []
+        for p in paths {
+            let url = URL(fileURLWithPath: (p as NSString).expandingTildeInPath)
+            do { added.append(try AttachmentStore.add(fileAt: url, toIssue: issueID)) }
+            catch { throw CoreError(message: "Couldn't attach '\(p)': \(error.localizedDescription)") }
+        }
+        _ = store.updateIssue(projectID: store.projects[idx].id, number: number) {
+            $0.attachments.append(contentsOf: added)
+        }
+        saveStore(store)
+        return "Attached \(added.count) file\(added.count == 1 ? "" : "s") to \(store.projects[idx].name)#\(number)."
+    }
+
+    static func attachList(project name: String?, number: Int?) throws -> CoreOutcome {
+        guard let number else { throw CoreError(message: "Missing required argument: number") }
+        let store = loadStore()
+        let idx = try projectIndexOrThrow(name, in: store)
+        guard let issue = store.projects[idx].issues.first(where: { $0.number == number }) else {
+            throw CoreError(message: "No issue #\(number) in '\(store.projects[idx].name)'.")
+        }
+        let rows: [[String: Any]] = issue.attachments.enumerated().map { n, a in
+            ["index": n + 1, "name": a.originalName, "image": a.isImage, "bytes": a.byteSize, "stored": a.storedName]
+        }
+        let text = issue.attachments.isEmpty ? "No attachments." :
+            issue.attachments.enumerated().map { n, a in "\(n + 1)\t\(a.originalName)\t\(a.byteSize)B" }
+                .joined(separator: "\n")
+        return CoreOutcome(text: text,
+                           json: ["project": store.projects[idx].name, "number": number,
+                                  "attachments": rows, "count": rows.count])
+    }
+
+    static func attachRemove(project name: String?, number: Int?, ref: String?) throws -> String {
+        guard let number else { throw CoreError(message: "Missing required argument: number") }
+        guard let ref = ref?.trimmingCharacters(in: .whitespaces), !ref.isEmpty else {
+            throw CoreError(message: "Missing attachment ref (its index from `attach list`, or its name).")
+        }
+        var store = loadStore()
+        let idx = try projectIndexOrThrow(name, in: store)
+        guard let issue = store.projects[idx].issues.first(where: { $0.number == number }) else {
+            throw CoreError(message: "No issue #\(number) in '\(store.projects[idx].name)'.")
+        }
+        let target: IssueAttachment?
+        if let n = Int(ref), n >= 1, n <= issue.attachments.count {
+            target = issue.attachments[n - 1]
+        } else {
+            target = issue.attachments.first { $0.originalName == ref || $0.storedName == ref }
+        }
+        guard let target else { throw CoreError(message: "No attachment '\(ref)' on #\(number).") }
+        try? FileManager.default.removeItem(at: AttachmentStore.fileURL(target, issueID: issue.id))
+        _ = store.updateIssue(projectID: store.projects[idx].id, number: number) {
+            $0.attachments.removeAll { $0.id == target.id }
+        }
+        saveStore(store)
+        return "Removed attachment '\(target.originalName)' from \(store.projects[idx].name)#\(number)."
+    }
+
     static func updateList(project name: String?) throws -> CoreOutcome {
         let store = loadStore()
         let idx = try projectIndexOrThrow(name, in: store)

@@ -292,6 +292,12 @@ final class ProjectStore {
     var peerHost = "" {
         didSet { UserDefaults.standard.set(peerHost, forKey: "pharos.peerHost") }
     }
+    /// The peer Mac's host key (its computer name). When set, a project's path on
+    /// the peer is read from its per-host map (`localPaths`), so multi-machine
+    /// sync feeds the peer-drift feature without a manual per-project override.
+    var peerHostKey = "" {
+        didSet { UserDefaults.standard.set(peerHostKey, forKey: "pharos.peerHostKey") }
+    }
 
     /// The registry file. Resolved from the shared `DataLocation` (honoring the
     /// `pharos.dataDir` pref + `PHAROS_REGISTRY`) so the GUI and CLI always agree,
@@ -321,6 +327,7 @@ final class ProjectStore {
         claudeArgs = d.string(forKey: "pharos.claudeArgs") ?? ""
         codexArgs  = d.string(forKey: "pharos.codexArgs")  ?? ""
         peerHost   = d.string(forKey: "pharos.peerHost")   ?? ""
+        peerHostKey = d.string(forKey: "pharos.peerHostKey") ?? ""
         load()
         lastFileMtime = fileModificationDate()
         refreshRunningAgents()
@@ -626,6 +633,33 @@ final class ProjectStore {
             $0.purgeExpiredTrash()
         }
         if let token { setUndo("Removed #\(number) “\(title)”", itemID: token) }
+    }
+
+    /// Attach files to an existing issue (GUI). Copies bytes into the issue's dir.
+    func addAttachments(_ projectID: Project.ID, number: Int, urls: [URL]) {
+        guard let issue = project(projectID)?.issues.first(where: { $0.number == number }) else { return }
+        let issueID = issue.id
+        var added: [IssueAttachment] = []
+        for url in urls {
+            if let a = try? AttachmentStore.add(fileAt: url, toIssue: issueID) { added.append(a) }
+            else { reportError("Couldn't attach \(url.lastPathComponent).") }
+        }
+        guard !added.isEmpty else { return }
+        mutateStore {
+            _ = $0.updateIssue(projectID: projectID, number: number) { $0.attachments.append(contentsOf: added) }
+        }
+    }
+
+    /// Remove one attachment from an issue and delete its file.
+    func removeAttachment(_ projectID: Project.ID, number: Int, attachment: IssueAttachment) {
+        if let issue = project(projectID)?.issues.first(where: { $0.number == number }) {
+            try? FileManager.default.removeItem(at: AttachmentStore.fileURL(attachment, issueID: issue.id))
+        }
+        mutateStore {
+            _ = $0.updateIssue(projectID: projectID, number: number) {
+                $0.attachments.removeAll { $0.id == attachment.id }
+            }
+        }
     }
 
     func addUpdate(_ projectID: Project.ID, body: String) {
