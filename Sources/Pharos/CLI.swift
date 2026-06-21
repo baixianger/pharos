@@ -102,6 +102,8 @@ enum CLI {
                 return ok(try PharosCore.setLocalPath(project: p.arg(0), path: p.arg(1), clear: p.has("clear")))
             case "host":
                 return emit(PharosCore.hostInfo(), json: p.has("json"))
+            case "search":
+                return emit(try PharosCore.search(p.positional.joined(separator: " ")), json: p.has("json"))
             case "yolo":
                 return ok(try PharosCore.setFlag(name: p.arg(0), flag: "yolo", value: try boolArg(p.arg(1), label: "on|off")))
             case "tmux":
@@ -163,6 +165,15 @@ enum CLI {
             // issue milestone <project> <#> <name|none>
             return ok(try PharosCore.issueSetMilestone(project: p.arg(1), number: p.arg(2).flatMap { Int($0) },
                                                        milestone: p.arg(3)))
+        case "parent":
+            // issue parent <project> <#> <parent#|none>
+            return ok(try PharosCore.issueSetParent(project: p.arg(1), number: p.arg(2).flatMap { Int($0) },
+                                                    parent: p.arg(3)))
+        case "link", "unlink":
+            // issue link|unlink <project> <#> <relates|blocks|blocked-by|duplicate> <#>
+            return ok(try PharosCore.issueLink(project: p.arg(1), from: p.arg(2).flatMap { Int($0) },
+                                               kind: p.arg(3), to: p.arg(4).flatMap { Int($0) },
+                                               add: p.arg(0) == "link"))
         case "add":
             return ok(try PharosCore.issueAdd(project: p.arg(1), title: p.arg(2),
                                               priority: p.opt("priority"), body: p.opt("body"),
@@ -353,6 +364,7 @@ enum CLI {
           git <project>                Git status for a project
           worktrees <project>          List a project's git worktrees
           sessions <project> <agent>   List past sessions (agent: claude|codex)
+          search <query>               Search issues across ALL projects (title/body/labels)
           issue list <project> [--all] [--status S] [--priority P] [--label L] [--milestone M]   List/filter issues
           milestone list <project>     List milestones (issue counts + due dates)
           update list <project>        Show the project-update feed
@@ -362,6 +374,8 @@ enum CLI {
           issue add <project> "<title>" [--priority none|low|medium|high|urgent] [--body "…"] [--attach <file>]… [--label L]…
           issue label add|rm <project> <#> <label>
           issue milestone <project> <#> <name|none>                Assign/clear an issue's milestone
+          issue parent <project> <#> <parent#|none>                Make an issue a sub-task (or clear)
+          issue link|unlink <project> <#> <relates|blocks|blocked-by|duplicate> <#>   Relate issues
           milestone add <project> "<name>" [--due yyyy-MM-dd]      Create a milestone
           milestone rm <project> <name>
           issue status <project> <#> <backlog|todo|in_progress|done|canceled>

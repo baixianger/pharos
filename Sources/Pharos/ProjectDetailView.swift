@@ -703,9 +703,19 @@ struct ProjectDetailView: View {
             if !issue.labels.isEmpty {
                 HStack(spacing: 4) { ForEach(issue.labels.prefix(3), id: \.self) { labelChip($0) } }
             }
-            if let session = issue.activeSession, store.runningSessions.contains(session) {
-                Label("agent", systemImage: "circle.fill")
-                    .font(.system(size: 9)).foregroundStyle(.green).labelStyle(.titleAndIcon)
+            HStack(spacing: 6) {
+                if issue.relations.contains(where: { $0.kind == .blockedBy }) {
+                    Image(systemName: "exclamationmark.octagon").font(.system(size: 9)).foregroundStyle(.orange)
+                }
+                let subCount = project.issues.filter { $0.parent == issue.number }.count
+                if subCount > 0 {
+                    Label("\(subCount)", systemImage: "list.bullet.indent")
+                        .font(.system(size: 9)).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
+                }
+                if let session = issue.activeSession, store.runningSessions.contains(session) {
+                    Label("agent", systemImage: "circle.fill")
+                        .font(.system(size: 9)).foregroundStyle(.green).labelStyle(.titleAndIcon)
+                }
             }
         }
         .padding(8)
@@ -749,6 +759,18 @@ struct ProjectDetailView: View {
                             .foregroundStyle(issue.status.isOpen ? .primary : .secondary)
                             .lineLimit(1)
                         HStack(spacing: 4) {
+                            if issue.parent != nil {
+                                Image(systemName: "arrow.turn.down.right").font(.caption2).foregroundStyle(.secondary)
+                            }
+                            let subCount = project.issues.filter { $0.parent == issue.number }.count
+                            if subCount > 0 {
+                                Label("\(subCount)", systemImage: "list.bullet.indent")
+                                    .font(.caption2).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
+                            }
+                            if issue.relations.contains(where: { $0.kind == .blockedBy }) {
+                                Image(systemName: "exclamationmark.octagon").font(.caption2).foregroundStyle(.orange)
+                                    .help("Blocked")
+                            }
                             if let m = project.milestones.first(where: { $0.id == issue.milestoneID }) {
                                 Label(m.name, systemImage: "flag")
                                     .font(.caption2).foregroundStyle(.secondary).labelStyle(.titleAndIcon)

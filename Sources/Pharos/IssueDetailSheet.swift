@@ -32,6 +32,7 @@ struct IssueDetailSheet: View {
                     VStack(alignment: .leading, spacing: 16) {
                         bodySection(issue)
                         milestoneSection(issue)
+                        relationsSection(issue)
                         labelsSection(issue)
                         attachmentsSection(issue)
                     }
@@ -149,6 +150,76 @@ struct IssueDetailSheet: View {
                 newMilestoneName = ""
             }
         }
+    }
+
+    private func relationsSection(_ issue: Issue) -> some View {
+        let all = store.project(projectID)?.issues ?? []
+        let others = all.filter { $0.number != issue.number }
+        let subtasks = all.filter { $0.parent == issue.number }
+        func title(_ n: Int) -> String {
+            all.first { $0.number == n }.map { "#\($0.number) \($0.title)" } ?? "#\(n)"
+        }
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Parent").font(.caption).foregroundStyle(.secondary)
+                Menu {
+                    Button { store.setIssueParent(projectID, number: number, parent: nil) } label: {
+                        Label("None", systemImage: issue.parent == nil ? "checkmark" : "")
+                    }
+                    if !others.isEmpty { Divider() }
+                    ForEach(others, id: \.number) { o in
+                        Button { store.setIssueParent(projectID, number: number, parent: o.number) } label: {
+                            Label("#\(o.number) \(o.title)", systemImage: issue.parent == o.number ? "checkmark" : "")
+                        }
+                    }
+                } label: { Label(issue.parent.map(title) ?? "None", systemImage: "arrow.up.right") }
+                    .menuStyle(.borderlessButton).fixedSize()
+                Spacer()
+                Menu {
+                    ForEach(RelationKind.allCases, id: \.self) { k in
+                        Menu(k.label) {
+                            ForEach(others, id: \.number) { o in
+                                Button("#\(o.number) \(o.title)") { store.addRelation(projectID, from: number, kind: k, to: o.number) }
+                            }
+                        }
+                    }
+                } label: { Label("Add link…", systemImage: "link") }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .disabled(others.isEmpty)
+            }
+
+            if !subtasks.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Sub-tasks").font(.caption).foregroundStyle(.secondary)
+                    ForEach(subtasks, id: \.number) { s in
+                        HStack(spacing: 6) {
+                            Image(systemName: s.status.symbol).foregroundStyle(.secondary).font(.caption)
+                            Text("#\(s.number) \(s.title)").font(.callout).lineLimit(1)
+                            Spacer()
+                            Button { store.setIssueParent(projectID, number: s.number, parent: nil) } label: {
+                                Image(systemName: "xmark.circle").font(.caption)
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+
+            if !issue.relations.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(issue.relations.enumerated()), id: \.offset) { _, rel in
+                        HStack(spacing: 6) {
+                            Image(systemName: rel.kind.symbol).foregroundStyle(.secondary).font(.caption)
+                            Text("\(rel.kind.label) \(title(rel.target))").font(.callout).lineLimit(1)
+                            Spacer()
+                            Button { store.removeRelation(projectID, from: number, kind: rel.kind, to: rel.target) } label: {
+                                Image(systemName: "xmark.circle").font(.caption)
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func labelsSection(_ issue: Issue) -> some View {

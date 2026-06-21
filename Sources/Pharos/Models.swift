@@ -111,6 +111,49 @@ struct Issue: Identifiable, Codable, Hashable {
     var sortOrder: Double = 0
     /// The milestone/cycle this issue belongs to, if any.
     var milestoneID: UUID?
+    /// Parent issue number (same project) — this issue is a sub-task of it.
+    var parent: Int?
+    /// Links to other issues in the same project (blocks / relates / duplicate).
+    var relations: [IssueRelation] = []
+}
+
+/// A typed link from one issue to another (within the same project).
+struct IssueRelation: Codable, Hashable {
+    var kind: RelationKind
+    var target: Int   // the other issue's number
+}
+
+enum RelationKind: String, Codable, CaseIterable {
+    case relates
+    case blocks
+    case blockedBy = "blocked_by"
+    case duplicate
+
+    /// The relation as seen from the *other* issue (kept in sync via dual-write).
+    var inverse: RelationKind {
+        switch self {
+        case .relates:   return .relates
+        case .blocks:    return .blockedBy
+        case .blockedBy: return .blocks
+        case .duplicate: return .duplicate
+        }
+    }
+    var label: String {
+        switch self {
+        case .relates:   return "Relates to"
+        case .blocks:    return "Blocks"
+        case .blockedBy: return "Blocked by"
+        case .duplicate: return "Duplicate of"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .relates:   return "arrow.left.and.right"
+        case .blocks:    return "hand.raised"
+        case .blockedBy: return "exclamationmark.octagon"
+        case .duplicate: return "doc.on.doc"
+        }
+    }
 }
 
 extension Issue {
@@ -132,6 +175,8 @@ extension Issue {
         labels = try c.decodeIfPresent([String].self, forKey: .labels) ?? []
         sortOrder = try c.decodeIfPresent(Double.self, forKey: .sortOrder) ?? 0
         milestoneID = try c.decodeIfPresent(UUID.self, forKey: .milestoneID)
+        parent = try c.decodeIfPresent(Int.self, forKey: .parent)
+        relations = try c.decodeIfPresent([IssueRelation].self, forKey: .relations) ?? []
     }
 }
 
