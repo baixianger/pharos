@@ -713,3 +713,51 @@ final class PasteboardImportTests: XCTestCase {
         XCTAssertTrue(PasteboardImport.fileURLs(from: pb).isEmpty)
     }
 }
+
+// MARK: - Labels & filtering
+
+final class CoreLabelTests: XCTestCase {
+    private var dir = ""
+    override func setUp() {
+        super.setUp()
+        dir = NSTemporaryDirectory() + "pharos-label-" + UUID().uuidString
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        setenv("PHAROS_REGISTRY", dir + "/projects.json", 1)
+    }
+    override func tearDown() {
+        unsetenv("PHAROS_REGISTRY")
+        try? FileManager.default.removeItem(atPath: dir)
+        super.tearDown()
+    }
+
+    func testIssueAddDedupsLabels() throws {
+        _ = try PharosCore.addProject(name: "app", localPath: nil, githubRemote: nil, tags: [], notes: nil)
+        _ = try PharosCore.issueAdd(project: "app", title: "x", priority: nil, body: nil,
+                                    attach: [], labels: ["UI", "ui", "   ", "backend"])
+        XCTAssertEqual(PharosCore.loadStore().projects[0].issues[0].labels, ["UI", "backend"])
+    }
+
+    func testLabelAddIsIdempotentAndRemoveCaseInsensitive() throws {
+        _ = try PharosCore.addProject(name: "app", localPath: nil, githubRemote: nil, tags: [], notes: nil)
+        _ = try PharosCore.issueAdd(project: "app", title: "x", priority: nil, body: nil)
+        _ = try PharosCore.issueLabel(project: "app", number: 1, add: true, label: "wip")
+        _ = try PharosCore.issueLabel(project: "app", number: 1, add: true, label: "WIP")   // dup ignored
+        XCTAssertEqual(PharosCore.loadStore().projects[0].issues[0].labels, ["wip"])
+        _ = try PharosCore.issueLabel(project: "app", number: 1, add: false, label: "WIP")  // remove case-insensitive
+        XCTAssertTrue(PharosCore.loadStore().projects[0].issues[0].labels.isEmpty)
+    }
+
+    func testIssueListFilters() throws {
+        _ = try PharosCore.addProject(name: "app", localPath: nil, githubRemote: nil, tags: [], notes: nil)
+        _ = try PharosCore.issueAdd(project: "app", title: "a", priority: "high", body: nil, attach: [], labels: ["x"])
+        _ = try PharosCore.issueAdd(project: "app", title: "b", priority: "low", body: nil, attach: [], labels: ["y"])
+        XCTAssertEqual(try PharosCore.issueList(project: "app", all: false, label: "x").json?["count"] as? Int, 1)
+        XCTAssertEqual(try PharosCore.issueList(project: "app", all: false, priority: "low").json?["count"] as? Int, 1)
+        XCTAssertEqual(try PharosCore.issueList(project: "app", all: false, status: "todo").json?["count"] as? Int, 2)
+    }
+
+    func testIssueDecodeTolerantOfMissingLabels() throws {
+        let issue = try JSONDecoder().decode(Issue.self, from: Data(#"{"number":1,"title":"x"}"#.utf8))
+        XCTAssertTrue(issue.labels.isEmpty)
+    }
+}

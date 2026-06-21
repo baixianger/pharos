@@ -126,8 +126,19 @@ matters is which **agent / session / worktree** is working an item.
   swept only when it's permanently purged (orphan sweep on load / empty).
 
 - [x] **Issue detail + attachment management polish.** `IssueDetailSheet` (open
-  an issue): body + attachment grid with inline image previews (click → open
-  full-size), add/remove attachments on an existing issue. CLI `pharos attach
-  add|list|rm <project> <#> …`. **Peer host key** setting: the SSH peer-drift
-  feature now reads each project's path on the peer from `localPaths` (no
-  per-project `peerPath` override needed).
+  an issue): body + attachment grid with inline image previews (click → in-app
+  QuickLook), editable title/description, add/remove attachments. Richer paste
+  (file / image / PDF / RTF / text). CLI `pharos attach add|list|rm`. **Peer host
+  key** setting: SSH peer-drift reads the peer's path from `localPaths`.
+
+### v1.3 — Issue organization & navigation (requested 2026-06-21)
+
+- [x] **Labels + filtering.** `Issue.labels` (single-user freeform tags). GUI
+  label chips on rows + add/remove in the detail sheet; Issues-tab filter bar
+  (text + status + label). CLI `issue add --label`, `issue label add|rm`,
+  `issue list --label/--status/--priority`.
+- [x] **⌘K quick-jump to issues.** The command palette now returns issues
+  (matched by `#number`, title, or label) alongside projects; selecting one jumps
+  to its project and opens it (`ProjectStore.requestedIssue` → detail sheet).
+- [ ] **Kanban board view.** Board grouped by status (columns), drag a card to
+  another column to change status. Builds on labels + filtering. (Next.)

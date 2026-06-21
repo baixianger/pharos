@@ -374,7 +374,8 @@ enum PharosCore {
     // MARK: Issues & project-update feed
 
     static func issueAdd(project name: String?, title: String?,
-                         priority: String?, body: String?, attach: [String] = []) throws -> String {
+                         priority: String?, body: String?, attach: [String] = [],
+                         labels: [String] = []) throws -> String {
         guard let title = title?.trimmingCharacters(in: .whitespaces), !title.isEmpty else {
             throw CoreError(message: "Missing required argument: title")
         }
@@ -391,8 +392,10 @@ enum PharosCore {
             do { attachments.append(try AttachmentStore.add(fileAt: url, toIssue: issueID)) }
             catch { throw CoreError(message: "Couldn't attach '\(path)': \(error.localizedDescription)") }
         }
+        let cleanLabels = normalizedLabels(labels)
         guard let issue = store.addIssue(projectID: pid, title: title, priority: prio,
-                                         body: body ?? "", id: issueID, attachments: attachments) else {
+                                         body: body ?? "", id: issueID,
+                                         attachments: attachments, labels: cleanLabels) else {
             throw CoreError(message: "Project not found: \(name ?? "")")
         }
         saveStore(store)
@@ -400,12 +403,39 @@ enum PharosCore {
         return "Created \(pname)#\(issue.number): \(issue.title)\(note)"
     }
 
-    static func issueList(project name: String?, all: Bool) throws -> CoreOutcome {
+    static func issueLabel(project name: String?, number: Int?, add: Bool, label: String?) throws -> String {
+        guard let number else { throw CoreError(message: "Missing required argument: number") }
+        guard let label = label?.trimmingCharacters(in: .whitespaces), !label.isEmpty else {
+            throw CoreError(message: "Missing required argument: label")
+        }
+        var store = loadStore()
+        let idx = try projectIndexOrThrow(name, in: store)
+        let ok = store.updateIssue(projectID: store.projects[idx].id, number: number) { issue in
+            if add {
+                if !issue.labels.contains(where: { $0.caseInsensitiveCompare(label) == .orderedSame }) {
+                    issue.labels.append(label)
+                }
+            } else {
+                issue.labels.removeAll { $0.caseInsensitiveCompare(label) == .orderedSame }
+            }
+        }
+        guard ok else { throw CoreError(message: "No issue #\(number) in '\(store.projects[idx].name)'.") }
+        saveStore(store)
+        return "\(add ? "Added" : "Removed") label '\(label)' \(add ? "to" : "from") \(store.projects[idx].name)#\(number)."
+    }
+
+    static func issueList(project name: String?, all: Bool,
+                          label: String? = nil, status: String? = nil, priority: String? = nil) throws -> CoreOutcome {
         let store = loadStore()
         let idx = try projectIndexOrThrow(name, in: store)
         let project = store.projects[idx]
+        let statusFilter = try status.map { try parseStatus($0) }
+        let priorityFilter = try priority.map { try parsePriority($0) }
         let issues = project.issues
-            .filter { all || $0.status.isOpen }
+            .filter { all || statusFilter != nil || $0.status.isOpen }
+            .filter { statusFilter == nil || $0.status == statusFilter }
+            .filter { priorityFilter == nil || $0.priority == priorityFilter }
+            .filter { label == nil || $0.labels.contains { $0.caseInsensitiveCompare(label!) == .orderedSame } }
             .sorted { lhs, rhs in
                 if lhs.status.order != rhs.status.order { return lhs.status.order < rhs.status.order }
                 if lhs.priority.rank != rhs.priority.rank { return lhs.priority.rank > rhs.priority.rank }
@@ -414,16 +444,29 @@ enum PharosCore {
         let rows: [[String: Any]] = issues.map { i in
             [
                 "number": i.number, "title": i.title, "status": i.status.rawValue,
-                "priority": i.priority.rawValue, "body": i.body,
+                "priority": i.priority.rawValue, "body": i.body, "labels": i.labels,
                 "activeSession": i.activeSession ?? NSNull(),
             ]
         }
         let text = issues.isEmpty ? "No issues." : issues.map { i in
             let prio = i.priority == .none ? "" : "\(i.priority.rawValue) "
+            let lbls = i.labels.isEmpty ? "" : "  {\(i.labels.joined(separator: ", "))}"
             let agent = i.activeSession != nil ? "  ▶ agent" : ""
-            return "#\(i.number)\t[\(i.status.rawValue)]\t\(prio)\(i.title)\(agent)"
+            return "#\(i.number)\t[\(i.status.rawValue)]\t\(prio)\(i.title)\(lbls)\(agent)"
         }.joined(separator: "\n")
         return CoreOutcome(text: text, json: ["project": project.name, "issues": rows, "count": rows.count])
+    }
+
+    /// Trim + de-dup labels (case-insensitive), preserving first-seen casing.
+    private static func normalizedLabels(_ labels: [String]) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for raw in labels {
+            let l = raw.trimmingCharacters(in: .whitespaces)
+            guard !l.isEmpty else { continue }
+            if seen.insert(l.lowercased()).inserted { out.append(l) }
+        }
+        return out
     }
 
     static func issueSetStatus(project name: String?, number: Int?, status: String?) throws -> String {

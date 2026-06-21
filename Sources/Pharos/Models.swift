@@ -102,6 +102,8 @@ struct Issue: Identifiable, Codable, Hashable {
     /// Images / files attached to the issue. The bytes live on disk under
     /// `<dataDir>/attachments/<issue.id>/`; this holds only metadata.
     var attachments: [IssueAttachment] = []
+    /// Freeform labels (single-user — just tags, no team machinery).
+    var labels: [String] = []
 }
 
 extension Issue {
@@ -120,6 +122,7 @@ extension Issue {
         activeSession = try c.decodeIfPresent(String.self, forKey: .activeSession)
         worktreePath = try c.decodeIfPresent(String.self, forKey: .worktreePath)
         attachments = try c.decodeIfPresent([IssueAttachment].self, forKey: .attachments) ?? []
+        labels = try c.decodeIfPresent([String].self, forKey: .labels) ?? []
     }
 }
 
