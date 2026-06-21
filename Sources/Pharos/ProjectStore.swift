@@ -622,6 +622,15 @@ final class ProjectStore {
         mutateStore { _ = $0.setIssueStatus(projectID: projectID, number: number, status: status) }
     }
 
+    /// Edit an issue's title and body (from the detail sheet).
+    func setIssueContent(_ projectID: Project.ID, number: Int, title: String, body: String) {
+        let t = title.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return }
+        mutateStore {
+            _ = $0.updateIssue(projectID: projectID, number: number) { $0.title = t; $0.body = body }
+        }
+    }
+
     func setIssuePriority(_ projectID: Project.ID, number: Int, priority: IssuePriority) {
         mutateStore { _ = $0.setIssuePriority(projectID: projectID, number: number, priority: priority) }
     }

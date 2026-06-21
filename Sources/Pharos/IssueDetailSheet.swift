@@ -1,16 +1,22 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import QuickLook
 
-/// Read/manage view for a single issue: status, priority, description, and an
-/// attachment grid with inline image previews. Clicking an image opens it
-/// full-size in the default app; files can be added (drag-drop / picker) or
-/// removed here on the existing issue.
+/// Read/edit view for a single issue: status, priority, title, description, and
+/// an attachment grid with inline image previews. Tapping an attachment opens it
+/// in an in-app QuickLook panel; files can be added (drag-drop / picker / paste)
+/// or removed. The title and description are editable in place.
 struct IssueDetailSheet: View {
     @Environment(ProjectStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let projectID: Project.ID
     let number: Int
+
+    @State private var editing = false
+    @State private var editedTitle = ""
+    @State private var editedBody = ""
+    @State private var quickLookURL: URL?
 
     private var issue: Issue? { store.project(projectID)?.issues.first { $0.number == number } }
 
@@ -21,12 +27,7 @@ struct IssueDetailSheet: View {
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        if !issue.body.isEmpty {
-                            Text(issue.body)
-                                .font(.body)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
+                        bodySection(issue)
                         attachmentsSection(issue)
                     }
                     .padding(20)
@@ -37,6 +38,7 @@ struct IssueDetailSheet: View {
         }
         .frame(width: 640, height: 640)
         .onDrop(of: [.fileURL], isTargeted: nil) { handleDrop($0) }
+        .quickLookPreview($quickLookURL)
     }
 
     private func header(_ issue: Issue) -> some View {
@@ -51,8 +53,15 @@ struct IssueDetailSheet: View {
                 .menuStyle(.borderlessButton).fixedSize()
 
             Text("#\(issue.number)").font(.headline.monospacedDigit()).foregroundStyle(.secondary)
-            Text(issue.title).font(.title3).bold().lineLimit(2)
+
+            if editing {
+                TextField("Title", text: $editedTitle).textFieldStyle(.roundedBorder).font(.title3)
+            } else {
+                Text(issue.title).font(.title3).bold().lineLimit(2)
+            }
+
             Spacer()
+
             Menu {
                 ForEach(IssuePriority.allCases) { p in
                     Button { store.setIssuePriority(projectID, number: number, priority: p) } label: {
@@ -66,9 +75,36 @@ struct IssueDetailSheet: View {
             .menuStyle(.borderlessButton).fixedSize()
             .help("Priority: \(issue.priority.label)")
 
-            Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            if editing {
+                Button("Cancel") { editing = false }.keyboardShortcut(.cancelAction)
+                Button("Save") { saveEdits() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(editedTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+            } else {
+                Button { startEditing(issue) } label: { Image(systemName: "pencil") }
+                    .help("Edit title & description")
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
         }
         .padding(16)
+    }
+
+    @ViewBuilder
+    private func bodySection(_ issue: Issue) -> some View {
+        if editing {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Description").font(.caption).foregroundStyle(.secondary)
+                TextEditor(text: $editedBody)
+                    .font(.body)
+                    .frame(minHeight: 140)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+            }
+        } else if !issue.body.isEmpty {
+            Text(issue.body)
+                .font(.body)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private func attachmentsSection(_ issue: Issue) -> some View {
@@ -76,11 +112,13 @@ struct IssueDetailSheet: View {
             HStack {
                 Text("Attachments (\(issue.attachments.count))").font(.headline)
                 Spacer()
+                Button { paste() } label: { Label("Paste", systemImage: "doc.on.clipboard") }
+                    .controlSize(.small)
                 Button { addFiles() } label: { Label("Add files…", systemImage: "paperclip") }
                     .controlSize(.small)
             }
             if issue.attachments.isEmpty {
-                Text("No attachments. Drag files here, or use Add files.")
+                Text("No attachments. Drag files here, use Add files, or Paste.")
                     .font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 70)
                     .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
@@ -110,8 +148,8 @@ struct IssueDetailSheet: View {
                 .background(.quaternary.opacity(0.4))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .contentShape(Rectangle())
-                .onTapGesture { NSWorkspace.shared.open(url) }
-                .help("Click to open full-size")
+                .onTapGesture { quickLookURL = url }
+                .help("Click to preview (QuickLook)")
 
                 Button {
                     store.removeAttachment(projectID, number: number, attachment: att)
@@ -125,7 +163,8 @@ struct IssueDetailSheet: View {
             Text(byteString(att.byteSize)).font(.caption2).foregroundStyle(.secondary)
         }
         .contextMenu {
-            Button { NSWorkspace.shared.open(url) } label: { Label("Open", systemImage: "arrow.up.forward.app") }
+            Button { quickLookURL = url } label: { Label("Quick Look", systemImage: "eye") }
+            Button { NSWorkspace.shared.open(url) } label: { Label("Open in default app", systemImage: "arrow.up.forward.app") }
             Button { LaunchService.revealInFinder(url.path) } label: { Label("Reveal in Finder", systemImage: "folder") }
             Button(role: .destructive) {
                 store.removeAttachment(projectID, number: number, attachment: att)
@@ -133,7 +172,20 @@ struct IssueDetailSheet: View {
         }
     }
 
-    // MARK: Actions
+    // MARK: Editing
+
+    private func startEditing(_ issue: Issue) {
+        editedTitle = issue.title
+        editedBody = issue.body
+        editing = true
+    }
+
+    private func saveEdits() {
+        store.setIssueContent(projectID, number: number, title: editedTitle, body: editedBody)
+        editing = false
+    }
+
+    // MARK: Attachments
 
     private func addFiles() {
         let panel = NSOpenPanel()
@@ -144,6 +196,12 @@ struct IssueDetailSheet: View {
         if panel.runModal() == .OK {
             store.addAttachments(projectID, number: number, urls: panel.urls)
         }
+    }
+
+    private func paste() {
+        let urls = PasteboardImport.fileURLs()
+        store.addAttachments(projectID, number: number, urls: urls)
+        for url in urls where PasteboardImport.isTemp(url) { try? FileManager.default.removeItem(at: url) }
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {

@@ -140,20 +140,9 @@ struct IssueComposer: View {
     }
 
     private func paste() {
-        let pb = NSPasteboard.general
-        if let urls = pb.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
-            for url in urls { stage(url) }
-            return
-        }
-        if let image = NSImage(pasteboard: pb),
-           let tiff = image.tiffRepresentation,
-           let rep = NSBitmapImageRep(data: tiff),
-           let png = rep.representation(using: .png, properties: [:]) {
-            let tmp = FileManager.default.temporaryDirectory
-                .appendingPathComponent("pasted-\(UUID().uuidString).png")
-            try? png.write(to: tmp)
-            stage(tmp)
-            try? FileManager.default.removeItem(at: tmp)
+        for url in PasteboardImport.fileURLs() {
+            stage(url)
+            if PasteboardImport.isTemp(url) { try? FileManager.default.removeItem(at: url) }
         }
     }
 
