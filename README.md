@@ -71,6 +71,10 @@
 
 **Agent-finish notifications.** macOS notifications fire when a watched agent process exits, so you know when a long-running task is done without polling.
 
+**Issues, list or board.** Per project, track issues (status, priority, freeform labels) as a filterable list or a drag-to-reorder **kanban board** grouped by status. The headline trick: launch an agent *on* an issue and Pharos auto-logs an update to the project log when it finishes.
+
+**Recent activity feed.** A cross-project view (toolbar → Activity) of all recent issues and project-log updates, newest first — click any entry to jump straight to it.
+
 ### Git and Multi-Machine
 
 **Per-project git panel.** The project detail view shows current branch, dirty/clean status, commits ahead and behind the remote, and the most recent commit — pulled live via git.
