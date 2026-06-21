@@ -92,6 +92,8 @@ enum CLI {
                 return try runGroup(p)
             case "issue":
                 return try runIssue(p)
+            case "milestone":
+                return try runMilestone(p)
             case "update":
                 return try runUpdate(p)
             case "attach":
@@ -155,7 +157,12 @@ enum CLI {
         case "list", nil:
             return emit(try PharosCore.issueList(project: p.arg(1), all: p.has("all"),
                                                  label: p.opt("label"), status: p.opt("status"),
-                                                 priority: p.opt("priority")), json: p.has("json"))
+                                                 priority: p.opt("priority"), milestone: p.opt("milestone")),
+                        json: p.has("json"))
+        case "milestone":
+            // issue milestone <project> <#> <name|none>
+            return ok(try PharosCore.issueSetMilestone(project: p.arg(1), number: p.arg(2).flatMap { Int($0) },
+                                                       milestone: p.arg(3)))
         case "add":
             return ok(try PharosCore.issueAdd(project: p.arg(1), title: p.arg(2),
                                               priority: p.opt("priority"), body: p.opt("body"),
@@ -202,6 +209,19 @@ enum CLI {
             return ok(try PharosCore.attachRemove(project: p.arg(1), number: number, ref: p.arg(3)))
         case let other?:
             return usageError("Unknown attach subcommand: \(other) (use add|list|rm)")
+        }
+    }
+
+    private static func runMilestone(_ p: Parsed) throws -> Int32 {
+        switch p.arg(0) {
+        case "add":
+            return ok(try PharosCore.milestoneAdd(project: p.arg(1), milestone: p.arg(2), due: p.opt("due")))
+        case "list", nil:
+            return emit(try PharosCore.milestoneList(project: p.arg(1)), json: p.has("json"))
+        case "rm", "remove":
+            return ok(try PharosCore.milestoneRemove(project: p.arg(1), milestone: p.arg(2)))
+        case let other?:
+            return usageError("Unknown milestone subcommand: \(other) (use add|list|rm)")
         }
     }
 
@@ -333,13 +353,17 @@ enum CLI {
           git <project>                Git status for a project
           worktrees <project>          List a project's git worktrees
           sessions <project> <agent>   List past sessions (agent: claude|codex)
-          issue list <project> [--all] [--status S] [--priority P] [--label L]   List/filter issues
+          issue list <project> [--all] [--status S] [--priority P] [--label L] [--milestone M]   List/filter issues
+          milestone list <project>     List milestones (issue counts + due dates)
           update list <project>        Show the project-update feed
           trash [list]                 List soft-deleted items
 
         ISSUES & PROJECT LOG (single-user — no human assignees)
           issue add <project> "<title>" [--priority none|low|medium|high|urgent] [--body "…"] [--attach <file>]… [--label L]…
           issue label add|rm <project> <#> <label>
+          issue milestone <project> <#> <name|none>                Assign/clear an issue's milestone
+          milestone add <project> "<name>" [--due yyyy-MM-dd]      Create a milestone
+          milestone rm <project> <name>
           issue status <project> <#> <backlog|todo|in_progress|done|canceled>
           issue priority <project> <#> <none|low|medium|high|urgent>
           issue start <project> <#> <agent> [--no-yolo] [--tmux]   Launch an agent ON an issue

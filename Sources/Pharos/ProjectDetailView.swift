@@ -48,6 +48,7 @@ struct ProjectDetailView: View {
     @State private var issueSearch = ""
     @State private var issueStatusFilter: IssueStatus?
     @State private var issueLabelFilter: String?
+    @State private var issueMilestoneFilter: UUID?
     @State private var issueViewMode: IssueViewMode = .list
 
     private enum IssueViewMode: String, CaseIterable { case list, board }
@@ -515,6 +516,7 @@ struct ProjectDetailView: View {
         // status filter only narrows the list view).
         let base = project.issues
             .filter { issueLabelFilter == nil || $0.labels.contains { $0.caseInsensitiveCompare(issueLabelFilter!) == .orderedSame } }
+            .filter { issueMilestoneFilter == nil || $0.milestoneID == issueMilestoneFilter }
             .filter { matchesIssueSearch($0) }
         let listed = base
             .filter { issueStatusFilter == nil || $0.status == issueStatusFilter }
@@ -552,7 +554,7 @@ struct ProjectDetailView: View {
                 Button { addIssueFromComposer(project) } label: { Label("Add", systemImage: "plus") }
                     .disabled(newIssueTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            if !project.issues.isEmpty { issueFilterBar(knownLabels) }
+            if !project.issues.isEmpty { issueFilterBar(knownLabels, project.milestones) }
             if project.issues.isEmpty {
                 Text("No issues yet.").font(.callout).foregroundStyle(.secondary)
             } else if issueViewMode == .board {
@@ -591,11 +593,11 @@ struct ProjectDetailView: View {
     }
 
     @ViewBuilder
-    private func issueFilterBar(_ knownLabels: [String]) -> some View {
+    private func issueFilterBar(_ knownLabels: [String], _ milestones: [Milestone]) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "line.3.horizontal.decrease.circle").foregroundStyle(.secondary)
             TextField("Filter…", text: $issueSearch)
-                .textFieldStyle(.roundedBorder).frame(maxWidth: 160)
+                .textFieldStyle(.roundedBorder).frame(maxWidth: 140)
             Menu {
                 Button { issueStatusFilter = nil } label: { Label("All statuses", systemImage: issueStatusFilter == nil ? "checkmark" : "") }
                 ForEach(IssueStatus.allCases) { s in
@@ -614,8 +616,17 @@ struct ProjectDetailView: View {
                 } label: { Label(issueLabelFilter ?? "Label", systemImage: "tag") }
                     .menuStyle(.borderlessButton).fixedSize()
             }
-            if issueStatusFilter != nil || issueLabelFilter != nil || !issueSearch.isEmpty {
-                Button { issueSearch = ""; issueStatusFilter = nil; issueLabelFilter = nil } label: {
+            if !milestones.isEmpty {
+                Menu {
+                    Button { issueMilestoneFilter = nil } label: { Label("All milestones", systemImage: issueMilestoneFilter == nil ? "checkmark" : "") }
+                    ForEach(milestones) { m in
+                        Button { issueMilestoneFilter = m.id } label: { Label(m.name, systemImage: issueMilestoneFilter == m.id ? "checkmark" : "flag") }
+                    }
+                } label: { Label(milestones.first { $0.id == issueMilestoneFilter }?.name ?? "Milestone", systemImage: "flag") }
+                    .menuStyle(.borderlessButton).fixedSize()
+            }
+            if issueStatusFilter != nil || issueLabelFilter != nil || issueMilestoneFilter != nil || !issueSearch.isEmpty {
+                Button { issueSearch = ""; issueStatusFilter = nil; issueLabelFilter = nil; issueMilestoneFilter = nil } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain).help("Clear filters")
@@ -641,10 +652,8 @@ struct ProjectDetailView: View {
             HStack(alignment: .top, spacing: 12) {
                 ForEach(IssueStatus.allCases) { status in
                     boardColumn(project, status: status,
-                                cards: base.filter { $0.status == status }.sorted { a, b in
-                                    if a.priority.rank != b.priority.rank { return a.priority.rank > b.priority.rank }
-                                    return a.number < b.number
-                                })
+                                cards: base.filter { $0.status == status }
+                                    .sorted { ($0.sortOrder, $0.number) < ($1.sortOrder, $1.number) })
                 }
             }
             .padding(.vertical, 4)
@@ -669,8 +678,9 @@ struct ProjectDetailView: View {
         .padding(8)
         .frame(width: 210, alignment: .top)
         .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
+        // Drop in the column's empty space → append to the end of this status.
         .dropDestination(for: String.self) { items, _ in
-            for s in items { if let n = Int(s) { store.setIssueStatus(project.id, number: n, status: status) } }
+            for s in items { if let n = Int(s) { store.moveIssue(project.id, number: n, toStatus: status, before: nil) } }
             return true
         }
     }
@@ -686,6 +696,10 @@ struct ProjectDetailView: View {
                 }
             }
             Text(issue.title).font(.caption).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
+            if let m = project.milestones.first(where: { $0.id == issue.milestoneID }) {
+                Label(m.name, systemImage: "flag")
+                    .font(.system(size: 9)).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
+            }
             if !issue.labels.isEmpty {
                 HStack(spacing: 4) { ForEach(issue.labels.prefix(3), id: \.self) { labelChip($0) } }
             }
@@ -701,6 +715,13 @@ struct ProjectDetailView: View {
         .contentShape(Rectangle())
         .onTapGesture { detailIssueNumber = issue.number }
         .draggable("\(issue.number)")
+        // Drop onto a card → insert before it (reorder within / across columns).
+        .dropDestination(for: String.self) { items, _ in
+            for s in items where Int(s) != issue.number {
+                if let n = Int(s) { store.moveIssue(project.id, number: n, toStatus: issue.status, before: issue.number) }
+            }
+            return true
+        }
     }
 
     @ViewBuilder
@@ -728,6 +749,10 @@ struct ProjectDetailView: View {
                             .foregroundStyle(issue.status.isOpen ? .primary : .secondary)
                             .lineLimit(1)
                         HStack(spacing: 4) {
+                            if let m = project.milestones.first(where: { $0.id == issue.milestoneID }) {
+                                Label(m.name, systemImage: "flag")
+                                    .font(.caption2).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
+                            }
                             ForEach(issue.labels.prefix(4), id: \.self) { labelChip($0) }
                             if let session = issue.activeSession, store.runningSessions.contains(session) {
                                 Label("agent running", systemImage: "circle.fill")
@@ -808,7 +833,7 @@ struct ProjectDetailView: View {
                             .foregroundStyle(u.kind == .agent ? Color.blue : Color.secondary)
                             .frame(width: 16)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(u.body).font(.callout)
+                            MarkdownText(text: u.body).font(.callout)
                             Text(u.createdAt.formatted(.relative(presentation: .named))
                                  + (u.issueNumber.map { " · #\($0)" } ?? ""))
                                 .font(.caption2).foregroundStyle(.secondary)

@@ -18,6 +18,8 @@ struct IssueDetailSheet: View {
     @State private var editedBody = ""
     @State private var quickLookURL: URL?
     @State private var newLabel = ""
+    @State private var showNewMilestone = false
+    @State private var newMilestoneName = ""
 
     private var issue: Issue? { store.project(projectID)?.issues.first { $0.number == number } }
 
@@ -29,6 +31,7 @@ struct IssueDetailSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         bodySection(issue)
+                        milestoneSection(issue)
                         labelsSection(issue)
                         attachmentsSection(issue)
                     }
@@ -102,10 +105,49 @@ struct IssueDetailSheet: View {
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
             }
         } else if !issue.body.isEmpty {
-            Text(issue.body)
-                .font(.body)
+            MarkdownText(text: issue.body)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func milestoneSection(_ issue: Issue) -> some View {
+        let milestones = store.project(projectID)?.milestones ?? []
+        let current = milestones.first { $0.id == issue.milestoneID }
+        return HStack(spacing: 8) {
+            Text("Milestone").font(.caption).foregroundStyle(.secondary)
+            Menu {
+                Button { store.setIssueMilestone(projectID, number: number, milestoneID: nil) } label: {
+                    Label("None", systemImage: issue.milestoneID == nil ? "checkmark" : "")
+                }
+                if !milestones.isEmpty { Divider() }
+                ForEach(milestones) { m in
+                    Button { store.setIssueMilestone(projectID, number: number, milestoneID: m.id) } label: {
+                        Label(m.name, systemImage: issue.milestoneID == m.id ? "checkmark" : "flag")
+                    }
+                }
+                Divider()
+                Button { showNewMilestone = true } label: { Label("New milestone…", systemImage: "plus") }
+            } label: {
+                Label(current?.name ?? "None", systemImage: "flag")
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            if let due = current?.due {
+                Text("due \(due.formatted(.dateTime.year().month().day()))")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .alert("New milestone", isPresented: $showNewMilestone) {
+            TextField("Name", text: $newMilestoneName)
+            Button("Cancel", role: .cancel) { newMilestoneName = "" }
+            Button("Create") {
+                let n = newMilestoneName.trimmingCharacters(in: .whitespaces)
+                if !n.isEmpty, let m = store.createMilestone(projectID, name: n) {
+                    store.setIssueMilestone(projectID, number: number, milestoneID: m.id)
+                }
+                newMilestoneName = ""
+            }
         }
     }
 

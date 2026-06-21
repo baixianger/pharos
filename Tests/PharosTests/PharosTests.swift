@@ -761,3 +761,80 @@ final class CoreLabelTests: XCTestCase {
         XCTAssertTrue(issue.labels.isEmpty)
     }
 }
+
+// MARK: - Manual ordering (moveIssue)
+
+final class MoveIssueTests: XCTestCase {
+    func testReorderWithinColumn() {
+        var s = StoreData(projects: [Project(name: "app")])
+        let pid = s.projects[0].id
+        s.addIssue(projectID: pid, title: "a")   // #1
+        s.addIssue(projectID: pid, title: "b")   // #2
+        s.addIssue(projectID: pid, title: "c")   // #3
+        XCTAssertTrue(s.moveIssue(projectID: pid, number: 3, toStatus: .todo, before: 1))
+        let order = s.projects[0].issues
+            .filter { $0.status == .todo }
+            .sorted { ($0.sortOrder, $0.number) < ($1.sortOrder, $1.number) }
+            .map(\.number)
+        XCTAssertEqual(order, [3, 1, 2])
+    }
+
+    func testMoveAcrossColumnsChangesStatusAndAppends() {
+        var s = StoreData(projects: [Project(name: "app")])
+        let pid = s.projects[0].id
+        s.addIssue(projectID: pid, title: "a")   // #1
+        s.addIssue(projectID: pid, title: "b")   // #2
+        XCTAssertTrue(s.moveIssue(projectID: pid, number: 1, toStatus: .inProgress, before: nil))
+        XCTAssertEqual(s.projects[0].issues.first { $0.number == 1 }?.status, .inProgress)
+        XCTAssertEqual(s.projects[0].issues.filter { $0.status == .todo }.map(\.number), [2])
+    }
+
+    func testMoveUnknownIssueReturnsFalse() {
+        var s = StoreData(projects: [Project(name: "app")])
+        XCTAssertFalse(s.moveIssue(projectID: s.projects[0].id, number: 99, toStatus: .done, before: nil))
+    }
+}
+
+// MARK: - Milestones
+
+final class CoreMilestoneTests: XCTestCase {
+    private var dir = ""
+    override func setUp() {
+        super.setUp()
+        dir = NSTemporaryDirectory() + "pharos-ms-" + UUID().uuidString
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        setenv("PHAROS_REGISTRY", dir + "/projects.json", 1)
+    }
+    override func tearDown() {
+        unsetenv("PHAROS_REGISTRY")
+        try? FileManager.default.removeItem(atPath: dir)
+        super.tearDown()
+    }
+
+    func testAddAssignFilterRemove() throws {
+        _ = try PharosCore.addProject(name: "app", localPath: nil, githubRemote: nil, tags: [], notes: nil)
+        _ = try PharosCore.issueAdd(project: "app", title: "a", priority: nil, body: nil)
+        _ = try PharosCore.issueAdd(project: "app", title: "b", priority: nil, body: nil)
+        _ = try PharosCore.milestoneAdd(project: "app", milestone: "Sprint 1", due: "2026-07-01")
+        _ = try PharosCore.issueSetMilestone(project: "app", number: 1, milestone: "Sprint 1")
+        XCTAssertEqual(try PharosCore.issueList(project: "app", all: false, milestone: "Sprint 1").json?["count"] as? Int, 1)
+
+        _ = try PharosCore.milestoneRemove(project: "app", milestone: "Sprint 1")
+        XCTAssertTrue(PharosCore.loadStore().projects[0].milestones.isEmpty)
+        XCTAssertNil(PharosCore.loadStore().projects[0].issues.first { $0.number == 1 }?.milestoneID)
+    }
+
+    func testSetMilestoneAutocreatesAndClears() throws {
+        _ = try PharosCore.addProject(name: "app", localPath: nil, githubRemote: nil, tags: [], notes: nil)
+        _ = try PharosCore.issueAdd(project: "app", title: "a", priority: nil, body: nil)
+        _ = try PharosCore.issueSetMilestone(project: "app", number: 1, milestone: "Auto")   // autocreate
+        XCTAssertEqual(PharosCore.loadStore().projects[0].milestones.map(\.name), ["Auto"])
+        _ = try PharosCore.issueSetMilestone(project: "app", number: 1, milestone: "none")    // clear
+        XCTAssertNil(PharosCore.loadStore().projects[0].issues[0].milestoneID)
+    }
+
+    func testBadDueThrows() throws {
+        _ = try PharosCore.addProject(name: "app", localPath: nil, githubRemote: nil, tags: [], notes: nil)
+        XCTAssertThrowsError(try PharosCore.milestoneAdd(project: "app", milestone: "x", due: "not-a-date"))
+    }
+}

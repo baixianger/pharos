@@ -71,7 +71,7 @@
 
 **Agent-finish notifications.** macOS notifications fire when a watched agent process exits, so you know when a long-running task is done without polling.
 
-**Issues, list or board.** Per project, track issues (status, priority, freeform labels) as a filterable list or a drag-to-reorder **kanban board** grouped by status. The headline trick: launch an agent *on* an issue and Pharos auto-logs an update to the project log when it finishes.
+**Issues, list or board.** Per project, track issues (status, priority, freeform labels, **cycles/milestones**, markdown bodies, image/file attachments) as a filterable list or a **kanban board** grouped by status — drag cards between columns to change status or reorder. The headline trick: launch an agent *on* an issue and Pharos auto-logs an update to the project log when it finishes.
 
 **Recent activity feed.** A cross-project view (toolbar → Activity) of all recent issues and project-log updates, newest first — click any entry to jump straight to it.
 
@@ -144,7 +144,8 @@ Run `pharos help` for the authoritative list. Summary:
 |-------|----------|
 | Read | `list` · `groups` · `git <project>` · `worktrees <project>` · `sessions <project> <agent>` · `issue list <project> [--all]` · `update list <project>` · `trash [list]` |
 | Agents | `launch <project> <agent> [--no-yolo] [--tmux]` · `resume <project> <agent> <session_id>` · `playbook <project> <name>` · `open`/`editor`/`reveal <project>` |
-| Issues & log | `issue add <project> "<title>" [--priority …] [--body …] [--attach <file>]… [--label L]…` · `issue list <project> [--all] [--status S] [--priority P] [--label L]` · `issue status\|priority <project> <#> <value>` · `issue label add\|rm <project> <#> <label>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `attach add\|list\|rm <project> <#> …` · `update add <project> "<text>" [--issue <#>]` |
+| Issues & log | `issue add <project> "<title>" [--priority …] [--body …] [--attach <file>]… [--label L]…` · `issue list <project> [--all] [--status S] [--priority P] [--label L] [--milestone M]` · `issue status\|priority <project> <#> <value>` · `issue label add\|rm <project> <#> <label>` · `issue milestone <project> <#> <name\|none>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `attach add\|list\|rm <project> <#> …` · `update add <project> "<text>" [--issue <#>]` |
+| Milestones | `milestone add <project> "<name>" [--due yyyy-MM-dd]` · `milestone list <project>` · `milestone rm <project> <name>` |
 | Registry | `add <name> [--path] [--remote] [--tag]… [--notes]` · `remove <project>` · `rename <project> <new>` · `describe <project> <text…>` · `group create\|delete\|add\|remove …` · `yolo`/`tmux <project> <on\|off>` · `trash restore <id>` · `trash empty` |
 | Multi-machine | `host` · `path <project> <path>` · `path <project> --clear` |
 

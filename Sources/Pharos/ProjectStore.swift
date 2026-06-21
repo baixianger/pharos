@@ -120,10 +120,75 @@ extension StoreData {
         return issue
     }
 
+    /// Move an issue to `toStatus` and position it before `beforeNumber` (or at
+    /// the end of that status column if nil), renumbering the column's
+    /// `sortOrder` to a clean 0…n. Drives kanban drag-reorder + cross-column move.
+    @discardableResult
+    mutating func moveIssue(projectID: Project.ID, number: Int, toStatus: IssueStatus,
+                            before beforeNumber: Int?, now: Date = Date()) -> Bool {
+        guard let pi = projects.firstIndex(where: { $0.id == projectID }),
+              projects[pi].issues.contains(where: { $0.number == number }) else { return false }
+        // Current display order of the destination column, excluding the moved issue.
+        var order = projects[pi].issues
+            .filter { $0.status == toStatus && $0.number != number }
+            .sorted { ($0.sortOrder, $0.number) < ($1.sortOrder, $1.number) }
+            .map(\.number)
+        if let before = beforeNumber, let idx = order.firstIndex(of: before) {
+            order.insert(number, at: idx)
+        } else {
+            order.append(number)
+        }
+        for i in projects[pi].issues.indices {
+            if projects[pi].issues[i].number == number {
+                if projects[pi].issues[i].status != toStatus {
+                    projects[pi].issues[i].status = toStatus
+                    projects[pi].issues[i].updatedAt = now
+                }
+            }
+            if let pos = order.firstIndex(of: projects[pi].issues[i].number) {
+                projects[pi].issues[i].sortOrder = Double(pos)
+            }
+        }
+        return true
+    }
+
     /// All distinct labels used across a project's issues (sorted).
     func issueLabels(projectID: Project.ID) -> [String] {
         guard let p = projects.first(where: { $0.id == projectID }) else { return [] }
         return Array(Set(p.issues.flatMap(\.labels))).sorted { $0.lowercased() < $1.lowercased() }
+    }
+
+    // MARK: Milestones / cycles
+
+    /// Add a milestone (or return the existing one with that name).
+    @discardableResult
+    mutating func addMilestone(projectID: Project.ID, name: String, due: Date?, now: Date = Date()) -> Milestone? {
+        guard let i = projects.firstIndex(where: { $0.id == projectID }) else { return nil }
+        let n = name.trimmingCharacters(in: .whitespaces)
+        guard !n.isEmpty else { return nil }
+        if let existing = projects[i].milestones.first(where: { $0.name.caseInsensitiveCompare(n) == .orderedSame }) {
+            return existing
+        }
+        let m = Milestone(name: n, due: due, createdAt: now)
+        projects[i].milestones.append(m)
+        return m
+    }
+
+    /// Delete a milestone and unassign it from every issue.
+    @discardableResult
+    mutating func removeMilestone(projectID: Project.ID, milestoneID: UUID) -> Bool {
+        guard let i = projects.firstIndex(where: { $0.id == projectID }),
+              projects[i].milestones.contains(where: { $0.id == milestoneID }) else { return false }
+        projects[i].milestones.removeAll { $0.id == milestoneID }
+        for j in projects[i].issues.indices where projects[i].issues[j].milestoneID == milestoneID {
+            projects[i].issues[j].milestoneID = nil
+        }
+        return true
+    }
+
+    func milestone(projectID: Project.ID, named name: String) -> Milestone? {
+        projects.first { $0.id == projectID }?
+            .milestones.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
     }
 
     /// Mutate one issue (by per-project number) in place. Returns false if absent.
@@ -644,8 +709,29 @@ final class ProjectStore {
         }
     }
 
+    func setIssueMilestone(_ projectID: Project.ID, number: Int, milestoneID: UUID?) {
+        mutateStore { _ = $0.updateIssue(projectID: projectID, number: number) { $0.milestoneID = milestoneID } }
+    }
+
+    @discardableResult
+    func createMilestone(_ projectID: Project.ID, name: String, due: Date? = nil) -> Milestone? {
+        var created: Milestone?
+        mutateStore { created = $0.addMilestone(projectID: projectID, name: name, due: due) }
+        return created
+    }
+
+    func removeMilestone(_ projectID: Project.ID, milestoneID: UUID) {
+        mutateStore { _ = $0.removeMilestone(projectID: projectID, milestoneID: milestoneID) }
+    }
+
     func setIssueStatus(_ projectID: Project.ID, number: Int, status: IssueStatus) {
         mutateStore { _ = $0.setIssueStatus(projectID: projectID, number: number, status: status) }
+    }
+
+    /// Kanban drag: move an issue to a status column, optionally before another
+    /// card (reorder within / across columns), persisting the manual order.
+    func moveIssue(_ projectID: Project.ID, number: Int, toStatus: IssueStatus, before: Int?) {
+        mutateStore { _ = $0.moveIssue(projectID: projectID, number: number, toStatus: toStatus, before: before) }
     }
 
     /// Edit an issue's title and body (from the detail sheet).

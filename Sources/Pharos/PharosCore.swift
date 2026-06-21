@@ -425,17 +425,23 @@ enum PharosCore {
     }
 
     static func issueList(project name: String?, all: Bool,
-                          label: String? = nil, status: String? = nil, priority: String? = nil) throws -> CoreOutcome {
+                          label: String? = nil, status: String? = nil, priority: String? = nil,
+                          milestone: String? = nil) throws -> CoreOutcome {
         let store = loadStore()
         let idx = try projectIndexOrThrow(name, in: store)
         let project = store.projects[idx]
         let statusFilter = try status.map { try parseStatus($0) }
         let priorityFilter = try priority.map { try parsePriority($0) }
+        let milestoneNames = Dictionary(uniqueKeysWithValues: project.milestones.map { ($0.id, $0.name) })
+        let milestoneID = milestone.flatMap { mname in
+            project.milestones.first { $0.name.caseInsensitiveCompare(mname) == .orderedSame }?.id
+        }
         let issues = project.issues
             .filter { all || statusFilter != nil || $0.status.isOpen }
             .filter { statusFilter == nil || $0.status == statusFilter }
             .filter { priorityFilter == nil || $0.priority == priorityFilter }
             .filter { label == nil || $0.labels.contains { $0.caseInsensitiveCompare(label!) == .orderedSame } }
+            .filter { milestone == nil || $0.milestoneID == milestoneID }
             .sorted { lhs, rhs in
                 if lhs.status.order != rhs.status.order { return lhs.status.order < rhs.status.order }
                 if lhs.priority.rank != rhs.priority.rank { return lhs.priority.rank > rhs.priority.rank }
@@ -445,17 +451,105 @@ enum PharosCore {
             [
                 "number": i.number, "title": i.title, "status": i.status.rawValue,
                 "priority": i.priority.rawValue, "body": i.body, "labels": i.labels,
+                "milestone": i.milestoneID.flatMap { milestoneNames[$0] } ?? NSNull(),
                 "activeSession": i.activeSession ?? NSNull(),
             ]
         }
         let text = issues.isEmpty ? "No issues." : issues.map { i in
             let prio = i.priority == .none ? "" : "\(i.priority.rawValue) "
             let lbls = i.labels.isEmpty ? "" : "  {\(i.labels.joined(separator: ", "))}"
+            let ms = i.milestoneID.flatMap { milestoneNames[$0] }.map { "  @\($0)" } ?? ""
             let agent = i.activeSession != nil ? "  ▶ agent" : ""
-            return "#\(i.number)\t[\(i.status.rawValue)]\t\(prio)\(i.title)\(lbls)\(agent)"
+            return "#\(i.number)\t[\(i.status.rawValue)]\t\(prio)\(i.title)\(lbls)\(ms)\(agent)"
         }.joined(separator: "\n")
         return CoreOutcome(text: text, json: ["project": project.name, "issues": rows, "count": rows.count])
     }
+
+    // MARK: Milestones
+
+    static func milestoneAdd(project name: String?, milestone mname: String?, due: String?) throws -> String {
+        guard let mname = mname?.trimmingCharacters(in: .whitespaces), !mname.isEmpty else {
+            throw CoreError(message: "Missing required argument: name")
+        }
+        let dueDate = try parseDue(due)
+        var store = loadStore()
+        let idx = try projectIndexOrThrow(name, in: store)
+        guard let m = store.addMilestone(projectID: store.projects[idx].id, name: mname, due: dueDate) else {
+            throw CoreError(message: "Couldn't create milestone.")
+        }
+        saveStore(store)
+        let dueStr = m.due.map { " (due \(Self.dueFormatter.string(from: $0)))" } ?? ""
+        return "Milestone '\(m.name)'\(dueStr) in '\(store.projects[idx].name)'."
+    }
+
+    static func milestoneList(project name: String?) throws -> CoreOutcome {
+        let store = loadStore()
+        let idx = try projectIndexOrThrow(name, in: store)
+        let project = store.projects[idx]
+        let rows: [[String: Any]] = project.milestones.map { m in
+            let count = project.issues.filter { $0.milestoneID == m.id }.count
+            return ["name": m.name, "due": m.due.map { Self.dueFormatter.string(from: $0) } ?? NSNull(), "count": count]
+        }
+        let text = project.milestones.isEmpty ? "No milestones." : project.milestones.map { m in
+            let count = project.issues.filter { $0.milestoneID == m.id }.count
+            let due = m.due.map { " · due \(Self.dueFormatter.string(from: $0))" } ?? ""
+            return "\(m.name)\t(\(count) issues)\(due)"
+        }.joined(separator: "\n")
+        return CoreOutcome(text: text, json: ["project": project.name, "milestones": rows, "count": rows.count])
+    }
+
+    static func milestoneRemove(project name: String?, milestone mname: String?) throws -> String {
+        guard let mname = mname?.trimmingCharacters(in: .whitespaces), !mname.isEmpty else {
+            throw CoreError(message: "Missing required argument: name")
+        }
+        var store = loadStore()
+        let idx = try projectIndexOrThrow(name, in: store)
+        guard let m = store.milestone(projectID: store.projects[idx].id, named: mname) else {
+            throw CoreError(message: "No milestone '\(mname)' in '\(store.projects[idx].name)'.")
+        }
+        store.removeMilestone(projectID: store.projects[idx].id, milestoneID: m.id)
+        saveStore(store)
+        return "Deleted milestone '\(m.name)' (issues unassigned)."
+    }
+
+    /// Assign (or clear, with name nil/"none") an issue's milestone. Auto-creates
+    /// the milestone if it doesn't exist yet.
+    static func issueSetMilestone(project name: String?, number: Int?, milestone mname: String?) throws -> String {
+        guard let number else { throw CoreError(message: "Missing required argument: number") }
+        var store = loadStore()
+        let idx = try projectIndexOrThrow(name, in: store)
+        let pid = store.projects[idx].id
+        let trimmed = mname?.trimmingCharacters(in: .whitespaces)
+        let targetID: UUID?
+        if let trimmed, !trimmed.isEmpty, trimmed.lowercased() != "none" {
+            targetID = store.addMilestone(projectID: pid, name: trimmed, due: nil)?.id
+        } else {
+            targetID = nil
+        }
+        let ok = store.updateIssue(projectID: pid, number: number) { $0.milestoneID = targetID }
+        guard ok else { throw CoreError(message: "No issue #\(number) in '\(store.projects[idx].name)'.") }
+        saveStore(store)
+        if let targetID, let m = store.projects[idx].milestones.first(where: { $0.id == targetID }) {
+            return "\(store.projects[idx].name)#\(number) → milestone '\(m.name)'."
+        }
+        return "\(store.projects[idx].name)#\(number) milestone cleared."
+    }
+
+    /// `yyyy-MM-dd` parser for `--due`. nil → nil; bad format → throws.
+    private static func parseDue(_ s: String?) throws -> Date? {
+        guard let s = s?.trimmingCharacters(in: .whitespaces), !s.isEmpty else { return nil }
+        guard let date = dueFormatter.date(from: s) else {
+            throw CoreError(message: "Bad date '\(s)' (use yyyy-MM-dd).")
+        }
+        return date
+    }
+
+    static let dueFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
 
     /// Trim + de-dup labels (case-insensitive), preserving first-seen casing.
     private static func normalizedLabels(_ labels: [String]) -> [String] {
