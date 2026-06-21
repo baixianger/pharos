@@ -44,10 +44,13 @@ struct ProjectDetailView: View {
     @State private var newUpdateText = ""
     @State private var showIssueComposer = false
     @State private var detailIssueNumber: Int?
-    // Issue filters.
+    // Issue filters + view mode.
     @State private var issueSearch = ""
     @State private var issueStatusFilter: IssueStatus?
     @State private var issueLabelFilter: String?
+    @State private var issueViewMode: IssueViewMode = .list
+
+    private enum IssueViewMode: String, CaseIterable { case list, board }
 
     private var project: Project? { store.project(projectID) }
 
@@ -508,10 +511,13 @@ struct ProjectDetailView: View {
     @ViewBuilder
     private func issuesCard(_ project: Project) -> some View {
         let knownLabels = Array(Set(project.issues.flatMap(\.labels))).sorted { $0.lowercased() < $1.lowercased() }
-        let filtered = project.issues
-            .filter { issueStatusFilter == nil || $0.status == issueStatusFilter }
+        // `base` = text + label filtered (board columns are the statuses, so the
+        // status filter only narrows the list view).
+        let base = project.issues
             .filter { issueLabelFilter == nil || $0.labels.contains { $0.caseInsensitiveCompare(issueLabelFilter!) == .orderedSame } }
             .filter { matchesIssueSearch($0) }
+        let listed = base
+            .filter { issueStatusFilter == nil || $0.status == issueStatusFilter }
             .sorted { a, b in
                 if a.status.order != b.status.order { return a.status.order < b.status.order }
                 if a.priority.rank != b.priority.rank { return a.priority.rank > b.priority.rank }
@@ -522,6 +528,11 @@ struct ProjectDetailView: View {
             HStack {
                 Text("Issues (\(openCount) open)").font(.headline)
                 Spacer()
+                Picker("", selection: $issueViewMode) {
+                    Image(systemName: "list.bullet").tag(IssueViewMode.list)
+                    Image(systemName: "rectangle.split.3x1").tag(IssueViewMode.board)
+                }
+                .pickerStyle(.segmented).fixedSize().labelsHidden()
                 Button { showIssueComposer = true } label: {
                     Label("New issue…", systemImage: "square.and.pencil")
                 }
@@ -544,12 +555,14 @@ struct ProjectDetailView: View {
             if !project.issues.isEmpty { issueFilterBar(knownLabels) }
             if project.issues.isEmpty {
                 Text("No issues yet.").font(.callout).foregroundStyle(.secondary)
-            } else if filtered.isEmpty {
+            } else if issueViewMode == .board {
+                issuesBoard(project, base: base)
+            } else if listed.isEmpty {
                 Text("No issues match the filter.").font(.callout).foregroundStyle(.secondary)
             } else {
-                ForEach(filtered) { issue in
+                ForEach(listed) { issue in
                     issueRow(project, issue)
-                    if issue.id != filtered.last?.id { Divider() }
+                    if issue.id != listed.last?.id { Divider() }
                 }
             }
         }
@@ -618,6 +631,76 @@ struct ProjectDetailView: View {
             .padding(.horizontal, 6).padding(.vertical, 1)
             .background(.tint.opacity(0.15), in: Capsule())
             .foregroundStyle(.tint)
+    }
+
+    // MARK: Board (kanban) view
+
+    @ViewBuilder
+    private func issuesBoard(_ project: Project, base: [Issue]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(IssueStatus.allCases) { status in
+                    boardColumn(project, status: status,
+                                cards: base.filter { $0.status == status }.sorted { a, b in
+                                    if a.priority.rank != b.priority.rank { return a.priority.rank > b.priority.rank }
+                                    return a.number < b.number
+                                })
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private func boardColumn(_ project: Project, status: IssueStatus, cards: [Issue]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: status.symbol).foregroundStyle(.secondary)
+                Text(status.label).font(.subheadline.bold())
+                Spacer()
+                Text("\(cards.count)").font(.caption).foregroundStyle(.secondary)
+            }
+            if cards.isEmpty {
+                Text("Drop here").font(.caption2).foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            } else {
+                ForEach(cards) { boardCard(project, $0) }
+            }
+        }
+        .padding(8)
+        .frame(width: 210, alignment: .top)
+        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
+        .dropDestination(for: String.self) { items, _ in
+            for s in items { if let n = Int(s) { store.setIssueStatus(project.id, number: n, status: status) } }
+            return true
+        }
+    }
+
+    private func boardCard(_ project: Project, _ issue: Issue) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 4) {
+                Text("#\(issue.number)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                Spacer()
+                if issue.priority != .none {
+                    Image(systemName: issue.priority.symbol).font(.caption2)
+                        .foregroundStyle(issue.priority == .urgent ? .orange : .secondary)
+                }
+            }
+            Text(issue.title).font(.caption).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
+            if !issue.labels.isEmpty {
+                HStack(spacing: 4) { ForEach(issue.labels.prefix(3), id: \.self) { labelChip($0) } }
+            }
+            if let session = issue.activeSession, store.runningSessions.contains(session) {
+                Label("agent", systemImage: "circle.fill")
+                    .font(.system(size: 9)).foregroundStyle(.green).labelStyle(.titleAndIcon)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+        .contentShape(Rectangle())
+        .onTapGesture { detailIssueNumber = issue.number }
+        .draggable("\(issue.number)")
     }
 
     @ViewBuilder

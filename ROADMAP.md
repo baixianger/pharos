@@ -140,5 +140,10 @@ matters is which **agent / session / worktree** is working an item.
 - [x] **⌘K quick-jump to issues.** The command palette now returns issues
   (matched by `#number`, title, or label) alongside projects; selecting one jumps
   to its project and opens it (`ProjectStore.requestedIssue` → detail sheet).
-- [ ] **Kanban board view.** Board grouped by status (columns), drag a card to
-  another column to change status. Builds on labels + filtering. (Next.)
+- [x] **Kanban board view.** Issues tab has a List/Board toggle; the board groups
+  issues into status columns (backlog/todo/in_progress/done/canceled). Drag a card
+  to another column to change its status (`.draggable`/`.dropDestination`); text +
+  label filters still apply.
+- [x] **Recent activity view.** A cross-project feed (toolbar → Activity) of all
+  recent issues (by last update) and project-log updates, newest first, filterable
+  (All / Issues / Updates). Click an entry to jump to it (`ActivityView`).
