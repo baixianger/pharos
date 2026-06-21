@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 @testable import Pharos
 
 // MARK: - SessionsService.encodeClaudePath
@@ -687,5 +688,28 @@ final class CoreAttachTests: XCTestCase {
         _ = try PharosCore.attachAdd(project: "app", number: 1, paths: [src.path])
         _ = try PharosCore.attachRemove(project: "app", number: 1, ref: "notes.txt")
         XCTAssertEqual(PharosCore.loadStore().projects[0].issues[0].attachments.count, 0)
+    }
+}
+
+// MARK: - PasteboardImport
+
+final class PasteboardImportTests: XCTestCase {
+    func testPlainTextBecomesTxtTempFile() throws {
+        let pb = NSPasteboard(name: NSPasteboard.Name("pharos-test-\(UUID().uuidString)"))
+        pb.clearContents()
+        pb.setString("hello clipboard", forType: .string)
+        let urls = PasteboardImport.fileURLs(from: pb)
+        XCTAssertEqual(urls.count, 1)
+        let url = try XCTUnwrap(urls.first)
+        XCTAssertEqual(url.pathExtension, "txt")
+        XCTAssertTrue(PasteboardImport.isTemp(url))
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "hello clipboard")
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    func testEmptyPasteboardReturnsNothing() {
+        let pb = NSPasteboard(name: NSPasteboard.Name("pharos-test-empty-\(UUID().uuidString)"))
+        pb.clearContents()
+        XCTAssertTrue(PasteboardImport.fileURLs(from: pb).isEmpty)
     }
 }
