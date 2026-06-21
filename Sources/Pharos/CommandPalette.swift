@@ -78,6 +78,7 @@ struct CommandPalette: View {
         for p in projects {
             for issue in p.issues where
                 issue.title.lowercased().contains(q)
+                || issue.body.lowercased().contains(q)
                 || "#\(issue.number)".contains(q)
                 || issue.labels.contains(where: { $0.lowercased().contains(q) }) {
                 issueMatches.append(.issue(projectID: p.id, projectName: p.name, issue: issue))

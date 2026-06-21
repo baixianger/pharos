@@ -447,11 +447,16 @@ enum PharosCore {
                 if lhs.priority.rank != rhs.priority.rank { return lhs.priority.rank > rhs.priority.rank }
                 return lhs.number < rhs.number
             }
+        let subtasks = Dictionary(grouping: project.issues.compactMap { i in i.parent.map { ($0, i.number) } },
+                                  by: { $0.0 }).mapValues { $0.map(\.1).sorted() }
         let rows: [[String: Any]] = issues.map { i in
             [
                 "number": i.number, "title": i.title, "status": i.status.rawValue,
                 "priority": i.priority.rawValue, "body": i.body, "labels": i.labels,
                 "milestone": i.milestoneID.flatMap { milestoneNames[$0] } ?? NSNull(),
+                "parent": i.parent ?? NSNull(),
+                "subtasks": subtasks[i.number] ?? [],
+                "relations": i.relations.map { ["kind": $0.kind.rawValue, "target": $0.target] },
                 "activeSession": i.activeSession ?? NSNull(),
             ]
         }
@@ -459,8 +464,10 @@ enum PharosCore {
             let prio = i.priority == .none ? "" : "\(i.priority.rawValue) "
             let lbls = i.labels.isEmpty ? "" : "  {\(i.labels.joined(separator: ", "))}"
             let ms = i.milestoneID.flatMap { milestoneNames[$0] }.map { "  @\($0)" } ?? ""
+            let par = i.parent.map { "  ↳#\($0)" } ?? ""
+            let subs = (subtasks[i.number]?.count).flatMap { $0 > 0 ? "  (\($0) sub)" : nil } ?? ""
             let agent = i.activeSession != nil ? "  ▶ agent" : ""
-            return "#\(i.number)\t[\(i.status.rawValue)]\t\(prio)\(i.title)\(lbls)\(ms)\(agent)"
+            return "#\(i.number)\t[\(i.status.rawValue)]\t\(prio)\(i.title)\(lbls)\(ms)\(par)\(subs)\(agent)"
         }.joined(separator: "\n")
         return CoreOutcome(text: text, json: ["project": project.name, "issues": rows, "count": rows.count])
     }
@@ -533,6 +540,81 @@ enum PharosCore {
             return "\(store.projects[idx].name)#\(number) → milestone '\(m.name)'."
         }
         return "\(store.projects[idx].name)#\(number) milestone cleared."
+    }
+
+    // MARK: Cross-project search
+
+    /// Search every project's issues by title / body / labels / number. Returns
+    /// matches with their project, number, title, and status.
+    static func search(_ query: String?) throws -> CoreOutcome {
+        guard let q = query?.trimmingCharacters(in: .whitespaces).lowercased(), !q.isEmpty else {
+            throw CoreError(message: "Missing search query.")
+        }
+        let store = loadStore()
+        var rows: [[String: Any]] = []
+        var lines: [String] = []
+        for p in store.projects {
+            for i in p.issues where issueMatches(i, q) {
+                rows.append(["project": p.name, "number": i.number, "title": i.title,
+                             "status": i.status.rawValue, "labels": i.labels])
+                let lbls = i.labels.isEmpty ? "" : "  {\(i.labels.joined(separator: ", "))}"
+                lines.append("\(p.name)#\(i.number)\t[\(i.status.rawValue)]\t\(i.title)\(lbls)")
+            }
+        }
+        let text = lines.isEmpty ? "No matches for \"\(q)\"." : lines.joined(separator: "\n")
+        return CoreOutcome(text: text, json: ["query": q, "matches": rows, "count": rows.count])
+    }
+
+    private static func issueMatches(_ issue: Issue, _ q: String) -> Bool {
+        issue.title.lowercased().contains(q)
+            || issue.body.lowercased().contains(q)
+            || "#\(issue.number)".contains(q)
+            || issue.labels.contains { $0.lowercased().contains(q) }
+    }
+
+    // MARK: Relations & subtasks
+
+    static func issueSetParent(project name: String?, number: Int?, parent parentStr: String?) throws -> String {
+        guard let number else { throw CoreError(message: "Missing required argument: number") }
+        var store = loadStore()
+        let idx = try projectIndexOrThrow(name, in: store)
+        let parent: Int?
+        if let p = parentStr?.trimmingCharacters(in: .whitespaces), !p.isEmpty, p.lowercased() != "none" {
+            guard let pn = Int(p) else { throw CoreError(message: "Parent must be an issue number or 'none'.") }
+            parent = pn
+        } else {
+            parent = nil
+        }
+        guard store.setIssueParent(projectID: store.projects[idx].id, number: number, parent: parent) else {
+            throw CoreError(message: "Couldn't set parent — missing issue, self-parent, or would create a cycle.")
+        }
+        saveStore(store)
+        let pn = store.projects[idx].name
+        return parent.map { "\(pn)#\(number) is now a sub-task of #\($0)." } ?? "\(pn)#\(number) parent cleared."
+    }
+
+    static func issueLink(project name: String?, from: Int?, kind kindStr: String?, to: Int?, add: Bool) throws -> String {
+        guard let from, let to else { throw CoreError(message: "Missing issue number(s).") }
+        let kind = try parseRelationKind(kindStr)
+        var store = loadStore()
+        let idx = try projectIndexOrThrow(name, in: store)
+        let ok = add
+            ? store.addRelation(projectID: store.projects[idx].id, from: from, kind: kind, to: to)
+            : store.removeRelation(projectID: store.projects[idx].id, from: from, kind: kind, to: to)
+        guard ok else { throw CoreError(message: "Couldn't \(add ? "link" : "unlink") — check the issue numbers.") }
+        saveStore(store)
+        return "#\(from) \(kind.label.lowercased()) #\(to) — \(add ? "linked" : "unlinked")."
+    }
+
+    static func parseRelationKind(_ s: String?) throws -> RelationKind {
+        switch (s ?? "").lowercased().replacingOccurrences(of: "-", with: "_") {
+        case "relates", "related", "relates_to", "related_to": return .relates
+        case "blocks", "block": return .blocks
+        case "blocked_by", "blockedby", "blocked": return .blockedBy
+        case "duplicate", "duplicate_of", "dup": return .duplicate
+        default:
+            throw CoreError(message: "Unknown relation '\(s ?? "")' (use relates|blocks|blocked-by|duplicate).")
+        }
     }
 
     /// `yyyy-MM-dd` parser for `--due`. nil → nil; bad format → throws.

@@ -191,6 +191,69 @@ extension StoreData {
             .milestones.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
     }
 
+    // MARK: Relations & subtasks
+
+    /// Set (or clear, with nil) an issue's parent. Guards against cycles and
+    /// self-parenting. Returns false if the issue/parent is missing or invalid.
+    @discardableResult
+    mutating func setIssueParent(projectID: Project.ID, number: Int, parent: Int?, now: Date = Date()) -> Bool {
+        guard let pi = projects.firstIndex(where: { $0.id == projectID }),
+              let ii = projects[pi].issues.firstIndex(where: { $0.number == number }) else { return false }
+        if let parent {
+            guard parent != number,
+                  projects[pi].issues.contains(where: { $0.number == parent }),
+                  !wouldCycle(setting: parent, for: number, in: projects[pi].issues) else { return false }
+        }
+        projects[pi].issues[ii].parent = parent
+        projects[pi].issues[ii].updatedAt = now
+        return true
+    }
+
+    /// True if making `parent` the parent of `number` would create a cycle
+    /// (i.e. `number` is already an ancestor of `parent`).
+    private func wouldCycle(setting parent: Int, for number: Int, in issues: [Issue]) -> Bool {
+        var cur: Int? = parent
+        var steps = 0
+        while let c = cur, steps <= issues.count {
+            if c == number { return true }
+            cur = issues.first { $0.number == c }?.parent
+            steps += 1
+        }
+        return false
+    }
+
+    /// Add a typed relation between two issues, writing the inverse on the target.
+    @discardableResult
+    mutating func addRelation(projectID: Project.ID, from: Int, kind: RelationKind, to: Int) -> Bool {
+        guard from != to,
+              let pi = projects.firstIndex(where: { $0.id == projectID }),
+              projects[pi].issues.contains(where: { $0.number == from }),
+              projects[pi].issues.contains(where: { $0.number == to }) else { return false }
+        addLink(pi, on: from, IssueRelation(kind: kind, target: to))
+        addLink(pi, on: to, IssueRelation(kind: kind.inverse, target: from))
+        return true
+    }
+
+    @discardableResult
+    mutating func removeRelation(projectID: Project.ID, from: Int, kind: RelationKind, to: Int) -> Bool {
+        guard let pi = projects.firstIndex(where: { $0.id == projectID }) else { return false }
+        removeLink(pi, on: from, IssueRelation(kind: kind, target: to))
+        removeLink(pi, on: to, IssueRelation(kind: kind.inverse, target: from))
+        return true
+    }
+
+    private mutating func addLink(_ pi: Int, on number: Int, _ rel: IssueRelation) {
+        guard let ii = projects[pi].issues.firstIndex(where: { $0.number == number }) else { return }
+        if !projects[pi].issues[ii].relations.contains(rel) {
+            projects[pi].issues[ii].relations.append(rel)
+        }
+    }
+
+    private mutating func removeLink(_ pi: Int, on number: Int, _ rel: IssueRelation) {
+        guard let ii = projects[pi].issues.firstIndex(where: { $0.number == number }) else { return }
+        projects[pi].issues[ii].relations.removeAll { $0 == rel }
+    }
+
     /// Mutate one issue (by per-project number) in place. Returns false if absent.
     @discardableResult
     mutating func updateIssue(projectID: Project.ID, number: Int, now: Date = Date(),
@@ -722,6 +785,18 @@ final class ProjectStore {
 
     func removeMilestone(_ projectID: Project.ID, milestoneID: UUID) {
         mutateStore { _ = $0.removeMilestone(projectID: projectID, milestoneID: milestoneID) }
+    }
+
+    func setIssueParent(_ projectID: Project.ID, number: Int, parent: Int?) {
+        mutateStore { _ = $0.setIssueParent(projectID: projectID, number: number, parent: parent) }
+    }
+
+    func addRelation(_ projectID: Project.ID, from: Int, kind: RelationKind, to: Int) {
+        mutateStore { _ = $0.addRelation(projectID: projectID, from: from, kind: kind, to: to) }
+    }
+
+    func removeRelation(_ projectID: Project.ID, from: Int, kind: RelationKind, to: Int) {
+        mutateStore { _ = $0.removeRelation(projectID: projectID, from: from, kind: kind, to: to) }
     }
 
     func setIssueStatus(_ projectID: Project.ID, number: Int, status: IssueStatus) {

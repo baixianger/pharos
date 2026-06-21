@@ -75,6 +75,8 @@
 
 **Recent activity feed.** A cross-project view (toolbar → Activity) of all recent issues and project-log updates, newest first — click any entry to jump straight to it.
 
+**Sub-tasks & relations.** Nest issues under a parent and link them (`blocks` / `blocked-by` / `relates` / `duplicate`); rows flag blocked issues and sub-task counts. ⌘K and `pharos search` search issue titles, bodies, and labels across every project.
+
 ### Git and Multi-Machine
 
 **Per-project git panel.** The project detail view shows current branch, dirty/clean status, commits ahead and behind the remote, and the most recent commit — pulled live via git.
@@ -142,9 +144,9 @@ Run `pharos help` for the authoritative list. Summary:
 
 | Group | Commands |
 |-------|----------|
-| Read | `list` · `groups` · `git <project>` · `worktrees <project>` · `sessions <project> <agent>` · `issue list <project> [--all]` · `update list <project>` · `trash [list]` |
+| Read | `list` · `groups` · `git <project>` · `worktrees <project>` · `sessions <project> <agent>` · `issue list <project> [--all]` · `update list <project>` · `search <query>` · `trash [list]` |
 | Agents | `launch <project> <agent> [--no-yolo] [--tmux]` · `resume <project> <agent> <session_id>` · `playbook <project> <name>` · `open`/`editor`/`reveal <project>` |
-| Issues & log | `issue add <project> "<title>" [--priority …] [--body …] [--attach <file>]… [--label L]…` · `issue list <project> [--all] [--status S] [--priority P] [--label L] [--milestone M]` · `issue status\|priority <project> <#> <value>` · `issue label add\|rm <project> <#> <label>` · `issue milestone <project> <#> <name\|none>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `attach add\|list\|rm <project> <#> …` · `update add <project> "<text>" [--issue <#>]` |
+| Issues & log | `issue add <project> "<title>" [--priority …] [--body …] [--attach <file>]… [--label L]…` · `issue list <project> [--all] [--status S] [--priority P] [--label L] [--milestone M]` · `issue status\|priority <project> <#> <value>` · `issue label add\|rm <project> <#> <label>` · `issue milestone <project> <#> <name\|none>` · `issue parent <project> <#> <parent#\|none>` · `issue link\|unlink <project> <#> <relates\|blocks\|blocked-by\|duplicate> <#>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `attach add\|list\|rm <project> <#> …` · `update add <project> "<text>" [--issue <#>]` |
 | Milestones | `milestone add <project> "<name>" [--due yyyy-MM-dd]` · `milestone list <project>` · `milestone rm <project> <name>` |
 | Registry | `add <name> [--path] [--remote] [--tag]… [--notes]` · `remove <project>` · `rename <project> <new>` · `describe <project> <text…>` · `group create\|delete\|add\|remove …` · `yolo`/`tmux <project> <on\|off>` · `trash restore <id>` · `trash empty` |
 | Multi-machine | `host` · `path <project> <path>` · `path <project> --clear` |

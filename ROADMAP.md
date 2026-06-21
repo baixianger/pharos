@@ -160,3 +160,14 @@ matters is which **agent / session / worktree** is working an item.
   GUI: milestone picker in the detail sheet (+ New milestone…), filter-bar
   milestone menu, flag chip on rows/cards. CLI: `milestone add|list|rm`,
   `issue milestone <#> <name|none>`, `issue list --milestone`.
+
+### v1.5 — Relations & search (requested 2026-06-21)
+
+- [x] **Issue relations + sub-tasks.** `Issue.parent` (sub-tasks, cycle-guarded)
+  + `Issue.relations` (relates / blocks / blocked-by / duplicate, dual-written so
+  the inverse stays in sync). Detail sheet: parent picker, sub-task list, link
+  list (add/remove); rows/cards flag blocked + sub-task counts. CLI: `issue
+  parent <#> <parent#|none>`, `issue link|unlink <#> <kind> <#>`.
+- [x] **Cross-project search.** `pharos search <query>` over every project's
+  issues (title / body / labels / number); ⌘K now matches issue bodies too, so
+  the palette is a live cross-project search.

@@ -838,3 +838,75 @@ final class CoreMilestoneTests: XCTestCase {
         XCTAssertThrowsError(try PharosCore.milestoneAdd(project: "app", milestone: "x", due: "not-a-date"))
     }
 }
+
+// MARK: - Relations & subtasks
+
+final class RelationTests: XCTestCase {
+    private func twoIssueStore() -> (StoreData, Project.ID) {
+        var s = StoreData(projects: [Project(name: "app")])
+        let pid = s.projects[0].id
+        s.addIssue(projectID: pid, title: "a")   // #1
+        s.addIssue(projectID: pid, title: "b")   // #2
+        return (s, pid)
+    }
+
+    func testParentAndCycleGuard() {
+        var (s, pid) = twoIssueStore()
+        XCTAssertTrue(s.setIssueParent(projectID: pid, number: 2, parent: 1))
+        XCTAssertEqual(s.projects[0].issues.first { $0.number == 2 }?.parent, 1)
+        XCTAssertFalse(s.setIssueParent(projectID: pid, number: 1, parent: 1))   // self
+        XCTAssertFalse(s.setIssueParent(projectID: pid, number: 1, parent: 2))   // cycle (2's parent is 1)
+    }
+
+    func testRelationDualWriteAndRemove() {
+        var (s, pid) = twoIssueStore()
+        XCTAssertTrue(s.addRelation(projectID: pid, from: 1, kind: .blocks, to: 2))
+        XCTAssertEqual(s.projects[0].issues.first { $0.number == 1 }?.relations, [IssueRelation(kind: .blocks, target: 2)])
+        XCTAssertEqual(s.projects[0].issues.first { $0.number == 2 }?.relations, [IssueRelation(kind: .blockedBy, target: 1)])
+        XCTAssertTrue(s.removeRelation(projectID: pid, from: 1, kind: .blocks, to: 2))
+        XCTAssertTrue(s.projects[0].issues.first { $0.number == 1 }?.relations.isEmpty ?? false)
+        XCTAssertTrue(s.projects[0].issues.first { $0.number == 2 }?.relations.isEmpty ?? false)
+    }
+
+    func testRelatesIsSymmetric() {
+        var (s, pid) = twoIssueStore()
+        XCTAssertTrue(s.addRelation(projectID: pid, from: 1, kind: .relates, to: 2))
+        XCTAssertEqual(s.projects[0].issues.first { $0.number == 2 }?.relations, [IssueRelation(kind: .relates, target: 1)])
+    }
+
+    func testIssueDecodeTolerantOfMissingRelations() throws {
+        let i = try JSONDecoder().decode(Issue.self, from: Data(#"{"number":1,"title":"x"}"#.utf8))
+        XCTAssertNil(i.parent)
+        XCTAssertTrue(i.relations.isEmpty)
+    }
+}
+
+// MARK: - Cross-project search
+
+final class SearchTests: XCTestCase {
+    private var dir = ""
+    override func setUp() {
+        super.setUp()
+        dir = NSTemporaryDirectory() + "pharos-search-" + UUID().uuidString
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        setenv("PHAROS_REGISTRY", dir + "/projects.json", 1)
+    }
+    override func tearDown() {
+        unsetenv("PHAROS_REGISTRY")
+        try? FileManager.default.removeItem(atPath: dir)
+        super.tearDown()
+    }
+
+    func testSearchAcrossProjectsByBodyAndLabel() throws {
+        _ = try PharosCore.addProject(name: "web", localPath: nil, githubRemote: nil, tags: [], notes: nil)
+        _ = try PharosCore.addProject(name: "api", localPath: nil, githubRemote: nil, tags: [], notes: nil)
+        _ = try PharosCore.issueAdd(project: "web", title: "Login", priority: nil, body: "oauth callback", attach: [], labels: ["frontend"])
+        _ = try PharosCore.issueAdd(project: "api", title: "Token", priority: nil, body: "refresh oauth token")
+        _ = try PharosCore.issueAdd(project: "web", title: "Dark mode", priority: nil, body: nil)
+        XCTAssertEqual(try PharosCore.search("oauth").json?["count"] as? Int, 2)     // body match, both projects
+        XCTAssertEqual(try PharosCore.search("callback").json?["count"] as? Int, 1)  // body, web only
+        XCTAssertEqual(try PharosCore.search("frontend").json?["count"] as? Int, 1)  // label match
+        XCTAssertEqual(try PharosCore.search("zzzz").json?["count"] as? Int, 0)
+        XCTAssertThrowsError(try PharosCore.search("   "))
+    }
+}
