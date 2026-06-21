@@ -22,6 +22,7 @@ struct Project: Identifiable, Codable, Hashable {
     var peerPath: String?       // override for this project's directory on the peer host; nil/empty = same as localPath
     var issues: [Issue] = []    // native, single-user issues (no human assignees)
     var updates: [ProjectUpdate] = []   // project-update feed / personal changelog
+    var milestones: [Milestone] = []    // cycles / milestones issues can belong to
     /// Per-host local checkout paths (computer name → absolute path). The shared
     /// project data syncs across machines; this map keeps each machine's own
     /// path so iCloud sync never clobbers it. `localPath` above is the resolved
@@ -32,11 +33,12 @@ struct Project: Identifiable, Codable, Hashable {
          tags: [String] = [], yolo: Bool = true, tmux: Bool = false,
          addedAt: Date = Date(), playbooks: [Playbook] = [], notes: String = "",
          peerPath: String? = nil, issues: [Issue] = [], updates: [ProjectUpdate] = [],
-         localPaths: [String: String] = [:]) {
+         localPaths: [String: String] = [:], milestones: [Milestone] = []) {
         self.id = id; self.name = name; self.localPath = localPath; self.githubRemote = githubRemote
         self.tags = tags; self.yolo = yolo; self.tmux = tmux; self.addedAt = addedAt
         self.playbooks = playbooks; self.notes = notes; self.peerPath = peerPath
         self.issues = issues; self.updates = updates; self.localPaths = localPaths
+        self.milestones = milestones
     }
 
     /// Tolerant decoding — missing keys (older registries) fall back to defaults,
@@ -57,6 +59,7 @@ struct Project: Identifiable, Codable, Hashable {
         issues = try c.decodeIfPresent([Issue].self, forKey: .issues) ?? []
         updates = try c.decodeIfPresent([ProjectUpdate].self, forKey: .updates) ?? []
         localPaths = try c.decodeIfPresent([String: String].self, forKey: .localPaths) ?? [:]
+        milestones = try c.decodeIfPresent([Milestone].self, forKey: .milestones) ?? []
     }
 
     /// Next per-project issue number (#1, #2, …). Based on current issues only;
@@ -104,6 +107,10 @@ struct Issue: Identifiable, Codable, Hashable {
     var attachments: [IssueAttachment] = []
     /// Freeform labels (single-user — just tags, no team machinery).
     var labels: [String] = []
+    /// Manual sort position within its board column (lower = higher up).
+    var sortOrder: Double = 0
+    /// The milestone/cycle this issue belongs to, if any.
+    var milestoneID: UUID?
 }
 
 extension Issue {
@@ -123,7 +130,18 @@ extension Issue {
         worktreePath = try c.decodeIfPresent(String.self, forKey: .worktreePath)
         attachments = try c.decodeIfPresent([IssueAttachment].self, forKey: .attachments) ?? []
         labels = try c.decodeIfPresent([String].self, forKey: .labels) ?? []
+        sortOrder = try c.decodeIfPresent(Double.self, forKey: .sortOrder) ?? 0
+        milestoneID = try c.decodeIfPresent(UUID.self, forKey: .milestoneID)
     }
+}
+
+/// A cycle / milestone: a named bucket (optionally with a due date) that issues
+/// can belong to. Single-user — just an iteration label, no team sprints.
+struct Milestone: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
+    var name: String
+    var due: Date?
+    var createdAt: Date = Date()
 }
 
 /// Metadata for an image or file attached to an issue. The bytes live on disk

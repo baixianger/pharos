@@ -147,3 +147,16 @@ matters is which **agent / session / worktree** is working an item.
 - [x] **Recent activity view.** A cross-project feed (toolbar → Activity) of all
   recent issues (by last update) and project-log updates, newest first, filterable
   (All / Issues / Updates). Click an entry to jump to it (`ActivityView`).
+
+### v1.4 — Cycles, ordering, markdown (requested 2026-06-21)
+
+- [x] **Markdown rendering** for issue bodies + project-log notes (`MarkdownText`,
+  a dependency-free renderer adapted from Wick's `WickMarkdown`: headings, bullet
+  / numbered lists, fenced code, inline bold/italic/code/links).
+- [x] **Manual issue ordering** — drag a board card within / across columns to
+  reorder; persisted via `Issue.sortOrder` (`StoreData.moveIssue` renumbers the
+  destination column 0…n). Board sorts by `sortOrder`.
+- [x] **Cycles / milestones** — `Milestone` on `Project` + `Issue.milestoneID`.
+  GUI: milestone picker in the detail sheet (+ New milestone…), filter-bar
+  milestone menu, flag chip on rows/cards. CLI: `milestone add|list|rm`,
+  `issue milestone <#> <name|none>`, `issue list --milestone`.
