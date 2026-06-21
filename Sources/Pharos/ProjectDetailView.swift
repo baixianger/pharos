@@ -43,6 +43,7 @@ struct ProjectDetailView: View {
     @State private var newIssuePriority: IssuePriority = .none
     @State private var newUpdateText = ""
     @State private var showIssueComposer = false
+    @State private var detailIssueNumber: Int?
 
     private var project: Project? { store.project(projectID) }
 
@@ -544,6 +545,14 @@ struct ProjectDetailView: View {
         .sheet(isPresented: $showIssueComposer) {
             IssueComposer(projectID: projectID).environment(store)
         }
+        .sheet(isPresented: Binding(
+            get: { detailIssueNumber != nil },
+            set: { if !$0 { detailIssueNumber = nil } }
+        )) {
+            if let n = detailIssueNumber {
+                IssueDetailSheet(projectID: projectID, number: n).environment(store)
+            }
+        }
     }
 
     @ViewBuilder
@@ -561,18 +570,24 @@ struct ProjectDetailView: View {
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             .help("Status: \(issue.status.label)")
 
-            Text("#\(issue.number)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(issue.title)
-                    .font(.callout)
-                    .strikethrough(issue.status == .canceled)
-                    .foregroundStyle(issue.status.isOpen ? .primary : .secondary)
-                    .lineLimit(1)
-                if let session = issue.activeSession, store.runningSessions.contains(session) {
-                    Label("agent running", systemImage: "circle.fill")
-                        .font(.caption2).foregroundStyle(.green).labelStyle(.titleAndIcon)
+            Button { detailIssueNumber = issue.number } label: {
+                HStack(spacing: 8) {
+                    Text("#\(issue.number)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(issue.title)
+                            .font(.callout)
+                            .strikethrough(issue.status == .canceled)
+                            .foregroundStyle(issue.status.isOpen ? .primary : .secondary)
+                            .lineLimit(1)
+                        if let session = issue.activeSession, store.runningSessions.contains(session) {
+                            Label("agent running", systemImage: "circle.fill")
+                                .font(.caption2).foregroundStyle(.green).labelStyle(.titleAndIcon)
+                        }
+                    }
                 }
             }
+            .buttonStyle(.plain)
+            .help("Open issue")
             Spacer()
             if !issue.attachments.isEmpty {
                 Label("\(issue.attachments.count)", systemImage: "paperclip")
@@ -992,8 +1007,11 @@ struct ProjectDetailView: View {
         guard !host.isEmpty, let localPath = project.localPath, !localPath.isEmpty else {
             peer = nil; return
         }
-        // Use the project-specific peer path when set; fall back to the local path.
-        let effectivePath = project.peerPath ?? localPath
+        // Prefer an explicit per-project override; else the peer's own path from
+        // the per-host map (when a peer host key is configured); else the local path.
+        let key = store.peerHostKey
+        let mapped = key.isEmpty ? nil : project.localPaths[key]
+        let effectivePath = project.peerPath ?? mapped ?? localPath
         peerLoading = true
         peer = await PeerService.status(host: host, path: effectivePath)
         peerLoading = false

@@ -94,6 +94,8 @@ enum CLI {
                 return try runIssue(p)
             case "update":
                 return try runUpdate(p)
+            case "attach":
+                return try runAttach(p)
             case "path":
                 return ok(try PharosCore.setLocalPath(project: p.arg(0), path: p.arg(1), clear: p.has("clear")))
             case "host":
@@ -171,6 +173,22 @@ enum CLI {
             return ok(message)
         case let other?:
             return usageError("Unknown issue subcommand: \(other) (use list|add|status|priority|start|rm)")
+        }
+    }
+
+    private static func runAttach(_ p: Parsed) throws -> Int32 {
+        let number = p.arg(2).flatMap { Int($0) }
+        switch p.arg(0) {
+        case "add":
+            // Files are the positionals after <project> <#>, plus any --file values.
+            let files = Array(p.positional.dropFirst(3)) + p.all("file")
+            return ok(try PharosCore.attachAdd(project: p.arg(1), number: number, paths: files))
+        case "list", nil:
+            return emit(try PharosCore.attachList(project: p.arg(1), number: number), json: p.has("json"))
+        case "rm", "remove":
+            return ok(try PharosCore.attachRemove(project: p.arg(1), number: number, ref: p.arg(3)))
+        case let other?:
+            return usageError("Unknown attach subcommand: \(other) (use add|list|rm)")
         }
     }
 
@@ -312,6 +330,9 @@ enum CLI {
           issue priority <project> <#> <none|low|medium|high|urgent>
           issue start <project> <#> <agent> [--no-yolo] [--tmux]   Launch an agent ON an issue
           issue rm <project> <#>                                   (→ Trash, 30-day restore)
+          attach add <project> <#> <file>…                         Attach files to an issue
+          attach list <project> <#>                                List an issue's attachments
+          attach rm <project> <#> <index|name>                     Remove an attachment
           update add <project> "<text>" [--issue <#>]              Log a progress note
 
         AGENTS / LAUNCH

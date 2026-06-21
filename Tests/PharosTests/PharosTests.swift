@@ -644,3 +644,48 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(issue?.attachments.first?.originalName, "log.txt")
     }
 }
+
+// MARK: - pharos attach (existing issues)
+
+final class CoreAttachTests: XCTestCase {
+    private var dir = ""
+    override func setUp() {
+        super.setUp()
+        dir = NSTemporaryDirectory() + "pharos-coreattach-" + UUID().uuidString
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        setenv("PHAROS_REGISTRY", dir + "/projects.json", 1)
+    }
+    override func tearDown() {
+        unsetenv("PHAROS_REGISTRY")
+        try? FileManager.default.removeItem(atPath: dir)
+        super.tearDown()
+    }
+
+    func testAttachAddListRemoveOnExistingIssue() throws {
+        let src = URL(fileURLWithPath: dir).appendingPathComponent("img.png")
+        try Data("x".utf8).write(to: src)
+        _ = try PharosCore.addProject(name: "app", localPath: nil, githubRemote: nil, tags: [], notes: nil)
+        _ = try PharosCore.issueAdd(project: "app", title: "t", priority: nil, body: nil)
+        _ = try PharosCore.attachAdd(project: "app", number: 1, paths: [src.path])
+
+        let listed = try PharosCore.attachList(project: "app", number: 1)
+        XCTAssertEqual(listed.json?["count"] as? Int, 1)
+        let issueID = PharosCore.loadStore().projects[0].issues[0].id
+        let att = PharosCore.loadStore().projects[0].issues[0].attachments[0]
+        XCTAssertTrue(FileManager.default.fileExists(atPath: AttachmentStore.fileURL(att, issueID: issueID).path))
+
+        _ = try PharosCore.attachRemove(project: "app", number: 1, ref: "1")
+        XCTAssertEqual(PharosCore.loadStore().projects[0].issues[0].attachments.count, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: AttachmentStore.fileURL(att, issueID: issueID).path))
+    }
+
+    func testAttachRemoveByName() throws {
+        let src = URL(fileURLWithPath: dir).appendingPathComponent("notes.txt")
+        try Data("x".utf8).write(to: src)
+        _ = try PharosCore.addProject(name: "app", localPath: nil, githubRemote: nil, tags: [], notes: nil)
+        _ = try PharosCore.issueAdd(project: "app", title: "t", priority: nil, body: nil)
+        _ = try PharosCore.attachAdd(project: "app", number: 1, paths: [src.path])
+        _ = try PharosCore.attachRemove(project: "app", number: 1, ref: "notes.txt")
+        XCTAssertEqual(PharosCore.loadStore().projects[0].issues[0].attachments.count, 0)
+    }
+}

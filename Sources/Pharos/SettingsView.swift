@@ -166,6 +166,13 @@ private struct IntegrationsSettingsTab: View {
                 Text("Compares each project's git HEAD on this machine over SSH. Leave empty to disable.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                LabeledContent("Peer host key") {
+                    TextField("e.g. macbook-air", text: $store.peerHostKey)
+                        .textFieldStyle(.roundedBorder).frame(maxWidth: 220)
+                }
+                Text("The peer Mac's computer name (run `pharos host` there). When set, each project's path on the peer is read from its per-host map — no per-project override needed.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Section("Command line") {
                 Text("Pharos is scriptable from the command line — and it's how agents drive it: a Claude Code or Codex session can shell out to update issues and post progress. Symlink it onto your PATH, then run `pharos help` (e.g. `pharos list --json`, `pharos issue start <project> 3 claude`).")

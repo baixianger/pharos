@@ -124,3 +124,10 @@ matters is which **agent / session / worktree** is working an item.
   rest of the data dir). CLI `issue add … --attach <file>` (repeatable). Trash
   parity: attachment files are retained while the issue sits in the Trash and
   swept only when it's permanently purged (orphan sweep on load / empty).
+
+- [x] **Issue detail + attachment management polish.** `IssueDetailSheet` (open
+  an issue): body + attachment grid with inline image previews (click → open
+  full-size), add/remove attachments on an existing issue. CLI `pharos attach
+  add|list|rm <project> <#> …`. **Peer host key** setting: the SSH peer-drift
+  feature now reads each project's path on the peer from `localPaths` (no
+  per-project `peerPath` override needed).

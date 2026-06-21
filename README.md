@@ -140,7 +140,7 @@ Run `pharos help` for the authoritative list. Summary:
 |-------|----------|
 | Read | `list` · `groups` · `git <project>` · `worktrees <project>` · `sessions <project> <agent>` · `issue list <project> [--all]` · `update list <project>` · `trash [list]` |
 | Agents | `launch <project> <agent> [--no-yolo] [--tmux]` · `resume <project> <agent> <session_id>` · `playbook <project> <name>` · `open`/`editor`/`reveal <project>` |
-| Issues & log | `issue add <project> "<title>" [--priority …] [--body …] [--attach <file>]…` · `issue status <project> <#> <status>` · `issue priority <project> <#> <priority>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `update add <project> "<text>" [--issue <#>]` |
+| Issues & log | `issue add <project> "<title>" [--priority …] [--body …] [--attach <file>]…` · `issue status <project> <#> <status>` · `issue priority <project> <#> <priority>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `attach add\|list\|rm <project> <#> …` · `update add <project> "<text>" [--issue <#>]` |
 | Registry | `add <name> [--path] [--remote] [--tag]… [--notes]` · `remove <project>` · `rename <project> <new>` · `describe <project> <text…>` · `group create\|delete\|add\|remove …` · `yolo`/`tmux <project> <on\|off>` · `trash restore <id>` · `trash empty` |
 | Multi-machine | `host` · `path <project> <path>` · `path <project> --clear` |
 
@@ -159,7 +159,9 @@ Pharos handles it with a **per-host path map** — each Mac stores and reads onl
 its own path (keyed by computer name), so syncing never clobbers it. A project
 synced from another Mac shows "not checked out on *this* host" until you point it
 at a local folder (GUI **Set local folder…**, or `pharos path <project> <path>`).
-`pharos host` prints this machine's key.
+`pharos host` prints this machine's key. Set **Peer host key** (Settings) to the
+other Mac's key and the SSH peer-drift comparison reads its path from the synced
+map automatically.
 
 ---
 
