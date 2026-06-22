@@ -542,6 +542,48 @@ enum PharosCore {
         return "\(store.projects[idx].name)#\(number) milestone cleared."
     }
 
+    // MARK: Overview / dashboard
+
+    static func overview() -> CoreOutcome {
+        let store = loadStore()
+        let projects = store.projects
+        let counts = store.issueStatusCounts()
+        let open = store.openIssueCount
+        let openIssues = projects.flatMap(\.issues).filter { $0.status.isOpen }
+        let byPriority = Dictionary(grouping: openIssues, by: { $0.priority }).mapValues(\.count)
+        let blocked = openIssues.filter { $0.relations.contains { $0.kind == .blockedBy } }.count
+        let milestones = projects.reduce(0) { $0 + $1.milestones.count }
+        let groups = store.groups.sorted { $0.lowercased() < $1.lowercased() }
+        let groupRows: [[String: Any]] = groups.map { g in
+            let ps = projects.filter { $0.tags.contains(g) }
+            let openG = ps.reduce(0) { $0 + $1.issues.filter { $0.status.isOpen }.count }
+            return ["name": g, "projects": ps.count, "open": openG]
+        }
+
+        let json: [String: Any] = [
+            "projects": projects.count,
+            "groups": store.groups.count,
+            "openIssues": open,
+            "byStatus": Dictionary(uniqueKeysWithValues: IssueStatus.allCases.map { ($0.rawValue, counts[$0] ?? 0) }),
+            "byPriority": Dictionary(uniqueKeysWithValues: IssuePriority.allCases.map { ($0.rawValue, byPriority[$0] ?? 0) }),
+            "blocked": blocked,
+            "milestones": milestones,
+            "groupRollup": groupRows,
+        ]
+
+        let statusLine = IssueStatus.allCases.map { "\($0.rawValue) \(counts[$0] ?? 0)" }.joined(separator: " · ")
+        let prioLine = IssuePriority.allCases.reversed()
+            .compactMap { p in (byPriority[p] ?? 0) > 0 ? "\(p.rawValue) \(byPriority[p]!)" : nil }
+            .joined(separator: " · ")
+        var lines = [
+            "Projects: \(projects.count)   Groups: \(store.groups.count)   Open issues: \(open)   Milestones: \(milestones)   Blocked: \(blocked)",
+            "By status: \(statusLine)",
+        ]
+        if !prioLine.isEmpty { lines.append("Open by priority: \(prioLine)") }
+        for g in groupRows { lines.append("  • \(g["name"] ?? ""): \(g["projects"] ?? 0) projects, \(g["open"] ?? 0) open") }
+        return CoreOutcome(text: lines.joined(separator: "\n"), json: json)
+    }
+
     // MARK: Cross-project search
 
     /// Search every project's issues by title / body / labels / number. Returns
