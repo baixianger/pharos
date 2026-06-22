@@ -265,21 +265,42 @@ enum LaunchService {
 
     /// The tmux session name Pharos uses for a given project + agent kind.
     /// Public so ProjectStore can match against live session names.
-    static func tmuxSessionName(_ project: Project, _ kind: AgentKind) -> String {
+    /// Common tmux prefix for a project: `pharos-<slug>-`. All of a project's
+    /// agent sessions (per-kind and per-issue) start with this.
+    static func tmuxSessionPrefix(_ project: Project) -> String {
         let base = project.name.lowercased().map { (c: Character) -> Character in
             (c.isLetter || c.isNumber) ? c : "-"
         }
-        return "pharos-\(String(base))-\(kind.rawValue)"
+        return "pharos-\(String(base))-"
     }
+
+    static func tmuxSessionName(_ project: Project, _ kind: AgentKind) -> String {
+        "\(tmuxSessionPrefix(project))\(kind.rawValue)"
+    }
+
+    /// Per-issue session name, so agents launched on different issues of the same
+    /// project+kind don't collide (and finish-detection targets the right issue).
+    static func tmuxSessionName(_ project: Project, _ kind: AgentKind, issue: Int) -> String {
+        "\(tmuxSessionName(project, kind))-i\(issue)"
+    }
+
+    /// First installed tmux binary, or nil if tmux isn't installed.
+    static let tmuxPath: String? = {
+        ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+    }()
 
     /// Returns the set of all live tmux session names that Pharos launched
     /// (prefix "pharos-"). Returns an empty set if tmux is not installed or
     /// not running.
-    static func runningSessions() -> Set<String> {
-        let r = Shell.run("/opt/homebrew/bin/tmux", ["list-sessions", "-F", "#{session_name}"])
-        guard r.ok, !r.out.isEmpty else { return [] }
-        let names = r.out.split(separator: "\n").map(String.init).filter { $0.hasPrefix("pharos-") }
-        return Set(names)
+    /// Live Pharos tmux sessions. Returns nil ("unknown") when tmux isn't
+    /// installed, so callers never mistake "can't tell" for "nothing running"
+    /// (which would falsely clear issue↔agent links). An installed tmux with no
+    /// server simply yields an empty set.
+    static func runningSessions() -> Set<String>? {
+        guard let tmux = tmuxPath else { return nil }
+        let r = Shell.run(tmux, ["list-sessions", "-F", "#{session_name}"])
+        return Set(r.out.split(separator: "\n").map(String.init).filter { $0.hasPrefix("pharos-") })
     }
 
     /// Run an arbitrary shell command at `path` in the chosen terminal.

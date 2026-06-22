@@ -182,3 +182,22 @@ matters is which **agent / session / worktree** is working an item.
 - [x] **Window title fix.** The native tab/window title is now `"<project> —
   Pharos"` (was the bare project name, which made the Dock/window list look like
   a different app, e.g. "camoufox-MCP"); the dashboard home is titled "Pharos".
+
+### v1.7 — Tracking reliability & polish (requested 2026-06-22)
+
+- [x] **Running-agent reliability.** `runningSessions()` now returns `nil` when
+  tmux is unavailable (vs. empty) so links are never falsely cleared; finish
+  detection reconciles each issue's `activeSession` against the *live* tmux set
+  (`StoreData.reconcileAgentLinks`) on every poll, on launch, and on refresh —
+  so a restart or a finish-while-closed self-heals instead of going stale.
+  Per-issue session names (`pharos-<slug>-<kind>-i<n>`) end same-project
+  collisions; the project dot now prefix-matches. Issue launches only link a
+  session when run in tmux (non-tmux can't be tracked).
+- [x] **Rename a project in the app** (sidebar context menu → Rename…,
+  clash-checked) — `ProjectStore.rename`. (Notes/paths were already editable.)
+- [x] **One-click CLI install** (Settings → Command line → "Install command"):
+  symlinks the bundled binary as `pharos` into the first writable PATH dir
+  (`/opt/homebrew/bin` → `/usr/local/bin` → `~/.local/bin` → `~/bin`).
+- [x] **Dashboard entry in the sidebar.** A "Dashboard" row pinned at the top of
+  the sidebar (selected when no project is) — the obvious entry point to the
+  overview, alongside the toolbar button.

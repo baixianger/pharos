@@ -744,8 +744,10 @@ enum PharosCore {
         let useYolo = yolo ?? project.yolo
         let useTmux = tmux ?? project.tmux
         let terminal = persistedTerminal()
-        let tmuxName = LaunchService.tmuxSessionName(project, kind)
-        store.linkIssueSession(projectID: project.id, number: number, session: tmuxName)
+        let tmuxName = LaunchService.tmuxSessionName(project, kind, issue: number)
+        // Only link a trackable (tmux) session; otherwise just move to In Progress.
+        if useTmux { store.linkIssueSession(projectID: project.id, number: number, session: tmuxName) }
+        else { _ = store.setIssueStatus(projectID: project.id, number: number, status: .inProgress) }
         saveStore(store)
         runOnMain {
             LaunchService.launchAgent(kind, atPath: path, yolo: useYolo, tmux: useTmux,

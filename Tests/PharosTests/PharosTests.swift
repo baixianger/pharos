@@ -954,3 +954,35 @@ final class CoreOverviewTests: XCTestCase {
         XCTAssertEqual((o.json?["byPriority"] as? [String: Int])?["urgent"], 1)
     }
 }
+
+// MARK: - Running-agent reconciliation + session naming
+
+final class AgentTrackingTests: XCTestCase {
+    func testPerIssueSessionNameAndPrefix() {
+        let p = Project(name: "My App")
+        XCTAssertEqual(LaunchService.tmuxSessionPrefix(p), "pharos-my-app-")
+        XCTAssertEqual(LaunchService.tmuxSessionName(p, .claude), "pharos-my-app-claude")
+        XCTAssertEqual(LaunchService.tmuxSessionName(p, .claude, issue: 3), "pharos-my-app-claude-i3")
+    }
+
+    func testReconcileClearsDeadLinksOnly() {
+        var s = StoreData(projects: [Project(name: "app")])
+        let pid = s.projects[0].id
+        s.addIssue(projectID: pid, title: "x")   // #1
+        _ = s.linkIssueSession(projectID: pid, number: 1, session: "pharos-app-claude-i1")
+
+        // Session still live → no change.
+        _ = s.reconcileAgentLinks(live: ["pharos-app-claude-i1"])
+        XCTAssertEqual(s.projects[0].issues[0].activeSession, "pharos-app-claude-i1")
+        XCTAssertTrue(s.projects[0].updates.isEmpty)
+
+        // Session gone (e.g. finished while app was closed) → clear + post finish.
+        let touched = s.reconcileAgentLinks(live: [])
+        XCTAssertEqual(touched, ["app"])
+        XCTAssertNil(s.projects[0].issues[0].activeSession)
+        XCTAssertEqual(s.projects[0].updates.first?.kind, .agent)
+        XCTAssertEqual(s.projects[0].updates.first?.issueNumber, 1)
+        // Status is left as-is (agent finishing ≠ issue resolved).
+        XCTAssertEqual(s.projects[0].issues[0].status, .inProgress)
+    }
+}
