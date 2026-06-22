@@ -14,10 +14,8 @@ struct ProjectsSidebar: View {
     var body: some View {
         List(selection: $selectedProject) {
             Section {
-                navRow("Dashboard", "Overview · all projects", "square.grid.2x2",
+                navRow("Dashboard", "Stats · activity · all projects", "square.grid.2x2",
                        selected: selectedProject == nil) { selectedProject = nil }
-                navRow("Activity", "Recent issues & updates", "tray.full",
-                       selected: false) { store.requestActivity() }
             }
             Section {
                 ForEach(shown) { project in
