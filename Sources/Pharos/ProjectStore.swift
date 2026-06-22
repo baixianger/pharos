@@ -152,6 +152,20 @@ extension StoreData {
         return true
     }
 
+    // MARK: Aggregates (dashboard / overview)
+
+    /// Count of issues per status across every project.
+    func issueStatusCounts() -> [IssueStatus: Int] {
+        var counts: [IssueStatus: Int] = [:]
+        for p in projects { for i in p.issues { counts[i.status, default: 0] += 1 } }
+        return counts
+    }
+
+    /// Total open (actionable) issues across every project.
+    var openIssueCount: Int {
+        projects.reduce(0) { $0 + $1.issues.filter { $0.status.isOpen }.count }
+    }
+
     /// All distinct labels used across a project's issues (sorted).
     func issueLabels(projectID: Project.ID) -> [String] {
         guard let p = projects.first(where: { $0.id == projectID }) else { return [] }

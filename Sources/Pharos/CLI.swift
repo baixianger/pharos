@@ -104,6 +104,8 @@ enum CLI {
                 return emit(PharosCore.hostInfo(), json: p.has("json"))
             case "search":
                 return emit(try PharosCore.search(p.positional.joined(separator: " ")), json: p.has("json"))
+            case "overview", "dashboard":
+                return emit(PharosCore.overview(), json: p.has("json"))
             case "yolo":
                 return ok(try PharosCore.setFlag(name: p.arg(0), flag: "yolo", value: try boolArg(p.arg(1), label: "on|off")))
             case "tmux":
@@ -365,6 +367,7 @@ enum CLI {
           worktrees <project>          List a project's git worktrees
           sessions <project> <agent>   List past sessions (agent: claude|codex)
           search <query>               Search issues across ALL projects (title/body/labels)
+          overview                     Aggregate stats across all projects (counts, blocked, milestones)
           issue list <project> [--all] [--status S] [--priority P] [--label L] [--milestone M]   List/filter issues
           milestone list <project>     List milestones (issue counts + due dates)
           update list <project>        Show the project-update feed

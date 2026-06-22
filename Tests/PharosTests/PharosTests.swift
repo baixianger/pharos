@@ -910,3 +910,47 @@ final class SearchTests: XCTestCase {
         XCTAssertThrowsError(try PharosCore.search("   "))
     }
 }
+
+// MARK: - Overview / dashboard aggregates
+
+final class OverviewTests: XCTestCase {
+    func testStatusCountsAndOpenCount() {
+        var s = StoreData(projects: [Project(name: "a"), Project(name: "b")])
+        let aid = s.projects[0].id, bid = s.projects[1].id
+        s.addIssue(projectID: aid, title: "1")
+        s.addIssue(projectID: aid, title: "2")
+        _ = s.setIssueStatus(projectID: aid, number: 2, status: .done)
+        s.addIssue(projectID: bid, title: "1")
+        let c = s.issueStatusCounts()
+        XCTAssertEqual(c[.todo], 2)
+        XCTAssertEqual(c[.done], 1)
+        XCTAssertEqual(s.openIssueCount, 2)   // 2 todo open; the done one isn't
+    }
+}
+
+final class CoreOverviewTests: XCTestCase {
+    private var dir = ""
+    override func setUp() {
+        super.setUp()
+        dir = NSTemporaryDirectory() + "pharos-ov-" + UUID().uuidString
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        setenv("PHAROS_REGISTRY", dir + "/projects.json", 1)
+    }
+    override func tearDown() {
+        unsetenv("PHAROS_REGISTRY")
+        try? FileManager.default.removeItem(atPath: dir)
+        super.tearDown()
+    }
+
+    func testOverviewJSON() throws {
+        _ = try PharosCore.addProject(name: "app", localPath: nil, githubRemote: nil, tags: ["work"], notes: nil)
+        _ = try PharosCore.issueAdd(project: "app", title: "a", priority: "urgent", body: nil)
+        _ = try PharosCore.issueAdd(project: "app", title: "b", priority: nil, body: nil)
+        _ = try PharosCore.issueSetStatus(project: "app", number: 2, status: "done")
+        let o = PharosCore.overview()
+        XCTAssertEqual(o.json?["projects"] as? Int, 1)
+        XCTAssertEqual(o.json?["openIssues"] as? Int, 1)
+        XCTAssertEqual((o.json?["byStatus"] as? [String: Int])?["done"], 1)
+        XCTAssertEqual((o.json?["byPriority"] as? [String: Int])?["urgent"], 1)
+    }
+}

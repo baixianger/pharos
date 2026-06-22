@@ -73,6 +73,8 @@
 
 **Issues, list or board.** Per project, track issues (status, priority, freeform labels, **cycles/milestones**, markdown bodies, image/file attachments) as a filterable list or a **kanban board** grouped by status — drag cards between columns to change status or reorder. The headline trick: launch an agent *on* an issue and Pharos auto-logs an update to the project log when it finishes.
 
+**Dashboard.** A home overview (toolbar → Overview / no project selected) rolling up all projects, groups, open-issue counts by status & priority, blocked issues, milestone progress, active agents, and recent activity — click anything to jump to it. Same numbers from the CLI via `pharos overview`.
+
 **Recent activity feed.** A cross-project view (toolbar → Activity) of all recent issues and project-log updates, newest first — click any entry to jump straight to it.
 
 **Sub-tasks & relations.** Nest issues under a parent and link them (`blocks` / `blocked-by` / `relates` / `duplicate`); rows flag blocked issues and sub-task counts. ⌘K and `pharos search` search issue titles, bodies, and labels across every project.
@@ -144,7 +146,7 @@ Run `pharos help` for the authoritative list. Summary:
 
 | Group | Commands |
 |-------|----------|
-| Read | `list` · `groups` · `git <project>` · `worktrees <project>` · `sessions <project> <agent>` · `issue list <project> [--all]` · `update list <project>` · `search <query>` · `trash [list]` |
+| Read | `list` · `groups` · `git <project>` · `worktrees <project>` · `sessions <project> <agent>` · `issue list <project> [--all]` · `update list <project>` · `search <query>` · `overview` · `trash [list]` |
 | Agents | `launch <project> <agent> [--no-yolo] [--tmux]` · `resume <project> <agent> <session_id>` · `playbook <project> <name>` · `open`/`editor`/`reveal <project>` |
 | Issues & log | `issue add <project> "<title>" [--priority …] [--body …] [--attach <file>]… [--label L]…` · `issue list <project> [--all] [--status S] [--priority P] [--label L] [--milestone M]` · `issue status\|priority <project> <#> <value>` · `issue label add\|rm <project> <#> <label>` · `issue milestone <project> <#> <name\|none>` · `issue parent <project> <#> <parent#\|none>` · `issue link\|unlink <project> <#> <relates\|blocks\|blocked-by\|duplicate> <#>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `attach add\|list\|rm <project> <#> …` · `update add <project> "<text>" [--issue <#>]` |
 | Milestones | `milestone add <project> "<name>" [--due yyyy-MM-dd]` · `milestone list <project>` · `milestone rm <project> <name>` |

@@ -171,3 +171,14 @@ matters is which **agent / session / worktree** is working an item.
 - [x] **Cross-project search.** `pharos search <query>` over every project's
   issues (title / body / labels / number); ⌘K now matches issue bodies too, so
   the palette is a live cross-project search.
+
+### v1.6 — Dashboard (requested 2026-06-22)
+
+- [x] **Dashboard / overview.** `DashboardView` is the home screen (no project
+  selected; toolbar Overview button returns to it): stat tiles (projects /
+  groups / open issues / agents running), issues-by-status, needs-attention
+  (blocked + urgent), agents working, milestone progress, group rollup, recent
+  activity — all clickable to jump in. CLI mirror: `pharos overview [--json]`.
+- [x] **Window title fix.** The native tab/window title is now `"<project> —
+  Pharos"` (was the bare project name, which made the Dock/window list look like
+  a different app, e.g. "camoufox-MCP"); the dashboard home is titled "Pharos".

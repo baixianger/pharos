@@ -20,10 +20,12 @@ struct ContentView: View {
     @State private var showOnboarding = false
     @State private var searchText = ""
 
-    /// Native window-tab label — the current project's name, so each tab reads
-    /// the project it shows.
+    /// Native window-tab label — leads with the project so each tab reads the
+    /// project it shows, but keeps the "Pharos" app identity so the Dock/window
+    /// list never looks like some other app. No project selected → the dashboard,
+    /// titled just "Pharos".
     private var tabTitle: String {
-        if let id = selectedProject, let p = store.project(id) { return p.name }
+        if let id = selectedProject, let p = store.project(id) { return "\(p.name) — Pharos" }
         return "Pharos"
     }
 
@@ -36,9 +38,7 @@ struct ContentView: View {
             if let id = selectedProject, store.project(id) != nil {
                 ProjectDetailView(projectID: id)
             } else {
-                ContentUnavailableView("Select a project",
-                                       systemImage: "sidebar.left",
-                                       description: Text("Pick a project to see git status and launch agents."))
+                DashboardView(selectedProject: $selectedProject)
             }
         }
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search")
@@ -64,6 +64,13 @@ struct ContentView: View {
                 }
                 .help("Add a project")
                 .accessibilityLabel("Add project")
+
+                Button { selectedProject = nil } label: {
+                    Label("Overview", systemImage: "square.grid.2x2")
+                }
+                .help("Dashboard — overview of all projects, groups, and issues")
+                .accessibilityLabel("Show dashboard")
+                .disabled(selectedProject == nil)
 
                 Button { showActivity = true } label: {
                     Label("Activity", systemImage: "tray.full")
