@@ -12,24 +12,24 @@ struct ProjectsSidebar: View {
     @State private var renameText = ""
 
     var body: some View {
-        List(selection: $selectedProject) {
-            Section {
-                navRow("Dashboard", "Stats · activity · all projects", "square.grid.2x2",
-                       selected: selectedProject == nil) { selectedProject = nil }
-            }
-            Section {
-                ForEach(shown) { project in
-                    ProjectRow(project: project)
-                        .tag(project.id)
-                        .contextMenu { rowMenu(project) }
+        VStack(spacing: 0) {
+            // Pinned — stays put while the project list scrolls below it.
+            dashboardHeader
+            List(selection: $selectedProject) {
+                Section {
+                    ForEach(shown) { project in
+                        ProjectRow(project: project)
+                            .tag(project.id)
+                            .contextMenu { rowMenu(project) }
+                    }
+                } header: {
+                    groupHeader
                 }
-            } header: {
-                groupHeader
             }
+            .listStyle(.sidebar)
+            .overlay { if store.visibleProjects.isEmpty { emptyState } }
         }
-        .listStyle(.sidebar)
         .navigationTitle("Pharos")
-        .overlay { if store.visibleProjects.isEmpty { emptyState } }
         .alert("New group", isPresented: $newGroupShown) {
             TextField("Name", text: $newGroupName)
             Button("Cancel", role: .cancel) { }
@@ -51,12 +51,11 @@ struct ProjectsSidebar: View {
         }
     }
 
-    /// A Wick-style top-of-sidebar nav row: gradient icon badge + title +
-    /// subtitle, highlighted when selected.
-    @ViewBuilder
-    private func navRow(_ title: String, _ subtitle: String, _ symbol: String,
-                        selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+    /// Pinned Wick-style Dashboard entry above the scrolling list: gradient icon
+    /// badge + title + subtitle. Draws its own highlight (it's not a List row).
+    private var dashboardHeader: some View {
+        let selected = selectedProject == nil
+        return Button { selectedProject = nil } label: {
             HStack(spacing: 10) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 6)
@@ -64,21 +63,24 @@ struct ProjectsSidebar: View {
                             colors: [Color.accentColor.opacity(0.85), Color.accentColor.opacity(0.55)],
                             startPoint: .topLeading, endPoint: .bottomTrailing))
                         .frame(width: 28, height: 28)
-                    Image(systemName: symbol)
+                    Image(systemName: "square.grid.2x2")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.white)
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.system(size: 14, weight: .semibold))
-                    Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text("Dashboard").font(.system(size: 14, weight: .semibold))
+                    Text("Stats · activity · all projects").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
             }
-            .padding(.vertical, 4)
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(selected ? Color.accentColor.opacity(0.15) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .listRowBackground(selected ? Color.accentColor.opacity(0.15) : Color.clear)
+        .padding(.horizontal, 10)
+        .padding(.top, 10).padding(.bottom, 4)
     }
 
     private var groupHeader: some View {
