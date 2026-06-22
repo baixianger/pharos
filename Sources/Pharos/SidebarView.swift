@@ -13,17 +13,17 @@ struct ProjectsSidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Pinned — stays put while the project list scrolls below it.
+            // Pinned — Dashboard + the group switcher stay put; only the
+            // project list below them scrolls.
             dashboardHeader
+            groupHeader
+                .padding(.horizontal, 16)
+                .padding(.top, 6).padding(.bottom, 4)
             List(selection: $selectedProject) {
-                Section {
-                    ForEach(shown) { project in
-                        ProjectRow(project: project)
-                            .tag(project.id)
-                            .contextMenu { rowMenu(project) }
-                    }
-                } header: {
-                    groupHeader
+                ForEach(shown) { project in
+                    ProjectRow(project: project)
+                        .tag(project.id)
+                        .contextMenu { rowMenu(project) }
                 }
             }
             .listStyle(.sidebar)
