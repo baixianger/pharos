@@ -16,7 +16,6 @@ struct ContentView: View {
     @State private var showImport = false
     @State private var showPalette = false
     @State private var showTrash = false
-    @State private var showActivity = false
     @State private var showOnboarding = false
     @State private var searchText = ""
 
@@ -72,12 +71,6 @@ struct ContentView: View {
                 .accessibilityLabel("Show dashboard")
                 .disabled(selectedProject == nil)
 
-                Button { showActivity = true } label: {
-                    Label("Activity", systemImage: "tray.full")
-                }
-                .help("Recent issues & updates across all projects")
-                .accessibilityLabel("Show recent activity")
-
                 Button { showTrash = true } label: {
                     Label("Trash", systemImage: "clock.arrow.circlepath")
                 }
@@ -108,9 +101,6 @@ struct ContentView: View {
         .sheet(isPresented: $showTrash) {
             TrashView().environment(store)
         }
-        .sheet(isPresented: $showActivity) {
-            ActivityView(selectedProject: $selectedProject).environment(store)
-        }
         .sheet(isPresented: $showOnboarding) {
             OnboardingView {
                 onboarded = true
@@ -137,9 +127,6 @@ struct ContentView: View {
         }
         .onChange(of: store.paletteRequested) { _, requested in
             if requested { showPalette = true; store.paletteRequested = false }
-        }
-        .onChange(of: store.activityRequested) { _, requested in
-            if requested { showActivity = true; store.activityRequested = false }
         }
         .onChange(of: store.trashRequested) { _, requested in
             if requested { showTrash = true; store.trashRequested = false }

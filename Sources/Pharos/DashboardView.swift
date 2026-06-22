@@ -1,40 +1,93 @@
 import SwiftUI
 
-/// The home screen (shown when no project is selected): a cross-project rollup of
-/// projects, groups, issues, milestones, and recent activity — click anything to
-/// jump to it.
+/// One entry in the activity feed: an issue (by last update) or a project-log update.
+enum ActivityEntry: Identifiable {
+    case issue(projectID: Project.ID, projectName: String, issue: Issue)
+    case update(projectID: Project.ID, projectName: String, update: ProjectUpdate)
+
+    var id: String {
+        switch self {
+        case .issue(_, _, let i):  return "i:\(i.id.uuidString)"
+        case .update(_, _, let u): return "u:\(u.id.uuidString)"
+        }
+    }
+    var date: Date {
+        switch self {
+        case .issue(_, _, let i):  return i.updatedAt
+        case .update(_, _, let u): return u.createdAt
+        }
+    }
+}
+
+/// The home screen: a cross-project rollup with a group switcher up top, stat
+/// cards, and the recent-activity feed at the bottom. Click anything to jump in.
 struct DashboardView: View {
     @Environment(ProjectStore.self) private var store
     @Binding var selectedProject: Project.ID?
 
-    private var projects: [Project] { store.projects }
+    enum ActivityFilter: String, CaseIterable, Identifiable {
+        case all = "All", issues = "Issues", updates = "Updates"
+        var id: String { rawValue }
+    }
+    @State private var groupFilter: String?           // nil = all groups
+    @State private var activityFilter: ActivityFilter = .all
+
+    /// Projects in scope, narrowed by the selected group tab.
+    private var projects: [Project] {
+        guard let g = groupFilter, store.groups.contains(g) else { return store.projects }
+        return store.projects.filter { $0.tags.contains(g) }
+    }
     private var allIssues: [(p: Project, i: Issue)] { projects.flatMap { p in p.issues.map { (p, $0) } } }
     private var openIssues: [(p: Project, i: Issue)] { allIssues.filter { $0.i.status.isOpen } }
     private var blocked: [(p: Project, i: Issue)] {
         openIssues.filter { $0.i.relations.contains { $0.kind == .blockedBy } }
     }
-    private var urgent: [(p: Project, i: Issue)] {
-        openIssues.filter { $0.i.priority == .urgent }
-    }
+    private var urgent: [(p: Project, i: Issue)] { openIssues.filter { $0.i.priority == .urgent } }
     private var activeAgents: [(p: Project, i: Issue)] {
         allIssues.filter { if let s = $0.i.activeSession { return store.runningSessions.contains(s) } else { return false } }
+    }
+    private var agentCount: Int {
+        store.runningSessions.filter { s in projects.contains { LaunchService.tmuxSessionPrefix($0).hasPrefix("pharos-") && s.hasPrefix(LaunchService.tmuxSessionPrefix($0)) } }.count
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                if !store.groups.isEmpty { groupTabs }
                 statTiles
                 statusCard
                 if !blocked.isEmpty || !urgent.isEmpty { attentionCard }
                 if !activeAgents.isEmpty { agentsCard }
                 if projects.contains(where: { !$0.milestones.isEmpty }) { milestonesCard }
-                if !store.groups.isEmpty { groupsCard }
-                recentCard
+                activityCard
             }
             .padding(22)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .navigationTitle("Overview")
+        .navigationTitle("Dashboard")
+    }
+
+    // MARK: Group tabs
+
+    private var groupTabs: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                groupPill("All Projects", group: nil)
+                ForEach(store.groups, id: \.self) { g in groupPill(g, group: g) }
+            }
+        }
+    }
+
+    private func groupPill(_ label: String, group: String?) -> some View {
+        let selected = groupFilter == group
+        return Button { groupFilter = group } label: {
+            Text(label)
+                .font(.system(size: 12, weight: .medium))
+                .padding(.horizontal, 12).padding(.vertical, 5)
+                .background(selected ? Color.accentColor : Color.secondary.opacity(0.12), in: Capsule())
+                .foregroundStyle(selected ? .white : .primary)
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: Tiles
@@ -42,9 +95,9 @@ struct DashboardView: View {
     private var statTiles: some View {
         HStack(spacing: 12) {
             tile("\(projects.count)", "Projects", "square.grid.2x2")
-            tile("\(store.groups.count)", "Groups", "tag")
             tile("\(openIssues.count)", "Open issues", "smallcircle.filled.circle")
-            tile("\(store.runningSessions.count)", "Agents running", "sparkles")
+            tile("\(blocked.count)", "Blocked", "exclamationmark.octagon")
+            tile("\(agentCount)", "Agents running", "sparkles")
         }
     }
 
@@ -130,8 +183,7 @@ struct DashboardView: View {
                                 Spacer()
                                 if let due = m.due {
                                     Text(due.formatted(.dateTime.month().day()))
-                                        .font(.caption2)
-                                        .foregroundStyle(due < Date() ? .red : .secondary)
+                                        .font(.caption2).foregroundStyle(due < Date() ? .red : .secondary)
                                 }
                                 Text("\(done)/\(issues.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                             }
@@ -143,34 +195,19 @@ struct DashboardView: View {
         }
     }
 
-    private var groupsCard: some View {
-        card("Groups") {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(store.groups, id: \.self) { g in
-                    let ps = projects.filter { $0.tags.contains(g) }
-                    let openG = ps.reduce(0) { $0 + $1.issues.filter { $0.status.isOpen }.count }
-                    Button { store.selection = .group(g) } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "tag").foregroundStyle(.secondary)
-                            Text(g).font(.callout)
-                            Spacer()
-                            Text("\(ps.count) projects · \(openG) open").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
+    private var activityCard: some View {
+        let entries = recentActivity().prefix(50)
+        return card("Activity") {
+            Picker("", selection: $activityFilter) {
+                ForEach(ActivityFilter.allCases) { Text($0.rawValue).tag($0) }
             }
-        }
-    }
+            .pickerStyle(.segmented).fixedSize().labelsHidden()
 
-    private var recentCard: some View {
-        let entries = recentActivity().prefix(6)
-        return card("Recent activity") {
             if entries.isEmpty {
                 Text("Nothing yet.").font(.callout).foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(entries)) { entry in activityRow(entry) }
+                    ForEach(Array(entries)) { activityRow($0) }
                 }
             }
         }
@@ -223,8 +260,12 @@ struct DashboardView: View {
     private func recentActivity() -> [ActivityEntry] {
         var out: [ActivityEntry] = []
         for p in projects {
-            for i in p.issues { out.append(.issue(projectID: p.id, projectName: p.name, issue: i)) }
-            for u in p.updates { out.append(.update(projectID: p.id, projectName: p.name, update: u)) }
+            if activityFilter != .updates {
+                for i in p.issues { out.append(.issue(projectID: p.id, projectName: p.name, issue: i)) }
+            }
+            if activityFilter != .issues {
+                for u in p.updates { out.append(.update(projectID: p.id, projectName: p.name, update: u)) }
+            }
         }
         return out.sorted { $0.date > $1.date }
     }
