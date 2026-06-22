@@ -138,6 +138,9 @@ struct ContentView: View {
         .onChange(of: store.paletteRequested) { _, requested in
             if requested { showPalette = true; store.paletteRequested = false }
         }
+        .onChange(of: store.activityRequested) { _, requested in
+            if requested { showActivity = true; store.activityRequested = false }
+        }
         .onChange(of: store.trashRequested) { _, requested in
             if requested { showTrash = true; store.trashRequested = false }
         }
