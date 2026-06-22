@@ -14,11 +14,10 @@ struct ProjectsSidebar: View {
     var body: some View {
         List(selection: $selectedProject) {
             Section {
-                Button { selectedProject = nil } label: {
-                    Label("Dashboard", systemImage: "square.grid.2x2")
-                }
-                .buttonStyle(.plain)
-                .listRowBackground(selectedProject == nil ? Color.accentColor.opacity(0.15) : Color.clear)
+                navRow("Dashboard", "Overview · all projects", "square.grid.2x2",
+                       selected: selectedProject == nil) { selectedProject = nil }
+                navRow("Activity", "Recent issues & updates", "tray.full",
+                       selected: false) { store.requestActivity() }
             }
             Section {
                 ForEach(shown) { project in
@@ -52,6 +51,36 @@ struct ProjectsSidebar: View {
                 renameTarget = nil
             }
         }
+    }
+
+    /// A Wick-style top-of-sidebar nav row: gradient icon badge + title +
+    /// subtitle, highlighted when selected.
+    @ViewBuilder
+    private func navRow(_ title: String, _ subtitle: String, _ symbol: String,
+                        selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(LinearGradient(
+                            colors: [Color.accentColor.opacity(0.85), Color.accentColor.opacity(0.55)],
+                            startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 28, height: 28)
+                    Image(systemName: symbol)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.system(size: 14, weight: .semibold))
+                    Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(selected ? Color.accentColor.opacity(0.15) : Color.clear)
     }
 
     private var groupHeader: some View {

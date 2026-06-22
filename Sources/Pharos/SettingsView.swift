@@ -176,9 +176,17 @@ private struct IntegrationsSettingsTab: View {
                 .disabled(!store.iCloudAvailable && !store.dataLocationIsICloud)
                 Text(store.iCloudAvailable
                      ? "iCloud Drive syncs your projects, issues, and logs across your Macs. Each Mac keeps its own local checkout path, so paths never clobber each other."
-                     : "Turn on iCloud Drive in System Settings to sync across Macs.")
+                     : "iCloud Drive isn't active on this Mac yet (no iCloud Drive folder found). Turn on iCloud Drive → “Sync this Mac” in System Settings; the option un-greys once its folder appears.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if !store.iCloudAvailable {
+                    Button("Open iCloud Settings…") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.systempreferences.AppleIDSettings") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                    .controlSize(.small)
+                }
                 LabeledContent("Current") {
                     Text(store.dataDirectoryPath.replacingOccurrences(
                         of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
