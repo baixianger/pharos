@@ -8,9 +8,18 @@ struct ProjectsSidebar: View {
     let searchText: String
     @State private var newGroupShown = false
     @State private var newGroupName = ""
+    @State private var renameTarget: Project?
+    @State private var renameText = ""
 
     var body: some View {
         List(selection: $selectedProject) {
+            Section {
+                Button { selectedProject = nil } label: {
+                    Label("Dashboard", systemImage: "square.grid.2x2")
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(selectedProject == nil ? Color.accentColor.opacity(0.15) : Color.clear)
+            }
             Section {
                 ForEach(shown) { project in
                     ProjectRow(project: project)
@@ -30,6 +39,17 @@ struct ProjectsSidebar: View {
             Button("Create") {
                 let n = newGroupName.trimmingCharacters(in: .whitespaces)
                 if !n.isEmpty { store.addGroup(n); store.selection = .group(n) }
+            }
+        }
+        .alert("Rename project", isPresented: Binding(
+            get: { renameTarget != nil },
+            set: { if !$0 { renameTarget = nil } }
+        )) {
+            TextField("Name", text: $renameText)
+            Button("Cancel", role: .cancel) { renameTarget = nil }
+            Button("Rename") {
+                if let p = renameTarget { store.rename(p.id, to: renameText) }
+                renameTarget = nil
             }
         }
     }
@@ -106,6 +126,9 @@ struct ProjectsSidebar: View {
             }
         }
         Divider()
+        Button { renameText = project.name; renameTarget = project } label: {
+            Label("Rename…", systemImage: "pencil")
+        }
         Button(role: .destructive) { store.remove(project) } label: {
             Label("Remove from Pharos", systemImage: "trash")
         }

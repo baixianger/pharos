@@ -127,6 +127,39 @@ private struct IntegrationsSettingsTab: View {
     private static var cliSymlinkSnippet: String {
         "ln -s \"\(executablePath)\" /usr/local/bin/pharos"
     }
+    @State private var cliInstallStatus: String?
+
+    /// Symlink the bundled binary as `pharos` into the first user-writable dir
+    /// (preferring ones already on a typical PATH). Returns a status message.
+    private static func installCLISymlink() -> String {
+        guard let exec = Bundle.main.executablePath else { return "Couldn't locate the Pharos binary." }
+        let fm = FileManager.default
+        let home = NSHomeDirectory()
+        let candidates = ["/opt/homebrew/bin", "/usr/local/bin", "\(home)/.local/bin", "\(home)/bin"]
+        for dir in candidates {
+            var isDir: ObjCBool = false
+            if !fm.fileExists(atPath: dir, isDirectory: &isDir) {
+                guard dir.hasPrefix(home) else { continue }            // don't create system dirs
+                try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            }
+            guard fm.isWritableFile(atPath: dir) else { continue }
+            let dest = "\(dir)/pharos"
+            if (try? fm.destinationOfSymbolicLink(atPath: dest)) != nil {
+                try? fm.removeItem(atPath: dest)                       // replace our old symlink
+            } else if fm.fileExists(atPath: dest) {
+                continue                                               // a real file is here — don't clobber
+            }
+            do {
+                try fm.createSymbolicLink(atPath: dest, withDestinationPath: exec)
+                let short = dest.replacingOccurrences(of: home, with: "~")
+                let needsPathHint = dir.hasPrefix(home)
+                return needsPathHint
+                    ? "Installed → \(short)  (make sure \(dir.replacingOccurrences(of: home, with: "~")) is on your PATH)"
+                    : "Installed → \(short)"
+            } catch { continue }
+        }
+        return "Couldn't auto-install (no writable PATH dir found) — use the command below."
+    }
 
     var body: some View {
         @Bindable var store = store
@@ -185,14 +218,20 @@ private struct IntegrationsSettingsTab: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
                 HStack {
+                    Button("Install command") { cliInstallStatus = Self.installCLISymlink() }
+                        .buttonStyle(.borderedProminent)
                     Button("Copy command") {
                         let pb = NSPasteboard.general
                         pb.clearContents()
                         pb.setString(Self.cliSymlinkSnippet, forType: .string)
                     }
+                    .buttonStyle(.borderless)
                     Spacer()
                 }
-                .buttonStyle(.borderless)
+                if let status = cliInstallStatus {
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .formStyle(.grouped)

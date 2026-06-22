@@ -329,6 +329,29 @@ extension StoreData {
     /// was linked to and clear the link. Status is intentionally left unchanged
     /// (an agent finishing doesn't mean the issue is resolved). Returns the names
     /// of projects that got an update (for downstream notification/UI refresh).
+    /// Reconcile issue↔agent links against the set of *live* tmux sessions: any
+    /// issue whose `activeSession` is no longer live = its agent ended, so post a
+    /// finish update and clear the link. Robust to restarts and missed polls
+    /// (unlike a previous-vs-now diff). Returns names of touched projects.
+    @discardableResult
+    mutating func reconcileAgentLinks(live: Set<String>, now: Date = Date()) -> [String] {
+        var touched: [String] = []
+        for pi in projects.indices {
+            for ii in projects[pi].issues.indices {
+                guard let session = projects[pi].issues[ii].activeSession, !live.contains(session) else { continue }
+                let number = projects[pi].issues[ii].number
+                let title = projects[pi].issues[ii].title
+                projects[pi].issues[ii].activeSession = nil
+                projects[pi].issues[ii].updatedAt = now
+                projects[pi].updates.insert(
+                    ProjectUpdate(createdAt: now, body: "Agent finished on #\(number) \(title).",
+                                  kind: .agent, issueNumber: number), at: 0)
+                touched.append(projects[pi].name)
+            }
+        }
+        return touched
+    }
+
     @discardableResult
     mutating func postAgentFinished(session: String, now: Date = Date()) -> [String] {
         var touched: [String] = []
@@ -538,32 +561,23 @@ final class ProjectStore {
 
     @MainActor
     private func pollSessions() async {
-        let newSessions = await Task.detached(priority: .utility) {
-            LaunchService.runningSessions()
-        }.value
+        // nil = tmux unknown → skip this tick rather than falsely clearing links.
+        let probed = await Task.detached(priority: .utility) { LaunchService.runningSessions() }.value
+        guard let live = probed else { return }
 
-        let finished = runningSessions.subtracting(newSessions)
         if notifyOnFinish {
-            for sessionName in finished {
+            for sessionName in runningSessions.subtracting(live) {
                 postFinishedNotification(sessionName: sessionName)
             }
         }
-
-        // Agent-loop: when an agent that was launched ON an issue finishes, post
-        // an update to that project's log and clear the link. Only touch the
-        // store if some live issue is actually linked to a finished session.
-        if !finished.isEmpty {
-            let hasLinked = projects.contains { p in
-                p.issues.contains { ($0.activeSession).map(finished.contains) ?? false }
-            }
-            if hasLinked {
-                mutateStore { s in for name in finished { _ = s.postAgentFinished(session: name) } }
-            }
+        // Reconcile issue↔agent links against the live set (restart-safe).
+        if projects.contains(where: { $0.issues.contains { $0.activeSession != nil } }) {
+            mutateStore { _ = $0.reconcileAgentLinks(live: live) }
         }
 
         // TODO: needs-input detection
 
-        runningSessions = newSessions
+        runningSessions = live
     }
 
     private func postFinishedNotification(sessionName: String) {
@@ -673,6 +687,19 @@ final class ProjectStore {
     }
 
     func project(_ id: Project.ID) -> Project? { projects.first { $0.id == id } }
+
+    /// Rename a project (GUI). Rejects a clash with a different project.
+    func rename(_ projectID: Project.ID, to newName: String) {
+        let n = newName.trimmingCharacters(in: .whitespaces)
+        guard !n.isEmpty else { return }
+        if projects.contains(where: { $0.id != projectID && $0.name.caseInsensitiveCompare(n) == .orderedSame }) {
+            reportError("A project named '\(n)' already exists.")
+            return
+        }
+        mutateStore { s in
+            if let i = s.projects.firstIndex(where: { $0.id == projectID }) { s.projects[i].name = n }
+        }
+    }
 
     /// Set (or clear) THIS machine's local checkout path for a project. Persists
     /// into the per-host map so it never clobbers another machine's path.
@@ -885,10 +912,15 @@ final class ProjectStore {
         guard let path = project.localPath, !path.isEmpty else {
             reportError("'\(project.name)' has no local path."); return
         }
-        let tmuxName = LaunchService.tmuxSessionName(project, kind)
-        mutateStore { _ = $0.linkIssueSession(projectID: project.id, number: number, session: tmuxName) }
+        let useTmux = project.tmux
+        let tmuxName = LaunchService.tmuxSessionName(project, kind, issue: number)
+        mutateStore { s in
+            // Only link a trackable (tmux) session; otherwise just move to In Progress.
+            if useTmux { _ = s.linkIssueSession(projectID: project.id, number: number, session: tmuxName) }
+            else { _ = s.setIssueStatus(projectID: project.id, number: number, status: .inProgress) }
+        }
         let extra = kind == .claude ? claudeArgs : codexArgs
-        LaunchService.launchAgent(kind, atPath: path, yolo: project.yolo, tmux: project.tmux,
+        LaunchService.launchAgent(kind, atPath: path, yolo: project.yolo, tmux: useTmux,
                                   tmuxName: tmuxName, terminal: terminal, extraArgs: extra, source: .ui)
         refreshRunningAgents()
     }
@@ -1088,10 +1120,13 @@ final class ProjectStore {
     /// Queries tmux for live sessions and updates `runningSessions`.
     func refreshRunningAgents() {
         Task {
-            let sessions = await Task.detached(priority: .utility) {
-                LaunchService.runningSessions()
-            }.value
-            runningSessions = sessions
+            let probed = await Task.detached(priority: .utility) { LaunchService.runningSessions() }.value
+            guard let live = probed else { return }   // tmux unknown → keep what we have
+            runningSessions = live
+            // Self-heal stale links on launch / manual refresh / after a launch.
+            if projects.contains(where: { $0.issues.contains { $0.activeSession != nil } }) {
+                mutateStore { _ = $0.reconcileAgentLinks(live: live) }
+            }
         }
     }
 
@@ -1102,6 +1137,8 @@ final class ProjectStore {
 
     /// Returns true if ANY Pharos agent session is live for this project.
     func hasRunningAgent(_ project: Project) -> Bool {
-        AgentKind.allCases.contains { isRunning(project, $0) }
+        // Prefix match so per-issue sessions (pharos-<slug>-claude-i3) count too.
+        let prefix = LaunchService.tmuxSessionPrefix(project)
+        return runningSessions.contains { $0.hasPrefix(prefix) }
     }
 }
