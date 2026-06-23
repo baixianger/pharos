@@ -51,12 +51,6 @@ struct ContentView: View {
                 .help("Reload git status")
                 .accessibilityLabel("Refresh git status")
 
-                SettingsLink {
-                    Label("Settings", systemImage: "gearshape")
-                }
-                .help("Settings")
-                .accessibilityLabel("Open Settings")
-
                 Menu {
                     Button { store.requestAdd() } label: { Label("Add Local Folder…", systemImage: "folder.badge.plus") }
                     Button { store.requestImport() } label: { Label("Import from GitHub…", systemImage: "arrow.down.circle") }
@@ -65,19 +59,6 @@ struct ContentView: View {
                 }
                 .help("Add a project")
                 .accessibilityLabel("Add project")
-
-                Button { selectedProject = nil; store.homeRoute = .dashboard } label: {
-                    Label("Overview", systemImage: "square.grid.2x2")
-                }
-                .help("Dashboard — overview of all projects, groups, and issues")
-                .accessibilityLabel("Show dashboard")
-                .disabled(selectedProject == nil && store.homeRoute == .dashboard)
-
-                Button { selectedProject = nil; store.homeRoute = .rooms } label: {
-                    Label("Chat Rooms", systemImage: "sailboat.fill")
-                }
-                .help("Watch agents talk in the mesh chat rooms")
-                .accessibilityLabel("Show agent chat rooms")
 
                 Button { showTrash = true } label: {
                     Label("Trash", systemImage: "clock.arrow.circlepath")
