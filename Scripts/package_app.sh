@@ -136,6 +136,12 @@ if [[ -d "$APP_RESOURCES_DIR" ]]; then
   cp -R "$APP_RESOURCES_DIR/." "$APP/Contents/Resources/"
 fi
 
+# Bundle the agent skills so `pharos skill install` works from the installed app.
+if [[ -d "$ROOT/skills" ]]; then
+  rm -rf "$APP/Contents/Resources/skills"
+  cp -R "$ROOT/skills" "$APP/Contents/Resources/skills"
+fi
+
 # SwiftPM resource bundles are emitted next to the built binary.
 PREFERRED_BUILD_DIR="$(dirname "$(build_product_path "$APP_NAME" "${ARCH_LIST[0]}")")"
 shopt -s nullglob

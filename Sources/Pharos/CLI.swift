@@ -112,6 +112,8 @@ enum CLI {
                 return ok(try PharosCore.setFlag(name: p.arg(0), flag: "tmux", value: try boolArg(p.arg(1), label: "on|off")))
             case "mesh":
                 return runMesh(rest)
+            case "skill", "skills":
+                return runSkill(rest)
 
             default:
                 return usageError("Unknown command: \(command)")
@@ -200,6 +202,27 @@ enum CLI {
             return 0
         default:
             print(meshUsage); return 2
+        }
+    }
+
+    /// `pharos skill …` — install the bundled agent skills into Claude's skills dir.
+    private static func runSkill(_ args: [String]) -> Int32 {
+        switch args.first {
+        case "list", nil, "ls":
+            let s = SkillInstall.available()
+            if s.isEmpty { print("(no bundled skills found)") } else { s.forEach { print($0) } }
+            return 0
+        case "install":
+            let rest = Array(args.dropFirst())
+            guard let name = rest.first else {
+                print("usage: pharos skill install <name|all> [--project <dir>]"); return 2
+            }
+            var project: String?
+            if let i = rest.firstIndex(of: "--project"), i + 1 < rest.count { project = rest[i + 1] }
+            SkillInstall.install(name, projectDir: project).forEach { print($0) }
+            return 0
+        case let other?:
+            return usageError("Unknown skill subcommand: \(other) (use list | install <name|all> [--project <dir>])")
         }
     }
 
