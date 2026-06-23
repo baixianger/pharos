@@ -66,7 +66,7 @@ struct PharosApp: App {
         MenuBarExtra {
             MenuBarView(store: store)
         } label: {
-            Image(systemName: "square.grid.2x2")
+            Image(nsImage: LighthouseIcon.menuBar)
         }
         .menuBarExtraStyle(.menu)
     }
