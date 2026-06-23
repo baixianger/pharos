@@ -7,11 +7,11 @@ struct SettingsView: View {
             GeneralSettingsTab()
                 .tabItem { Label("General", systemImage: "gearshape") }
             LaunchSettingsTab()
-                .tabItem { Label("Launch", systemImage: "terminal") }
+                .tabItem { Label("Launch", systemImage: "paperplane.fill") }
             ProjectsSettingsTab()
                 .tabItem { Label("Projects", systemImage: "folder") }
             CLISettingsTab()
-                .tabItem { Label("CLI", systemImage: "chevron.left.forwardslash.chevron.right") }
+                .tabItem { Label("CLI", systemImage: "terminal") }
             SyncSettingsTab()
                 .tabItem { Label("Sync", systemImage: "arrow.triangle.2.circlepath") }
         }
