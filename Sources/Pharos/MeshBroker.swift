@@ -199,47 +199,68 @@ final class MeshBroker {
 
         case "say":
             guard let r = req.room, let n = req.nick, let t = req.text else { return .fail("room, nick and text required") }
-            let msg = MeshMsg(from: n, room: r, text: t, ts: Date().timeIntervalSince1970, to: req.to ?? [])
-            lock.lock()
-            if rooms[r] == nil { rooms[r] = Room() }
-            // mention-only when @targets given; otherwise broadcast to the rest of the room.
-            let targets = (req.to?.isEmpty == false) ? req.to! : Array(rooms[r]!.members.subtracting([n]))
-            for tg in targets { rooms[r]!.mailboxes[tg, default: []].append(msg) }
-            let wake = waiters.filter { $0.room == r && targets.contains($0.nick) }
-            lock.unlock()
-            appendTranscript(msg)
-            for w in wake { w.sem.signal() }
+            deliver(room: r, from: n, text: t, to: req.to)
             return .okay()
 
         case "wait":
             guard let r = req.room, let n = req.nick else { return .fail("room and nick required") }
-            let timeoutMs = req.timeoutMs ?? 60_000
-            lock.lock()
-            if rooms[r] == nil { rooms[r] = Room(); rooms[r]!.members.insert(n); rooms[r]!.mailboxes[n] = [] }
-            if let box = rooms[r]!.mailboxes[n], !box.isEmpty {
-                rooms[r]!.mailboxes[n] = []
-                lock.unlock()
-                return MeshResponse(ok: true, messages: box)        // already had mail — return now
-            }
-            let w = Waiter(r, n)
-            waiters.append(w)
-            lock.unlock()
+            return park(room: r, nick: n, timeoutMs: req.timeoutMs ?? 60_000)
 
-            let res = w.sem.wait(timeout: .now() + .milliseconds(timeoutMs))   // ← the park
-
-            lock.lock()
-            waiters.removeAll { $0 === w }
-            let msgs = rooms[r]?.mailboxes[n] ?? []
-            rooms[r]?.mailboxes[n] = []
-            lock.unlock()
-            if res == .timedOut && msgs.isEmpty {
-                return MeshResponse(ok: true, messages: [], note: "timeout")
-            }
-            return MeshResponse(ok: true, messages: msgs)
+        case "ask":
+            // Send + park for the reply in ONE call, so an agent can't "send and
+            // forget to wait" — the act of asking *is* the hanging tool call.
+            guard let r = req.room, let n = req.nick, let t = req.text else { return .fail("room, nick and text required") }
+            deliver(room: r, from: n, text: t, to: req.to)
+            return park(room: r, nick: n, timeoutMs: req.timeoutMs ?? 60_000)
 
         default:
             return .fail("unknown cmd: \(req.cmd)")
         }
+    }
+
+    /// Post a message: mention-only when `@to` is given, else broadcast to the
+    /// rest of the room. Wakes any matching parked waiters.
+    private func deliver(room r: String, from n: String, text t: String, to: [String]?) {
+        let msg = MeshMsg(from: n, room: r, text: t, ts: Date().timeIntervalSince1970, to: to ?? [])
+        var wake: [Waiter] = []
+        lock.lock()
+        if rooms[r] == nil { rooms[r] = Room() }
+        let targets = (to?.isEmpty == false) ? to! : Array(rooms[r]!.members.subtracting([n]))
+        for tg in targets { rooms[r]!.mailboxes[tg, default: []].append(msg) }
+        wake = waiters.filter { $0.room == r && targets.contains($0.nick) }
+        lock.unlock()
+        appendTranscript(msg)
+        for w in wake { w.sem.signal() }
+    }
+
+    /// Block until a message for `nick` arrives (or timeout). The "park" point:
+    /// the connection — hence the agent's Bash tool call — hangs here. A message
+    /// queued before the call drains immediately; the mailbox means nothing is
+    /// lost across re-parks.
+    private func park(room r: String, nick n: String, timeoutMs: Int) -> MeshResponse {
+        lock.lock()
+        if rooms[r] == nil { rooms[r] = Room(); rooms[r]!.members.insert(n); rooms[r]!.mailboxes[n] = [] }
+        rooms[r]!.members.insert(n)
+        if let box = rooms[r]!.mailboxes[n], !box.isEmpty {
+            rooms[r]!.mailboxes[n] = []
+            lock.unlock()
+            return MeshResponse(ok: true, messages: box)
+        }
+        let w = Waiter(r, n)
+        waiters.append(w)
+        lock.unlock()
+
+        let res = w.sem.wait(timeout: .now() + .milliseconds(timeoutMs))
+
+        lock.lock()
+        waiters.removeAll { $0 === w }
+        let msgs = rooms[r]?.mailboxes[n] ?? []
+        rooms[r]?.mailboxes[n] = []
+        lock.unlock()
+        if res == .timedOut && msgs.isEmpty {
+            return MeshResponse(ok: true, messages: [], note: "timeout")
+        }
+        return MeshResponse(ok: true, messages: msgs)
     }
 
     private func appendTranscript(_ m: MeshMsg) {

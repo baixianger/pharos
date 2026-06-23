@@ -171,6 +171,17 @@ enum CLI {
             let to = a.dropFirst(3).compactMap { $0.hasPrefix("@") ? String($0.dropFirst()) : nil }
             let r = MeshClient.send(MeshRequest(cmd: "say", room: a[0], nick: a[1], text: a[2], to: to))
             return report(r)
+        case "ask":
+            guard a.count >= 3 else { print("usage: pharos mesh ask <room> <nick> <text> [@target …] [--timeout <seconds>]"); return 2 }
+            var timeout = 60
+            if let i = a.firstIndex(of: "--timeout"), i + 1 < a.count, let s = Int(a[i + 1]) { timeout = s }
+            let to = a.dropFirst(3).compactMap { $0.hasPrefix("@") ? String($0.dropFirst()) : nil }
+            let r = MeshClient.send(MeshRequest(cmd: "ask", room: a[0], nick: a[1], text: a[2], to: to, timeoutMs: timeout * 1000))
+            guard r.ok else { return report(r) }
+            let msgs = r.messages ?? []
+            if msgs.isEmpty { print("(no reply — \(r.note ?? "idle"))") }
+            for m in msgs { print("[\(m.room)] \(m.from): \(m.text)") }
+            return 0
         case "wait":
             guard a.count >= 2 else { print("usage: pharos mesh wait <room> <nick> [--timeout <seconds>]"); return 2 }
             var timeout = 60
@@ -192,6 +203,7 @@ enum CLI {
       list                                list rooms + members
       join   <room> <nick>                register a nick in a room
       say    <room> <nick> <text> [@n …]  post (no @ = whole room); returns at once
+      ask    <room> <nick> <text> [@n …]  send AND block for the reply in one call (can't "send & forget")
       wait   <room> <nick> [--timeout S]  BLOCK until a message for <nick> arrives (the park point)
       leave  <room> <nick>                leave a room
     """
