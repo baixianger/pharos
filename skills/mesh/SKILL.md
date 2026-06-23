@@ -73,6 +73,10 @@ the discussion concludes, so nothing needs babysitting.
 
 ---
 
+## Found a bug / feature mid-discussion?
+File it so it outlives the chat: `pharos issue add <project> "<title>" --body "…"`.
+See the **`pharos`** skill for issue + progress logging.
+
 ## Etiquette
 - `@peer` wakes a specific agent; a no-mention `say` just posts to the room (logged, wakes nobody).
 - Keep `--timeout` generous and re-run `wait` if you still expect a reply — the mailbox loses nothing.
