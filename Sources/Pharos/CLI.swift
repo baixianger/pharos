@@ -110,6 +110,8 @@ enum CLI {
                 return ok(try PharosCore.setFlag(name: p.arg(0), flag: "yolo", value: try boolArg(p.arg(1), label: "on|off")))
             case "tmux":
                 return ok(try PharosCore.setFlag(name: p.arg(0), flag: "tmux", value: try boolArg(p.arg(1), label: "on|off")))
+            case "mesh":
+                return runMesh(rest)
 
             default:
                 return usageError("Unknown command: \(command)")
@@ -137,6 +139,62 @@ enum CLI {
             return usageError("Unknown trash subcommand: \(other) (use list | restore <id> | empty)")
         }
     }
+
+    /// `pharos mesh …` — the agent chat room. Uses raw tokens (positional
+    /// room/nick/text), not the flag parser. `wait` blocks (the park point).
+    private static func runMesh(_ args: [String]) -> Int32 {
+        guard let sub = args.first else { print(meshUsage); return 2 }
+        let a = Array(args.dropFirst())
+        func report(_ r: MeshResponse) -> Int32 { print(r.ok ? "ok" : "error: \(r.error ?? "?")"); return r.ok ? 0 : 1 }
+
+        switch sub {
+        case "daemon":
+            MeshBroker.runDaemon()                          // never returns
+        case "create":
+            guard let room = a.first else { print("usage: pharos mesh create <room>"); return 2 }
+            return report(MeshClient.send(MeshRequest(cmd: "create", room: room)))
+        case "list":
+            let r = MeshClient.send(MeshRequest(cmd: "list"))
+            guard r.ok else { return report(r) }
+            let rooms = r.rooms ?? []
+            if rooms.isEmpty { print("(no rooms)") }
+            for ri in rooms { print("\(ri.name)  [\(ri.members.joined(separator: ", "))]") }
+            return 0
+        case "join":
+            guard a.count >= 2 else { print("usage: pharos mesh join <room> <nick>"); return 2 }
+            return report(MeshClient.send(MeshRequest(cmd: "join", room: a[0], nick: a[1])))
+        case "leave":
+            guard a.count >= 2 else { print("usage: pharos mesh leave <room> <nick>"); return 2 }
+            return report(MeshClient.send(MeshRequest(cmd: "leave", room: a[0], nick: a[1])))
+        case "say":
+            guard a.count >= 3 else { print("usage: pharos mesh say <room> <nick> <text> [@target …]"); return 2 }
+            let to = a.dropFirst(3).compactMap { $0.hasPrefix("@") ? String($0.dropFirst()) : nil }
+            let r = MeshClient.send(MeshRequest(cmd: "say", room: a[0], nick: a[1], text: a[2], to: to))
+            return report(r)
+        case "wait":
+            guard a.count >= 2 else { print("usage: pharos mesh wait <room> <nick> [--timeout <seconds>]"); return 2 }
+            var timeout = 60
+            if let i = a.firstIndex(of: "--timeout"), i + 1 < a.count, let s = Int(a[i + 1]) { timeout = s }
+            let r = MeshClient.send(MeshRequest(cmd: "wait", room: a[0], nick: a[1], timeoutMs: timeout * 1000))
+            guard r.ok else { return report(r) }
+            let msgs = r.messages ?? []
+            if msgs.isEmpty { print("(no messages — \(r.note ?? "idle"))") }
+            for m in msgs { print("[\(m.room)] \(m.from): \(m.text)") }
+            return 0
+        default:
+            print(meshUsage); return 2
+        }
+    }
+
+    private static let meshUsage = """
+    pharos mesh — agent chat room
+      create <room>                       create a room
+      list                                list rooms + members
+      join   <room> <nick>                register a nick in a room
+      say    <room> <nick> <text> [@n …]  post (no @ = whole room); returns at once
+      wait   <room> <nick> [--timeout S]  BLOCK until a message for <nick> arrives (the park point)
+      leave  <room> <nick>                leave a room
+    """
 
     private static func runGroup(_ p: Parsed) throws -> Int32 {
         switch p.arg(0) {
