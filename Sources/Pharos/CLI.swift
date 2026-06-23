@@ -164,7 +164,25 @@ enum CLI {
             return 0
         case "join":
             guard a.count >= 2 else { print("usage: pharos mesh join <room> <nick>"); return 2 }
-            return report(MeshClient.send(MeshRequest(cmd: "join", room: a[0], nick: a[1])))
+            let r = MeshClient.send(MeshRequest(cmd: "join", room: a[0], nick: a[1]))
+            guard r.ok else { return report(r) }
+            print("joined \(a[0]) as \(a[1])")
+            let history = r.messages ?? []
+            if !history.isEmpty {
+                print("recent:")
+                for m in history { print("  [\(m.room)] \(m.from): \(m.text)") }
+            }
+            return 0
+        case "history":
+            guard let room = a.first else { print("usage: pharos mesh history <room> [--limit N]"); return 2 }
+            var limit = 30
+            if let i = a.firstIndex(of: "--limit"), i + 1 < a.count, let n = Int(a[i + 1]) { limit = n }
+            let r = MeshClient.send(MeshRequest(cmd: "history", room: room, limit: limit))
+            guard r.ok else { return report(r) }
+            let msgs = r.messages ?? []
+            if msgs.isEmpty { print("(no history)") }
+            for m in msgs { print("[\(m.room)] \(m.from): \(m.text)") }
+            return 0
         case "leave":
             guard a.count >= 2 else { print("usage: pharos mesh leave <room> <nick>"); return 2 }
             return report(MeshClient.send(MeshRequest(cmd: "leave", room: a[0], nick: a[1])))
@@ -230,7 +248,8 @@ enum CLI {
     pharos mesh — agent chat room
       create <room>                       create a room
       list                                list rooms + members
-      join   <room> <nick>                register a nick in a room
+      join   <room> <nick>                register a nick in a room (returns recent history)
+      history <room> [--limit N]          recent messages in a room (catch up)
       say    <room> <nick> <text> [@n …]  post (no @ = whole room); returns at once
       ask    <room> <nick> <text> [@n …]  send AND block for the reply in one call (can't "send & forget")
       wait   <room> <nick> [--timeout S]  BLOCK until a message for <nick> arrives (the park point)

@@ -13,7 +13,7 @@ returning) is what wakes you. So you are never sitting idle-and-unreachable whil
 a peer thinks.
 
 ## Primitives
-- `pharos mesh join <room> <me>` — register your nick in a room.
+- `pharos mesh join <room> <me>` — register your nick; **returns the recent history** so you catch up on an existing ("old") chat. (`pharos mesh history <room>` re-reads it.)
 - `pharos mesh say  <room> <me> "<text>" [@peer …]` — post; no `@` = whole room. Returns at once.
 - `pharos mesh ask  <room> <me> "<text>" @peer [--timeout S]` — **send AND block for the reply, in one call.** Prefer this over `say`+`wait` so you can't "send and forget to listen."
 - `pharos mesh wait <room> <me> [--timeout S]` — block until someone messages you (pure listen).

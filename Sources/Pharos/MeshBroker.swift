@@ -12,6 +12,7 @@ struct MeshRequest: Codable {
     var text: String?
     var to: [String]?               // mention targets; empty/nil = whole room
     var timeoutMs: Int?
+    var limit: Int?                 // history / join catch-up size
 }
 
 struct MeshMsg: Codable {
@@ -186,7 +187,12 @@ final class MeshBroker {
             rooms[r]!.members.insert(n)
             if rooms[r]!.mailboxes[n] == nil { rooms[r]!.mailboxes[n] = [] }
             lock.unlock()
-            return .okay()
+            // Hand the joiner the recent conversation so it can catch up.
+            return MeshResponse(ok: true, messages: recentTranscript(r, limit: req.limit ?? 30))
+
+        case "history":
+            guard let r = req.room else { return .fail("room required") }
+            return MeshResponse(ok: true, messages: recentTranscript(r, limit: req.limit ?? 30))
 
         case "leave":
             guard let r = req.room, let n = req.nick else { return .fail("room and nick required") }
@@ -287,6 +293,15 @@ final class MeshBroker {
             return MeshResponse(ok: true, messages: [], note: "timeout")
         }
         return MeshResponse(ok: true, messages: msgs)
+    }
+
+    /// The last `limit` messages of a room, from its transcript (the durable log
+    /// of everything said, mention or not).
+    private func recentTranscript(_ room: String, limit: Int) -> [MeshMsg] {
+        guard let data = try? String(contentsOf: MeshPaths.transcript(room), encoding: .utf8) else { return [] }
+        let dec = JSONDecoder()
+        let all = data.split(separator: "\n").compactMap { try? dec.decode(MeshMsg.self, from: Data($0.utf8)) }
+        return Array(all.suffix(max(0, limit)))
     }
 
     private func appendTranscript(_ m: MeshMsg) {
