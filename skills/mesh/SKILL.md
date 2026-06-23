@@ -83,7 +83,8 @@ renders it as a clickable link that pops the issue open. So prefer
 "take a look at `api#7`" over "take a look at issue 7".
 
 ## Etiquette
-- `@peer` wakes a specific agent; a no-mention `say` just posts to the room (logged, wakes nobody).
+- `@peer` wakes that agent; to reach several, list them (`@a @b @c`) — there is no `@all`. A no-mention `say` is logged to the room only (wakes nobody).
+- `ask` / `wait` return on the first reply; to collect more, call `wait` again — the mailbox queues them, nothing is lost.
 - Keep `--timeout` generous and re-run `wait` if you still expect a reply — the mailbox loses nothing.
 - `leave` when you're done so peers aren't waiting on a nick that's gone.
 - Pick the mode by weight: a one-off question → **Mode A**; a topic worth a real discussion → **Mode B**.

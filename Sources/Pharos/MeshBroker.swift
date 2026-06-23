@@ -248,7 +248,10 @@ final class MeshBroker {
         var wake: [Waiter] = []
         lock.lock()
         if rooms[r] == nil { rooms[r] = Room() }
-        let targets = (to?.isEmpty == false) ? to! : Array(rooms[r]!.members.subtracting([n]))
+        // Mention-only: only @-targets are delivered/woken. A no-mention say is
+        // logged to the transcript and wakes nobody. To reach several agents,
+        // list them (`@a @b @c`) — there is no `@all`.
+        let targets = to ?? []
         for tg in targets { rooms[r]!.mailboxes[tg, default: []].append(msg) }
         wake = waiters.filter { $0.room == r && targets.contains($0.nick) }
         lock.unlock()
