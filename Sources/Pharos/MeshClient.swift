@@ -23,7 +23,9 @@ enum MeshClient {
 
     static func ensureDaemon() {
         if let fd = connect() { close(fd); return }
-        let exe = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
+        // Resolve symlinks so a `chat`-symlink invocation spawns the daemon as the
+        // REAL binary (argv0 "Pharos", not "chat" — else its args get re-prefixed).
+        let exe = (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath()
         try? FileManager.default.createDirectory(at: MeshPaths.supportDir, withIntermediateDirectories: true)
         let p = Process()
         p.executableURL = exe

@@ -13,9 +13,10 @@ struct ProjectsSidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Pinned — Dashboard + the group switcher stay put; only the
-            // project list below them scrolls.
+            // Pinned — Dashboard, Chat Rooms + the group switcher stay put; only
+            // the project list below them scrolls.
             dashboardHeader
+            roomsHeader
             groupHeader
                 .padding(.horizontal, 16)
                 .padding(.top, 6).padding(.bottom, 4)
@@ -51,11 +52,23 @@ struct ProjectsSidebar: View {
         }
     }
 
-    /// Pinned Wick-style Dashboard entry above the scrolling list: gradient icon
-    /// badge + title + subtitle. Draws its own highlight (it's not a List row).
+    /// Pinned Wick-style nav entries above the scrolling list: gradient icon
+    /// badge + title + subtitle. Draw their own highlight (not List rows).
     private var dashboardHeader: some View {
-        let selected = selectedProject == nil
-        return Button { selectedProject = nil } label: {
+        pinnedRow("Dashboard", "Stats · activity · all projects", "square.grid.2x2",
+                  selected: selectedProject == nil && store.homeRoute == .dashboard,
+                  topPad: 10) { selectedProject = nil; store.homeRoute = .dashboard }
+    }
+
+    private var roomsHeader: some View {
+        pinnedRow("Chat Rooms", "watch agents talk", "sailboat.fill",
+                  selected: selectedProject == nil && store.homeRoute == .rooms,
+                  topPad: 0) { selectedProject = nil; store.homeRoute = .rooms }
+    }
+
+    private func pinnedRow(_ title: String, _ subtitle: String, _ symbol: String,
+                           selected: Bool, topPad: CGFloat, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             HStack(spacing: 10) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 6)
@@ -63,13 +76,13 @@ struct ProjectsSidebar: View {
                             colors: [Color.accentColor.opacity(0.85), Color.accentColor.opacity(0.55)],
                             startPoint: .topLeading, endPoint: .bottomTrailing))
                         .frame(width: 28, height: 28)
-                    Image(systemName: "square.grid.2x2")
-                        .font(.system(size: 14, weight: .semibold))
+                    Image(systemName: symbol)
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white)
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Dashboard").font(.system(size: 14, weight: .semibold))
-                    Text("Stats · activity · all projects").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(title).font(.system(size: 14, weight: .semibold))
+                    Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
             }
@@ -80,7 +93,7 @@ struct ProjectsSidebar: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 10)
-        .padding(.top, 10).padding(.bottom, 4)
+        .padding(.top, topPad).padding(.bottom, 4)
     }
 
     private var groupHeader: some View {

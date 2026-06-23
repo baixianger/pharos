@@ -10,6 +10,11 @@ import SwiftUI
 enum PharosMain {
     static func main() {
         let args = Array(CommandLine.arguments.dropFirst())
+        // Invoked as `chat` (a symlink to this binary) → it's the mesh chat room.
+        let invokedAs = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? ""
+        if invokedAs == "chat" {
+            exit(CLI.run(["mesh"] + args))
+        }
         if let first = args.first, CLI.isCommand(first) {
             exit(CLI.run(args))
         }

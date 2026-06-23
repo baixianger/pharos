@@ -10,10 +10,12 @@ struct SettingsView: View {
                 .tabItem { Label("Launch", systemImage: "terminal") }
             ProjectsSettingsTab()
                 .tabItem { Label("Projects", systemImage: "folder") }
-            IntegrationsSettingsTab()
-                .tabItem { Label("Integrations", systemImage: "link") }
+            CLISettingsTab()
+                .tabItem { Label("CLI", systemImage: "chevron.left.forwardslash.chevron.right") }
+            SyncSettingsTab()
+                .tabItem { Label("Sync", systemImage: "arrow.triangle.2.circlepath") }
         }
-        .frame(width: 500, height: 430)
+        .frame(width: 500, height: 460)
     }
 }
 
@@ -118,48 +120,8 @@ private struct ProjectsSettingsTab: View {
 
 // MARK: - Integrations
 
-private struct IntegrationsSettingsTab: View {
+private struct SyncSettingsTab: View {
     @Environment(ProjectStore.self) private var store
-
-    private static var executablePath: String {
-        Bundle.main.executablePath ?? "<Pharos.app>/Contents/MacOS/Pharos"
-    }
-    private static var cliSymlinkSnippet: String {
-        "ln -s \"\(executablePath)\" /usr/local/bin/pharos"
-    }
-    @State private var cliInstallStatus: String?
-
-    /// Symlink the bundled binary as `pharos` into the first user-writable dir
-    /// (preferring ones already on a typical PATH). Returns a status message.
-    private static func installCLISymlink() -> String {
-        guard let exec = Bundle.main.executablePath else { return "Couldn't locate the Pharos binary." }
-        let fm = FileManager.default
-        let home = NSHomeDirectory()
-        let candidates = ["/opt/homebrew/bin", "/usr/local/bin", "\(home)/.local/bin", "\(home)/bin"]
-        for dir in candidates {
-            var isDir: ObjCBool = false
-            if !fm.fileExists(atPath: dir, isDirectory: &isDir) {
-                guard dir.hasPrefix(home) else { continue }            // don't create system dirs
-                try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-            }
-            guard fm.isWritableFile(atPath: dir) else { continue }
-            let dest = "\(dir)/pharos"
-            if (try? fm.destinationOfSymbolicLink(atPath: dest)) != nil {
-                try? fm.removeItem(atPath: dest)                       // replace our old symlink
-            } else if fm.fileExists(atPath: dest) {
-                continue                                               // a real file is here — don't clobber
-            }
-            do {
-                try fm.createSymbolicLink(atPath: dest, withDestinationPath: exec)
-                let short = dest.replacingOccurrences(of: home, with: "~")
-                let needsPathHint = dir.hasPrefix(home)
-                return needsPathHint
-                    ? "Installed → \(short)  (make sure \(dir.replacingOccurrences(of: home, with: "~")) is on your PATH)"
-                    : "Installed → \(short)"
-            } catch { continue }
-        }
-        return "Couldn't auto-install (no writable PATH dir found) — use the command below."
-    }
 
     var body: some View {
         @Bindable var store = store
@@ -215,34 +177,92 @@ private struct IntegrationsSettingsTab: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Section("Command line") {
-                Text("Pharos is scriptable from the command line — and it's how agents drive it: a Claude Code or Codex session can shell out to update issues and post progress. Symlink it onto your PATH, then run `pharos help` (e.g. `pharos list --json`, `pharos issue start <project> 3 claude`).")
-                    .font(.callout).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(Self.cliSymlinkSnippet)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-                HStack {
-                    Button("Install command") { cliInstallStatus = Self.installCLISymlink() }
-                        .buttonStyle(.borderedProminent)
-                    Button("Copy command") {
-                        let pb = NSPasteboard.general
-                        pb.clearContents()
-                        pb.setString(Self.cliSymlinkSnippet, forType: .string)
-                    }
-                    .buttonStyle(.borderless)
-                    Spacer()
-                }
-                if let status = cliInstallStatus {
-                    Text(status).font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - CLI
+
+private struct CLISettingsTab: View {
+    @State private var pharosStatus: String?
+    @State private var chatStatus: String?
+
+    private static var exec: String { Bundle.main.executablePath ?? "<Pharos.app>/Contents/MacOS/Pharos" }
+
+    /// First user-writable dir on a typical PATH — so neither the button nor the
+    /// copy-command needs `sudo` (the old `/usr/local/bin` snippet did).
+    private static var installDir: String {
+        let home = NSHomeDirectory()
+        let fm = FileManager.default
+        for d in ["/opt/homebrew/bin", "/usr/local/bin", "\(home)/.local/bin", "\(home)/bin"] {
+            if fm.fileExists(atPath: d) { if fm.isWritableFile(atPath: d) { return d } }
+            else if d.hasPrefix(home) { return d }   // we'll create it
+        }
+        return "\(home)/.local/bin"
+    }
+
+    private static func snippet(_ name: String) -> String { "ln -sf \"\(exec)\" \"\(installDir)/\(name)\"" }
+
+    /// Symlink the bundled binary under `name` into the first writable PATH dir.
+    private static func install(_ name: String) -> String {
+        guard let exec = Bundle.main.executablePath else { return "Couldn't locate the Pharos binary." }
+        let fm = FileManager.default
+        let home = NSHomeDirectory()
+        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "\(home)/.local/bin", "\(home)/bin"] {
+            if !fm.fileExists(atPath: dir) {
+                guard dir.hasPrefix(home) else { continue }
+                try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            }
+            guard fm.isWritableFile(atPath: dir) else { continue }
+            let dest = "\(dir)/\(name)"
+            if (try? fm.destinationOfSymbolicLink(atPath: dest)) != nil { try? fm.removeItem(atPath: dest) }
+            else if fm.fileExists(atPath: dest) { continue }     // don't clobber a real file
+            do {
+                try fm.createSymbolicLink(atPath: dest, withDestinationPath: exec)
+                let short = dest.replacingOccurrences(of: home, with: "~")
+                return dir.hasPrefix(home)
+                    ? "Installed → \(short)  (ensure \(dir.replacingOccurrences(of: home, with: "~")) is on your PATH)"
+                    : "Installed → \(short)"
+            } catch { continue }
+        }
+        return "Couldn't auto-install — copy the command below (no sudo needed)."
+    }
+
+    var body: some View {
+        Form {
+            Section("pharos — project & issue control") {
+                Text("How agents drive Pharos: a Claude Code / Codex session shells out to read and update issues and post progress — e.g. `pharos list --json`, `pharos issue start <project> 3 claude`, `pharos overview`.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                commandRow("pharos", status: $pharosStatus)
+            }
+            Section("chat — agent chat room") {
+                Text("Shorthand for `pharos mesh`: agents talk to each other — `chat join <room> <nick>`, `chat ask <room> <nick> \"…\" @peer`, `chat wait <room> <nick>`. Same binary, invoked as `chat`.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                commandRow("chat", status: $chatStatus)
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private func commandRow(_ name: String, status: Binding<String?>) -> some View {
+        Text(Self.snippet(name))
+            .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+            .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+        HStack {
+            Button("Install `\(name)`") { status.wrappedValue = Self.install(name) }
+                .buttonStyle(.borderedProminent)
+            Button("Copy command") {
+                let pb = NSPasteboard.general; pb.clearContents(); pb.setString(Self.snippet(name), forType: .string)
+            }
+            .buttonStyle(.borderless)
+            Spacer()
+        }
+        if let s = status.wrappedValue {
+            Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 

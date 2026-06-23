@@ -16,7 +16,6 @@ struct ContentView: View {
     @State private var showImport = false
     @State private var showPalette = false
     @State private var showTrash = false
-    @State private var showRooms = false
     @State private var showOnboarding = false
     @State private var searchText = ""
 
@@ -37,6 +36,8 @@ struct ContentView: View {
         } detail: {
             if let id = selectedProject, store.project(id) != nil {
                 ProjectDetailView(projectID: id)
+            } else if store.homeRoute == .rooms {
+                MeshRoomView()
             } else {
                 DashboardView(selectedProject: $selectedProject)
             }
@@ -65,15 +66,15 @@ struct ContentView: View {
                 .help("Add a project")
                 .accessibilityLabel("Add project")
 
-                Button { selectedProject = nil } label: {
+                Button { selectedProject = nil; store.homeRoute = .dashboard } label: {
                     Label("Overview", systemImage: "square.grid.2x2")
                 }
                 .help("Dashboard — overview of all projects, groups, and issues")
                 .accessibilityLabel("Show dashboard")
-                .disabled(selectedProject == nil)
+                .disabled(selectedProject == nil && store.homeRoute == .dashboard)
 
-                Button { showRooms = true } label: {
-                    Label("Chat Rooms", systemImage: "bubble.left.and.bubble.right")
+                Button { selectedProject = nil; store.homeRoute = .rooms } label: {
+                    Label("Chat Rooms", systemImage: "sailboat.fill")
                 }
                 .help("Watch agents talk in the mesh chat rooms")
                 .accessibilityLabel("Show agent chat rooms")
@@ -108,15 +109,6 @@ struct ContentView: View {
         .sheet(isPresented: $showTrash) {
             TrashView().environment(store)
         }
-        .sheet(isPresented: $showRooms) {
-            VStack(spacing: 0) {
-                HStack {
-                    Spacer()
-                    Button("Done") { showRooms = false }.keyboardShortcut(.cancelAction)
-                }.padding([.top, .trailing], 10)
-                MeshRoomView()
-            }
-        }
         .sheet(isPresented: $showOnboarding) {
             OnboardingView {
                 onboarded = true
@@ -143,9 +135,6 @@ struct ContentView: View {
         }
         .onChange(of: store.paletteRequested) { _, requested in
             if requested { showPalette = true; store.paletteRequested = false }
-        }
-        .onChange(of: store.roomsRequested) { _, requested in
-            if requested { showRooms = true; store.roomsRequested = false }
         }
         .onChange(of: store.trashRequested) { _, requested in
             if requested { showTrash = true; store.trashRequested = false }
