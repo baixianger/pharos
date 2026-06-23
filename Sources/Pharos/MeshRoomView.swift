@@ -26,7 +26,7 @@ struct MeshRoomView: View {
         .navigationTitle("Chat Rooms")
         .onAppear(perform: reload)
         .onReceive(tick) { _ in reload() }
-        .onChange(of: room) { _, r in messages = load(r) }
+        .onChange(of: room) { _, r in messages = r.isEmpty ? [] : load(r) }
         .alert("Rename room", isPresented: Binding(
             get: { renameTarget != nil },
             set: { if !$0 { renameTarget = nil } }
@@ -236,7 +236,7 @@ struct MeshRoomView: View {
             }
             Spacer(minLength: 0)
         }
-        .frame(maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(.quaternary.opacity(0.18))
     }
 
@@ -252,8 +252,9 @@ struct MeshRoomView: View {
 
     private func reload() {
         refreshRooms()
-        if room.isEmpty, let first = rooms.first { room = first }
-        if !room.isEmpty { messages = load(room) }
+        if !room.isEmpty && !rooms.contains(room) { room = "" }   // current room was deleted/renamed
+        if room.isEmpty { room = rooms.first ?? "" }
+        messages = room.isEmpty ? [] : load(room)
     }
 
     private func refreshRooms() {
