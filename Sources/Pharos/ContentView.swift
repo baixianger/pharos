@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var showImport = false
     @State private var showPalette = false
     @State private var showTrash = false
+    @State private var showRooms = false
     @State private var showOnboarding = false
     @State private var searchText = ""
 
@@ -71,6 +72,12 @@ struct ContentView: View {
                 .accessibilityLabel("Show dashboard")
                 .disabled(selectedProject == nil)
 
+                Button { showRooms = true } label: {
+                    Label("Chat Rooms", systemImage: "bubble.left.and.bubble.right")
+                }
+                .help("Watch agents talk in the mesh chat rooms")
+                .accessibilityLabel("Show agent chat rooms")
+
                 Button { showTrash = true } label: {
                     Label("Trash", systemImage: "clock.arrow.circlepath")
                 }
@@ -100,6 +107,15 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showTrash) {
             TrashView().environment(store)
+        }
+        .sheet(isPresented: $showRooms) {
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Button("Done") { showRooms = false }.keyboardShortcut(.cancelAction)
+                }.padding([.top, .trailing], 10)
+                MeshRoomView()
+            }
         }
         .sheet(isPresented: $showOnboarding) {
             OnboardingView {

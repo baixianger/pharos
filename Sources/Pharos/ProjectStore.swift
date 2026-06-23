@@ -1,5 +1,6 @@
 import SwiftUI
 import Observation
+import AppKit
 @preconcurrency import UserNotifications
 
 /// On-disk shape of the registry.
@@ -578,6 +579,7 @@ final class ProjectStore {
         // TODO: needs-input detection
 
         runningSessions = live
+        updateDockBadge()
     }
 
     private func postFinishedNotification(sessionName: String) {
@@ -1123,11 +1125,18 @@ final class ProjectStore {
             let probed = await Task.detached(priority: .utility) { LaunchService.runningSessions() }.value
             guard let live = probed else { return }   // tmux unknown → keep what we have
             runningSessions = live
+            updateDockBadge()
             // Self-heal stale links on launch / manual refresh / after a launch.
             if projects.contains(where: { $0.issues.contains { $0.activeSession != nil } }) {
                 mutateStore { _ = $0.reconcileAgentLinks(live: live) }
             }
         }
+    }
+
+    /// Mirror the running-agent count onto the Dock icon badge (glanceable status).
+    private func updateDockBadge() {
+        let n = runningSessions.count
+        NSApp.dockTile.badgeLabel = n > 0 ? "\(n)" : nil
     }
 
     /// Returns true if a Pharos tmux session for this project + agent kind is live.
