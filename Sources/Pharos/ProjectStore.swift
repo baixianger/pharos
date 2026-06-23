@@ -428,6 +428,7 @@ final class ProjectStore {
     var importRequested = false
     var paletteRequested = false
     var trashRequested = false
+    var roomsRequested = false
     var lastError: String?
     var terminal: TerminalApp = .ghostty {
         didSet { UserDefaults.standard.set(terminal.rawValue, forKey: "pharos.terminal") }
@@ -981,6 +982,7 @@ final class ProjectStore {
     }
 
     func requestTrash() { trashRequested = true }
+    func requestRooms() { roomsRequested = true }
     func dismissUndo() { lastUndo = nil }
 
     /// A request (from ⌘K) to open a specific issue. The owning project's detail

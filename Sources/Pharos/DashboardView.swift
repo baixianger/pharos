@@ -31,6 +31,8 @@ struct DashboardView: View {
     }
     @State private var groupFilter: String?           // nil = all groups
     @State private var activityFilter: ActivityFilter = .all
+    @State private var meshMessages: [MeshMsg] = []    // recent agent chatter (read from transcripts)
+    private let meshTick = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     /// Projects in scope, narrowed by the selected group tab.
     private var projects: [Project] {
@@ -58,6 +60,7 @@ struct DashboardView: View {
                 statusCard
                 if !blocked.isEmpty || !urgent.isEmpty { attentionCard }
                 if !activeAgents.isEmpty { agentsCard }
+                if !meshMessages.isEmpty { meshCard }
                 if projects.contains(where: { !$0.milestones.isEmpty }) { milestonesCard }
                 activityCard
             }
@@ -65,6 +68,48 @@ struct DashboardView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .navigationTitle("Dashboard")
+        .onAppear(perform: loadMesh)
+        .onReceive(meshTick) { _ in loadMesh() }
+    }
+
+    // MARK: Chat rooms (agents talking)
+
+    private var meshCard: some View {
+        let rooms = Set(meshMessages.map(\.room)).count
+        return card("Chat rooms · \(rooms) active") {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(meshMessages.prefix(6).enumerated()), id: \.offset) { _, m in
+                    Button { store.requestRooms() } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "bubble.left.and.bubble.right").foregroundStyle(.tint).font(.caption)
+                            Text(m.from).font(.callout.weight(.medium))
+                            Text(m.text).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                            Spacer()
+                            Text("· \(m.room)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+                Button { store.requestRooms() } label: {
+                    Label("Open chat rooms", systemImage: "arrow.up.forward.app").font(.caption)
+                }
+                .buttonStyle(.plain).foregroundStyle(.tint).padding(.top, 2)
+            }
+        }
+    }
+
+    private func loadMesh() {
+        let dir = MeshPaths.transcriptDir
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        let dec = JSONDecoder()
+        var all: [MeshMsg] = []
+        for f in files where f.pathExtension == "jsonl" {
+            guard let s = try? String(contentsOf: f, encoding: .utf8) else { continue }
+            for line in s.split(separator: "\n") {
+                if let m = try? dec.decode(MeshMsg.self, from: Data(line.utf8)) { all.append(m) }
+            }
+        }
+        meshMessages = all.sorted { $0.ts > $1.ts }
     }
 
     // MARK: Group tabs

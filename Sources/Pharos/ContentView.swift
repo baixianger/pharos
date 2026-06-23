@@ -144,6 +144,9 @@ struct ContentView: View {
         .onChange(of: store.paletteRequested) { _, requested in
             if requested { showPalette = true; store.paletteRequested = false }
         }
+        .onChange(of: store.roomsRequested) { _, requested in
+            if requested { showRooms = true; store.roomsRequested = false }
+        }
         .onChange(of: store.trashRequested) { _, requested in
             if requested { showTrash = true; store.trashRequested = false }
         }
