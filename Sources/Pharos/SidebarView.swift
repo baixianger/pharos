@@ -55,7 +55,7 @@ struct ProjectsSidebar: View {
     /// Pinned Wick-style nav entries above the scrolling list: gradient icon
     /// badge + title + subtitle. Draw their own highlight (not List rows).
     private var dashboardHeader: some View {
-        pinnedRow("Dashboard", "Stats · activity · all projects", "square.grid.2x2",
+        pinnedRow("Dashboard", "Stats · activity · all projects", "rectangle.3.group",
                   selected: selectedProject == nil && store.homeRoute == .dashboard,
                   topPad: 10) { selectedProject = nil; store.homeRoute = .dashboard }
     }
