@@ -61,7 +61,7 @@ struct ProjectsSidebar: View {
     }
 
     private var roomsHeader: some View {
-        pinnedRow("Chat Rooms", "watch agents talk", "sailboat.fill",
+        pinnedRow("Chat Rooms", "watch agents talk", "message.fill",
                   selected: selectedProject == nil && store.homeRoute == .rooms,
                   topPad: 0) { selectedProject = nil; store.homeRoute = .rooms }
     }

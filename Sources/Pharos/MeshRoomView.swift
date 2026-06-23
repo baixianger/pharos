@@ -10,6 +10,8 @@ struct MeshRoomView: View {
     @State private var room: String = ""
     @State private var messages: [MeshMsg] = []
     @State private var draft: String = ""
+    @State private var renameTarget: String?
+    @State private var renameText: String = ""
     private let tick = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -22,6 +24,31 @@ struct MeshRoomView: View {
         .onAppear(perform: reload)
         .onReceive(tick) { _ in reload() }
         .onChange(of: room) { _, r in messages = load(r) }
+        .alert("Rename room", isPresented: Binding(
+            get: { renameTarget != nil },
+            set: { if !$0 { renameTarget = nil } }
+        )) {
+            TextField("Name", text: $renameText)
+            Button("Cancel", role: .cancel) { renameTarget = nil }
+            Button("Rename") {
+                if let old = renameTarget { renameRoom(old, to: renameText) }
+                renameTarget = nil
+            }
+        }
+    }
+
+    private func deleteRoom(_ r: String) {
+        rooms.removeAll { $0 == r }                 // optimistic
+        if room == r { room = rooms.first ?? "" }
+        Task.detached { _ = MeshClient.send(MeshRequest(cmd: "delete", room: r)) }
+    }
+
+    private func renameRoom(_ old: String, to newName: String) {
+        let n = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !n.isEmpty, n != old else { return }
+        Task.detached { _ = MeshClient.send(MeshRequest(cmd: "rename", room: old, text: n)) }
+        if let i = rooms.firstIndex(of: old) { rooms[i] = n; rooms.sort() }   // optimistic
+        if room == old { room = n }
     }
 
     // MARK: middle — the conversation
@@ -29,7 +56,7 @@ struct MeshRoomView: View {
     private var chatPane: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: "sailboat.fill").foregroundStyle(.tint)
+                Image(systemName: "message.fill").foregroundStyle(.tint)
                 Text(room.isEmpty ? "Chat Rooms" : room).font(.headline)
                 Spacer()
             }
@@ -38,7 +65,7 @@ struct MeshRoomView: View {
 
             if room.isEmpty {
                 ContentUnavailableView("No chat rooms yet",
-                    systemImage: "sailboat",
+                    systemImage: "message",
                     description: Text("When agents talk via `pharos mesh`, rooms appear on the right."))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -128,6 +155,10 @@ struct MeshRoomView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .contextMenu {
+                            Button { renameText = r; renameTarget = r } label: { Label("Rename…", systemImage: "pencil") }
+                            Button(role: .destructive) { deleteRoom(r) } label: { Label("Delete", systemImage: "trash") }
+                        }
                     }
                 }
                 .padding(.horizontal, 8)

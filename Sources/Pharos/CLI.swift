@@ -166,6 +166,12 @@ enum CLI {
         case "leave":
             guard a.count >= 2 else { print("usage: pharos mesh leave <room> <nick>"); return 2 }
             return report(MeshClient.send(MeshRequest(cmd: "leave", room: a[0], nick: a[1])))
+        case "delete", "rm":
+            guard let room = a.first else { print("usage: pharos mesh delete <room>"); return 2 }
+            return report(MeshClient.send(MeshRequest(cmd: "delete", room: room)))
+        case "rename":
+            guard a.count >= 2 else { print("usage: pharos mesh rename <room> <new-name>"); return 2 }
+            return report(MeshClient.send(MeshRequest(cmd: "rename", room: a[0], text: a[1])))
         case "say":
             guard a.count >= 3 else { print("usage: pharos mesh say <room> <nick> <text> [@target …]"); return 2 }
             let to = a.dropFirst(3).compactMap { $0.hasPrefix("@") ? String($0.dropFirst()) : nil }
@@ -206,6 +212,8 @@ enum CLI {
       ask    <room> <nick> <text> [@n …]  send AND block for the reply in one call (can't "send & forget")
       wait   <room> <nick> [--timeout S]  BLOCK until a message for <nick> arrives (the park point)
       leave  <room> <nick>                leave a room
+      rename <room> <new-name>            rename a room
+      delete <room>                       delete a room (drops its transcript)
     """
 
     private static func runGroup(_ p: Parsed) throws -> Int32 {

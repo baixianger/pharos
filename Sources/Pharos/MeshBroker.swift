@@ -213,6 +213,29 @@ final class MeshBroker {
             deliver(room: r, from: n, text: t, to: req.to)
             return park(room: r, nick: n, timeoutMs: req.timeoutMs ?? 60_000)
 
+        case "delete":
+            guard let r = req.room else { return .fail("room required") }
+            lock.lock()
+            rooms[r] = nil
+            let wake = waiters.filter { $0.room == r }
+            waiters.removeAll { $0.room == r }
+            lock.unlock()
+            try? FileManager.default.removeItem(at: MeshPaths.transcript(r))
+            for w in wake { w.sem.signal() }
+            return .okay()
+
+        case "rename":
+            // room = old name, text = new name.
+            guard let old = req.room, let new = req.text, !new.isEmpty else { return .fail("room and new name required") }
+            lock.lock()
+            if let existing = rooms[old] { rooms[old] = nil; rooms[new] = existing }
+            let wake = waiters.filter { $0.room == old }
+            waiters.removeAll { $0.room == old }
+            lock.unlock()
+            try? FileManager.default.moveItem(at: MeshPaths.transcript(old), to: MeshPaths.transcript(new))
+            for w in wake { w.sem.signal() }
+            return .okay()
+
         default:
             return .fail("unknown cmd: \(req.cmd)")
         }
