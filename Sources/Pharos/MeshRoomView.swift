@@ -6,12 +6,15 @@ import SwiftUI
 /// a human message only queues for whoever is already waiting, it can't wake a
 /// stopped agent.
 struct MeshRoomView: View {
+    @Environment(ProjectStore.self) private var store
     @State private var rooms: [String] = []
     @State private var room: String = ""
     @State private var messages: [MeshMsg] = []
     @State private var draft: String = ""
     @State private var renameTarget: String?
     @State private var renameText: String = ""
+    @State private var issueRef: IssueRef?
+    private struct IssueRef: Identifiable { let project: String; let number: Int; var id: String { "\(project)#\(number)" } }
     private let tick = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -35,6 +38,74 @@ struct MeshRoomView: View {
                 renameTarget = nil
             }
         }
+        // Issue references (project#number) in messages are tappable links.
+        .environment(\.openURL, OpenURLAction { url in
+            guard url.scheme == "pharosissue" else { return .systemAction }
+            let parts = url.pathComponents                       // ["/", project, number]
+            if parts.count >= 3, let n = Int(parts[2]) {
+                issueRef = IssueRef(project: parts[1].removingPercentEncoding ?? parts[1], number: n)
+            }
+            return .handled
+        })
+        .sheet(item: $issueRef) { issuePopup($0) }
+    }
+
+    /// Turn `project#number` tokens into tappable issue links.
+    private func attributed(_ text: String) -> AttributedString {
+        guard let regex = try? NSRegularExpression(pattern: "([A-Za-z0-9._-]+)#([0-9]+)") else { return AttributedString(text) }
+        let ns = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return AttributedString(text) }
+        var result = AttributedString()
+        var idx = 0
+        for m in matches {
+            if m.range.location > idx {
+                result += AttributedString(ns.substring(with: NSRange(location: idx, length: m.range.location - idx)))
+            }
+            let proj = ns.substring(with: m.range(at: 1))
+            let num = ns.substring(with: m.range(at: 2))
+            var run = AttributedString(ns.substring(with: m.range))
+            let enc = proj.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? proj
+            run.link = URL(string: "pharosissue://x/\(enc)/\(num)")
+            run.foregroundColor = .accentColor
+            run.underlineStyle = .single
+            result += run
+            idx = m.range.location + m.range.length
+        }
+        if idx < ns.length { result += AttributedString(ns.substring(from: idx)) }
+        return result
+    }
+
+    @ViewBuilder
+    private func issuePopup(_ ref: IssueRef) -> some View {
+        let issue = store.projects.first { $0.name == ref.project }?.issues.first { $0.number == ref.number }
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("\(ref.project) #\(ref.number)").font(.headline)
+                Spacer()
+                Button("Done") { issueRef = nil }.keyboardShortcut(.cancelAction)
+            }
+            if let i = issue {
+                HStack(spacing: 6) {
+                    Image(systemName: i.status.symbol).foregroundStyle(.secondary)
+                    Text(i.status.label).font(.callout).foregroundStyle(.secondary)
+                }
+                Text(i.title).font(.title3.weight(.semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if !i.body.isEmpty {
+                    ScrollView {
+                        Text(i.body).font(.callout).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            } else {
+                Text("No issue “\(ref.project)#\(ref.number)” found in this registry.")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(width: 440, height: 340)
     }
 
     private func deleteRoom(_ r: String) {
@@ -106,7 +177,7 @@ struct MeshRoomView: View {
                 Text(Date(timeIntervalSince1970: m.ts).formatted(date: .omitted, time: .standard))
                     .font(.caption2).foregroundStyle(.secondary)
             }
-            Text(m.text).font(.callout).textSelection(.enabled)
+            Text(attributed(m.text)).font(.callout).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(10)

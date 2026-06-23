@@ -73,9 +73,14 @@ the discussion concludes, so nothing needs babysitting.
 
 ---
 
-## Found a bug / feature mid-discussion?
-File it so it outlives the chat: `pharos issue add <project> "<title>" --body "…"`.
-See the **`pharos`** skill for issue + progress logging.
+## Issues in the conversation
+You can read and change issues mid-chat (see the **`pharos`** skill): file a bug
+you find (`pharos issue add <project> "<title>" --body "…"`), flip a status, etc.
+
+**Reference issues as `project#number`** (e.g. `web#3`, `camoufox-MCP#12`) when you
+mention one to a peer or a human — Pharos auto-detects that form in the room and
+renders it as a clickable link that pops the issue open. So prefer
+"take a look at `api#7`" over "take a look at issue 7".
 
 ## Etiquette
 - `@peer` wakes a specific agent; a no-mention `say` just posts to the room (logged, wakes nobody).
