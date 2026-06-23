@@ -187,6 +187,7 @@ private struct SyncSettingsTab: View {
 private struct CLISettingsTab: View {
     @State private var pharosStatus: String?
     @State private var chatStatus: String?
+    @State private var skillStatus: String?
 
     private static var exec: String { Bundle.main.executablePath ?? "<Pharos.app>/Contents/MacOS/Pharos" }
 
@@ -241,9 +242,37 @@ private struct CLISettingsTab: View {
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 commandRow("chat", status: $chatStatus)
             }
+            Section("Agent skills (Claude Code)") {
+                Text("Symlink the bundled skills into ~/.claude/skills so every Claude session auto-loads them. For a single repo, use `pharos skill install <name> --project <dir>`.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if skillNames.isEmpty {
+                    Text("(no bundled skills found)").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(skillNames, id: \.self) { name in
+                        HStack {
+                            Image(systemName: "doc.text").foregroundStyle(.secondary)
+                            Text(name).font(.system(.body, design: .monospaced))
+                            Spacer()
+                            Button("Install") { skillStatus = SkillInstall.install(name, projectDir: nil).joined(separator: "\n") }
+                        }
+                    }
+                    HStack {
+                        Button("Install all → ~/.claude/skills") {
+                            skillStatus = SkillInstall.install("all", projectDir: nil).joined(separator: "\n")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Spacer()
+                    }
+                }
+                if let s = skillStatus {
+                    Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
         .formStyle(.grouped)
     }
+
+    private var skillNames: [String] { SkillInstall.available() }
 
     @ViewBuilder
     private func commandRow(_ name: String, status: Binding<String?>) -> some View {
