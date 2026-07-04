@@ -196,14 +196,19 @@ enum CLI {
             return report(MeshClient.send(MeshRequest(cmd: "rename", room: a[0], text: a[1])))
         case "say":
             guard a.count >= 3 else { print("usage: pharos mesh say <room> <nick> <text> [@target …]"); return 2 }
-            let to = a.dropFirst(3).compactMap { $0.hasPrefix("@") ? String($0.dropFirst()) : nil }
+            var to = a.dropFirst(3).compactMap { $0.hasPrefix("@") ? String($0.dropFirst()) : nil }
+            // Also honor @mentions written in the message text — the broker is
+            // mention-only, so "@bob" in the body with no trailing @arg would
+            // otherwise wake nobody (matches the GUI input's behavior).
+            for m in MeshHooks.parseTextMentions(a[2]) where !to.contains(m) { to.append(m) }
             let r = MeshClient.send(MeshRequest(cmd: "say", room: a[0], nick: a[1], text: a[2], to: to))
             return report(r)
         case "ask":
             guard a.count >= 3 else { print("usage: pharos mesh ask <room> <nick> <text> [@target …] [--timeout <seconds>]"); return 2 }
             var timeout = 60
             if let i = a.firstIndex(of: "--timeout"), i + 1 < a.count, let s = Int(a[i + 1]) { timeout = s }
-            let to = a.dropFirst(3).compactMap { $0.hasPrefix("@") ? String($0.dropFirst()) : nil }
+            var to = a.dropFirst(3).compactMap { $0.hasPrefix("@") ? String($0.dropFirst()) : nil }
+            for m in MeshHooks.parseTextMentions(a[2]) where !to.contains(m) { to.append(m) }
             let r = MeshClient.send(MeshRequest(cmd: "ask", room: a[0], nick: a[1], text: a[2], to: to, timeoutMs: timeout * 1000))
             guard r.ok else { return report(r) }
             let msgs = r.messages ?? []

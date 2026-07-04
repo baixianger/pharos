@@ -122,6 +122,21 @@ enum MeshHooks {
         return best?.nick
     }
 
+    /// Extract `@nick` mentions from free message text. The broker is
+    /// mention-only, so a message that only says "@bob" in its body (no trailing
+    /// `@arg`) would otherwise reach nobody's mailbox. Trailing punctuation is
+    /// trimmed; order-preserving + de-duplicated. Shared by the CLI `say`/`ask`
+    /// and the GUI chat input so both surfaces deliver text mentions identically.
+    static func parseTextMentions(_ text: String) -> [String] {
+        var out: [String] = []
+        for tok in text.split(whereSeparator: { $0.isWhitespace }) where tok.hasPrefix("@") {
+            let name = tok.dropFirst()
+                .trimmingCharacters(in: CharacterSet(charactersIn: ".,:;!?()[]{}<>'\""))
+            if !name.isEmpty && !out.contains(name) { out.append(name) }
+        }
+        return out
+    }
+
     private static func loadUnread(_ nick: String) -> MeshUnread? {
         guard let d = try? Data(contentsOf: MeshPaths.unreadFile(nick)) else { return nil }
         return try? JSONDecoder().decode(MeshUnread.self, from: d)

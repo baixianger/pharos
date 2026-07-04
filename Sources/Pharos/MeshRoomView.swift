@@ -249,13 +249,10 @@ struct MeshRoomView: View {
         let r = room
         draft = ""
         // The broker is mention-only (to: nil reaches nobody's mailbox), so
-        // @tokens in the human text must become real delivery targets.
-        var targets: [String] = []
-        for tok in text.split(whereSeparator: { $0.isWhitespace }) where tok.hasPrefix("@") {
-            let name = tok.dropFirst().trimmingCharacters(in: CharacterSet(charactersIn: ".,:;!?()[]{}<>'\""))
-            if !name.isEmpty && !targets.contains(name) { targets.append(name) }
-        }
-        let to = targets.isEmpty ? nil : targets
+        // @tokens in the human text must become real delivery targets. Shared
+        // parser with the CLI `say`/`ask` so both surfaces behave identically.
+        let mentions = MeshHooks.parseTextMentions(text)
+        let to = mentions.isEmpty ? nil : mentions
         Task.detached { _ = MeshClient.send(MeshRequest(cmd: "say", room: r, nick: "human", text: text, to: to)) }
     }
 
