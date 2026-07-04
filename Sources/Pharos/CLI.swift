@@ -164,7 +164,9 @@ enum CLI {
             return 0
         case "join":
             guard a.count >= 2 else { print("usage: pharos mesh join <room> <nick>"); return 2 }
-            let r = MeshClient.send(MeshRequest(cmd: "join", room: a[0], nick: a[1]))
+            // cwd is recorded as the nick's project so hooks can resolve cwd → nick.
+            let r = MeshClient.send(MeshRequest(cmd: "join", room: a[0], nick: a[1],
+                                                project: FileManager.default.currentDirectoryPath))
             guard r.ok else { return report(r) }
             print("joined \(a[0]) as \(a[1])")
             let history = r.messages ?? []
@@ -218,6 +220,18 @@ enum CLI {
             if msgs.isEmpty { print("(no messages — \(r.note ?? "idle"))") }
             for m in msgs { print("[\(m.room)] \(m.from): \(m.text)") }
             return 0
+        case "recv":
+            guard let nick = a.first else { print("usage: pharos mesh recv <nick>"); return 2 }
+            let r = MeshClient.send(MeshRequest(cmd: "recv", nick: nick))
+            guard r.ok else { return report(r) }
+            let msgs = r.messages ?? []
+            if msgs.isEmpty { print("(no unread)") }
+            for m in msgs { print("[\(m.room)] \(m.from): \(m.text)") }
+            return 0
+        case "unread":
+            return MeshHooks.unread(a)
+        case "install-hooks":
+            return MeshHooks.installHooks(a)
         default:
             print(meshUsage); return 2
         }
@@ -253,6 +267,10 @@ enum CLI {
       say    <room> <nick> <text> [@n …]  post (no @ = whole room); returns at once
       ask    <room> <nick> <text> [@n …]  send AND block for the reply in one call (can't "send & forget")
       wait   <room> <nick> [--timeout S]  BLOCK until a message for <nick> arrives (the park point)
+      recv   <nick>                       drain unread @you across ALL your rooms (non-blocking)
+      unread [<nick>] [--json]            peek the local unread signal (no daemon, never consumes)
+      unread --hook-stop                  Claude Code Stop-hook mode (fail-open, reads hook JSON on stdin)
+      install-hooks [--project <dir> | --user]   wire the Stop hook into .claude/settings.json
       leave  <room> <nick>                leave a room
       rename <room> <new-name>            rename a room
       delete <room>                       delete a room (drops its transcript)

@@ -44,6 +44,7 @@ enum MeshClient {
     }
 
     static func send(_ req: MeshRequest) -> MeshResponse {
+        if let e = MeshPaths.socketPathOverflow { return .fail(e) }
         ensureDaemon()
         guard let fd = connect() else { return .fail("cannot reach mesh daemon") }
         defer { close(fd) }

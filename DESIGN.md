@@ -65,6 +65,41 @@ and let the user move it (the current manual `desk1.sh`/`desk2.sh` behavior).
 - **P2** — agent session browser + resume · worktree manager · desktop placement.
 - **P3** — ⌘K command palette · menu-bar item · per-project playbooks · notifications.
 
+## Mesh delivery (decided 2026-07-04)
+
+The agent chat room guarantees @-mention delivery to a **live, joined** session:
+
+- The broker mirrors each nick's in-RAM mailboxes to a local signal file
+  (`mesh-state/unread/<nick>.json`, exists ⇔ unread pending) on every deliver
+  and drain; `mesh-state/presence.json` maps nick → project dir (recorded at
+  join) so hooks resolve cwd → nick. Both live in always-local App Support —
+  never iCloud — and are wiped on daemon start (they mirror RAM, no more).
+- Delivery is a Claude Code **Stop hook** (`pharos mesh unread --hook-stop`,
+  wired by `pharos mesh install-hooks`): zero-daemon (pure file read),
+  fail-open (every failure path exits 0), loop-safe (`stop_hook_active`).
+  It blocks the stop with the unread messages; the agent consumes them with
+  `pharos mesh recv <nick>` (drains all rooms) and replies.
+- The UI's human input parses `@nick` into real delivery targets (the broker
+  is mention-only; a broadcast reaches nobody's mailbox).
+- **Accepted contract — the idle ceiling.** The room is tmux-agnostic: we don't
+  know whether a session lives in tmux, so a Pharos-side tmux keystroke push is
+  not a universal option. Hooks work for ANY session; a session idling at its
+  prompt runs no hooks and gets delivery on its next activity (next turn
+  boundary or human prompt). That ceiling is accepted, not a bug.
+- Join/leave is human-initiated; re-summon replays via join's history catch-up.
+- The hook command always embeds the **absolute binary path** first (a session's
+  runtime PATH need not contain `pharos`), bare `pharos` only as fallback, `true`
+  as the terminal fail-open. The Stop-block's "Stop hook error" label is Claude
+  Code's own rendering of `decision: block` — no non-error-labeled block form
+  exists (verified against the probed hooks reference); only the reason text is ours.
+- **Next stage (deferred, approved 2026-07-04): csg-based tmux-guarded
+  reachability.** Where csg knows a session is tmux-wrapped, push delivery into
+  the pane actively, lifting the idle ceiling for those sessions; the hook path
+  stays the universal fallback for everything else. Also parked there: presence
+  staleness sweep → *offline* marking (mailbox kept, hard leave only on clean
+  SessionEnd), SessionEnd auto-leave, PostToolUse/UserPromptSubmit delivery,
+  roster online badges.
+
 ## Open questions
 
 - Terminal of choice is hardcoded to Ghostty in `LaunchService` — make it configurable

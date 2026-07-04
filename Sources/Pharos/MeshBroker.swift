@@ -6,13 +6,14 @@ import Darwin
 // MARK: - Wire protocol (newline-delimited JSON over a local unix socket)
 
 struct MeshRequest: Codable {
-    var cmd: String                 // create | list | join | leave | say | wait | daemon
+    var cmd: String                 // create | list | join | leave | say | wait | recv | daemon
     var room: String?
     var nick: String?
     var text: String?
     var to: [String]?               // mention targets; empty/nil = whole room
     var timeoutMs: Int?
     var limit: Int?                 // history / join catch-up size
+    var project: String?            // join only: the joiner's cwd, recorded in presence
 }
 
 struct MeshMsg: Codable {
@@ -24,6 +25,35 @@ struct MeshMsg: Codable {
 }
 
 struct MeshRoomInfo: Codable { var name: String; var members: [String] }
+
+// MARK: - Mirrored local state (the zero-daemon surface the hooks read)
+
+/// Per-nick unread signal file: a mirror of the nick's in-RAM mailboxes across
+/// all rooms, rewritten by the broker on every deliver and every drain. The
+/// file EXISTS iff something is unread — hooks check it with a pure local read,
+/// so a dead broker can never error or trap an agent.
+struct MeshUnread: Codable {
+    var v: Int
+    var nick: String
+    var count: Int
+    var rooms: [String: Int]        // room → unread count
+    var messages: [MeshMsg]         // oldest→newest (capped)
+    var updatedTs: Double
+}
+
+/// nick → where it joined from + what rooms it's in. Lets a hook resolve
+/// cwd → nick with a pure file read (join records the CLI's cwd as `project`).
+struct MeshPresenceEntry: Codable {
+    var project: String?
+    var rooms: [String]
+    var lastSeen: Double
+    var online: Bool
+}
+
+struct MeshPresence: Codable {
+    var v: Int
+    var nicks: [String: MeshPresenceEntry]
+}
 
 struct MeshResponse: Codable {
     var ok: Bool
@@ -39,13 +69,38 @@ struct MeshResponse: Codable {
 // MARK: - Paths (socket is always LOCAL; transcript lives in the data dir so the GUI/iCloud see it)
 
 enum MeshPaths {
-    /// Always-local Pharos app-support dir (never iCloud — a socket can't live in iCloud).
+    /// Always-local Pharos app-support dir (never iCloud — a socket can't live in
+    /// iCloud). `PHAROS_MESH_DIR` overrides it so tests can run a hermetic broker
+    /// without touching the live one (mirrors `PHAROS_REGISTRY`).
     static var supportDir: URL {
+        if let o = ProcessInfo.processInfo.environment["PHAROS_MESH_DIR"], !o.isEmpty {
+            return URL(fileURLWithPath: o, isDirectory: true)
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return base.appendingPathComponent("Pharos", isDirectory: true)
     }
     static var socketPath: String { supportDir.appendingPathComponent("mesh.sock").path }
     static var daemonLog: URL { supportDir.appendingPathComponent("mesh-daemon.log") }
+
+    /// Darwin's `sun_path` holds 104 bytes including the NUL — a longer socket
+    /// path silently truncates in `meshFillSockaddr` and binds/connects somewhere
+    /// unintended. Non-nil = the clear diagnostic to surface instead.
+    static var socketPathOverflow: String? {
+        let n = socketPath.utf8.count
+        guard n > 103 else { return nil }
+        return "mesh socket path too long: \(socketPath) (\(n) chars > 103) — set a shorter PHAROS_MESH_DIR"
+    }
+
+    /// Local-only mesh runtime state (never iCloud): per-nick unread signal
+    /// files + presence. Mirrors the broker's RAM, so a fresh daemon wipes it —
+    /// the hooks must never read a signal the current broker didn't write.
+    static var stateDir: URL { supportDir.appendingPathComponent("mesh-state", isDirectory: true) }
+    static var unreadDir: URL { stateDir.appendingPathComponent("unread", isDirectory: true) }
+    static var presenceFile: URL { stateDir.appendingPathComponent("presence.json") }
+    static func unreadFile(_ nick: String) -> URL {
+        let safe = String(nick.map { $0.isLetter || $0.isNumber || "._-".contains($0) ? $0 : "_" })
+        return unreadDir.appendingPathComponent("\(safe).json")
+    }
 
     /// Room transcripts live beside the registry (may be iCloud) so the GUI can show them.
     static var transcriptDir: URL {
@@ -107,6 +162,7 @@ final class MeshBroker {
     private let lock = NSLock()
     private struct Room { var members = Set<String>(); var mailboxes: [String: [MeshMsg]] = [:] }
     private var rooms: [String: Room] = [:]
+    private var presence: [String: MeshPresenceEntry] = [:]
 
     private final class Waiter {
         let room: String; let nick: String
@@ -124,8 +180,19 @@ final class MeshBroker {
         signal(SIGPIPE, SIG_IGN)        // a hung-up client must not kill the daemon
         try? FileManager.default.createDirectory(at: MeshPaths.supportDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: MeshPaths.transcriptDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: MeshPaths.unreadDir, withIntermediateDirectories: true)
+        // Fresh broker = fresh RAM: reset the mirrored state so hooks never see
+        // a signal this broker didn't write. Transcripts (durable) are untouched.
+        if let stale = try? FileManager.default.contentsOfDirectory(at: MeshPaths.unreadDir, includingPropertiesForKeys: nil) {
+            for f in stale { try? FileManager.default.removeItem(at: f) }
+        }
+        writePresenceLocked()
 
         let path = MeshPaths.socketPath
+        if let e = MeshPaths.socketPathOverflow {
+            FileHandle.standardError.write(Data((e + "\n").utf8))
+            exit(1)
+        }
         if let fd = MeshClient.connect() { close(fd); exit(0) }   // a daemon already serves here — defer
         unlink(path)
         let sfd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -186,6 +253,7 @@ final class MeshBroker {
             if rooms[r] == nil { rooms[r] = Room() }
             rooms[r]!.members.insert(n)
             if rooms[r]!.mailboxes[n] == nil { rooms[r]!.mailboxes[n] = [] }
+            touchPresenceLocked(n, project: req.project)
             lock.unlock()
             // Hand the joiner the recent conversation so it can catch up.
             return MeshResponse(ok: true, messages: recentTranscript(r, limit: req.limit ?? 30))
@@ -198,6 +266,9 @@ final class MeshBroker {
             guard let r = req.room, let n = req.nick else { return .fail("room and nick required") }
             lock.lock()
             rooms[r]?.members.remove(n)
+            rooms[r]?.mailboxes[n] = nil               // leaving abandons that room's unread
+            syncUnreadLocked(n)
+            touchPresenceLocked(n)
             let wake = waiters.filter { $0.room == r }     // let peers re-evaluate (avoid deadlock)
             lock.unlock()
             for w in wake { w.sem.signal() }
@@ -212,6 +283,24 @@ final class MeshBroker {
             guard let r = req.room, let n = req.nick else { return .fail("room and nick required") }
             return park(room: r, nick: n, timeoutMs: req.timeoutMs ?? 60_000)
 
+        case "recv":
+            // Non-blocking drain of the nick's mailboxes across ALL rooms — what
+            // the Stop hook tells an agent to run when the signal file is set.
+            guard let n = req.nick else { return .fail("nick required") }
+            lock.lock()
+            var out: [MeshMsg] = []
+            for name in rooms.keys {
+                if let box = rooms[name]!.mailboxes[n], !box.isEmpty {
+                    out.append(contentsOf: box)
+                    rooms[name]!.mailboxes[n] = []
+                }
+            }
+            out.sort { $0.ts < $1.ts }
+            syncUnreadLocked(n)
+            touchPresenceLocked(n)
+            lock.unlock()
+            return MeshResponse(ok: true, messages: out, note: out.isEmpty ? "idle" : nil)
+
         case "ask":
             // Send + park for the reply in ONE call, so an agent can't "send and
             // forget to wait" — the act of asking *is* the hanging tool call.
@@ -222,7 +311,11 @@ final class MeshBroker {
         case "delete":
             guard let r = req.room else { return .fail("room required") }
             lock.lock()
+            var affected = Set<String>()
+            if let room = rooms[r] { affected.formUnion(room.members); affected.formUnion(room.mailboxes.keys) }
             rooms[r] = nil
+            for n in affected { syncUnreadLocked(n); refreshPresenceRoomsLocked(n) }
+            writePresenceLocked()
             let wake = waiters.filter { $0.room == r }
             waiters.removeAll { $0.room == r }
             lock.unlock()
@@ -235,6 +328,8 @@ final class MeshBroker {
             guard let old = req.room, let new = req.text, !new.isEmpty else { return .fail("room and new name required") }
             lock.lock()
             if let existing = rooms[old] { rooms[old] = nil; rooms[new] = existing }
+            for n in rooms[new]?.members ?? [] { syncUnreadLocked(n); refreshPresenceRoomsLocked(n) }
+            writePresenceLocked()
             let wake = waiters.filter { $0.room == old }
             waiters.removeAll { $0.room == old }
             lock.unlock()
@@ -259,6 +354,8 @@ final class MeshBroker {
         // list them (`@a @b @c`) — there is no `@all`.
         let targets = to ?? []
         for tg in targets { rooms[r]!.mailboxes[tg, default: []].append(msg) }
+        for tg in targets { syncUnreadLocked(tg) }     // signal file: the hooks' zero-daemon read
+        touchPresenceLocked(n)
         wake = waiters.filter { $0.room == r && targets.contains($0.nick) }
         lock.unlock()
         appendTranscript(msg)
@@ -273,8 +370,10 @@ final class MeshBroker {
         lock.lock()
         if rooms[r] == nil { rooms[r] = Room(); rooms[r]!.members.insert(n); rooms[r]!.mailboxes[n] = [] }
         rooms[r]!.members.insert(n)
+        touchPresenceLocked(n)
         if let box = rooms[r]!.mailboxes[n], !box.isEmpty {
             rooms[r]!.mailboxes[n] = []
+            syncUnreadLocked(n)
             lock.unlock()
             return MeshResponse(ok: true, messages: box)
         }
@@ -288,11 +387,64 @@ final class MeshBroker {
         waiters.removeAll { $0 === w }
         let msgs = rooms[r]?.mailboxes[n] ?? []
         rooms[r]?.mailboxes[n] = []
+        syncUnreadLocked(n)
         lock.unlock()
         if res == .timedOut && msgs.isEmpty {
             return MeshResponse(ok: true, messages: [], note: "timeout")
         }
         return MeshResponse(ok: true, messages: msgs)
+    }
+
+    // MARK: mirrored state (call with `lock` held)
+
+    /// Rewrite `nick`'s unread signal file from its in-RAM mailboxes across all
+    /// rooms. Empty ⇒ the file is removed, so "file exists" ⇔ "unread pending".
+    ///
+    /// Invariant: every caller holds `lock`, and the write is rename-atomic, so
+    /// a reader always sees a complete snapshot equal to the mailboxes at some
+    /// serialized instant. A hook can still *observe* between two delivers and
+    /// report a smaller count than a later `recv` drains — that's read timing,
+    /// not lost state; the mailbox is authoritative and recv returns all of it.
+    private func syncUnreadLocked(_ nick: String) {
+        var msgs: [MeshMsg] = []
+        for (_, room) in rooms {
+            if let box = room.mailboxes[nick], !box.isEmpty { msgs.append(contentsOf: box) }
+        }
+        let url = MeshPaths.unreadFile(nick)
+        guard !msgs.isEmpty else { try? FileManager.default.removeItem(at: url); return }
+        msgs.sort { $0.ts < $1.ts }
+        var perRoom: [String: Int] = [:]
+        for m in msgs { perRoom[m.room, default: 0] += 1 }
+        let snap = MeshUnread(v: 1, nick: nick, count: msgs.count, rooms: perRoom,
+                              messages: Array(msgs.suffix(50)), updatedTs: Date().timeIntervalSince1970)
+        if let d = try? JSONEncoder().encode(snap) { try? d.write(to: url, options: .atomic) }
+    }
+
+    /// Bump a nick's presence (lastSeen, membership, optionally its project dir)
+    /// and mirror to disk. Skips nicks that are members of nothing and were never
+    /// seen — e.g. the GUI's "human" sender — so presence stays a roster of agents.
+    private func touchPresenceLocked(_ nick: String, project: String? = nil) {
+        let memberOf = rooms.filter { $0.value.members.contains(nick) }.map(\.key).sorted()
+        if presence[nick] == nil && memberOf.isEmpty { return }
+        var e = presence[nick] ?? MeshPresenceEntry(project: nil, rooms: [], lastSeen: 0, online: true)
+        if let p = project, !p.isEmpty { e.project = p }
+        e.rooms = memberOf
+        e.lastSeen = Date().timeIntervalSince1970
+        e.online = true
+        presence[nick] = e
+        writePresenceLocked()
+    }
+
+    /// Recompute a nick's room list without bumping lastSeen (room deleted/renamed).
+    private func refreshPresenceRoomsLocked(_ nick: String) {
+        guard var e = presence[nick] else { return }
+        e.rooms = rooms.filter { $0.value.members.contains(nick) }.map(\.key).sorted()
+        presence[nick] = e
+    }
+
+    private func writePresenceLocked() {
+        let snap = MeshPresence(v: 1, nicks: presence)
+        if let d = try? JSONEncoder().encode(snap) { try? d.write(to: MeshPaths.presenceFile, options: .atomic) }
     }
 
     /// The last `limit` messages of a room, from its transcript (the durable log

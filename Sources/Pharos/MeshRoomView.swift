@@ -2,9 +2,9 @@ import SwiftUI
 
 /// In-window chat-room pane: the conversation in the middle, the room list on the
 /// right. Reads the per-room transcript JSONL the broker writes, refreshing on a
-/// timer. There's a human input box at the bottom — kept as a placeholder; for now
-/// a human message only queues for whoever is already waiting, it can't wake a
-/// stopped agent.
+/// timer. The human input box at the bottom delivers @mentions for real: a
+/// mentioned agent is woken if parked in `wait`, else notified at its next turn
+/// boundary via the mesh Stop hook (see MeshHooks).
 struct MeshRoomView: View {
     @Environment(ProjectStore.self) private var store
     @State private var rooms: [String] = []
@@ -184,11 +184,12 @@ struct MeshRoomView: View {
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
-    /// Placeholder human input. Posting works (queues for any waiting agent) but
-    /// can't wake a stopped one — hence the honest placeholder text.
+    /// Human input. `@nick` delivers to that agent: it wakes a parked `wait`
+    /// immediately, or surfaces via the unread signal at the agent's next turn
+    /// boundary (Stop hook). No @ = transcript only.
     private var inputBar: some View {
         HStack(spacing: 8) {
-            TextField("Human messages can't notify agents yet — they queue for whoever's waiting",
+            TextField("Message the room — @nick to deliver to an agent",
                       text: $draft)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit(send)
@@ -247,7 +248,15 @@ struct MeshRoomView: View {
         guard !text.isEmpty, !room.isEmpty else { return }
         let r = room
         draft = ""
-        Task.detached { _ = MeshClient.send(MeshRequest(cmd: "say", room: r, nick: "human", text: text, to: nil)) }
+        // The broker is mention-only (to: nil reaches nobody's mailbox), so
+        // @tokens in the human text must become real delivery targets.
+        var targets: [String] = []
+        for tok in text.split(whereSeparator: { $0.isWhitespace }) where tok.hasPrefix("@") {
+            let name = tok.dropFirst().trimmingCharacters(in: CharacterSet(charactersIn: ".,:;!?()[]{}<>'\""))
+            if !name.isEmpty && !targets.contains(name) { targets.append(name) }
+        }
+        let to = targets.isEmpty ? nil : targets
+        Task.detached { _ = MeshClient.send(MeshRequest(cmd: "say", room: r, nick: "human", text: text, to: to)) }
     }
 
     private func reload() {

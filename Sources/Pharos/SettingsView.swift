@@ -188,6 +188,8 @@ private struct CLISettingsTab: View {
     @State private var pharosStatus: String?
     @State private var chatStatus: String?
     @State private var skillStatus: String?
+    @State private var meshHookInstalled = false
+    @State private var meshHookStatus: String?
 
     private static var exec: String { Bundle.main.executablePath ?? "<Pharos.app>/Contents/MacOS/Pharos" }
 
@@ -242,6 +244,30 @@ private struct CLISettingsTab: View {
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 commandRow("chat", status: $chatStatus)
             }
+            Section("Mesh delivery hook (Claude Code)") {
+                Text("Guarantees @mentions reach a joined agent: a Stop hook holds the session's turn-end while unread mentions are pending. Safe to install globally — sessions not joined to any room are untouched (the hook no-ops).")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Image(systemName: meshHookInstalled ? "checkmark.circle.fill" : "circle.dashed")
+                        .foregroundStyle(meshHookInstalled ? Color.green : Color.secondary)
+                    Text(meshHookInstalled ? "Installed → ~/.claude/settings.json" : "Not installed")
+                        .font(.callout)
+                    Spacer()
+                    Button(meshHookInstalled ? "Reinstall / update" : "Install globally (~/.claude)") {
+                        _ = MeshHooks.installHooks(["--user"])
+                        meshHookInstalled = MeshHooks.userHookInstalled()
+                        meshHookStatus = meshHookInstalled
+                            ? "Installed — applies to newly started Claude sessions."
+                            : "Install failed — check ~/.claude/settings.json (a file with invalid JSON is never overwritten)."
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                if let s = meshHookStatus {
+                    Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Text("Per-repo alternative: `pharos mesh install-hooks --project <dir>`.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Agent skills (Claude Code)") {
                 Text("Symlink the bundled skills into ~/.claude/skills so every Claude session auto-loads them. For a single repo, use `pharos skill install <name> --project <dir>`.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -270,6 +296,7 @@ private struct CLISettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { meshHookInstalled = MeshHooks.userHookInstalled() }
     }
 
     private var skillNames: [String] { SkillInstall.available() }
