@@ -244,8 +244,8 @@ private struct CLISettingsTab: View {
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 commandRow("chat", status: $chatStatus)
             }
-            Section("Mesh delivery hook (Claude Code)") {
-                Text("Guarantees @mentions reach a joined agent: a Stop hook holds the session's turn-end while unread mentions are pending. Safe to install globally — sessions not joined to any room are untouched (the hook no-ops).")
+            Section("Mesh delivery hooks (Claude Code)") {
+                Text("Installs two hooks: a Stop hook that surfaces unread @mentions at a session's turn-end, and a SessionStart hook that injects the session id so a joined agent can address messages to its exact session (telling apart two agents in one folder). Safe to install globally — sessions not joined to any room are untouched (the hooks no-op).")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Image(systemName: meshHookInstalled ? "checkmark.circle.fill" : "circle.dashed")

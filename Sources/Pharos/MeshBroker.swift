@@ -14,6 +14,7 @@ struct MeshRequest: Codable {
     var timeoutMs: Int?
     var limit: Int?                 // history / join catch-up size
     var project: String?            // join only: the joiner's cwd, recorded in presence
+    var session: String?            // join only: the joiner's CC session id (exact addressing)
 }
 
 struct MeshMsg: Codable {
@@ -45,6 +46,7 @@ struct MeshUnread: Codable {
 /// cwd → nick with a pure file read (join records the CLI's cwd as `project`).
 struct MeshPresenceEntry: Codable {
     var project: String?
+    var session: String?            // CC session id (from --session at join); nil for older/cwd-only joins
     var rooms: [String]
     var lastSeen: Double
     var online: Bool
@@ -81,6 +83,18 @@ enum MeshPaths {
     }
     static var socketPath: String { supportDir.appendingPathComponent("mesh.sock").path }
     static var daemonLog: URL { supportDir.appendingPathComponent("mesh-daemon.log") }
+
+    /// Cross-host transport (see MeshTCP.swift). `PHAROS_MESH_TCP=host:port`
+    /// makes the broker also listen on TCP and clients dial it instead of the
+    /// local UDS. Unauthenticated (Tailscale is the trust boundary), so the
+    /// broker refuses to bind unless `PHAROS_MESH_TCP_INSECURE=1` is also set.
+    static var tcpEndpoint: String? {
+        guard let v = ProcessInfo.processInfo.environment["PHAROS_MESH_TCP"], !v.isEmpty else { return nil }
+        return v
+    }
+    static var tcpInsecureOptIn: Bool {
+        ProcessInfo.processInfo.environment["PHAROS_MESH_TCP_INSECURE"] == "1"
+    }
 
     /// Darwin's `sun_path` holds 104 bytes including the NUL — a longer socket
     /// path silently truncates in `meshFillSockaddr` and binds/connects somewhere
@@ -193,7 +207,7 @@ final class MeshBroker {
             FileHandle.standardError.write(Data((e + "\n").utf8))
             exit(1)
         }
-        if let fd = MeshClient.connect() { close(fd); exit(0) }   // a daemon already serves here — defer
+        if let fd = MeshClient.connectUDS() { close(fd); exit(0) }   // a daemon already serves here — defer
         unlink(path)
         let sfd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard sfd >= 0 else { fatalError("mesh: socket() failed (\(errno))") }
@@ -210,11 +224,40 @@ final class MeshBroker {
         }
         listen(sfd, 64)
         meshLog("listening on \(path)")
+        startTCPListenerIfConfigured()
 
         while true {
             let cfd = accept(sfd, nil, nil)
             if cfd < 0 { continue }
             Thread.detachNewThread { [weak self] in self?.handle(cfd) }
+        }
+    }
+
+    /// Bring up the cross-host TCP listener when `PHAROS_MESH_TCP` is set. Runs
+    /// its accept loop on a detached thread; each connection is driven by the
+    /// same `handle` as UDS. Refuses to bind without the insecure opt-in, and
+    /// serving UDS continues regardless of any TCP failure.
+    private func startTCPListenerIfConfigured() {
+        guard let ep = MeshPaths.tcpEndpoint else { return }
+        guard MeshPaths.tcpInsecureOptIn else {
+            let msg = "mesh: refusing to bind TCP \(ep) without auth — set PHAROS_MESH_TCP_INSECURE=1 to allow "
+                    + "(trusted Tailscale network only). Serving UDS only.\n"
+            FileHandle.standardError.write(Data(msg.utf8))
+            return
+        }
+        guard let tfd = meshTCPListen(ep) else {
+            FileHandle.standardError.write(Data("mesh: failed to bind TCP \(ep) — serving UDS only.\n".utf8))
+            return
+        }
+        meshLog("listening on TCP \(ep)")
+        let up = "mesh: cross-host TCP listener on \(ep) (UNAUTHENTICATED — Tailscale is the trust boundary)\n"
+        FileHandle.standardError.write(Data(up.utf8))
+        Thread.detachNewThread { [weak self] in
+            while true {
+                let cfd = accept(tfd, nil, nil)
+                if cfd < 0 { continue }
+                Thread.detachNewThread { [weak self] in self?.handle(cfd) }
+            }
         }
     }
 
@@ -253,7 +296,7 @@ final class MeshBroker {
             if rooms[r] == nil { rooms[r] = Room() }
             rooms[r]!.members.insert(n)
             if rooms[r]!.mailboxes[n] == nil { rooms[r]!.mailboxes[n] = [] }
-            touchPresenceLocked(n, project: req.project)
+            touchPresenceLocked(n, project: req.project, session: req.session)
             lock.unlock()
             // Hand the joiner the recent conversation so it can catch up.
             return MeshResponse(ok: true, messages: recentTranscript(r, limit: req.limit ?? 30))
@@ -282,6 +325,22 @@ final class MeshBroker {
         case "wait":
             guard let r = req.room, let n = req.nick else { return .fail("room and nick required") }
             return park(room: r, nick: n, timeoutMs: req.timeoutMs ?? 60_000)
+
+        case "peek":
+            // Cross-host Stop-hook query: resolve (cwd, session) → nick on the
+            // broker (a dial-out host has no local presence/unread files), then
+            // return that nick's unread WITHOUT draining. `note` carries the
+            // resolved nick so the remote hook can format its block message.
+            lock.lock()
+            let who = req.nick ?? resolveNickLocked(cwd: req.project, session: req.session)
+            guard let n = who else { lock.unlock(); return MeshResponse(ok: true, messages: []) }
+            var pending: [MeshMsg] = []
+            for (_, room) in rooms {
+                if let box = room.mailboxes[n], !box.isEmpty { pending.append(contentsOf: box) }
+            }
+            pending.sort { $0.ts < $1.ts }
+            lock.unlock()
+            return MeshResponse(ok: true, messages: pending, note: pending.isEmpty ? nil : n)
 
         case "recv":
             // Non-blocking drain of the nick's mailboxes across ALL rooms — what
@@ -423,16 +482,41 @@ final class MeshBroker {
     /// Bump a nick's presence (lastSeen, membership, optionally its project dir)
     /// and mirror to disk. Skips nicks that are members of nothing and were never
     /// seen — e.g. the GUI's "human" sender — so presence stays a roster of agents.
-    private func touchPresenceLocked(_ nick: String, project: String? = nil) {
+    private func touchPresenceLocked(_ nick: String, project: String? = nil, session: String? = nil) {
         let memberOf = rooms.filter { $0.value.members.contains(nick) }.map(\.key).sorted()
         if presence[nick] == nil && memberOf.isEmpty { return }
-        var e = presence[nick] ?? MeshPresenceEntry(project: nil, rooms: [], lastSeen: 0, online: true)
+        var e = presence[nick] ?? MeshPresenceEntry(project: nil, session: nil, rooms: [], lastSeen: 0, online: true)
         if let p = project, !p.isEmpty { e.project = p }
+        if let s = session, !s.isEmpty { e.session = s }
         e.rooms = memberOf
         e.lastSeen = Date().timeIntervalSince1970
         e.online = true
         presence[nick] = e
         writePresenceLocked()
+    }
+
+    /// Broker-side nick resolution from (cwd, session) — mirrors
+    /// `MeshHooks.resolveNick` but against in-RAM presence, for the cross-host
+    /// `peek`. Session exact-match wins; else longest cwd-prefix, ties → recent.
+    private func resolveNickLocked(cwd: String?, session: String?) -> String? {
+        if let s = session, !s.isEmpty {
+            let hit = presence.filter { $0.value.session == s }
+                              .max { $0.value.lastSeen < $1.value.lastSeen }
+            if let hit { return hit.key }
+        }
+        guard let cwd, !cwd.isEmpty else { return nil }
+        let path = URL(fileURLWithPath: cwd).standardizedFileURL.path
+        var best: (nick: String, plen: Int, seen: Double)?
+        for (nick, e) in presence {
+            guard let proj = e.project, !proj.isEmpty else { continue }
+            let pr = URL(fileURLWithPath: proj).standardizedFileURL.path
+            guard path == pr || path.hasPrefix(pr + "/") else { continue }
+            if best == nil || pr.count > best!.plen
+                || (pr.count == best!.plen && e.lastSeen > best!.seen) {
+                best = (nick, pr.count, e.lastSeen)
+            }
+        }
+        return best?.nick
     }
 
     /// Recompute a nick's room list without bumping lastSeen (room deleted/renamed).

@@ -14,6 +14,7 @@ a peer thinks.
 
 ## Primitives
 - `pharos mesh join <room> <me>` — register your nick; **returns the recent history** so you catch up on an existing ("old") chat. (`pharos mesh history <room>` re-reads it.)
+  - **Pass `--session <id>` if you were given one.** The SessionStart hook injects a line into your context — *"your session id is …"*. Append `--session <that-id>` to `join` so delivery targets *this exact session*, not just this directory. Without it, two agents working in the same folder can't be told apart. If you weren't given a session id, just omit it (join falls back to the directory).
 - `pharos mesh say  <room> <me> "<text>" [@peer …]` — post; no `@` = whole room. Returns at once.
 - `pharos mesh ask  <room> <me> "<text>" @peer [--timeout S]` — **send AND block for the reply, in one call.** Prefer this over `say`+`wait` so you can't "send and forget to listen."
 - `pharos mesh wait <room> <me> [--timeout S]` — block until someone messages you (pure listen).
