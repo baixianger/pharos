@@ -465,14 +465,10 @@ final class ProjectStore {
         didSet { UserDefaults.standard.set(codexArgs, forKey: "pharos.codexArgs") }
     }
     /// SSH host alias or `user@host` for the peer machine. Empty = disabled.
+    /// The paired peer Mac (SSH host / Tailscale IP) — used to reach its mesh
+    /// broker for cross-host chat rooms (see MeshRemote).
     var peerHost = "" {
         didSet { UserDefaults.standard.set(peerHost, forKey: "pharos.peerHost") }
-    }
-    /// The peer Mac's host key (its computer name). When set, a project's path on
-    /// the peer is read from its per-host map (`localPaths`), so multi-machine
-    /// sync feeds the peer-drift feature without a manual per-project override.
-    var peerHostKey = "" {
-        didSet { UserDefaults.standard.set(peerHostKey, forKey: "pharos.peerHostKey") }
     }
 
     /// The registry file. Resolved from the shared `DataLocation` (honoring the
@@ -503,7 +499,6 @@ final class ProjectStore {
         claudeArgs = d.string(forKey: "pharos.claudeArgs") ?? ""
         codexArgs  = d.string(forKey: "pharos.codexArgs")  ?? ""
         peerHost   = d.string(forKey: "pharos.peerHost")   ?? ""
-        peerHostKey = d.string(forKey: "pharos.peerHostKey") ?? ""
         load()
         lastFileMtime = fileModificationDate()
         refreshRunningAgents()

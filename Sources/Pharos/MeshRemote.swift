@@ -76,12 +76,6 @@ enum MeshRemote {
         return Probe(sshOK: true, ip: ip, brokerUp: ensureBrokerAt(host, ip: ip))
     }
 
-    /// The peer's macOS computer name (for the per-host checkout-path map). Used
-    /// by pairing to auto-fill `peerHostKey`. nil if SSH fails.
-    static func peerComputerName(_ host: String) -> String? {
-        let r = Shell.run("/usr/bin/ssh", sshOpts + [host, "scutil --get ComputerName 2>/dev/null || hostname -s"])
-        return (r.ok && !r.out.isEmpty) ? r.out : nil
-    }
 
     /// The peer's Tailscale IPv4. Primary source is the LOCAL ssh config
     /// (`ssh -G` resolves the alias to its HostName — no network, no PATH

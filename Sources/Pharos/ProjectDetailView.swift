@@ -21,8 +21,6 @@ struct ProjectDetailView: View {
     @State private var addPlaybookShown = false
     @State private var newPlaybookName = ""
     @State private var newPlaybookCommand = ""
-    @State private var peer: PeerStatus? = nil
-    @State private var peerLoading = false
     @State private var ghStatus: GitHubStatus? = nil
     @State private var ghLoading = false
     @State private var worktreeToRemove: Worktree?
@@ -79,12 +77,11 @@ struct ProjectDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .navigationTitle(project.name)
-                .task(id: "\(projectID)|\(store.gitRefreshToken)|\(store.peerHost)") {
+                .task(id: "\(projectID)|\(store.gitRefreshToken)") {
                     await loadGit(project)
                     await loadHeatmap(project)
                     await loadSessions(project)
                     await loadWorktrees(project)
-                    await loadPeer(project)
                     await loadGitHubStatus(project)
                 }
                 .alert("New worktree", isPresented: $newWorktreeShown) {
@@ -147,9 +144,6 @@ struct ProjectDetailView: View {
                 gitCard
                 if git.isRepo { heatmapCard }
                 if git.isRepo { worktreesCard }
-                if !store.peerHost.isEmpty {
-                    peerCard(project)
-                }
             } else {
                 Text("Not a local repository.")
                     .foregroundStyle(.secondary)
@@ -352,115 +346,6 @@ struct ProjectDetailView: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-
-    // MARK: Peer machine card
-
-    @ViewBuilder
-    private func peerCard(_ project: Project) -> some View {
-        let host = store.peerHost
-        let localPath = project.localPath ?? ""
-        VStack(alignment: .leading, spacing: 12) {
-            // Header row
-            HStack {
-                Image(systemName: "network").foregroundStyle(.secondary)
-                Text("Peer: \(host)").font(.headline)
-                Spacer()
-                if peerLoading { ProgressView().controlSize(.small) }
-            }
-
-            // Directory override row
-            HStack(spacing: 8) {
-                Text("Directory on \(host)")
-                    .foregroundStyle(.secondary)
-                    .font(.callout)
-                    .fixedSize()
-                TextField(localPath, text: peerPathBinding(project))
-                    .textFieldStyle(.roundedBorder)
-                    .font(.callout)
-                    .onSubmit { Task { await loadPeer(project) } }
-                Button("Check") { Task { await loadPeer(project) } }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .disabled(peerLoading)
-            }
-
-            Divider()
-
-            // Status section
-            if peerLoading && peer == nil {
-                Text("Connecting…").foregroundStyle(.secondary).font(.callout)
-            } else if let p = peer {
-                if !p.reachable {
-                    Label("Unreachable — host did not respond", systemImage: "wifi.slash")
-                        .foregroundStyle(.secondary)
-                        .font(.callout)
-                } else if p.missing {
-                    // Prominent not-on-peer message to prompt the user to fix the directory
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label("Not found on \(host)", systemImage: "questionmark.folder")
-                            .font(.callout.weight(.medium))
-                        let effectivePath = project.peerPath ?? localPath
-                        Text("No git repo at \(effectivePath) — update the directory above.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    infoRow("arrow.triangle.branch", "Peer branch", p.branch)
-                    infoRow("checkmark.seal", "Peer HEAD", p.head)
-                    if p.dirtyCount > 0 {
-                        infoRow("pencil", "Peer changes", "\(p.dirtyCount) uncommitted")
-                    } else {
-                        infoRow("checkmark.circle", "Peer working tree", "clean")
-                    }
-                    Divider()
-                    // Drift indicator: compare peer HEAD vs local last commit hash
-                    let localHash = git.lastCommitHash
-                    let inSync = !localHash.isEmpty && localHash == p.head
-                    if inSync {
-                        Label("In sync", systemImage: "arrow.left.arrow.right")
-                            .foregroundStyle(.secondary)
-                            .font(.callout)
-                    } else if localHash.isEmpty {
-                        Label("Local HEAD unavailable", systemImage: "minus.circle")
-                            .foregroundStyle(.secondary)
-                            .font(.callout)
-                    } else {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Label("Differs", systemImage: "arrow.left.arrow.right.square")
-                                .font(.callout)
-                                .foregroundStyle(.primary)
-                            HStack(spacing: 4) {
-                                Text("local").foregroundStyle(.secondary)
-                                Text(localHash).fontWeight(.medium)
-                                Text("↔")
-                                Text("peer").foregroundStyle(.secondary)
-                                Text(p.head).fontWeight(.medium)
-                            }
-                            .font(.caption)
-                        }
-                    }
-                }
-            } else if !peerLoading {
-                Text("No data — click Check to poll.").foregroundStyle(.secondary).font(.callout)
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .glassEffect(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-
-    private func peerPathBinding(_ project: Project) -> Binding<String> {
-        Binding(
-            get: { store.project(project.id)?.peerPath ?? "" },
-            set: { newValue in
-                if var p = store.project(project.id) {
-                    let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                    p.peerPath = trimmed.isEmpty ? nil : trimmed
-                    store.update(p)
-                }
-            }
-        )
     }
 
     // MARK: Worktrees card
@@ -1206,21 +1091,6 @@ struct ProjectDetailView: View {
     private func loadWorktrees(_ project: Project) async {
         guard let path = project.localPath, !path.isEmpty else { worktrees = []; return }
         worktrees = await GitService.worktrees(for: path)
-    }
-
-    private func loadPeer(_ project: Project) async {
-        let host = store.peerHost
-        guard !host.isEmpty, let localPath = project.localPath, !localPath.isEmpty else {
-            peer = nil; return
-        }
-        // Prefer an explicit per-project override; else the peer's own path from
-        // the per-host map (when a peer host key is configured); else the local path.
-        let key = store.peerHostKey
-        let mapped = key.isEmpty ? nil : project.localPaths[key]
-        let effectivePath = project.peerPath ?? mapped ?? localPath
-        peerLoading = true
-        peer = await PeerService.status(host: host, path: effectivePath)
-        peerLoading = false
     }
 
     private func loadGitHubStatus(_ project: Project) async {

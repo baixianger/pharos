@@ -169,10 +169,9 @@ private struct MachinesSettingsTab: View {
 
 // MARK: - Pairing
 
-/// Pair this Mac with another over Tailscale — one flow that powers BOTH
-/// cross-machine git-HEAD comparison and cross-host chat rooms. Discovers the
-/// tailnet's Macs, validates SSH + Tailscale + mesh broker, and auto-fills the
-/// peer's computer name. The underlying config is still `peerHost` / `peerHostKey`.
+/// Pair this Mac with another over Tailscale for cross-host chat rooms.
+/// Discovers the tailnet's Macs, then validates SSH + Tailscale + mesh broker
+/// (starting the peer's broker if needed). Stores the peer in `peerHost`.
 private struct PairingView: View {
     @Environment(ProjectStore.self) private var store
     @State private var peers: [PairingService.Peer] = []
@@ -224,13 +223,9 @@ private struct PairingView: View {
                     }
                 }
             }
-            Text("Pairs over Tailscale — reused for cross-machine git-HEAD comparison AND cross-host chat rooms. The peer needs Pharos in /Applications; its broker is started automatically.")
+            Text("Pairs over Tailscale for cross-host chat rooms. The peer needs Pharos in /Applications; its broker is started automatically.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            LabeledContent("Peer computer name") {
-                TextField("auto-filled when paired", text: $store.peerHostKey)
-                    .textFieldStyle(.roundedBorder).frame(maxWidth: 200)
-            }
         }
         .task { await refresh() }
     }
@@ -243,7 +238,6 @@ private struct PairingView: View {
         testing = true
         let host = store.peerHost
         let r = await Task.detached { PairingService.pair(host: host) }.value
-        if let name = r.computerName, !name.isEmpty { store.peerHostKey = name }
         result = r
         testing = false
     }

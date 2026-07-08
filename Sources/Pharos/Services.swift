@@ -441,69 +441,6 @@ extension GitService {
     }
 }
 
-/// Queries a peer Mac's git state over SSH.
-/// All work is done off the main actor; the caller must never block on the result
-/// from the main thread without `await`.
-enum PeerService {
-
-    /// Shell-safe single-quote quoting (same logic as LaunchService.shellQuote).
-    private static func shellQuoted(_ s: String) -> String {
-        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
-    /// Fetch the peer's git state for `path`.
-    /// Returns `nil` when `host` is empty (peer tracking disabled).
-    /// Returns a `PeerStatus` with `reachable: false` if SSH fails to connect.
-    /// Returns a `PeerStatus` with `missing: true` if the path isn't a git repo on the peer.
-    static func status(host: String, path: String) async -> PeerStatus? {
-        guard !host.isEmpty else { return nil }
-        return await Task.detached(priority: .utility) {
-            let q = shellQuoted(path)
-            // Three lines of output, newline-separated:
-            //   1. short HEAD hash  (empty if not a git repo)
-            //   2. branch name      (empty if detached / not a git repo)
-            //   3. dirty-file count (0 if not a git repo)
-            let gitCmd = [
-                "git -C \(q) rev-parse --short HEAD 2>/dev/null",
-                "git -C \(q) rev-parse --abbrev-ref HEAD 2>/dev/null",
-                "git -C \(q) status --porcelain 2>/dev/null | wc -l | tr -d ' '"
-            ].joined(separator: "; ")
-
-            let r = Shell.run("/usr/bin/ssh", [
-                "-o", "BatchMode=yes",
-                "-o", "ConnectTimeout=6",
-                host,
-                gitCmd
-            ])
-
-            // SSH-level failure: exit code 255 is ssh's own connect/auth error,
-            // and any non-zero exit with no stdout means we never got past ssh to
-            // a git result. Either way the peer is effectively unreachable — do
-            // NOT misreport it as "repo missing".
-            if r.code == 255 || (!r.ok && r.out.isEmpty) {
-                return .unreachable
-            }
-
-            // SSH connected but git may have errored (path not a repo, etc.)
-            let lines = r.out.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-            let headLine   = lines.count > 0 ? lines[0].trimmingCharacters(in: .whitespaces) : ""
-            let branchLine = lines.count > 1 ? lines[1].trimmingCharacters(in: .whitespaces) : ""
-            let dirtyLine  = lines.count > 2 ? lines[2].trimmingCharacters(in: .whitespaces) : ""
-
-            // If the HEAD hash is empty the path is not a git repo on the peer.
-            if headLine.isEmpty { return .notOnPeer }
-
-            return PeerStatus(
-                head: headLine,
-                branch: branchLine.isEmpty ? "(detached)" : branchLine,
-                dirtyCount: Int(dirtyLine) ?? 0,
-                missing: false,
-                reachable: true
-            )
-        }.value
-    }
-}
-
 /// Lists the user's GitHub repos via the `gh` CLI.
 enum GitHubService {
     /// Resolved path to the `gh` binary, shared across all methods.

@@ -20,7 +20,6 @@ enum PairingService {
         let ok: Bool
         let steps: [Step]
         let ip: String?
-        let computerName: String?
     }
 
     /// Absolute path to the Tailscale CLI (not on a GUI process's PATH).
@@ -54,15 +53,14 @@ enum PairingService {
     static func pair(host: String) -> Result {
         let h = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !h.isEmpty else {
-            return Result(ok: false, steps: [Step(label: "Enter or pick a Mac", ok: false)], ip: nil, computerName: nil)
+            return Result(ok: false, steps: [Step(label: "Enter or pick a Mac", ok: false)], ip: nil)
         }
         let p = MeshRemote.probe(h)
         var steps = [Step(label: "SSH reachable", ok: p.sshOK)]
         if p.sshOK { steps.append(Step(label: "Tailscale address", ok: p.ip != nil)) }
         if p.ip != nil { steps.append(Step(label: "Mesh broker running", ok: p.brokerUp)) }
         let ok = p.sshOK && p.ip != nil && p.brokerUp
-        let name = ok ? MeshRemote.peerComputerName(h) : nil
-        return Result(ok: ok, steps: steps, ip: p.ip, computerName: name)
+        return Result(ok: ok, steps: steps, ip: p.ip)
     }
 
     private static func isIPv4(_ s: String) -> Bool {

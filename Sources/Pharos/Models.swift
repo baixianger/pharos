@@ -19,7 +19,6 @@ struct Project: Identifiable, Codable, Hashable {
     var addedAt: Date = Date()
     var playbooks: [Playbook] = []
     var notes: String = ""      // human-written description shown in Pharos
-    var peerPath: String?       // override for this project's directory on the peer host; nil/empty = same as localPath
     var issues: [Issue] = []    // native, single-user issues (no human assignees)
     var updates: [ProjectUpdate] = []   // project-update feed / personal changelog
     var milestones: [Milestone] = []    // cycles / milestones issues can belong to
@@ -32,11 +31,11 @@ struct Project: Identifiable, Codable, Hashable {
     init(id: UUID = UUID(), name: String, localPath: String? = nil, githubRemote: String? = nil,
          tags: [String] = [], yolo: Bool = true, tmux: Bool = false,
          addedAt: Date = Date(), playbooks: [Playbook] = [], notes: String = "",
-         peerPath: String? = nil, issues: [Issue] = [], updates: [ProjectUpdate] = [],
+         issues: [Issue] = [], updates: [ProjectUpdate] = [],
          localPaths: [String: String] = [:], milestones: [Milestone] = []) {
         self.id = id; self.name = name; self.localPath = localPath; self.githubRemote = githubRemote
         self.tags = tags; self.yolo = yolo; self.tmux = tmux; self.addedAt = addedAt
-        self.playbooks = playbooks; self.notes = notes; self.peerPath = peerPath
+        self.playbooks = playbooks; self.notes = notes
         self.issues = issues; self.updates = updates; self.localPaths = localPaths
         self.milestones = milestones
     }
@@ -55,7 +54,6 @@ struct Project: Identifiable, Codable, Hashable {
         addedAt = try c.decodeIfPresent(Date.self, forKey: .addedAt) ?? Date()
         playbooks = try c.decodeIfPresent([Playbook].self, forKey: .playbooks) ?? []
         notes = try c.decodeIfPresent(String.self, forKey: .notes) ?? ""
-        peerPath = try c.decodeIfPresent(String.self, forKey: .peerPath)
         issues = try c.decodeIfPresent([Issue].self, forKey: .issues) ?? []
         updates = try c.decodeIfPresent([ProjectUpdate].self, forKey: .updates) ?? []
         localPaths = try c.decodeIfPresent([String: String].self, forKey: .localPaths) ?? [:]
@@ -441,21 +439,6 @@ struct GitHubStatus: Sendable, Equatable {
 }
 
 /// Git state fetched from a peer machine over SSH. Value type → Sendable.
-struct PeerStatus: Sendable, Equatable {
-    /// Short HEAD commit hash reported by the peer.
-    var head: String
-    /// Branch name reported by the peer.
-    var branch: String
-    /// Number of uncommitted changes (`git status --porcelain | wc -l`).
-    var dirtyCount: Int
-    /// True when the path does not exist on the peer (git exited non-zero).
-    var missing: Bool
-    /// False when SSH itself could not connect within the timeout.
-    var reachable: Bool
-
-    static let unreachable = PeerStatus(head: "", branch: "", dirtyCount: 0, missing: false, reachable: false)
-    static let notOnPeer   = PeerStatus(head: "", branch: "", dirtyCount: 0, missing: true,  reachable: true)
-}
 
 /// Local git state shown in a project's detail view. Value type -> Sendable.
 struct GitInfo: Equatable {
