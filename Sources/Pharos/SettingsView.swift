@@ -317,19 +317,23 @@ private struct CLISettingsTab: View {
 
     var body: some View {
         Form {
-            Section("pharos — project & issue control") {
-                Text("How agents drive Pharos: a Claude Code / Codex session shells out to read and update issues and post progress — e.g. `pharos list --json`, `pharos issue start <project> 3 claude`, `pharos overview`.")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Section {
                 commandRow("pharos", status: $pharosStatus)
+            } header: {
+                HStack(spacing: 6) {
+                    Text("pharos — project & issue control")
+                    HelpBadge(text: "How agents drive Pharos: a Claude Code / Codex session shells out to read and update issues and post progress — e.g. `pharos list --json`, `pharos issue start <project> 3 claude`, `pharos overview`.")
+                }
             }
-            Section("chat — agent chat room") {
-                Text("Shorthand for `pharos mesh`: agents talk to each other — `chat join <room> <nick>`, `chat ask <room> <nick> \"…\" @peer`, `chat wait <room> <nick>`. Same binary, invoked as `chat`.")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Section {
                 commandRow("chat", status: $chatStatus)
+            } header: {
+                HStack(spacing: 6) {
+                    Text("chat — agent chat room")
+                    HelpBadge(text: "Shorthand for `pharos mesh`: agents talk to each other — `chat join <room> <nick>`, `chat ask <room> <nick> \"…\" @peer`, `chat wait <room> <nick>`. Same binary, invoked as `chat`.")
+                }
             }
-            Section("Mesh delivery hooks (Claude Code)") {
-                Text("Installs two hooks: a Stop hook that surfaces unread @mentions at a session's turn-end, and a SessionStart hook that injects the session id so a joined agent can address messages to its exact session (telling apart two agents in one folder). Safe to install globally — sessions not joined to any room are untouched (the hooks no-op).")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Section {
                 HStack {
                     Image(systemName: meshHookInstalled ? "checkmark.circle.fill" : "circle.dashed")
                         .foregroundStyle(meshHookInstalled ? Color.green : Color.secondary)
@@ -348,12 +352,13 @@ private struct CLISettingsTab: View {
                 if let s = meshHookStatus {
                     Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                Text("Per-repo alternative: `pharos mesh install-hooks --project <dir>`.")
-                    .font(.caption).foregroundStyle(.secondary)
+            } header: {
+                HStack(spacing: 6) {
+                    Text("Mesh delivery hooks (Claude Code)")
+                    HelpBadge(text: "Installs two Claude Code hooks: a Stop hook that surfaces unread @mentions at a session's turn-end, and a SessionStart hook that injects the session id so a joined agent can address messages to its exact session (telling apart two agents in one folder). Per-repo alternative: `pharos mesh install-hooks --project <dir>`. Safe to install globally — un-joined sessions no-op.")
+                }
             }
-            Section("Agent skills (Claude Code)") {
-                Text("Symlink the bundled skills into ~/.claude/skills so every Claude session auto-loads them. For a single repo, use `pharos skill install <name> --project <dir>`.")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Section {
                 if skillNames.isEmpty {
                     Text("(no bundled skills found)").font(.caption).foregroundStyle(.secondary)
                 } else {
@@ -375,6 +380,11 @@ private struct CLISettingsTab: View {
                 }
                 if let s = skillStatus {
                     Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            } header: {
+                HStack(spacing: 6) {
+                    Text("Agent skills (Claude Code)")
+                    HelpBadge(text: "Symlink the bundled skills into ~/.claude/skills so every Claude session auto-loads them. For a single repo, use `pharos skill install <name> --project <dir>`.")
                 }
             }
         }
