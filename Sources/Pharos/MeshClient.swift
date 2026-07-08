@@ -7,7 +7,14 @@ import Darwin
 /// (like tmux), sends one request, and returns the response. `wait` blocks here
 /// because the daemon holds the response open until a message arrives.
 enum MeshClient {
+    /// Pick the transport: a remote broker over TCP when `PHAROS_MESH_TCP` is
+    /// set (this Mac dials another's broker), else the local UDS.
     static func connect() -> Int32? {
+        if let ep = MeshPaths.tcpEndpoint { return meshTCPConnect(ep) }
+        return connectUDS()
+    }
+
+    static func connectUDS() -> Int32? {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         if fd < 0 { return nil }
         var addr = sockaddr_un()
@@ -44,10 +51,21 @@ enum MeshClient {
     }
 
     static func send(_ req: MeshRequest) -> MeshResponse {
+        // Remote broker (TCP): never auto-spawn a local daemon — just dial it.
+        if let ep = MeshPaths.tcpEndpoint {
+            guard let fd = connect() else { return .fail("cannot reach remote mesh broker at \(ep)") }
+            defer { close(fd) }
+            return roundTrip(fd, req)
+        }
         if let e = MeshPaths.socketPathOverflow { return .fail(e) }
         ensureDaemon()
-        guard let fd = connect() else { return .fail("cannot reach mesh daemon") }
+        guard let fd = connectUDS() else { return .fail("cannot reach mesh daemon") }
         defer { close(fd) }
+        return roundTrip(fd, req)
+    }
+
+    /// One request → one response over an already-connected fd (UDS or TCP).
+    private static func roundTrip(_ fd: Int32, _ req: MeshRequest) -> MeshResponse {
         guard let data = try? JSONEncoder().encode(req) else { return .fail("encode failed") }
         meshWriteAll(fd, data)
         guard let line = meshReadLine(fd),

@@ -163,10 +163,14 @@ enum CLI {
             for ri in rooms { print("\(ri.name)  [\(ri.members.joined(separator: ", "))]") }
             return 0
         case "join":
-            guard a.count >= 2 else { print("usage: pharos mesh join <room> <nick>"); return 2 }
-            // cwd is recorded as the nick's project so hooks can resolve cwd → nick.
+            guard a.count >= 2 else { print("usage: pharos mesh join <room> <nick> [--session <id>]"); return 2 }
+            // cwd is recorded as the nick's project so hooks can resolve cwd → nick;
+            // --session (the id the SessionStart hook injected) makes it exact.
+            var session: String?
+            if let i = a.firstIndex(of: "--session"), i + 1 < a.count { session = a[i + 1] }
             let r = MeshClient.send(MeshRequest(cmd: "join", room: a[0], nick: a[1],
-                                                project: FileManager.default.currentDirectoryPath))
+                                                project: FileManager.default.currentDirectoryPath,
+                                                session: session))
             guard r.ok else { return report(r) }
             print("joined \(a[0]) as \(a[1])")
             let history = r.messages ?? []
@@ -235,6 +239,8 @@ enum CLI {
             return 0
         case "unread":
             return MeshHooks.unread(a)
+        case "session-start":
+            return MeshHooks.sessionStart(a)        // Claude Code SessionStart hook
         case "install-hooks":
             return MeshHooks.installHooks(a)
         default:
@@ -267,7 +273,7 @@ enum CLI {
     pharos mesh — agent chat room
       create <room>                       create a room
       list                                list rooms + members
-      join   <room> <nick>                register a nick in a room (returns recent history)
+      join   <room> <nick> [--session <id>]  register a nick in a room (returns recent history)
       history <room> [--limit N]          recent messages in a room (catch up)
       say    <room> <nick> <text> [@n …]  post (no @ = whole room); returns at once
       ask    <room> <nick> <text> [@n …]  send AND block for the reply in one call (can't "send & forget")
@@ -275,7 +281,8 @@ enum CLI {
       recv   <nick>                       drain unread @you across ALL your rooms (non-blocking)
       unread [<nick>] [--json]            peek the local unread signal (no daemon, never consumes)
       unread --hook-stop                  Claude Code Stop-hook mode (fail-open, reads hook JSON on stdin)
-      install-hooks [--project <dir> | --user]   wire the Stop hook into .claude/settings.json
+      session-start                       Claude Code SessionStart-hook mode (injects session id into context)
+      install-hooks [--project <dir> | --user]   wire the Stop + SessionStart hooks into .claude/settings.json
       leave  <room> <nick>                leave a room
       rename <room> <new-name>            rename a room
       delete <room>                       delete a room (drops its transcript)
