@@ -12,10 +12,10 @@ struct SettingsView: View {
                 .tabItem { Label("Projects", systemImage: "folder") }
             CLISettingsTab()
                 .tabItem { Label("CLI", systemImage: "terminal") }
-            SyncSettingsTab()
-                .tabItem { Label("Sync", systemImage: "arrow.triangle.2.circlepath") }
+            MachinesSettingsTab()
+                .tabItem { Label("Machines", systemImage: "macbook.and.iphone") }
         }
-        .frame(width: 500, height: 460)
+        .frame(width: 520, height: 480)
     }
 }
 
@@ -31,10 +31,6 @@ private struct GeneralSettingsTab: View {
                     ForEach(AppearanceMode.allCases) { Text($0.label).tag($0) }
                 }
                 .pickerStyle(.segmented)
-            }
-            Section("New projects default to") {
-                Toggle("yolo", isOn: $store.defaultYolo)
-                Toggle("tmux", isOn: $store.defaultTmux)
             }
             Section("Notifications") {
                 Toggle("Notify when an agent finishes", isOn: $store.notifyOnFinish)
@@ -70,6 +66,10 @@ private struct LaunchSettingsTab: View {
                 }
                 Text("Appended to the launch command for every project.")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("New projects default to") {
+                Toggle("yolo", isOn: $store.defaultYolo)
+                Toggle("tmux", isOn: $store.defaultTmux)
             }
         }
         .formStyle(.grouped)
@@ -120,7 +120,7 @@ private struct ProjectsSettingsTab: View {
 
 // MARK: - Integrations
 
-private struct SyncSettingsTab: View {
+private struct MachinesSettingsTab: View {
     @Environment(ProjectStore.self) private var store
 
     var body: some View {
@@ -161,24 +161,91 @@ private struct SyncSettingsTab: View {
                     Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Section("Peer machine") {
-                LabeledContent("SSH host") {
-                    TextField("e.g. home-ts", text: $store.peerHost)
-                        .textFieldStyle(.roundedBorder).frame(maxWidth: 220)
-                }
-                Text("Compares each project's git HEAD on this machine over SSH. Leave empty to disable.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                LabeledContent("Peer host key") {
-                    TextField("e.g. macbook-air", text: $store.peerHostKey)
-                        .textFieldStyle(.roundedBorder).frame(maxWidth: 220)
-                }
-                Text("The peer Mac's computer name (run `pharos host` there). When set, each project's path on the peer is read from its per-host map — no per-project override needed.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            PairingView()
         }
         .formStyle(.grouped)
+    }
+}
+
+// MARK: - Pairing
+
+/// Pair this Mac with another over Tailscale — one flow that powers BOTH
+/// cross-machine git-HEAD comparison and cross-host chat rooms. Discovers the
+/// tailnet's Macs, validates SSH + Tailscale + mesh broker, and auto-fills the
+/// peer's computer name. The underlying config is still `peerHost` / `peerHostKey`.
+private struct PairingView: View {
+    @Environment(ProjectStore.self) private var store
+    @State private var peers: [PairingService.Peer] = []
+    @State private var testing = false
+    @State private var result: PairingService.Result?
+
+    var body: some View {
+        @Bindable var store = store
+        Section("Pair a Mac") {
+            HStack {
+                Text("Pair with")
+                Spacer()
+                Menu(store.peerHost.isEmpty ? "Choose a Mac…" : store.peerHost) {
+                    if peers.isEmpty {
+                        Text("No other Macs found on your tailnet").disabled(true)
+                    } else {
+                        ForEach(peers) { p in
+                            Button("\(p.name)  ·  \(p.ip)") { store.peerHost = p.ip; result = nil }
+                        }
+                    }
+                    Divider()
+                    Button("Refresh") { Task { await refresh() } }
+                }
+                .frame(maxWidth: 240)
+            }
+            LabeledContent("SSH host / IP") {
+                TextField("home-ts or 100.x.y.z", text: $store.peerHost)
+                    .textFieldStyle(.roundedBorder).frame(maxWidth: 200)
+                    .onChange(of: store.peerHost) { _, _ in result = nil }
+            }
+            HStack {
+                Button(testing ? "Testing…" : "Test & pair") { Task { await test() } }
+                    .disabled(testing || store.peerHost.isEmpty)
+                if testing { ProgressView().controlSize(.small).padding(.leading, 4) }
+                Spacer()
+                if let r = result {
+                    Label(r.ok ? "Paired" : "Not connected",
+                          systemImage: r.ok ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(r.ok ? Color.green : Color.orange)
+                        .font(.caption)
+                }
+            }
+            if let r = result {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(r.steps) { s in
+                        Label(s.label, systemImage: s.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundStyle(s.ok ? Color.green : Color.red)
+                            .font(.caption)
+                    }
+                }
+            }
+            Text("Pairs over Tailscale — reused for cross-machine git-HEAD comparison AND cross-host chat rooms. The peer needs Pharos in /Applications; its broker is started automatically.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            LabeledContent("Peer computer name") {
+                TextField("auto-filled when paired", text: $store.peerHostKey)
+                    .textFieldStyle(.roundedBorder).frame(maxWidth: 200)
+            }
+        }
+        .task { await refresh() }
+    }
+
+    private func refresh() async {
+        peers = await Task.detached { PairingService.discoverPeers() }.value
+    }
+
+    private func test() async {
+        testing = true
+        let host = store.peerHost
+        let r = await Task.detached { PairingService.pair(host: host) }.value
+        if let name = r.computerName, !name.isEmpty { store.peerHostKey = name }
+        result = r
+        testing = false
     }
 }
 
