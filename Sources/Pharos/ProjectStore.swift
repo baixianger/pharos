@@ -719,8 +719,11 @@ final class ProjectStore {
 
     // MARK: Data location (local ↔ iCloud Drive)
 
-    var dataLocationIsICloud: Bool { DataLocation.usingICloud }
-    var dataDirectoryPath: String { DataLocation.current.path }
+    // Stored (not computed) so @Observable tracks them: the values derive from
+    // `DataLocation` (UserDefaults-backed statics) which Observation can't see,
+    // so relocateData refreshes these to drive the Settings radio's update.
+    private(set) var dataLocationIsICloud: Bool = DataLocation.usingICloud
+    private(set) var dataDirectoryPath: String = DataLocation.current.path
     var iCloudAvailable: Bool { DataLocation.iCloudAvailable }
 
     /// Move Pharos's data between Application Support and iCloud Drive. Seeds the
@@ -742,6 +745,10 @@ final class ProjectStore {
             try? fm.copyItem(at: sourceRegistry, to: targetRegistry)
         }
         DataLocation.setDirectory(toICloud ? target : nil)
+        // Mirror the new location into the observed properties so the Settings
+        // radio reflects the switch (the statics above aren't Observation-tracked).
+        dataLocationIsICloud = DataLocation.usingICloud
+        dataDirectoryPath = DataLocation.current.path
         // Re-point and reload from the new location.
         lastFileMtime = nil
         load()
