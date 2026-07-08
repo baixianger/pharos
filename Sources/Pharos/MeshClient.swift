@@ -7,10 +7,19 @@ import Darwin
 /// (like tmux), sends one request, and returns the response. `wait` blocks here
 /// because the daemon holds the response open until a message arrives.
 enum MeshClient {
-    /// Pick the transport: a remote broker over TCP when `PHAROS_MESH_TCP` is
-    /// set (this Mac dials another's broker), else the local UDS.
+    /// GUI-set remote broker endpoint ("ip:port"), resolved from the peer SSH
+    /// host (see MeshRemote). When set, the app dials that broker instead of a
+    /// local one and never auto-spawns a daemon. The `PHAROS_MESH_TCP` env var
+    /// still takes precedence (agents / CLI). nil ⇒ use the local broker.
+    nonisolated(unsafe) static var remoteEndpoint: String?
+
+    /// The active remote endpoint, env taking precedence over the GUI's.
+    private static var activeRemote: String? { MeshPaths.tcpEndpoint ?? remoteEndpoint }
+
+    /// Pick the transport: a remote broker over TCP when configured (this Mac
+    /// dials another's broker), else the local UDS.
     static func connect() -> Int32? {
-        if let ep = MeshPaths.tcpEndpoint { return meshTCPConnect(ep) }
+        if let ep = activeRemote { return meshTCPConnect(ep) }
         return connectUDS()
     }
 
@@ -52,7 +61,7 @@ enum MeshClient {
 
     static func send(_ req: MeshRequest) -> MeshResponse {
         // Remote broker (TCP): never auto-spawn a local daemon — just dial it.
-        if let ep = MeshPaths.tcpEndpoint {
+        if let ep = activeRemote {
             guard let fd = connect() else { return .fail("cannot reach remote mesh broker at \(ep)") }
             defer { close(fd) }
             return roundTrip(fd, req)

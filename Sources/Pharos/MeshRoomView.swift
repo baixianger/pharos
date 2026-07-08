@@ -14,6 +14,9 @@ struct MeshRoomView: View {
     @State private var renameTarget: String?
     @State private var renameText: String = ""
     @State private var issueRef: IssueRef?
+    @State private var loading = false
+    @State private var resolving = false
+    @State private var resolved = false
     private struct IssueRef: Identifiable { let project: String; let number: Int; var id: String { "\(project)#\(number)" } }
     private let tick = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
@@ -24,9 +27,9 @@ struct MeshRoomView: View {
             roomList.frame(width: 210)
         }
         .navigationTitle("Chat Rooms")
-        .onAppear(perform: reload)
+        .task(id: store.peerHost) { await resolveRemote() }   // resolve transport BEFORE first load
         .onReceive(tick) { _ in reload() }
-        .onChange(of: room) { _, r in messages = r.isEmpty ? [] : load(r) }
+        .onChange(of: room) { _, r in Task { messages = await Self.history(r) } }
         .alert("Rename room", isPresented: Binding(
             get: { renameTarget != nil },
             set: { if !$0 { renameTarget = nil } }
@@ -256,24 +259,60 @@ struct MeshRoomView: View {
         Task.detached { _ = MeshClient.send(MeshRequest(cmd: "say", room: r, nick: "human", text: text, to: to)) }
     }
 
+    /// Poll the broker (which may be REMOTE over TCP — see MeshClient) for the
+    /// room list + the current room's history. Runs the blocking socket calls
+    /// off the main thread and applies results on the main actor. The `loading`
+    /// guard drops overlapping ticks so a slow remote round-trip can't pile up.
     private func reload() {
-        refreshRooms()
-        if !room.isEmpty && !rooms.contains(room) { room = "" }   // current room was deleted/renamed
-        if room.isEmpty { room = rooms.first ?? "" }
-        messages = room.isEmpty ? [] : load(room)
+        guard resolved, !loading, !resolving else { return }   // wait for transport to be resolved
+        loading = true
+        let selected = room
+        Task {
+            let snap = await Self.fetch(selected: selected)
+            loading = false
+            // Remote broker unreachable (e.g. peer daemon died) → re-bootstrap.
+            if !snap.ok && MeshClient.remoteEndpoint != nil { await resolveRemote(); return }
+            rooms = snap.rooms
+            room = snap.pick
+            messages = snap.messages
+        }
     }
 
-    private func refreshRooms() {
-        let dir = MeshPaths.transcriptDir
-        let found = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-        rooms = found.filter { $0.pathExtension == "jsonl" }
-            .map { $0.deletingPathExtension().lastPathComponent }
-            .sorted()
+    /// Point MeshClient at the peer's broker when this Mac has no local one —
+    /// SSHing (off-main) to discover the peer's Tailscale IP and ensure its
+    /// broker is up. nil result ⇒ use the local broker. Runs before the first
+    /// load, whenever the peer host changes, and to self-heal a dead remote.
+    private func resolveRemote() async {
+        guard !resolving else { return }
+        resolving = true
+        let peer = store.peerHost
+        let ep = await Task.detached { MeshRemote.resolve(peerHost: peer) }.value
+        MeshClient.remoteEndpoint = ep
+        resolving = false
+        resolved = true
+        reload()
     }
 
-    private func load(_ room: String) -> [MeshMsg] {
-        guard !room.isEmpty, let data = try? String(contentsOf: MeshPaths.transcript(room), encoding: .utf8) else { return [] }
-        let dec = JSONDecoder()
-        return data.split(separator: "\n").compactMap { try? dec.decode(MeshMsg.self, from: Data($0.utf8)) }
+    private struct Snapshot { let ok: Bool; let rooms: [String]; let pick: String; let messages: [MeshMsg] }
+
+    /// Off-main broker query: room list, then history for the room that stays
+    /// selected (or the first, if none/deleted). `ok` reflects broker reachability.
+    private static func fetch(selected: String) async -> Snapshot {
+        await Task.detached {
+            let listResp = MeshClient.send(MeshRequest(cmd: "list"))
+            let names = (listResp.rooms ?? []).map(\.name).sorted()
+            let pick = selected.isEmpty || !names.contains(selected) ? (names.first ?? "") : selected
+            let msgs: [MeshMsg] = pick.isEmpty ? []
+                : (MeshClient.send(MeshRequest(cmd: "history", room: pick, limit: 200)).messages ?? [])
+            return Snapshot(ok: listResp.ok, rooms: names, pick: pick, messages: msgs)
+        }.value
+    }
+
+    /// History for a specific room (used when the user switches rooms).
+    private static func history(_ room: String) async -> [MeshMsg] {
+        guard !room.isEmpty else { return [] }
+        return await Task.detached {
+            MeshClient.send(MeshRequest(cmd: "history", room: room, limit: 200)).messages ?? []
+        }.value
     }
 }
