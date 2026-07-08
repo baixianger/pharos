@@ -37,8 +37,25 @@ enum MeshClient {
         return fd
     }
 
+    /// When set (hub mode — see MeshHosting), a spawned local daemon binds TCP
+    /// on this endpoint so peers can dial in.
+    nonisolated(unsafe) static var hostTCPEndpoint: String?
+
+    /// Stop the local broker and wait for it to actually exit, so a respawn
+    /// rebinds cleanly (used when toggling hub mode on/off).
+    static func stopLocalDaemon() {
+        guard let fd = connectUDS() else { return }
+        if let d = try? JSONEncoder().encode(MeshRequest(cmd: "shutdown")) {
+            meshWriteAll(fd, d); _ = meshReadLine(fd)
+        }
+        close(fd)
+        for _ in 0..<20 {                       // up to ~1s for it to vanish
+            if let f = connectUDS() { close(f); usleep(50_000) } else { return }
+        }
+    }
+
     static func ensureDaemon() {
-        if let fd = connect() { close(fd); return }
+        if let fd = connectUDS() { close(fd); return }
         // Resolve symlinks so a `chat`-symlink invocation spawns the daemon as the
         // REAL binary (argv0 "Pharos", not "chat" — else its args get re-prefixed).
         let exe = (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath()
@@ -46,6 +63,12 @@ enum MeshClient {
         let p = Process()
         p.executableURL = exe
         p.arguments = ["mesh", "daemon"]
+        if let ep = hostTCPEndpoint {           // hub mode: spawned broker binds TCP
+            var env = ProcessInfo.processInfo.environment
+            env["PHAROS_MESH_TCP"] = ep
+            env["PHAROS_MESH_TCP_INSECURE"] = "1"
+            p.environment = env
+        }
         if !FileManager.default.fileExists(atPath: MeshPaths.daemonLog.path) {
             FileManager.default.createFile(atPath: MeshPaths.daemonLog.path, contents: nil)
         }
@@ -54,7 +77,7 @@ enum MeshClient {
         }
         try? p.run()
         for _ in 0..<60 {                       // wait up to ~3s for the socket
-            if let fd = connect() { close(fd); return }
+            if let fd = connectUDS() { close(fd); return }
             usleep(50_000)
         }
     }

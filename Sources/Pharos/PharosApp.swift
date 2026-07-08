@@ -33,6 +33,10 @@ struct PharosApp: App {
             ContentView()
                 .environment(store)
                 .preferredColorScheme(store.appearance.colorScheme)
+                .task {
+                    // Hub mode: bind the broker to TCP on launch so peers can dial in.
+                    if store.hostMesh { await Task.detached { MeshHosting.apply(hosting: true) }.value }
+                }
         }
         .defaultSize(width: 1180, height: 760)
         .commands {

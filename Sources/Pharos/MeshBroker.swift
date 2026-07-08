@@ -396,6 +396,12 @@ final class MeshBroker {
             for w in wake { w.sem.signal() }
             return .okay()
 
+        case "shutdown":
+            // Graceful stop — used when toggling the hub on/off to rebind the
+            // listener (UDS-only ↔ UDS+TCP). Reply first, then exit.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) { exit(0) }
+            return .okay("shutting down")
+
         default:
             return .fail("unknown cmd: \(req.cmd)")
         }

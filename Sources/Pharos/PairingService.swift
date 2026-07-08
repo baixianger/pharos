@@ -30,6 +30,13 @@ enum PairingService {
         return nil
     }
 
+    /// This Mac's own Tailscale IPv4 (for the hub to bind its broker to).
+    static func selfTailscaleIP() -> String? {
+        guard let bin = tailscaleBin() else { return nil }
+        let ip = Shell.run(bin, ["ip", "-4"]).out.split(separator: "\n").first.map(String.init) ?? ""
+        return isIPv4(ip) ? ip : nil
+    }
+
     /// The tailnet's Macs except this one (self excluded by its own Tailscale IP).
     static func discoverPeers() -> [Peer] {
         guard let bin = tailscaleBin() else { return [] }

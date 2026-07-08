@@ -1,6 +1,17 @@
 import AppKit
 import SwiftUI
 
+/// A small "?" that reveals an explanation on hover, so section chrome can stay
+/// terse instead of carrying a paragraph of caption text.
+struct HelpBadge: View {
+    let text: String
+    var body: some View {
+        Image(systemName: "questionmark.circle")
+            .foregroundStyle(.secondary)
+            .help(text)
+    }
+}
+
 struct SettingsView: View {
     var body: some View {
         TabView {
@@ -161,6 +172,17 @@ private struct MachinesSettingsTab: View {
                     Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Section {
+                Toggle(isOn: Binding(
+                    get: { store.hostMesh },
+                    set: { on in store.hostMesh = on; Task.detached { MeshHosting.apply(hosting: on) } }
+                )) {
+                    HStack(spacing: 6) {
+                        Text("Host the chat mesh for other Macs")
+                        HelpBadge(text: "Turn ON for ONE always-on Mac (the hub): it binds this Mac's chat broker to your Tailscale address so your other Macs can pair to it and share the same rooms. Leave OFF on your other Macs — they use “Pair a Mac” below to connect to the hub.")
+                    }
+                }
+            } header: { Text("Host mesh") }
             PairingView()
         }
         .formStyle(.grouped)

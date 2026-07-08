@@ -470,6 +470,11 @@ final class ProjectStore {
     var peerHost = "" {
         didSet { UserDefaults.standard.set(peerHost, forKey: "pharos.peerHost") }
     }
+    /// Host the chat mesh for other Macs — bind this Mac's broker to TCP so peers
+    /// can dial in (see MeshHosting). The apply/restart is driven by the GUI.
+    var hostMesh = false {
+        didSet { UserDefaults.standard.set(hostMesh, forKey: "pharos.hostMesh") }
+    }
 
     /// The registry file. Resolved from the shared `DataLocation` (honoring the
     /// `pharos.dataDir` pref + `PHAROS_REGISTRY`) so the GUI and CLI always agree,
@@ -499,6 +504,7 @@ final class ProjectStore {
         claudeArgs = d.string(forKey: "pharos.claudeArgs") ?? ""
         codexArgs  = d.string(forKey: "pharos.codexArgs")  ?? ""
         peerHost   = d.string(forKey: "pharos.peerHost")   ?? ""
+        hostMesh   = d.bool(forKey: "pharos.hostMesh")
         load()
         lastFileMtime = fileModificationDate()
         refreshRunningAgents()
