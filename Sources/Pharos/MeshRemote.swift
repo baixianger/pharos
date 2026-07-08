@@ -41,9 +41,12 @@ enum MeshRemote {
     /// "ip:port" on success, nil on any failure.
     private static func ensurePeerBroker(_ host: String) -> String? {
         guard let ip = peerIP(host) else { return nil }
+        return ensureBrokerAt(host, ip: ip) ? "\(ip):\(port)" : nil
+    }
 
-        // Idempotent: if the TCP port is already open, this is a pure no-op;
-        // otherwise find the Pharos binary and start a TCP broker (detached).
+    /// Ensure a TCP broker is listening on the peer at `ip:port` — start one
+    /// (detached, idempotent) if the port is closed. Returns whether it's UP.
+    static func ensureBrokerAt(_ host: String, ip: String) -> Bool {
         let bins = peerBinCandidates.joined(separator: " ")
         let script = """
         if ! /usr/bin/nc -z -G2 \(ip) \(port) 2>/dev/null; then
@@ -60,7 +63,24 @@ enum MeshRemote {
         /usr/bin/nc -z -G2 \(ip) \(port) 2>/dev/null && echo UP || echo DOWN
         """
         let r = Shell.run("/usr/bin/ssh", sshOpts + ["-o", "ConnectTimeout=10", host, script])
-        return r.out.hasSuffix("UP") ? "\(ip):\(port)" : nil
+        return r.out.hasSuffix("UP")
+    }
+
+    /// Pairing probe: is the peer SSH-reachable, does it have a Tailscale IP, and
+    /// is its mesh broker up (started if needed)? Drives the pairing UI's checks.
+    struct Probe { let sshOK: Bool; let ip: String?; let brokerUp: Bool }
+    static func probe(_ host: String) -> Probe {
+        let ssh = Shell.run("/usr/bin/ssh", sshOpts + [host, "true"])
+        guard ssh.ok else { return Probe(sshOK: false, ip: nil, brokerUp: false) }
+        guard let ip = peerIP(host) else { return Probe(sshOK: true, ip: nil, brokerUp: false) }
+        return Probe(sshOK: true, ip: ip, brokerUp: ensureBrokerAt(host, ip: ip))
+    }
+
+    /// The peer's macOS computer name (for the per-host checkout-path map). Used
+    /// by pairing to auto-fill `peerHostKey`. nil if SSH fails.
+    static func peerComputerName(_ host: String) -> String? {
+        let r = Shell.run("/usr/bin/ssh", sshOpts + [host, "scutil --get ComputerName 2>/dev/null || hostname -s"])
+        return (r.ok && !r.out.isEmpty) ? r.out : nil
     }
 
     /// The peer's Tailscale IPv4. Primary source is the LOCAL ssh config
