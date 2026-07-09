@@ -143,7 +143,8 @@ enum CLI {
     }
 
     /// `pharos mesh …` — the agent chat room. Uses raw tokens (positional
-    /// room/nick/text), not the flag parser. `wait` blocks (the park point).
+    /// room/nick/text), not the flag parser. Non-blocking: `say` delivers into the
+    /// target's mailbox, the Stop hook surfaces it; `recv` drains without blocking.
     private static func runMesh(_ args: [String]) -> Int32 {
         guard let sub = args.first else { print(meshUsage); return 2 }
         let a = Array(args.dropFirst())
@@ -207,28 +208,6 @@ enum CLI {
             for m in MeshHooks.parseTextMentions(a[2]) where !to.contains(m) { to.append(m) }
             let r = MeshClient.send(MeshRequest(cmd: "say", room: a[0], nick: a[1], text: a[2], to: to))
             return report(r)
-        case "ask":
-            guard a.count >= 3 else { print("usage: pharos mesh ask <room> <nick> <text> [@target …] [--timeout <seconds>]"); return 2 }
-            var timeout = 60
-            if let i = a.firstIndex(of: "--timeout"), i + 1 < a.count, let s = Int(a[i + 1]) { timeout = s }
-            var to = a.dropFirst(3).compactMap { $0.hasPrefix("@") ? String($0.dropFirst()) : nil }
-            for m in MeshHooks.parseTextMentions(a[2]) where !to.contains(m) { to.append(m) }
-            let r = MeshClient.send(MeshRequest(cmd: "ask", room: a[0], nick: a[1], text: a[2], to: to, timeoutMs: timeout * 1000))
-            guard r.ok else { return report(r) }
-            let msgs = r.messages ?? []
-            if msgs.isEmpty { print("(no reply — \(r.note ?? "idle"))") }
-            for m in msgs { print("[\(m.room)] \(m.from): \(m.text)") }
-            return 0
-        case "wait":
-            guard a.count >= 2 else { print("usage: pharos mesh wait <room> <nick> [--timeout <seconds>]"); return 2 }
-            var timeout = 60
-            if let i = a.firstIndex(of: "--timeout"), i + 1 < a.count, let s = Int(a[i + 1]) { timeout = s }
-            let r = MeshClient.send(MeshRequest(cmd: "wait", room: a[0], nick: a[1], timeoutMs: timeout * 1000))
-            guard r.ok else { return report(r) }
-            let msgs = r.messages ?? []
-            if msgs.isEmpty { print("(no messages — \(r.note ?? "idle"))") }
-            for m in msgs { print("[\(m.room)] \(m.from): \(m.text)") }
-            return 0
         case "recv":
             guard let nick = a.first else { print("usage: pharos mesh recv <nick>"); return 2 }
             let r = MeshClient.send(MeshRequest(cmd: "recv", nick: nick))
@@ -275,9 +254,7 @@ enum CLI {
       list                                list rooms + members
       join   <room> <nick> [--session <id>]  register a nick in a room (returns recent history)
       history <room> [--limit N]          recent messages in a room (catch up)
-      say    <room> <nick> <text> [@n …]  post (no @ = whole room); returns at once
-      ask    <room> <nick> <text> [@n …]  send AND block for the reply in one call (can't "send & forget")
-      wait   <room> <nick> [--timeout S]  BLOCK until a message for <nick> arrives (the park point)
+      say    <room> <nick> <text> [@n …]  send; @n reaches that agent (no @ = transcript only)
       recv   <nick>                       drain unread @you across ALL your rooms (non-blocking)
       unread [<nick>] [--json]            peek the local unread signal (no daemon, never consumes)
       unread --hook-stop                  Claude Code Stop-hook mode (fail-open, reads hook JSON on stdin)

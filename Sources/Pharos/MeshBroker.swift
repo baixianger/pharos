@@ -6,7 +6,7 @@ import Darwin
 // MARK: - Wire protocol (newline-delimited JSON over a local unix socket)
 
 struct MeshRequest: Codable {
-    var cmd: String                 // create | list | join | leave | say | wait | recv | daemon
+    var cmd: String                 // create | list | join | leave | say | recv | daemon
     var room: String?
     var nick: String?
     var text: String?
@@ -169,21 +169,15 @@ func meshWriteAll(_ fd: Int32, _ data: Data) {
 
 // MARK: - Broker daemon
 
-/// In-memory chat broker. Holds rooms → members → per-member mailboxes, blocks
-/// `wait` calls until a message addressed to that nick arrives (the "park" point),
-/// and appends every message to a per-room transcript file for the GUI to read.
+/// In-memory chat broker. Holds rooms → members → per-member durable mailboxes,
+/// mirrors each nick's unread to a signal file for the hooks, and appends every
+/// message to a per-room transcript file for the GUI to read. Delivery to an agent
+/// is by @mention into its mailbox; the Stop hook surfaces it at the next turn.
 final class MeshBroker {
     private let lock = NSLock()
     private struct Room { var members = Set<String>(); var mailboxes: [String: [MeshMsg]] = [:] }
     private var rooms: [String: Room] = [:]
     private var presence: [String: MeshPresenceEntry] = [:]
-
-    private final class Waiter {
-        let room: String; let nick: String
-        let sem = DispatchSemaphore(value: 0)
-        init(_ r: String, _ n: String) { room = r; nick = n }
-    }
-    private var waiters: [Waiter] = []
 
     static func runDaemon() -> Never {
         MeshBroker().serve()
@@ -312,19 +306,13 @@ final class MeshBroker {
             rooms[r]?.mailboxes[n] = nil               // leaving abandons that room's unread
             syncUnreadLocked(n)
             touchPresenceLocked(n)
-            let wake = waiters.filter { $0.room == r }     // let peers re-evaluate (avoid deadlock)
             lock.unlock()
-            for w in wake { w.sem.signal() }
             return .okay()
 
         case "say":
             guard let r = req.room, let n = req.nick, let t = req.text else { return .fail("room, nick and text required") }
             deliver(room: r, from: n, text: t, to: req.to)
             return .okay()
-
-        case "wait":
-            guard let r = req.room, let n = req.nick else { return .fail("room and nick required") }
-            return park(room: r, nick: n, timeoutMs: req.timeoutMs ?? 60_000)
 
         case "peek":
             // Cross-host Stop-hook query: resolve (cwd, session) → nick on the
@@ -360,13 +348,6 @@ final class MeshBroker {
             lock.unlock()
             return MeshResponse(ok: true, messages: out, note: out.isEmpty ? "idle" : nil)
 
-        case "ask":
-            // Send + park for the reply in ONE call, so an agent can't "send and
-            // forget to wait" — the act of asking *is* the hanging tool call.
-            guard let r = req.room, let n = req.nick, let t = req.text else { return .fail("room, nick and text required") }
-            deliver(room: r, from: n, text: t, to: req.to)
-            return park(room: r, nick: n, timeoutMs: req.timeoutMs ?? 60_000)
-
         case "delete":
             guard let r = req.room else { return .fail("room required") }
             lock.lock()
@@ -375,11 +356,8 @@ final class MeshBroker {
             rooms[r] = nil
             for n in affected { syncUnreadLocked(n); refreshPresenceRoomsLocked(n) }
             writePresenceLocked()
-            let wake = waiters.filter { $0.room == r }
-            waiters.removeAll { $0.room == r }
             lock.unlock()
             try? FileManager.default.removeItem(at: MeshPaths.transcript(r))
-            for w in wake { w.sem.signal() }
             return .okay()
 
         case "rename":
@@ -389,11 +367,8 @@ final class MeshBroker {
             if let existing = rooms[old] { rooms[old] = nil; rooms[new] = existing }
             for n in rooms[new]?.members ?? [] { syncUnreadLocked(n); refreshPresenceRoomsLocked(n) }
             writePresenceLocked()
-            let wake = waiters.filter { $0.room == old }
-            waiters.removeAll { $0.room == old }
             lock.unlock()
             try? FileManager.default.moveItem(at: MeshPaths.transcript(old), to: MeshPaths.transcript(new))
-            for w in wake { w.sem.signal() }
             return .okay()
 
         case "shutdown":
@@ -407,57 +382,21 @@ final class MeshBroker {
         }
     }
 
-    /// Post a message: mention-only when `@to` is given, else broadcast to the
-    /// rest of the room. Wakes any matching parked waiters.
+    /// Post a message: mention-only. Each @-target gets it in their durable
+    /// mailbox; the Stop hook surfaces it at the target's next turn boundary.
     private func deliver(room r: String, from n: String, text t: String, to: [String]?) {
         let msg = MeshMsg(from: n, room: r, text: t, ts: Date().timeIntervalSince1970, to: to ?? [])
-        var wake: [Waiter] = []
         lock.lock()
         if rooms[r] == nil { rooms[r] = Room() }
-        // Mention-only: only @-targets are delivered/woken. A no-mention say is
-        // logged to the transcript and wakes nobody. To reach several agents,
+        // Mention-only: only @-targets are delivered. A no-mention say is logged
+        // to the transcript and reaches nobody's mailbox. To reach several agents,
         // list them (`@a @b @c`) — there is no `@all`.
         let targets = to ?? []
         for tg in targets { rooms[r]!.mailboxes[tg, default: []].append(msg) }
         for tg in targets { syncUnreadLocked(tg) }     // signal file: the hooks' zero-daemon read
         touchPresenceLocked(n)
-        wake = waiters.filter { $0.room == r && targets.contains($0.nick) }
         lock.unlock()
         appendTranscript(msg)
-        for w in wake { w.sem.signal() }
-    }
-
-    /// Block until a message for `nick` arrives (or timeout). The "park" point:
-    /// the connection — hence the agent's Bash tool call — hangs here. A message
-    /// queued before the call drains immediately; the mailbox means nothing is
-    /// lost across re-parks.
-    private func park(room r: String, nick n: String, timeoutMs: Int) -> MeshResponse {
-        lock.lock()
-        if rooms[r] == nil { rooms[r] = Room(); rooms[r]!.members.insert(n); rooms[r]!.mailboxes[n] = [] }
-        rooms[r]!.members.insert(n)
-        touchPresenceLocked(n)
-        if let box = rooms[r]!.mailboxes[n], !box.isEmpty {
-            rooms[r]!.mailboxes[n] = []
-            syncUnreadLocked(n)
-            lock.unlock()
-            return MeshResponse(ok: true, messages: box)
-        }
-        let w = Waiter(r, n)
-        waiters.append(w)
-        lock.unlock()
-
-        let res = w.sem.wait(timeout: .now() + .milliseconds(timeoutMs))
-
-        lock.lock()
-        waiters.removeAll { $0 === w }
-        let msgs = rooms[r]?.mailboxes[n] ?? []
-        rooms[r]?.mailboxes[n] = []
-        syncUnreadLocked(n)
-        lock.unlock()
-        if res == .timedOut && msgs.isEmpty {
-            return MeshResponse(ok: true, messages: [], note: "timeout")
-        }
-        return MeshResponse(ok: true, messages: msgs)
     }
 
     // MARK: mirrored state (call with `lock` held)
