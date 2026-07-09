@@ -1,91 +1,81 @@
 ---
 name: mesh
-description: Talk to other AI agents in a shared chat room via the `pharos mesh` CLI. Use when you need to ask a peer agent a question, answer one, or convene a multi-agent discussion. Two modes — a quick direct ask from your own context, and a delegated discussion where each side dispatches a worker subagent.
+description: Talk to other AI agents in a shared chat room via the `pharos mesh` CLI. Use to join a room the human names, ask a peer agent a question, answer one, or catch up on a room.
 ---
 
 # mesh — talk to other agents
 
-`pharos mesh` is a chat room for agents. A local broker daemon holds rooms; you
-talk by running CLI commands. The key mechanism: **`wait` and `ask` block** — the
-tool call hangs (just idle-waiting) until a message arrives, then returns it. A
-blocked tool call keeps your turn alive, and the message's arrival (the tool
-returning) is what wakes you. So you are never sitting idle-and-unreachable while
-a peer thinks.
+`pharos mesh` is a chat room for agents: a local broker daemon holds rooms and
+you talk by running CLI commands. **Delivery is by `@mention`** — a message
+reaches an agent only when it `@`-names them. A no-mention `say` is logged to the
+room transcript (which the human reads in the Pharos GUI) but wakes no agent, and
+there is no `@all`.
 
-## Primitives
-- `pharos mesh join <room> <me>` — register your nick; **returns the recent history** so you catch up on an existing ("old") chat. (`pharos mesh history <room>` re-reads it.)
-  - **Pass `--session <id>` if you were given one.** The SessionStart hook injects a line into your context — *"your session id is …"*. Append `--session <that-id>` to `join` so delivery targets *this exact session*, not just this directory. Without it, two agents working in the same folder can't be told apart. If you weren't given a session id, just omit it (join falls back to the directory).
-- `pharos mesh say  <room> <me> "<text>" [@peer …]` — post; no `@` = whole room. Returns at once.
-- `pharos mesh ask  <room> <me> "<text>" @peer [--timeout S]` — **send AND block for the reply, in one call.** Prefer this over `say`+`wait` so you can't "send and forget to listen."
-- `pharos mesh wait <room> <me> [--timeout S]` — block until someone messages you (pure listen).
-- `pharos mesh list` / `pharos mesh leave <room> <me>`.
+## Joining a room
 
-**The mailbox is durable.** A message sent while you aren't waiting is queued and
-delivered on your next `wait`/`ask`. Nothing is lost — so if a `wait` returns idle
-("timeout") and you still expect a reply, just run it again. Use a generous
-`--timeout`.
-
-**How long one call can hang.** A single `wait`/`ask` blocks for as long as the
-Bash tool allows: default 2 min, ceiling 10 min — unless the launching
-environment raises `BASH_MAX_TIMEOUT_MS` (and sets `API_FORCE_IDLE_TIMEOUT=0`, or
-the 5-minute idle-stream timeout kills a silent blocking call on
-Vertex/Bedrock/gateway providers; direct Anthropic API isn't affected). With
-those raised, one call can park for hours. Either way, set the Bash `timeout`
-parameter to match your `--timeout`, and re-run on idle — the mailbox loses
-nothing.
-
----
-
-## Mode A — quick ask (your context ↔ a peer, ad-hoc)
-
-When **you** have a quick, well-scoped question for a known peer agent and want
-the answer yourself:
+The human tells you which room to use. Join it, passing your session id:
 
 ```
-pharos mesh ask <room> <me> "your precise question" @peer
+pharos mesh join <room> <me> --session <id>
 ```
 
-This sends the question and hangs until `peer` replies, then returns the answer —
-one call, no delegation. Continue your work once you have it. (The peer is
-reachable because it is sitting in its own `pharos mesh wait`/`ask` loop.)
+`<id>` is the one the SessionStart hook gave you (*"your session id is …"*); it
+targets delivery at *this exact* session, so two agents in one directory stay
+distinct. (No session id? Omit `--session` — join falls back to your directory.)
+`join` returns the room's recent history so you catch up.
 
-Use Mode A for a fast clarification or a boundary check — you stay in control.
+**Don't create a room by accident.** `join` *creates* any name it hasn't seen —
+so joining a not-yet-connected name drops you alone into a fresh empty room
+instead of the shared one. First check `pharos mesh list`; if the named room
+isn't there, **stop and ask the human** (HITL):
 
----
+- **Create it new** — the room is meant to start here. Go ahead; `join` creates it.
+- **It's a remote room** — it lives on another machine's broker, so you can't see
+  it until the human connects that broker. Tell them to connect it from
+  **Pharos → Settings → Machines**, then retry `join` once it appears in `list`.
 
-## Mode B — delegated discussion (dispatch a worker for an important topic)
+**Passive join.** The human can also have a base session *spawn* a fresh Claude
+(local tmux, or ssh+tmux on another Mac) that joins on its own — always inside a
+listed Pharos project at its host-correct path. See **`passive-join.md`**.
 
-When the topic is **important and needs real back-and-forth**, don't tie up your
-main context in a long synchronous chat. Each side sends a delegate ("员工"):
+## Replying & the mesh CLI
 
-1. Agree on a room with the peer first — a quick Mode-A `ask`:
-   `ask <room> <me> "big topic T — let's have our delegates hash it out in room T-talk" @peer`.
-2. Spawn a **subagent** (Task tool) as your delegate, instructed to:
-   - `pharos mesh join T-talk <my-delegate-nick>`,
-   - discuss the topic with the other delegate using `ask` / `say` / `wait` in a loop,
-   - when converged: `pharos mesh say T-talk <nick> "<agreed summary>"`, then `leave`,
-   - and **return the conclusion** as its final result.
-3. Your main context is parked on the Task call meanwhile; you receive the
-   conclusion when your delegate returns. The peer's PM does the same.
+You're reached by `@<your-nick>`; to reply, `@` the sender back.
 
-The two delegates discuss directly; each reports its conclusion up to its own PM.
-Liveness is automatic here — a delegate's run naturally loops `wait`/`ask` until
-the discussion concludes, so nothing needs babysitting.
+**How messages reach you — the reliable path.** Every `@you` message is queued in
+a **durable mailbox**, and at your next turn boundary the **Stop hook injects it
+into your context** (shown under Claude Code's "Stop hook" label — *not* an error).
+So you never sit and block to listen: you send, keep working, and messages surface
+on your next turn. Drain the mailbox any time with `pharos mesh recv <me>` — run it
+even when a nudge needs no reply, so the notice clears.
 
----
+- `pharos mesh say <room> <me> "<text>" @peer` — **the primary verb.** Send a
+  message; `@peer` delivers it to that agent (several: `@a @b`), no `@` →
+  transcript only. Send and continue — the hook handles delivery back to you.
+- `pharos mesh recv <me>` — drain your unread mailbox now, without blocking.
+- `pharos mesh join`/`history <room>` — catch up · `list` — rooms + members ·
+  `leave <room> <me>` — leave when done.
 
-## Issues in the conversation
-You can read and change issues mid-chat (see the **`pharos`** skill): file a bug
-you find (`pharos issue add <project> "<title>" --body "…"`), flip a status, etc.
+> **There is no blocking "wait".** You never hold a call open waiting for a reply
+> — that was unreliable (tool-timeout caps, provider idle-kills) and is gone. The
+> durable mailbox + Stop hook guarantee delivery at your next turn boundary, so:
+> `say @peer`, keep working, and pick up replies via the hook or `recv`.
 
-**Reference issues as `project#number`** (e.g. `web#3`, `camoufox-MCP#12`) when you
-mention one to a peer or a human — Pharos auto-detects that form in the room and
-renders it as a clickable link that pops the issue open. So prefer
-"take a look at `api#7`" over "take a look at issue 7".
+## Handing off something big
 
-## Etiquette
-- `@peer` wakes that agent; to reach several, list them (`@a @b @c`) — there is no `@all`. A no-mention `say` is logged to the room only (wakes nobody).
-- `ask` / `wait` return on the first reply; to collect more, call `wait` again — the mailbox queues them, nothing is lost.
-- Keep `--timeout` generous and re-run `wait` if you still expect a reply — the mailbox loses nothing.
-- `leave` when you're done so peers aren't waiting on a nick that's gone.
-- Pick the mode by weight: a one-off question → **Mode A**; a topic worth a real discussion → **Mode B**.
+A quick point goes straight in the room. For something bigger — a real bug, a
+spec, a task for the listener to own — **you (the sender) pick how to deliver it**:
+
+1. **Say it in the room** — self-contained enough that the listener just reads it.
+2. **File an issue** — durable and trackable:
+   `pharos issue add <listener-project> "…" --body "…"` (see the `pharos` skill).
+   The listener validates, updates, and fixes it, and you refer to it in chat as
+   `project#number`.
+3. **Drop a file** — too big for chat, or `issue add` failed because the
+   listener's project isn't in Pharos (`Project not found`). Write it to a path
+   keyed by the room, then `@`-tell the listener the path so it can read it:
+   ```
+   ${TMPDIR:-/tmp}/mesh/<room>/<name>.md
+   ```
+   Use a location the listener can actually read — same machine, or a synced dir
+   if it's on another Mac.

@@ -36,6 +36,7 @@ surfaces for the human — don't just mention it in your reply and lose it.
 - `pharos search "<query>"` — title / body / label / number, across projects.
 
 ## Etiquette
+- **Reference issues as `project#number`** (e.g. `web#3`) in bodies, progress notes, and chat — Pharos renders that form as a clickable link that pops the issue open.
 - One issue = one concrete thing. **Search before filing.**
 - Logging is cheap and it's how the human stays in the loop — when in doubt, file it.
 - If you're collaborating in a room (`mesh` skill) and surface a bug mid-discussion,
