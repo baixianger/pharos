@@ -1,14 +1,25 @@
 import AppKit
 import SwiftUI
 
-/// A small "?" that reveals an explanation on hover, so section chrome can stay
+/// A small "?" that reveals an explanation — click for a popover (reliable and
+/// discoverable), plus a hover tooltip as a bonus — so section chrome can stay
 /// terse instead of carrying a paragraph of caption text.
 struct HelpBadge: View {
     let text: String
+    @State private var show = false
     var body: some View {
-        Image(systemName: "questionmark.circle")
-            .foregroundStyle(.secondary)
-            .help(text)
+        Button { show.toggle() } label: {
+            Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help(text)
+        .popover(isPresented: $show, arrowEdge: .bottom) {
+            Text(.init(text))                       // renders the `code` backticks
+                .font(.callout)
+                .frame(width: 300, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(14)
+        }
     }
 }
 
