@@ -183,17 +183,15 @@ private struct MachinesSettingsTab: View {
                     Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Section {
-                Toggle(isOn: Binding(
-                    get: { store.hostMesh },
-                    set: { on in store.hostMesh = on; Task.detached { MeshHosting.apply(hosting: on) } }
-                )) {
-                    HStack(spacing: 6) {
-                        Text("Host the chat mesh for other Macs")
-                        HelpBadge(text: "Turn ON for ONE always-on Mac (the hub): it binds this Mac's chat broker to your Tailscale address so your other Macs can pair to it and share the same rooms. Leave OFF on your other Macs — they use “Pair a Mac” below to connect to the hub.")
-                    }
+            Section("Host mesh") {
+                HStack {
+                    Toggle("Host the chat mesh for other Macs", isOn: Binding(
+                        get: { store.hostMesh },
+                        set: { on in store.hostMesh = on; Task.detached { MeshHosting.apply(hosting: on) } }
+                    ))
+                    HelpBadge(text: "Turn ON for ONE always-on Mac (the hub): it binds this Mac's chat broker to your Tailscale address so your other Macs can pair to it and share the same rooms. Leave OFF on your other Macs — they use “Pair a Mac” below to connect to the hub.")
                 }
-            } header: { Text("Host mesh") }
+            }
             PairingView()
         }
         .formStyle(.grouped)
@@ -328,23 +326,15 @@ private struct CLISettingsTab: View {
 
     var body: some View {
         Form {
-            Section {
-                commandRow("pharos", status: $pharosStatus)
-            } header: {
-                HStack(spacing: 6) {
-                    Text("pharos — project & issue control")
-                    HelpBadge(text: "How agents drive Pharos: a Claude Code / Codex session shells out to read and update issues and post progress — e.g. `pharos list --json`, `pharos issue start <project> 3 claude`, `pharos overview`.")
-                }
+            Section("pharos — project & issue control") {
+                commandRow("pharos", status: $pharosStatus,
+                           help: "How agents drive Pharos: a Claude Code / Codex session shells out to read and update issues and post progress — e.g. `pharos list --json`, `pharos issue start <project> 3 claude`, `pharos overview`.")
             }
-            Section {
-                commandRow("chat", status: $chatStatus)
-            } header: {
-                HStack(spacing: 6) {
-                    Text("chat — agent chat room")
-                    HelpBadge(text: "Shorthand for `pharos mesh`: agents talk to each other — `chat join <room> <nick>`, `chat ask <room> <nick> \"…\" @peer`, `chat wait <room> <nick>`. Same binary, invoked as `chat`.")
-                }
+            Section("chat — agent chat room") {
+                commandRow("chat", status: $chatStatus,
+                           help: "Shorthand for `pharos mesh`: agents talk to each other — `chat join <room> <nick>`, `chat ask <room> <nick> \"…\" @peer`, `chat wait <room> <nick>`. Same binary, invoked as `chat`.")
             }
-            Section {
+            Section("Mesh delivery hooks (Claude Code)") {
                 HStack {
                     Image(systemName: meshHookInstalled ? "checkmark.circle.fill" : "circle.dashed")
                         .foregroundStyle(meshHookInstalled ? Color.green : Color.secondary)
@@ -359,17 +349,13 @@ private struct CLISettingsTab: View {
                             : "Install failed — check ~/.claude/settings.json (a file with invalid JSON is never overwritten)."
                     }
                     .buttonStyle(.borderedProminent)
+                    HelpBadge(text: "Installs two Claude Code hooks: a Stop hook that surfaces unread @mentions at a session's turn-end, and a SessionStart hook that injects the session id so a joined agent can address messages to its exact session (telling apart two agents in one folder). Per-repo alternative: `pharos mesh install-hooks --project <dir>`. Safe to install globally — un-joined sessions no-op.")
                 }
                 if let s = meshHookStatus {
                     Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-            } header: {
-                HStack(spacing: 6) {
-                    Text("Mesh delivery hooks (Claude Code)")
-                    HelpBadge(text: "Installs two Claude Code hooks: a Stop hook that surfaces unread @mentions at a session's turn-end, and a SessionStart hook that injects the session id so a joined agent can address messages to its exact session (telling apart two agents in one folder). Per-repo alternative: `pharos mesh install-hooks --project <dir>`. Safe to install globally — un-joined sessions no-op.")
-                }
             }
-            Section {
+            Section("Agent skills (Claude Code)") {
                 if skillNames.isEmpty {
                     Text("(no bundled skills found)").font(.caption).foregroundStyle(.secondary)
                 } else {
@@ -387,15 +373,11 @@ private struct CLISettingsTab: View {
                         }
                         .buttonStyle(.borderedProminent)
                         Spacer()
+                        HelpBadge(text: "Symlink the bundled skills into ~/.claude/skills so every Claude session auto-loads them. For a single repo, use `pharos skill install <name> --project <dir>`.")
                     }
                 }
                 if let s = skillStatus {
                     Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-            } header: {
-                HStack(spacing: 6) {
-                    Text("Agent skills (Claude Code)")
-                    HelpBadge(text: "Symlink the bundled skills into ~/.claude/skills so every Claude session auto-loads them. For a single repo, use `pharos skill install <name> --project <dir>`.")
                 }
             }
         }
@@ -406,7 +388,7 @@ private struct CLISettingsTab: View {
     private var skillNames: [String] { SkillInstall.available() }
 
     @ViewBuilder
-    private func commandRow(_ name: String, status: Binding<String?>) -> some View {
+    private func commandRow(_ name: String, status: Binding<String?>, help: String) -> some View {
         Text(Self.snippet(name))
             .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
             .padding(8).frame(maxWidth: .infinity, alignment: .leading)
@@ -419,6 +401,7 @@ private struct CLISettingsTab: View {
             }
             .buttonStyle(.borderless)
             Spacer()
+            HelpBadge(text: help)
         }
         if let s = status.wrappedValue {
             Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
