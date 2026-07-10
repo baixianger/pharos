@@ -35,8 +35,10 @@ isn't there, **stop and ask the human** (HITL):
   **Pharos → Settings → Machines**, then retry `join` once it appears in `list`.
 
 **Passive join.** The human can also have a base session *spawn* a fresh Claude
-(local tmux, or ssh+tmux on another Mac) that joins on its own — always inside a
-listed Pharos project at its host-correct path. See **`passive-join.md`**.
+that joins on its own — one command, on this or another machine:
+`pharos launch <project> claude --host <alias>` (or `pharos issue start <proj>
+<#> claude --host <alias>` for a worker on an issue), then drive it with
+`pharos agents` / `agent peek|say|kill`. See **`passive-join.md`**.
 
 ## Replying & the mesh CLI
 
