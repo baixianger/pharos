@@ -65,11 +65,11 @@ pharos agent peek|say|kill <session> [--host <alias>]   # 驱动（对应 cc-tmu
    端到端实测：`pharos launch "World Monitor" claude --host home-ts` → 白富贵路径解析 →
    keychain 自动解锁 → READY + RC URL。issue start 远程分支：状态置 In Progress、
    发 brief、**不做 session link**（本地 reconcile 只看本机 tmux，会误清远程链接——见后续项）。
-2. ⬜ CLI：`agents` / `agent peek|say|kill` —— 驱动面
+2. ✅ CLI：`agents` / `agent peek|say|kill`（**DONE 2026-07-10**，本地/远程同一驱动面，实测通过）
 3. ✅ 分发通道**已存在**：`SkillInstall.swift` 把 repo `skills/` → app bundle →
    symlink 进 `~/.claude/skills/`（symlink 意味着装好的 app 永远是当前版本，无需 .version 戳）
-4. ⬜ skill 文档 v2 重写（`skills/mesh/`，教真实存在的命令）
-5. ⬜ Pharos#5 P1-P3
+4. ✅ skill 文档 v2（**DONE 2026-07-10**：passive-join.md 重写为 launch/issue-start --host 主路径 + agent 驱动面；SKILL.md 指针更新）
+5. ◐ Pharos#5：P1 ✅（probe 只读 + demoteStrayHub 自愈）、P3 ✅（mesh-endpoint 拨号文件，env>file>GUI）、**P2 待做**（store 同步 meshHubHostID + Settings 单选 hub）
 
 ## 实施中发现的后续项
 
