@@ -13,8 +13,9 @@ enum MeshClient {
     /// still takes precedence (agents / CLI). nil ⇒ use the local broker.
     nonisolated(unsafe) static var remoteEndpoint: String?
 
-    /// The active remote endpoint, env taking precedence over the GUI's.
-    private static var activeRemote: String? { MeshPaths.tcpEndpoint ?? remoteEndpoint }
+    /// The active remote endpoint: env > app-managed mesh-endpoint file > the
+    /// GUI's in-memory resolution.
+    private static var activeRemote: String? { MeshPaths.dialEndpoint ?? remoteEndpoint }
 
     /// Pick the transport: a remote broker over TCP when configured (this Mac
     /// dials another's broker), else the local UDS.

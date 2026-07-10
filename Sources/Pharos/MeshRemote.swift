@@ -67,13 +67,17 @@ enum MeshRemote {
     }
 
     /// Pairing probe: is the peer SSH-reachable, does it have a Tailscale IP, and
-    /// is its mesh broker up (started if needed)? Drives the pairing UI's checks.
+    /// is its mesh broker up? **Read-only** — a probe must never start anything:
+    /// probing from both sides used to bootstrap a broker on each, leaving two
+    /// islanded hubs (Pharos#5, observed 2026-07-10). Bootstrapping belongs to
+    /// the explicit dial-out path (`resolve`), whose direction is correct.
     struct Probe { let sshOK: Bool; let ip: String?; let brokerUp: Bool }
     static func probe(_ host: String) -> Probe {
         let ssh = Shell.run("/usr/bin/ssh", sshOpts + [host, "true"])
         guard ssh.ok else { return Probe(sshOK: false, ip: nil, brokerUp: false) }
         guard let ip = peerIP(host) else { return Probe(sshOK: true, ip: nil, brokerUp: false) }
-        return Probe(sshOK: true, ip: ip, brokerUp: ensureBrokerAt(host, ip: ip))
+        let up = Shell.run("/usr/bin/nc", ["-z", "-G", "2", ip, "\(port)"]).ok
+        return Probe(sshOK: true, ip: ip, brokerUp: up)
     }
 
 

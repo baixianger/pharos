@@ -288,6 +288,9 @@ struct MeshRoomView: View {
         let peer = store.peerHost
         let ep = await Task.detached { MeshRemote.resolve(peerHost: peer) }.value
         MeshClient.remoteEndpoint = ep
+        // Persist for CLI/hooks on this machine (Pharos#5 P3): satellite agents
+        // read the mesh-endpoint file and follow the hub with zero env config.
+        MeshPaths.setDialEndpointFile(ep)
         resolving = false
         resolved = true
         reload()

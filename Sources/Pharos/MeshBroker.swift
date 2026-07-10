@@ -96,6 +96,28 @@ enum MeshPaths {
         ProcessInfo.processInfo.environment["PHAROS_MESH_TCP_INSECURE"] == "1"
     }
 
+    /// Where CLIENTS (CLI, hooks) should dial: the env override first, else the
+    /// app-managed `mesh-endpoint` file. The file is written by the GUI when this
+    /// Mac pairs to a remote hub, so satellite agents follow the hub with zero
+    /// per-agent env config (Pharos#5 P3). Dial-only — the broker's *bind*
+    /// decision stays env-only (`tcpEndpoint`), or a satellite would try to bind
+    /// the hub's address.
+    static var endpointFile: URL { supportDir.appendingPathComponent("mesh-endpoint") }
+    static var dialEndpoint: String? {
+        if let env = tcpEndpoint { return env }
+        guard let raw = try? String(contentsOf: endpointFile, encoding: .utf8) else { return nil }
+        let v = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return meshSplitHostPort(v) != nil ? v : nil
+    }
+    static func setDialEndpointFile(_ ep: String?) {
+        if let ep, !ep.isEmpty {
+            try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+            try? (ep + "\n").write(to: endpointFile, atomically: true, encoding: .utf8)
+        } else {
+            try? FileManager.default.removeItem(at: endpointFile)
+        }
+    }
+
     /// Darwin's `sun_path` holds 104 bytes including the NUL — a longer socket
     /// path silently truncates in `meshFillSockaddr` and binds/connects somewhere
     /// unintended. Non-nil = the clear diagnostic to surface instead.

@@ -23,9 +23,22 @@ enum MeshHosting {
         }
         let ep = "\(ip):\(MeshRemote.port)"
         MeshClient.hostTCPEndpoint = ep
+        MeshPaths.setDialEndpointFile(nil)               // a hub never dials out
         // Already listening on TCP? Then nothing to restart.
         if let fd = meshTCPConnect(ep, timeoutSec: 2) { close(fd); return }
         MeshClient.stopLocalDaemon()                     // drop any UDS-only broker
         _ = MeshClient.send(MeshRequest(cmd: "list"))    // respawn bound to TCP
+    }
+
+    /// Satellite self-heal (Pharos#5): a Mac with hub mode OFF should never run
+    /// a TCP-bound broker — one left behind (old pairing probes used to start
+    /// them) hijacks this machine's GUI and agents into an islanded room set.
+    /// Detect and stop it; whatever needs a local broker later respawns UDS-only.
+    static func demoteStrayHub() {
+        guard let ip = PairingService.selfTailscaleIP() else { return }
+        let ep = "\(ip):\(MeshRemote.port)"
+        guard let fd = meshTCPConnect(ep, timeoutSec: 1) else { return }   // no TCP broker — fine
+        close(fd)
+        MeshClient.stopLocalDaemon()
     }
 }

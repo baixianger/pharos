@@ -34,8 +34,11 @@ struct PharosApp: App {
                 .environment(store)
                 .preferredColorScheme(store.appearance.colorScheme)
                 .task {
-                    // Hub mode: bind the broker to TCP on launch so peers can dial in.
+                    // Hub mode: bind the broker to TCP on launch so peers can dial
+                    // in. Not hosting: demote any stray TCP-bound broker a past
+                    // pairing probe left behind (Pharos#5 split-brain).
                     if store.hostMesh { await Task.detached { MeshHosting.apply(hosting: true) }.value }
+                    else { await Task.detached { MeshHosting.demoteStrayHub() }.value }
                 }
         }
         .defaultSize(width: 1180, height: 760)

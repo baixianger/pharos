@@ -88,7 +88,7 @@ enum MeshHooks {
         }
         // Cross-host: a dial-out session has no local presence/unread files, so
         // ask the remote broker (fail-open — unreachable broker never blocks).
-        if MeshPaths.tcpEndpoint != nil {
+        if MeshPaths.dialEndpoint != nil {
             return stopHookRemote(cwd: cwd, session: session, explicitNick: explicitNick)
         }
         guard let nick = explicitNick ?? resolveNick(cwd: cwd, session: session),
