@@ -62,6 +62,10 @@ enum CLI {
                 let yolo: Bool? = p.has("no-yolo") ? false : (p.has("yolo") ? true : nil)
                 let tmux: Bool? = p.has("tmux") ? true : nil
                 return ok(try PharosCore.launchAgent(project: p.arg(0), agent: p.arg(1), yolo: yolo, tmux: tmux, host: p.opt("host"), source: .cli))
+            case "agents":
+                return ok(RemoteLaunch.listAgents(host: p.opt("host"), filter: p.arg(0)))
+            case "agent":
+                return try runAgent(p)
             case "resume":
                 return ok(try PharosCore.resumeSession(project: p.arg(0), agent: p.arg(1), sessionID: p.arg(2)))
             case "playbook":
@@ -128,6 +132,35 @@ enum CLI {
     }
 
     // MARK: Sub-dispatchers
+
+    /// `pharos agent peek|say|kill <session> [--host <alias>]` — drive a live
+    /// agent tmux session, local or on another machine (see `pharos agents`).
+    private static func runAgent(_ p: Parsed) throws -> Int32 {
+        let host = p.opt("host")
+        guard let sub = p.arg(0) else {
+            return usageError("usage: pharos agent peek|say|kill <session> [--host <alias>]")
+        }
+        guard let session = p.arg(1) else {
+            return usageError("agent \(sub) needs a session name (list them: pharos agents)")
+        }
+        do {
+            switch sub {
+            case "peek":
+                let lines = Int(p.opt("lines") ?? "") ?? 40
+                return ok(try RemoteLaunch.peek(session: session, host: host, lines: lines))
+            case "say":
+                let text = p.positional.dropFirst(2).joined(separator: " ")
+                guard !text.isEmpty else { return usageError("agent say needs a message") }
+                return ok(try RemoteLaunch.say(session: session, host: host, text: text))
+            case "kill":
+                return ok(try RemoteLaunch.kill(session: session, host: host))
+            default:
+                return usageError("Unknown agent subcommand: \(sub) (use peek|say|kill)")
+            }
+        } catch let e as RemoteLaunch.RemoteError {
+            throw CoreError(message: e.message)
+        }
+    }
 
     private static func runTrash(_ p: Parsed) throws -> Int32 {
         switch p.arg(0) {
@@ -519,6 +552,10 @@ enum CLI {
 
         AGENTS / LAUNCH
           launch <project> <agent> [--no-yolo] [--tmux] [--host <alias>]   Launch an agent (--host: detached on another machine, RC URL printed)
+          agents [<filter>] [--host <alias>]              List live agent tmux sessions (pharos-*)
+          agent peek <session> [--lines N] [--host <alias>]   Tail an agent's pane
+          agent say  <session> <text…> [--host <alias>]       Type one line into an agent
+          agent kill <session> [--host <alias>]               Kill an agent session
           resume <project> <agent> <session_id>           Resume a past session
           playbook <project> <name>                       Run a saved playbook
           open <project>                                  Open the terminal there

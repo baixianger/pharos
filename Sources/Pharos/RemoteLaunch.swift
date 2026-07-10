@@ -238,4 +238,63 @@ enum RemoteLaunch {
         pause(0.5)
         _ = tmux(host, ["send-keys", "-t", name, "Enter"])
     }
+
+    // MARK: - Driving surface (pharos agents / agent peek|say|kill)
+
+    /// tmux, local or remote — one driving surface for either side.
+    private static func tmuxAny(_ host: String?, _ args: [String]) -> Shell.Result {
+        if let host, !host.isEmpty { return tmux(host, args) }
+        guard let bin = LaunchService.tmuxPath else {
+            return Shell.Result(out: "", err: "tmux not installed", code: 127)
+        }
+        return Shell.run(bin, args)
+    }
+
+    private static func at(_ host: String?) -> String { host.map { " on \($0)" } ?? "" }
+
+    /// Live `pharos-*` agent sessions, optionally substring-filtered.
+    static func listAgents(host: String?, filter: String?) -> String {
+        let r = tmuxAny(host, ["list-sessions", "-F", "#{session_name}\t#{session_attached}"])
+        guard r.ok else { return "(no tmux server\(at(host)))" }
+        let rows = r.out.split(separator: "\n").map(String.init)
+            .filter { $0.hasPrefix("pharos-") }
+            .filter { row in filter.map { row.localizedCaseInsensitiveContains($0) } ?? true }
+        if rows.isEmpty { return "(no pharos agent sessions\(at(host)))" }
+        return rows.map { row in
+            let f = row.split(separator: "\t").map(String.init)
+            return (f.first ?? row) + ((f.count > 1 && f[1] != "0") ? "  (attached)" : "")
+        }.joined(separator: "\n")
+    }
+
+    /// Tail of an agent's pane (trailing blank pane rows trimmed).
+    static func peek(session: String, host: String?, lines: Int) throws -> String {
+        let r = tmuxAny(host, ["capture-pane", "-t", session, "-p"])
+        guard r.ok else {
+            throw RemoteError(message: "cannot peek '\(session)'\(at(host)): \(r.err.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        var all = r.out.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        while all.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { all.removeLast() }
+        return all.suffix(max(1, lines)).joined(separator: "\n")
+    }
+
+    /// Type one line into an agent (literal send-keys, then Enter — type_line rule).
+    static func say(session: String, host: String?, text: String) throws -> String {
+        guard !text.contains("\n") else {
+            throw RemoteError(message: "multiline message — write it to a file on the target and say 'Read <path>' instead")
+        }
+        guard tmuxAny(host, ["has-session", "-t", "=\(session)"]).ok else {
+            throw RemoteError(message: "no session '\(session)'\(at(host)) (see: pharos agents)")
+        }
+        _ = tmuxAny(host, ["send-keys", "-t", session, "-l", "--", text])
+        pause(0.5)
+        _ = tmuxAny(host, ["send-keys", "-t", session, "Enter"])
+        return "sent to '\(session)'\(at(host))"
+    }
+
+    static func kill(session: String, host: String?) throws -> String {
+        guard tmuxAny(host, ["kill-session", "-t", "=\(session)"]).ok else {
+            throw RemoteError(message: "no session '\(session)'\(at(host)) (see: pharos agents)")
+        }
+        return "killed '\(session)'\(at(host))"
+    }
 }
