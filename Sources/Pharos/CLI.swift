@@ -503,7 +503,7 @@ enum CLI {
 
     // MARK: Misc
 
-    private static var version: String { "0.2.0" }
+    private static var version: String { "0.3.0" }
 
     private static func prettyJSON(_ obj: Any) -> String {
         guard
