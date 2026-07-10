@@ -89,11 +89,11 @@ enum PharosCore {
     // MARK: Persisted prefs (shared with the GUI via UserDefaults)
 
     static func persistedTerminal() -> TerminalApp {
-        TerminalApp(rawValue: UserDefaults.standard.string(forKey: "pharos.terminal") ?? "") ?? .ghostty
+        TerminalApp(rawValue: PharosPrefs.shared.string(forKey: "pharos.terminal") ?? "") ?? .ghostty
     }
 
     static func persistedEditor() -> EditorApp {
-        EditorApp(rawValue: UserDefaults.standard.string(forKey: "pharos.editor") ?? "") ?? .vscode
+        EditorApp(rawValue: PharosPrefs.shared.string(forKey: "pharos.editor") ?? "") ?? .vscode
     }
 
     // MARK: Reads

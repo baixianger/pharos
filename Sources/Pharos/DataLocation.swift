@@ -1,5 +1,23 @@
 import Foundation
 
+/// The app's preferences domain (`me.pai.pharos`) no matter which front door
+/// the process came through.
+///
+/// Invoked via a `pharos`/`chat` symlink (or the bare dev binary), Bundle.main
+/// does NOT resolve to the .app bundle, so `PharosPrefs.shared` silently
+/// reads/writes a per-process "pharos" domain instead of the app's. The CLI
+/// then misses `pharos.dataDir` and splits onto its own registry in
+/// Application Support while the GUI follows the pref into iCloud — two
+/// diverging stores (the actual Pharos#6 root cause; the rename was innocent).
+/// EVERY pref access must go through `PharosPrefs.shared`.
+enum PharosPrefs {
+    static let appDomain = "me.pai.pharos"
+    static var shared: UserDefaults {
+        if Bundle.main.bundleIdentifier == appDomain { return .standard }
+        return UserDefaults(suiteName: appDomain) ?? .standard
+    }
+}
+
 /// Resolves where Pharos keeps its data (the registry + attachments).
 ///
 /// Default is `~/Library/Application Support/Pharos`. The user can move it into
@@ -37,7 +55,7 @@ enum DataLocation {
     /// The active data directory: the user's `pharos.dataDir` override, else the
     /// Application Support default.
     static var current: URL {
-        if let custom = UserDefaults.standard.string(forKey: defaultsKey), !custom.isEmpty {
+        if let custom = PharosPrefs.shared.string(forKey: defaultsKey), !custom.isEmpty {
             return URL(fileURLWithPath: custom, isDirectory: true)
         }
         return appSupportDirectory
@@ -45,16 +63,16 @@ enum DataLocation {
 
     /// True iff the active directory is the iCloud Drive folder.
     static var usingICloud: Bool {
-        guard let custom = UserDefaults.standard.string(forKey: defaultsKey), !custom.isEmpty,
+        guard let custom = PharosPrefs.shared.string(forKey: defaultsKey), !custom.isEmpty,
               let icloud = iCloudDirectory else { return false }
         return URL(fileURLWithPath: custom).standardizedFileURL == icloud.standardizedFileURL
     }
 
     static func setDirectory(_ url: URL?) {
         if let url {
-            UserDefaults.standard.set(url.path, forKey: defaultsKey)
+            PharosPrefs.shared.set(url.path, forKey: defaultsKey)
         } else {
-            UserDefaults.standard.removeObject(forKey: defaultsKey)
+            PharosPrefs.shared.removeObject(forKey: defaultsKey)
         }
     }
 

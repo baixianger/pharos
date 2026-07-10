@@ -462,41 +462,41 @@ final class ProjectStore {
     var homeRoute: HomeRoute = .dashboard
     var lastError: String?
     var terminal: TerminalApp = .ghostty {
-        didSet { UserDefaults.standard.set(terminal.rawValue, forKey: "pharos.terminal") }
+        didSet { PharosPrefs.shared.set(terminal.rawValue, forKey: "pharos.terminal") }
     }
     var editor: EditorApp = .vscode {
-        didSet { UserDefaults.standard.set(editor.rawValue, forKey: "pharos.editor") }
+        didSet { PharosPrefs.shared.set(editor.rawValue, forKey: "pharos.editor") }
     }
     var appearance: AppearanceMode = .system {
-        didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "pharos.appearance") }
+        didSet { PharosPrefs.shared.set(appearance.rawValue, forKey: "pharos.appearance") }
     }
     var defaultYolo = true {
-        didSet { UserDefaults.standard.set(defaultYolo, forKey: "pharos.defaultYolo") }
+        didSet { PharosPrefs.shared.set(defaultYolo, forKey: "pharos.defaultYolo") }
     }
     var defaultTmux = false {
-        didSet { UserDefaults.standard.set(defaultTmux, forKey: "pharos.defaultTmux") }
+        didSet { PharosPrefs.shared.set(defaultTmux, forKey: "pharos.defaultTmux") }
     }
     var notifyOnFinish = true {
-        didSet { UserDefaults.standard.set(notifyOnFinish, forKey: "pharos.notifyOnFinish") }
+        didSet { PharosPrefs.shared.set(notifyOnFinish, forKey: "pharos.notifyOnFinish") }
     }
     var scanRoots: [String] = [] {
         didSet {
             if let data = try? JSONEncoder().encode(scanRoots) {
-                UserDefaults.standard.set(String(decoding: data, as: UTF8.self), forKey: "pharos.scanRoots")
+                PharosPrefs.shared.set(String(decoding: data, as: UTF8.self), forKey: "pharos.scanRoots")
             }
         }
     }
     var claudeArgs = "" {
-        didSet { UserDefaults.standard.set(claudeArgs, forKey: "pharos.claudeArgs") }
+        didSet { PharosPrefs.shared.set(claudeArgs, forKey: "pharos.claudeArgs") }
     }
     var codexArgs = "" {
-        didSet { UserDefaults.standard.set(codexArgs, forKey: "pharos.codexArgs") }
+        didSet { PharosPrefs.shared.set(codexArgs, forKey: "pharos.codexArgs") }
     }
     /// SSH host alias or `user@host` for the peer machine. Empty = disabled.
     /// The paired peer Mac (SSH host / Tailscale IP) — used to reach its mesh
     /// broker for cross-host chat rooms (see MeshRemote).
     var peerHost = "" {
-        didSet { UserDefaults.standard.set(peerHost, forKey: "pharos.peerHost") }
+        didSet { PharosPrefs.shared.set(peerHost, forKey: "pharos.peerHost") }
     }
     /// Which Mac hosts the chat mesh — the synced store is the single source of
     /// truth, so both machines always read the same answer (Pharos#5 P2).
@@ -527,7 +527,7 @@ final class ProjectStore {
     init() {
         try? FileManager.default.createDirectory(
             at: PharosCore.registryURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let d = UserDefaults.standard
+        let d = PharosPrefs.shared
         terminal = TerminalApp(rawValue: d.string(forKey: "pharos.terminal") ?? "") ?? .ghostty
         editor = EditorApp(rawValue: d.string(forKey: "pharos.editor") ?? "") ?? .vscode
         appearance = AppearanceMode(rawValue: d.string(forKey: "pharos.appearance") ?? "") ?? .system
