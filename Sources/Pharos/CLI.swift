@@ -61,7 +61,7 @@ enum CLI {
             case "launch":
                 let yolo: Bool? = p.has("no-yolo") ? false : (p.has("yolo") ? true : nil)
                 let tmux: Bool? = p.has("tmux") ? true : nil
-                return ok(try PharosCore.launchAgent(project: p.arg(0), agent: p.arg(1), yolo: yolo, tmux: tmux, source: .cli))
+                return ok(try PharosCore.launchAgent(project: p.arg(0), agent: p.arg(1), yolo: yolo, tmux: tmux, host: p.opt("host"), source: .cli))
             case "resume":
                 return ok(try PharosCore.resumeSession(project: p.arg(0), agent: p.arg(1), sessionID: p.arg(2)))
             case "playbook":
@@ -326,7 +326,7 @@ enum CLI {
             let yolo: Bool? = p.has("no-yolo") ? false : (p.has("yolo") ? true : nil)
             let tmux: Bool? = p.has("tmux") ? true : nil
             return ok(try PharosCore.issueStart(project: p.arg(1), number: number, agent: p.arg(3),
-                                                yolo: yolo, tmux: tmux, source: .cli))
+                                                yolo: yolo, tmux: tmux, host: p.opt("host"), source: .cli))
         case "rm", "remove":
             let message = try PharosCore.issueRemove(project: p.arg(1), number: number)
             AuditLog.record(actor: .cli, action: "issue_remove", detail: "\(p.arg(1) ?? "")#\(number ?? 0)")
@@ -510,7 +510,7 @@ enum CLI {
           milestone rm <project> <name>
           issue status <project> <#> <backlog|todo|in_progress|done|canceled>
           issue priority <project> <#> <none|low|medium|high|urgent>
-          issue start <project> <#> <agent> [--no-yolo] [--tmux]   Launch an agent ON an issue
+          issue start <project> <#> <agent> [--no-yolo] [--tmux] [--host <alias>]   Launch an agent ON an issue (--host: on another machine)
           issue rm <project> <#>                                   (→ Trash, 30-day restore)
           attach add <project> <#> <file>…                         Attach files to an issue
           attach list <project> <#>                                List an issue's attachments
@@ -518,7 +518,7 @@ enum CLI {
           update add <project> "<text>" [--issue <#>]              Log a progress note
 
         AGENTS / LAUNCH
-          launch <project> <agent> [--no-yolo] [--tmux]   Launch an agent
+          launch <project> <agent> [--no-yolo] [--tmux] [--host <alias>]   Launch an agent (--host: detached on another machine, RC URL printed)
           resume <project> <agent> <session_id>           Resume a past session
           playbook <project> <name>                       Run a saved playbook
           open <project>                                  Open the terminal there

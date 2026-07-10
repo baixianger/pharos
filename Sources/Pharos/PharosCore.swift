@@ -727,7 +727,8 @@ enum PharosCore {
     /// launch. When launched in tmux, the GUI auto-posts an update when the agent
     /// session ends (see `ProjectStore.postAgentFinished`).
     static func issueStart(project name: String?, number: Int?, agent agentRaw: String?,
-                           yolo: Bool?, tmux: Bool?, source: AuditLog.Source) throws -> String {
+                           yolo: Bool?, tmux: Bool?, host: String? = nil,
+                           source: AuditLog.Source) throws -> String {
         guard let number else { throw CoreError(message: "Missing required argument: number") }
         guard let agentRaw, let kind = AgentKind(rawValue: agentRaw) else {
             throw CoreError(message: "Argument 'agent' must be \"claude\" or \"codex\".")
@@ -735,11 +736,30 @@ enum PharosCore {
         var store = loadStore()
         let idx = try projectIndexOrThrow(name, in: store)
         let project = store.projects[idx]
-        guard let path = project.localPath, !path.isEmpty else {
-            throw CoreError(message: "Project '\(project.name)' has no local path.")
-        }
         guard let issue = project.issues.first(where: { $0.number == number }) else {
             throw CoreError(message: "No issue #\(number) in '\(project.name)'.")
+        }
+        // Remote start: the issue moves to In Progress but is NOT session-linked —
+        // the local reconcile sweep only sees THIS machine's tmux and would
+        // falsely clear a remote link (remote reconcile is a tracked follow-up).
+        if let host, !host.isEmpty {
+            _ = store.setIssueStatus(projectID: project.id, number: number, status: .inProgress)
+            saveStore(store)
+            let brief = "You are working on \(project.name)#\(number): \(issue.title). "
+                + "Read it with `pharos issue list \(project.name) --all`, log progress with "
+                + "`pharos update add \(project.name) \"<note>\" --issue \(number)`, and set "
+                + "`pharos issue status \(project.name) \(number) done` when finished."
+            do {
+                let summary = try RemoteLaunch.launch(project: project, kind: kind, host: host,
+                                                      yolo: yolo ?? project.yolo, issue: number,
+                                                      brief: brief, source: source)
+                return "Started \(kind.label) on \(project.name)#\(number) remotely — issue moved to In Progress.\n" + summary
+            } catch let e as RemoteLaunch.RemoteError {
+                throw CoreError(message: e.message)
+            }
+        }
+        guard let path = project.localPath, !path.isEmpty else {
+            throw CoreError(message: "Project '\(project.name)' has no local path.")
         }
         let useYolo = yolo ?? project.yolo
         let useTmux = tmux ?? project.tmux
@@ -891,12 +911,23 @@ enum PharosCore {
     // MARK: Actions (side effects)
 
     static func launchAgent(project name: String?, agent agentRaw: String?,
-                            yolo: Bool?, tmux: Bool?, source: AuditLog.Source) throws -> String {
+                            yolo: Bool?, tmux: Bool?, host: String? = nil,
+                            source: AuditLog.Source) throws -> String {
         guard let name, !name.isEmpty else { throw CoreError(message: "Missing required argument: project") }
         guard let agentRaw, let kind = AgentKind(rawValue: agentRaw) else {
             throw CoreError(message: "Argument 'agent' must be \"claude\" or \"codex\".")
         }
         guard let project = findProject(name) else { throw CoreError(message: "Project not found: \(name)") }
+        // Remote launch: path resolves per-host from the synced registry; tmux is
+        // implied (a detached remote session IS tmux). See RemoteLaunch.
+        if let host, !host.isEmpty {
+            do {
+                return try RemoteLaunch.launch(project: project, kind: kind, host: host,
+                                               yolo: yolo ?? true, source: source)
+            } catch let e as RemoteLaunch.RemoteError {
+                throw CoreError(message: e.message)
+            }
+        }
         guard let path = project.localPath, !path.isEmpty else {
             throw CoreError(message: "Project '\(name)' has no local path.")
         }
