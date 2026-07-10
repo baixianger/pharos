@@ -1,6 +1,6 @@
 # mesh skill v2 — Pharos 自包含 skill 设计稿
 
-状态：DRAFT（2026-07-10，源自 mesh 验收 session；跟踪：brainstorm#2，关联 Pharos#5）
+状态：**COMPLETE**（2026-07-10 收尾完成：v0.3.0 双机部署 + P2 + 远程 reconcile + Pharos#6 根因修复；brainstorm#2 / Pharos#5 / Pharos#6 均已关闭）
 
 ## 定位与边界
 
@@ -69,12 +69,21 @@ pharos agent peek|say|kill <session> [--host <alias>]   # 驱动（对应 cc-tmu
 3. ✅ 分发通道**已存在**：`SkillInstall.swift` 把 repo `skills/` → app bundle →
    symlink 进 `~/.claude/skills/`（symlink 意味着装好的 app 永远是当前版本，无需 .version 戳）
 4. ✅ skill 文档 v2（**DONE 2026-07-10**：passive-join.md 重写为 launch/issue-start --host 主路径 + agent 驱动面；SKILL.md 指针更新）
-5. ◐ Pharos#5：P1 ✅（probe 只读 + demoteStrayHub 自愈）、P3 ✅（mesh-endpoint 拨号文件，env>file>GUI）、**P2 待做**（store 同步 meshHubHostID + Settings 单选 hub）
+5. ✅ Pharos#5：P1 ✅（probe 只读 + demoteStrayHub 自愈）、P3 ✅（mesh-endpoint 拨号文件，env>file>GUI）、
+   P2 ✅（**DONE 2026-07-10**：StoreData.meshHubHostID 单一事实 + isMeshHub 派生 + defaults 迁移 +
+   Settings 单选 hub + 启动时卫星自动配对写 endpoint 文件；双向抢 hub 实测通过，endpoint 方向翻转正确）
+6. ✅ 远程 reconcile（**DONE 2026-07-10**）：Issue.activeSessionHost（本机=HostIdentity、远程=ssh alias）、
+   reconcileAgentLinks 按 host 分桶、RemoteLaunch.runningSessions ssh 探测（5s 超时、30s 缓存、
+   unreachable fail-open）；issue start --host 启动成功后补 link；GUI running 徽标用 local+remote 并集。
+   实测：远程 start → link 保持 → agent kill → sweep 清 link + 发 Agent finished。
 
 ## 实施中发现的后续项
 
-- **远程 reconcile**：issue↔session 链接要支持远端 tmux（reconcile 需按 host 分桶探测）
-- **改名残留**：白富贵的 localPaths 挂在旧名记录（world-monitor）上，改名后的
-  "World Monitor" 没继承 —— rename 迁移或 iCloud 合并问题，待查（已提 Pharos issue）
+- ✅ **远程 reconcile**：已实现（见上第 6 条）
+- ✅ **改名残留（Pharos#6）真相**：不是 rename 的锅。`pharos` symlink 调用时 Bundle.main 解析不到
+  .app bundle，UserDefaults.standard 落到进程级 "pharos" 域 → CLI 读不到 pharos.dataDir →
+  CLI 写 Application Support、GUI 写 iCloud，**双注册表分叉**。rename 是原地改（id 不变），
+  白富贵路径留在 GUI 那份冻结的 iCloud 旧快照里。修复：PharosPrefs.shared 显式解析
+  me.pai.pharos 域（所有前门统一），一次性数据统一手术（备份 projects.json.pre-unify-backup-20260710）。
 - **PHAROS_HOST override** 可以从任一台机器代注册别机路径：
   `PHAROS_HOST=白富贵 pharos path <project> <dir>`（文档值得记录）
