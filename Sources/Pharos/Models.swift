@@ -98,6 +98,11 @@ struct Issue: Identifiable, Codable, Hashable {
     var updatedAt: Date = Date()
     /// tmux session name of an agent currently working this issue (nil = none).
     var activeSession: String?
+    /// Where `activeSession`'s tmux server lives: this machine's `HostIdentity`
+    /// for local launches, or the SSH alias used for a remote launch (which is
+    /// what a reconcile sweep needs to dial). nil = legacy link, treated as
+    /// local. Cleared together with `activeSession`.
+    var activeSessionHost: String?
     /// Worktree path an agent is running in for this issue, if any.
     var worktreePath: String?
     /// Images / files attached to the issue. The bytes live on disk under
@@ -168,6 +173,7 @@ extension Issue {
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
         activeSession = try c.decodeIfPresent(String.self, forKey: .activeSession)
+        activeSessionHost = try c.decodeIfPresent(String.self, forKey: .activeSessionHost)
         worktreePath = try c.decodeIfPresent(String.self, forKey: .worktreePath)
         attachments = try c.decodeIfPresent([IssueAttachment].self, forKey: .attachments) ?? []
         labels = try c.decodeIfPresent([String].self, forKey: .labels) ?? []

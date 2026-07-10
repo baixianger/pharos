@@ -46,7 +46,7 @@ struct DashboardView: View {
     }
     private var urgent: [(p: Project, i: Issue)] { openIssues.filter { $0.i.priority == .urgent } }
     private var activeAgents: [(p: Project, i: Issue)] {
-        allIssues.filter { if let s = $0.i.activeSession { return store.runningSessions.contains(s) } else { return false } }
+        allIssues.filter { if let s = $0.i.activeSession { return store.allRunningSessions.contains(s) } else { return false } }
     }
     private var agentCount: Int {
         store.runningSessions.filter { s in projects.contains { LaunchService.tmuxSessionPrefix($0).hasPrefix("pharos-") && s.hasPrefix(LaunchService.tmuxSessionPrefix($0)) } }.count

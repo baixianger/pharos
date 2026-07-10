@@ -597,7 +597,7 @@ struct ProjectDetailView: View {
                     Label("\(subCount)", systemImage: "list.bullet.indent")
                         .font(.system(size: 9)).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
                 }
-                if let session = issue.activeSession, store.runningSessions.contains(session) {
+                if let session = issue.activeSession, store.allRunningSessions.contains(session) {
                     Label("agent", systemImage: "circle.fill")
                         .font(.system(size: 9)).foregroundStyle(.green).labelStyle(.titleAndIcon)
                 }
@@ -661,7 +661,7 @@ struct ProjectDetailView: View {
                                     .font(.caption2).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
                             }
                             ForEach(issue.labels.prefix(4), id: \.self) { labelChip($0) }
-                            if let session = issue.activeSession, store.runningSessions.contains(session) {
+                            if let session = issue.activeSession, store.allRunningSessions.contains(session) {
                                 Label("agent running", systemImage: "circle.fill")
                                     .font(.caption2).foregroundStyle(.green).labelStyle(.titleAndIcon)
                             }

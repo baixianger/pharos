@@ -739,9 +739,10 @@ enum PharosCore {
         guard let issue = project.issues.first(where: { $0.number == number }) else {
             throw CoreError(message: "No issue #\(number) in '\(project.name)'.")
         }
-        // Remote start: the issue moves to In Progress but is NOT session-linked —
-        // the local reconcile sweep only sees THIS machine's tmux and would
-        // falsely clear a remote link (remote reconcile is a tracked follow-up).
+        // Remote start: move to In Progress up front, launch, then link the
+        // session tagged with the SSH alias — the reconcile sweep probes that
+        // host's tmux (fail-open when unreachable), so a remote link is now
+        // tracked exactly like a local one.
         if let host, !host.isEmpty {
             _ = store.setIssueStatus(projectID: project.id, number: number, status: .inProgress)
             saveStore(store)
@@ -753,6 +754,13 @@ enum PharosCore {
                 let summary = try RemoteLaunch.launch(project: project, kind: kind, host: host,
                                                       yolo: yolo ?? project.yolo, issue: number,
                                                       brief: brief, source: source)
+                // Link AFTER the (minutes-long) launch, on a fresh load — the
+                // GUI may have written the registry while we waited.
+                var post = loadStore()
+                _ = post.linkIssueSession(projectID: project.id, number: number,
+                                          session: LaunchService.tmuxSessionName(project, kind, issue: number),
+                                          host: host)
+                saveStore(post)
                 return "Started \(kind.label) on \(project.name)#\(number) remotely — issue moved to In Progress.\n" + summary
             } catch let e as RemoteLaunch.RemoteError {
                 throw CoreError(message: e.message)

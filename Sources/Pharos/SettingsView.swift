@@ -185,11 +185,16 @@ private struct MachinesSettingsTab: View {
             }
             Section("Host mesh") {
                 HStack {
-                    Toggle("Host the chat mesh for other Macs", isOn: Binding(
-                        get: { store.hostMesh },
-                        set: { on in store.hostMesh = on; Task.detached { MeshHosting.apply(hosting: on) } }
+                    Toggle("Host the chat mesh on this Mac", isOn: Binding(
+                        get: { store.isMeshHub },
+                        set: { on in store.setMeshHub(on); Task.detached { MeshHosting.apply(hosting: on) } }
                     ))
-                    HelpBadge(text: "Turn ON for ONE always-on Mac (the hub): it binds this Mac's chat broker to your Tailscale address so your other Macs can pair to it and share the same rooms. Leave OFF on your other Macs — they use “Pair a Mac” below to connect to the hub.")
+                    HelpBadge(text: "Exactly ONE Mac in the pairing hosts the mesh (the hub) — the role is stored in your synced project data, so all your Macs agree on it. Turning this ON claims the hub for this Mac (and takes it from whichever Mac had it); OFF releases it. The hub binds its chat broker to your Tailscale address; the other Macs pair to it below.")
+                }
+                if let hub = store.meshHubHostID, hub != HostIdentity.current {
+                    Text("Current hub: \(hub). Turning this on moves the hub here — \(hub) demotes itself the next time Pharos launches there.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             PairingView()

@@ -11,11 +11,17 @@ struct StoreData: Codable {
     var projects: [Project] = []
     var groups: [String] = []   // user-defined groups (may be empty)
     var trash: [TrashedItem] = []   // soft-deleted items awaiting restore/purge
+    /// Which machine hosts the mesh (its `HostIdentity`). Lives in the synced
+    /// store — every Mac reads the SAME answer, so a second hub is impossible
+    /// by construction (Pharos#5 P2). nil = nobody hosts.
+    var meshHubHostID: String?
 
-    init(projects: [Project] = [], groups: [String] = [], trash: [TrashedItem] = []) {
+    init(projects: [Project] = [], groups: [String] = [], trash: [TrashedItem] = [],
+         meshHubHostID: String? = nil) {
         self.projects = projects
         self.groups = groups
         self.trash = trash
+        self.meshHubHostID = meshHubHostID
     }
 
     /// Tolerant decode — missing keys fall back to empty rather than failing the
@@ -29,6 +35,7 @@ struct StoreData: Codable {
         projects = try c.decodeIfPresent([Project].self, forKey: .projects) ?? []
         groups = try c.decodeIfPresent([String].self, forKey: .groups) ?? []
         trash = try c.decodeIfPresent([TrashedItem].self, forKey: .trash) ?? []
+        meshHubHostID = try c.decodeIfPresent(String.self, forKey: .meshHubHostID)
     }
 }
 
@@ -296,14 +303,27 @@ extension StoreData {
     }
 
     /// Link an agent session/worktree to an issue and move it to In Progress.
+    /// `host` is the SSH alias for a remote launch; local launches default to
+    /// this machine's `HostIdentity` so a synced peer's reconcile sweep never
+    /// mistakes the link for one of its own tmux sessions.
     @discardableResult
     mutating func linkIssueSession(projectID: Project.ID, number: Int, session: String,
+                                   host: String? = nil,
                                    worktreePath: String? = nil, now: Date = Date()) -> Bool {
         updateIssue(projectID: projectID, number: number, now: now) {
             $0.status = .inProgress
             $0.activeSession = session
+            $0.activeSessionHost = host ?? HostIdentity.current
             $0.worktreePath = worktreePath
         }
+    }
+
+    /// Which live-session bucket a link belongs to: "" = this machine's tmux
+    /// (legacy nil links and links tagged with our own `HostIdentity`); anything
+    /// else is the SSH alias a reconcile sweep must probe.
+    static func linkHostBucket(_ host: String?) -> String {
+        guard let host, !host.isEmpty, host != HostIdentity.current else { return "" }
+        return host
     }
 
     /// Soft-delete an issue: move it to Trash. Returns the trash item id.
@@ -333,19 +353,26 @@ extension StoreData {
     /// was linked to and clear the link. Status is intentionally left unchanged
     /// (an agent finishing doesn't mean the issue is resolved). Returns the names
     /// of projects that got an update (for downstream notification/UI refresh).
-    /// Reconcile issue↔agent links against the set of *live* tmux sessions: any
-    /// issue whose `activeSession` is no longer live = its agent ended, so post a
+    /// Reconcile issue↔agent links against the *live* tmux sessions of each
+    /// host, keyed by `linkHostBucket` ("" = this machine). Any linked session
+    /// that is absent from its host's live set = its agent ended, so post a
     /// finish update and clear the link. Robust to restarts and missed polls
-    /// (unlike a previous-vs-now diff). Returns names of touched projects.
+    /// (unlike a previous-vs-now diff). A link whose bucket has NO entry in
+    /// `live` is left alone — the caller couldn't probe that host, and an
+    /// unreachable host must never clear links (fail-open, the v1.7 rule).
+    /// Returns names of touched projects.
     @discardableResult
-    mutating func reconcileAgentLinks(live: Set<String>, now: Date = Date()) -> [String] {
+    mutating func reconcileAgentLinks(live: [String: Set<String>], now: Date = Date()) -> [String] {
         var touched: [String] = []
         for pi in projects.indices {
             for ii in projects[pi].issues.indices {
-                guard let session = projects[pi].issues[ii].activeSession, !live.contains(session) else { continue }
+                guard let session = projects[pi].issues[ii].activeSession else { continue }
+                let bucket = Self.linkHostBucket(projects[pi].issues[ii].activeSessionHost)
+                guard let liveSet = live[bucket], !liveSet.contains(session) else { continue }
                 let number = projects[pi].issues[ii].number
                 let title = projects[pi].issues[ii].title
                 projects[pi].issues[ii].activeSession = nil
+                projects[pi].issues[ii].activeSessionHost = nil
                 projects[pi].issues[ii].updatedAt = now
                 projects[pi].updates.insert(
                     ProjectUpdate(createdAt: now, body: "Agent finished on #\(number) \(title).",
@@ -364,6 +391,7 @@ extension StoreData {
                 let number = projects[pi].issues[ii].number
                 let title = projects[pi].issues[ii].title
                 projects[pi].issues[ii].activeSession = nil
+                projects[pi].issues[ii].activeSessionHost = nil
                 projects[pi].issues[ii].updatedAt = now
                 let update = ProjectUpdate(createdAt: now,
                                            body: "Agent finished on #\(number) \(title).",
@@ -470,10 +498,20 @@ final class ProjectStore {
     var peerHost = "" {
         didSet { UserDefaults.standard.set(peerHost, forKey: "pharos.peerHost") }
     }
-    /// Host the chat mesh for other Macs — bind this Mac's broker to TCP so peers
-    /// can dial in (see MeshHosting). The apply/restart is driven by the GUI.
-    var hostMesh = false {
-        didSet { UserDefaults.standard.set(hostMesh, forKey: "pharos.hostMesh") }
+    /// Which Mac hosts the chat mesh — the synced store is the single source of
+    /// truth, so both machines always read the same answer (Pharos#5 P2).
+    /// Mutate via `setMeshHub(_:)`; refreshed by `load()` when iCloud syncs.
+    private(set) var meshHubHostID: String?
+    /// Whether THIS Mac is the mesh hub (drives the broker's TCP bind — see
+    /// MeshHosting). Derived, never stored per-machine.
+    var isMeshHub: Bool { meshHubHostID == HostIdentity.current }
+
+    /// Claim or release the hub role for THIS Mac. Claiming overwrites whichever
+    /// machine held it — there is exactly one hub per pairing; a deposed hub
+    /// demotes itself on its next launch (PharosApp `.task`).
+    func setMeshHub(_ on: Bool) {
+        meshHubHostID = on ? HostIdentity.current : nil
+        save()
     }
 
     /// The registry file. Resolved from the shared `DataLocation` (honoring the
@@ -504,8 +542,14 @@ final class ProjectStore {
         claudeArgs = d.string(forKey: "pharos.claudeArgs") ?? ""
         codexArgs  = d.string(forKey: "pharos.codexArgs")  ?? ""
         peerHost   = d.string(forKey: "pharos.peerHost")   ?? ""
-        hostMesh   = d.bool(forKey: "pharos.hostMesh")
         load()
+        // Migrate the pre-P2 per-machine hub flag into the synced store (one
+        // shot): a Mac that had "Host mesh" ON claims the hub slot unless the
+        // synced store already names one.
+        if d.bool(forKey: "pharos.hostMesh") {
+            d.removeObject(forKey: "pharos.hostMesh")
+            if meshHubHostID == nil { setMeshHub(true) }
+        }
         lastFileMtime = fileModificationDate()
         refreshRunningAgents()
         requestNotificationAuthorizationIfNeeded()
@@ -576,9 +620,10 @@ final class ProjectStore {
                 postFinishedNotification(sessionName: sessionName)
             }
         }
-        // Reconcile issue↔agent links against the live set (restart-safe).
+        // Reconcile issue↔agent links against each host's live set (restart-safe).
         if projects.contains(where: { $0.issues.contains { $0.activeSession != nil } }) {
-            mutateStore { _ = $0.reconcileAgentLinks(live: live) }
+            let map = await liveSessionMap(localLive: live)
+            mutateStore { _ = $0.reconcileAgentLinks(live: map) }
         }
 
         // TODO: needs-input detection
@@ -640,6 +685,7 @@ final class ProjectStore {
         projects = store.projects
         groups = store.groups
         trash = store.trash
+        meshHubHostID = store.meshHubHostID
         // Drop expired trash from the in-memory view; persistence catches up on
         // the next save (we don't write here to avoid churning the file watcher).
         trash.removeAll { Date().timeIntervalSince($0.deletedAt) > StoreData.trashRetention }
@@ -650,7 +696,8 @@ final class ProjectStore {
     func save() {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        var store = StoreData(projects: projects, groups: groups, trash: trash)
+        var store = StoreData(projects: projects, groups: groups, trash: trash,
+                              meshHubHostID: meshHubHostID)
         store.captureHostPaths(host: HostIdentity.current)   // record this host's paths
         if let data = try? encoder.encode(store) {
             try? data.write(to: fileURL, options: .atomic)
@@ -945,11 +992,13 @@ final class ProjectStore {
     /// back to the published arrays, and persist. All delete/restore paths funnel
     /// through here so the GUI and the CLI share one mutation implementation.
     private func mutateStore(_ body: (inout StoreData) -> Void) {
-        var s = StoreData(projects: projects, groups: groups, trash: trash)
+        var s = StoreData(projects: projects, groups: groups, trash: trash,
+                          meshHubHostID: meshHubHostID)
         body(&s)
         projects = s.projects
         groups = s.groups
         trash = s.trash
+        meshHubHostID = s.meshHubHostID
         save()
     }
 
@@ -1141,9 +1190,46 @@ final class ProjectStore {
             updateDockBadge()
             // Self-heal stale links on launch / manual refresh / after a launch.
             if projects.contains(where: { $0.issues.contains { $0.activeSession != nil } }) {
-                mutateStore { _ = $0.reconcileAgentLinks(live: live) }
+                let map = await liveSessionMap(localLive: live)
+                mutateStore { _ = $0.reconcileAgentLinks(live: map) }
             }
         }
+    }
+
+    /// Recent remote live-set probes, so the 10s poll doesn't SSH every tick.
+    private var remoteLiveCache: [String: (stamp: Date, live: Set<String>?)] = [:]
+
+    /// Live sessions on the remote hosts that issue links point at (refreshed
+    /// by the same probes that feed reconcile). Lets the GUI badge a
+    /// remotely-launched issue as running even though local tmux knows nothing.
+    private(set) var remoteRunningSessions: Set<String> = []
+
+    /// Live sessions across every probed host — what issue "running" badges use.
+    var allRunningSessions: Set<String> { runningSessions.union(remoteRunningSessions) }
+
+    /// Assemble the per-host live-session map for `reconcileAgentLinks`: the
+    /// local tmux set under "" plus one probe per remote host that any link
+    /// points at (30s cache). A host that can't be probed is simply ABSENT from
+    /// the map — reconcile then skips its links (fail-open, the v1.7 rule).
+    private func liveSessionMap(localLive: Set<String>?) async -> [String: Set<String>] {
+        var map: [String: Set<String>] = [:]
+        if let localLive { map[""] = localLive }
+        let hosts = Set(projects.flatMap { p in
+            p.issues.compactMap { i in
+                i.activeSession != nil ? StoreData.linkHostBucket(i.activeSessionHost) : nil
+            }
+        }).subtracting([""])
+        for host in hosts {
+            if let cached = remoteLiveCache[host], Date().timeIntervalSince(cached.stamp) < 30 {
+                if let liveSet = cached.live { map[host] = liveSet }
+                continue
+            }
+            let probed = await Task.detached(priority: .utility) { RemoteLaunch.runningSessions(host: host) }.value
+            remoteLiveCache[host] = (Date(), probed)
+            if let probed { map[host] = probed }
+        }
+        remoteRunningSessions = map.filter { $0.key != "" }.values.reduce(into: []) { $0.formUnion($1) }
+        return map
     }
 
     /// Mirror the running-agent count onto the Dock icon badge (glanceable status).

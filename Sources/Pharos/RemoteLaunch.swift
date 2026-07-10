@@ -242,6 +242,23 @@ enum RemoteLaunch {
     // MARK: - Driving surface (pharos agents / agent peek|say|kill)
 
     /// tmux, local or remote — one driving surface for either side.
+    /// Live Pharos tmux sessions on `host` — the remote counterpart of
+    /// `LaunchService.runningSessions()`, for the reconcile sweep. nil =
+    /// "couldn't tell" (ssh unreachable, tmux missing): callers MUST fail open
+    /// and leave that host's links alone. A tmux with no server is a real empty
+    /// set (every session there ended). Short 5s connect timeout — this runs
+    /// from the GUI's poll loop.
+    static func runningSessions(host: String) -> Set<String>? {
+        let r = Shell.run("/usr/bin/ssh",
+                          ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host,
+                           "\(pathShim); tmux list-sessions -F '#{session_name}'"])
+        if r.code == 0 {
+            return Set(r.out.split(separator: "\n").map(String.init).filter { $0.hasPrefix("pharos-") })
+        }
+        if (r.err + r.out).contains("no server running") { return [] }
+        return nil
+    }
+
     private static func tmuxAny(_ host: String?, _ args: [String]) -> Shell.Result {
         if let host, !host.isEmpty { return tmux(host, args) }
         guard let bin = LaunchService.tmuxPath else {

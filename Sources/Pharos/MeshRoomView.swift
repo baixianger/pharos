@@ -286,11 +286,16 @@ struct MeshRoomView: View {
         guard !resolving else { return }
         resolving = true
         let peer = store.peerHost
-        let ep = await Task.detached { MeshRemote.resolve(peerHost: peer) }.value
+        let hub = store.isMeshHub
+        let ep = await Task.detached { MeshRemote.resolve(peerHost: peer, isHub: hub) }.value
         MeshClient.remoteEndpoint = ep
         // Persist for CLI/hooks on this machine (Pharos#5 P3): satellite agents
         // read the mesh-endpoint file and follow the hub with zero env config.
-        MeshPaths.setDialEndpointFile(ep)
+        // Fail-open: a satellite whose peer is transiently unreachable keeps the
+        // last-known endpoint file instead of islanding its agents onto a local
+        // broker. The hub (and an unpaired Mac) does clear the file — it serves
+        // locally by design.
+        if hub || peer.isEmpty || ep != nil { MeshPaths.setDialEndpointFile(ep) }
         resolving = false
         resolved = true
         reload()

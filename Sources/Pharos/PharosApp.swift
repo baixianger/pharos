@@ -34,11 +34,28 @@ struct PharosApp: App {
                 .environment(store)
                 .preferredColorScheme(store.appearance.colorScheme)
                 .task {
-                    // Hub mode: bind the broker to TCP on launch so peers can dial
-                    // in. Not hosting: demote any stray TCP-bound broker a past
-                    // pairing probe left behind (Pharos#5 split-brain).
-                    if store.hostMesh { await Task.detached { MeshHosting.apply(hosting: true) }.value }
-                    else { await Task.detached { MeshHosting.demoteStrayHub() }.value }
+                    // The hub role comes from the synced store (Pharos#5 P2), so
+                    // every Mac reads the same answer. Hub: bind the broker to TCP
+                    // so peers can dial in. Everyone else: demote any stray
+                    // TCP-bound broker (split-brain), then pair to the hub and
+                    // persist the dial endpoint so CLI/hooks on this Mac follow
+                    // it with zero env config — without waiting for the Rooms
+                    // view to be opened.
+                    if store.isMeshHub {
+                        await Task.detached { MeshHosting.apply(hosting: true) }.value
+                    } else {
+                        await Task.detached { MeshHosting.demoteStrayHub() }.value
+                        let peer = store.peerHost
+                        if !peer.isEmpty {
+                            let ep = await Task.detached { MeshRemote.resolve(peerHost: peer, isHub: false) }.value
+                            // Fail-open: an unreachable peer keeps the last-known
+                            // endpoint file rather than islanding this Mac's agents.
+                            if let ep {
+                                MeshClient.remoteEndpoint = ep
+                                MeshPaths.setDialEndpointFile(ep)
+                            }
+                        }
+                    }
                 }
         }
         .defaultSize(width: 1180, height: 760)

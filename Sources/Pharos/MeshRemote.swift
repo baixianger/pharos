@@ -29,8 +29,13 @@ enum MeshRemote {
     /// Resolve the GUI's mesh endpoint. nil ⇒ "a local broker serves — use it";
     /// else "ip:port" for the peer's broker (ensured running). BLOCKING + SSH —
     /// always call this off the main thread.
-    static func resolve(peerHost: String) -> String? {
-        if let fd = MeshClient.connectUDS() { close(fd); return nil }   // local broker wins
+    ///
+    /// Config wins (Pharos#5 P2): the synced store says who the hub is. The hub
+    /// always serves locally; everyone else dials the peer. The old "local
+    /// broker wins" UDS short-circuit let a stray local broker island a
+    /// satellite into its own room set.
+    static func resolve(peerHost: String, isHub: Bool) -> String? {
+        if isHub { return nil }
         let host = peerHost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { return nil }
         return ensurePeerBroker(host)
