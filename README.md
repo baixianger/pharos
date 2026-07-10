@@ -79,13 +79,19 @@
 
 **Sub-tasks & relations.** Nest issues under a parent and link them (`blocks` / `blocked-by` / `relates` / `duplicate`); rows flag blocked issues and sub-task counts. ⌘K and `pharos search` search issue titles, bodies, and labels across every project.
 
+### Agent Mesh
+
+**Agent↔agent chat rooms.** Agents talk to each other through the CLI — no MCP server, nothing preloaded into context: `pharos mesh join/say/recv`, with `@mention` delivery, durable per-room transcripts, and a read-only room view in the app. Session-precise addressing comes from a `SessionStart` hook, and a `Stop` hook surfaces unread mentions to parked agents (`pharos mesh install-hooks`).
+
+**Cross-host rooms with exactly one hub.** Rooms span your Macs over Tailscale. Which machine hosts the broker is stored in the *synced* data (`meshHubHostID`) — every Mac reads the same answer, so a split-brain second hub is impossible. Satellites pair automatically at app launch and their agents/CLI follow the hub with zero per-agent configuration; a deposed hub demotes itself on its next launch.
+
 ### Git and Multi-Machine
 
 **Per-project git panel.** The project detail view shows current branch, dirty/clean status, commits ahead and behind the remote, and the most recent commit — pulled live via git.
 
 **Open PRs and CI status.** For GitHub-backed projects, Pharos uses `gh` to surface the count of open pull requests and the conclusion of the latest CI run (success, failure, in progress) alongside the local git state.
 
-**Peer git drift over SSH.** Configure a peer host (another Mac) in Settings, and Pharos will SSH into it to compare each project's HEAD, branch, and dirty count against your local copy — useful for keeping two machines in sync. Per-project, you can override the remote directory path if it differs from your local one.
+**Launch agents on your other Mac.** `pharos launch <project> claude --host <ssh-alias>` (or `pharos issue start <project> <#> claude --host …`) spawns a detached tmux agent on a paired Mac: the synced registry resolves that machine's checkout path, the macOS keychain is auto-unlocked for the session, and Pharos waits for the ready prompt and prints the Remote Control URL. Drive any live session from anywhere: `pharos agents [--host]`, `pharos agent peek|say|kill <session> [--host]`. Remotely-started issues stay tracked — the reconcile sweep probes the remote host's tmux over SSH and logs "Agent finished" when the session ends (and never clears links for an unreachable host).
 
 ---
 
@@ -95,9 +101,9 @@
 
 1. Grab the latest **`Pharos-<version>.dmg`** from [Releases](https://github.com/baixianger/pharos/releases).
 2. Open the DMG and drag **Pharos.app** to your Applications folder.
-3. Launch. Pharos is notarized and Developer ID–signed — no Gatekeeper warning.
+3. Launch. Current builds are **ad-hoc signed** — on first launch **right-click → Open** (or `xattr -dr com.apple.quarantine /Applications/Pharos.app`).
 
-> **Requirements:** macOS 26 (Tahoe) · Apple Silicon (arm64) or Intel (x86_64 universal binary)
+> **Requirements:** macOS 26 (Tahoe) · Apple Silicon (arm64)
 
 Pharos uses **Sparkle** for automatic updates — you'll be notified inside the app when a new version is available.
 
@@ -151,6 +157,8 @@ Run `pharos help` for the authoritative list. Summary:
 | Issues & log | `issue add <project> "<title>" [--priority …] [--body …] [--attach <file>]… [--label L]…` · `issue list <project> [--all] [--status S] [--priority P] [--label L] [--milestone M]` · `issue status\|priority <project> <#> <value>` · `issue label add\|rm <project> <#> <label>` · `issue milestone <project> <#> <name\|none>` · `issue parent <project> <#> <parent#\|none>` · `issue link\|unlink <project> <#> <relates\|blocks\|blocked-by\|duplicate> <#>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `attach add\|list\|rm <project> <#> …` · `update add <project> "<text>" [--issue <#>]` |
 | Milestones | `milestone add <project> "<name>" [--due yyyy-MM-dd]` · `milestone list <project>` · `milestone rm <project> <name>` |
 | Registry | `add <name> [--path] [--remote] [--tag]… [--notes]` · `remove <project>` · `rename <project> <new>` · `describe <project> <text…>` · `group create\|delete\|add\|remove …` · `yolo`/`tmux <project> <on\|off>` · `trash restore <id>` · `trash empty` |
+| Mesh | `mesh create\|list\|join\|say\|recv\|unread\|history\|leave\|rename\|delete` · `mesh install-hooks [--project <dir> \| --user]` (also invocable as `chat`) |
+| Cross-host | `launch <project> <agent> --host <ssh-alias>` · `issue start <project> <#> <agent> --host <alias>` · `agents [--host]` · `agent peek\|say\|kill <session> [--host]` |
 | Multi-machine | `host` · `path <project> <path>` · `path <project> --clear` |
 
 The headline differentiator — **issues wired to the agent loop**: `pharos issue
@@ -168,27 +176,29 @@ Pharos handles it with a **per-host path map** — each Mac stores and reads onl
 its own path (keyed by computer name), so syncing never clobbers it. A project
 synced from another Mac shows "not checked out on *this* host" until you point it
 at a local folder (GUI **Set local folder…**, or `pharos path <project> <path>`).
-`pharos host` prints this machine's key. Set **Peer host key** (Settings) to the
-other Mac's key and the SSH peer-drift comparison reads its path from the synced
-map automatically.
+`pharos host` prints this machine's key. Settings → **Machines** pairs this Mac
+with the other one (SSH over Tailscale) and picks which machine hosts the agent
+mesh; remote launches (`--host`) resolve each project's path from the same
+synced per-host map.
 
 ---
 
 ## Privacy
 
-Pharos reads `~/.claude/projects/` and `~/.codex/sessions/` **locally only**. No session data, file paths, or identifiers are transmitted to any remote server. All app state lives in `~/Library/Application Support/Pharos/`.
+Pharos reads `~/.claude/projects/` and `~/.codex/sessions/` **locally only**. No session data, file paths, or identifiers are transmitted to any remote server. All app state lives in `~/Library/Application Support/Pharos/` — or in your own iCloud Drive `Pharos/` folder if you enable multi-machine sync. Cross-host features (mesh, remote launch) talk only to your own paired Macs over SSH/Tailscale.
 
 ---
 
 ## Release
 
-Pharos is distributed as a notarized DMG, built and published with one command:
+Current releases are ad-hoc-signed DMGs:
 
 ```bash
-bundle exec fastlane mac release
+bash Scripts/package_app.sh release   # build + package Pharos.app
+bash Scripts/make_dmg.sh              # styled drag-to-install DMG
 ```
 
-This runs the full pipeline: build → sign → notarize → staple → DMG → GitHub release. See [docs/RELEASE.md](docs/RELEASE.md) for prerequisites (Developer ID cert + notarytool profile).
+A full notarized pipeline (build → sign → notarize → staple → DMG → GitHub release) is scripted as `bundle exec fastlane mac release` — see [docs/RELEASE.md](docs/RELEASE.md) for its prerequisites (Developer ID cert + notarytool profile).
 
 ---
 

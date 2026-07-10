@@ -7,6 +7,36 @@ Maps Pharos versions to git history. Newest at top.
 
 ## Unreleased
 
+## v0.3.0 — 2026-07-10
+
+**Cross-host agents.** `pharos launch <project> <agent> --host <ssh-alias>` and
+`pharos issue start … --host` spawn a detached tmux agent on another Mac over
+SSH/Tailscale: per-host path resolution from the synced registry, macOS keychain
+auto-unlock (per tmux-server security session), ready-prompt wait + Remote
+Control URL capture, and issue-brief injection. Drive surface from any machine:
+`pharos agents [--host]`, `pharos agent peek|say|kill <session> [--host]`.
+
+**One mesh hub, in the data model (Pharos#5).** Hub identity moved into the
+synced store (`meshHubHostID`) — every Mac reads the same answer, so a second
+hub is impossible by construction. The Settings toggle claims/releases the role;
+a deposed hub self-demotes on its next launch. Satellites pair at app startup
+and follow the hub through the app-managed `mesh-endpoint` dial file — zero
+per-agent env config, fail-open when the hub is unreachable. (v1's blocking
+`mesh ask`/`wait` gave way to say/@mention → unread signal → `recv`, delivered
+by the Stop/SessionStart hooks.)
+
+**Remote issue tracking.** Issue↔session links record which host the tmux
+session lives on; the reconcile sweep probes remote hosts over SSH (5s timeout,
+30s cache, never clears links for an unreachable host), so a remotely-started
+issue shows as running and auto-logs "Agent finished" when its session ends.
+
+**Registry split-brain fixed (Pharos#6).** A `pharos` symlink invocation doesn't
+resolve Bundle.main to the app bundle, so the CLI read a per-process defaults
+domain, missed the iCloud data-location pref, and silently kept its own registry
+— GUI and CLI diverged. All pref access now routes through `PharosPrefs`
+(explicit app domain from any front door), with a one-time data unification
+(backups kept beside both files).
+
 ## v0.2.0 — 2026-06-23
 
 **Issues & project log (Linear-style, single-user).** Native issues with status,
