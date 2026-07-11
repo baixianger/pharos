@@ -83,6 +83,18 @@ enum MeshClient {
         }
     }
 
+    /// Hook-safe send: NEVER spawns a daemon. Dial-out hosts use the normal TCP
+    /// path (which never auto-spawns); locally we only talk to a broker that is
+    /// already up. nil ⇒ nobody to tell — the caller must treat that as fine
+    /// (hooks are fail-open; a dead broker also means nobody reads presence).
+    @discardableResult
+    static func sendIfUp(_ req: MeshRequest) -> MeshResponse? {
+        if activeRemote != nil { return send(req) }
+        guard let fd = connectUDS() else { return nil }
+        defer { close(fd) }
+        return roundTrip(fd, req)
+    }
+
     static func send(_ req: MeshRequest) -> MeshResponse {
         // Remote broker (TCP): never auto-spawn a local daemon — just dial it.
         if let ep = activeRemote {

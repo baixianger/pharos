@@ -971,18 +971,191 @@ final class AgentTrackingTests: XCTestCase {
         s.addIssue(projectID: pid, title: "x")   // #1
         _ = s.linkIssueSession(projectID: pid, number: 1, session: "pharos-app-claude-i1")
 
-        // Session still live → no change.
-        _ = s.reconcileAgentLinks(live: ["pharos-app-claude-i1"])
+        // Session still live on this machine ("" bucket) → no change.
+        _ = s.reconcileAgentLinks(live: ["": ["pharos-app-claude-i1"]])
         XCTAssertEqual(s.projects[0].issues[0].activeSession, "pharos-app-claude-i1")
         XCTAssertTrue(s.projects[0].updates.isEmpty)
 
         // Session gone (e.g. finished while app was closed) → clear + post finish.
-        let touched = s.reconcileAgentLinks(live: [])
+        let touched = s.reconcileAgentLinks(live: ["": []])
         XCTAssertEqual(touched, ["app"])
         XCTAssertNil(s.projects[0].issues[0].activeSession)
         XCTAssertEqual(s.projects[0].updates.first?.kind, .agent)
         XCTAssertEqual(s.projects[0].updates.first?.issueNumber, 1)
         // Status is left as-is (agent finishing ≠ issue resolved).
         XCTAssertEqual(s.projects[0].issues[0].status, .inProgress)
+    }
+}
+
+// MARK: - Mesh: session-state model + poke safety (probed ground truth)
+
+final class MeshStateMappingTests: XCTestCase {
+
+    /// The hook-event → state table, exactly as probed (cc-hook-probe FINDINGS,
+    /// re-verified on CC v2.1.207, 2026-07-11).
+    func testHookEventMapping() {
+        XCTAssertEqual(MeshHooks.stateFor(event: "UserPromptSubmit", notificationType: nil), .busy)
+        XCTAssertEqual(MeshHooks.stateFor(event: "SessionEnd", notificationType: nil), .gone)
+        XCTAssertEqual(MeshHooks.stateFor(event: "Notification", notificationType: "permission_prompt"), .blocked)
+        XCTAssertEqual(MeshHooks.stateFor(event: "Notification", notificationType: "elicitation_dialog"), .blocked)
+        XCTAssertEqual(MeshHooks.stateFor(event: "Notification", notificationType: "idle_prompt"), .idle)
+    }
+
+    /// Unknown events/notification types are deliberately ignored — a CC
+    /// upgrade adding new notifications must never flip anyone's state.
+    func testUnknownEventsIgnored() {
+        XCTAssertNil(MeshHooks.stateFor(event: "Notification", notificationType: "auto_compact_started"))
+        XCTAssertNil(MeshHooks.stateFor(event: "Notification", notificationType: nil))
+        XCTAssertNil(MeshHooks.stateFor(event: "PreToolUse", notificationType: nil))
+    }
+
+    /// Poke may only reach a session whose composer is verifiably idle. busy is
+    /// mid-turn; blocked means a PERMISSION DIALOG is up — keys would answer it.
+    func testPokeableStates() {
+        XCTAssertTrue(MeshSessionState.stopped.pokeable)
+        XCTAssertTrue(MeshSessionState.idle.pokeable)
+        XCTAssertFalse(MeshSessionState.busy.pokeable)
+        XCTAssertFalse(MeshSessionState.blocked.pokeable)
+        XCTAssertFalse(MeshSessionState.gone.pokeable)
+    }
+}
+
+final class MeshPokeRouteTests: XCTestCase {
+
+    override func setUp() { setenv("PHAROS_HOST", "test-mac", 1) }
+    override func tearDown() { unsetenv("PHAROS_HOST") }
+
+    private func member(pane: String?, host: String?) -> MeshMemberInfo {
+        MeshMemberInfo(nick: "bot", project: "/tmp/x", session: "s", host: host,
+                       tmuxPane: pane, state: "stopped", stateTs: 0, rooms: ["r"], lastSeen: 0)
+    }
+
+    func testLocalPane() {
+        if case .local(let pane) = MeshPoke.route(for: member(pane: "%7", host: "test-mac"), peerHost: "peer") {
+            XCTAssertEqual(pane, "%7")
+        } else { XCTFail("expected .local") }
+    }
+
+    func testRemotePaneViaPeer() {
+        if case .remote(let pane, let host) = MeshPoke.route(for: member(pane: "%2", host: "other-mac"), peerHost: "home-ts") {
+            XCTAssertEqual(pane, "%2")
+            XCTAssertEqual(host, "home-ts")   // SSH alias, not the presence host name
+        } else { XCTFail("expected .remote") }
+    }
+
+    func testNoPaneIsUnpokeable() {
+        if case .unpokeable = MeshPoke.route(for: member(pane: nil, host: "test-mac"), peerHost: "peer") {
+        } else { XCTFail("expected .unpokeable without a pane") }
+    }
+
+    func testUnknownHostIsUnpokeable() {
+        // Guessing a host would send keystrokes to the wrong machine.
+        if case .unpokeable = MeshPoke.route(for: member(pane: "%1", host: nil), peerHost: "peer") {
+        } else { XCTFail("expected .unpokeable without a host") }
+    }
+
+    func testRemoteWithoutPeerIsUnpokeable() {
+        if case .unpokeable = MeshPoke.route(for: member(pane: "%1", host: "other-mac"), peerHost: "") {
+        } else { XCTFail("expected .unpokeable without a paired peer") }
+    }
+
+    /// The nudge is typed into a live pane; if it ever hit a shell instead, it
+    /// must stay inert — so no quoting/expansion metacharacters, ever.
+    func testNudgeTextHasNoShellMetacharacters() {
+        let text = MeshPoke.nudgeText(for: "agent-a.1_x")
+        let forbidden = CharacterSet(charactersIn: "`$\"';|&<>(){}[]*?~#!")
+        XCTAssertNil(text.unicodeScalars.first(where: { forbidden.contains($0) }),
+                     "nudge text must be shell-inert: \(text)")
+    }
+}
+
+final class MeshWireCompatTests: XCTestCase {
+
+    /// Pre-0.4 presence entries (no host/pane/state keys) must keep decoding —
+    /// same tolerance rule as the registry itself.
+    func testOldPresenceEntryDecodes() throws {
+        let old = #"{"v":1,"nicks":{"bot":{"project":"/tmp/x","rooms":["r"],"lastSeen":1.0,"online":true}}}"#
+        let p = try JSONDecoder().decode(MeshPresence.self, from: Data(old.utf8))
+        XCTAssertEqual(p.nicks["bot"]?.rooms, ["r"])
+        XCTAssertNil(p.nicks["bot"]?.tmuxPane)
+        XCTAssertNil(p.nicks["bot"]?.state)
+    }
+
+    /// Text-mention parsing feeds both the GUI input and CLI say — the poke
+    /// pipeline's very first step.
+    func testParseTextMentions() {
+        XCTAssertEqual(MeshHooks.parseTextMentions("@alice check the PR with @bob, @alice!"), ["alice", "bob"])
+        XCTAssertEqual(MeshHooks.parseTextMentions("no mentions here"), [])
+    }
+}
+
+final class MeshPokePaneCommandTests: XCTestCase {
+    private func result(_ out: String) -> Shell.Result { Shell.Result(out: out, err: "", code: 0) }
+
+    /// Claude Code's pane command is claude/node/bun — or a bare version number
+    /// ("2.1.207") on current installs, where the launcher execs a versioned
+    /// binary (observed live 2026-07-11).
+    func testAcceptedPaneCommands() {
+        for ok in ["claude", "node", "bun", "2.1.207", "10.0.1"] {
+            XCTAssertTrue(MeshPoke.paneRunsClaude(result(ok)), ok)
+        }
+        for bad in ["zsh", "bash", "vim", "2.1", "2.1.207-beta", "python3.11"] {
+            XCTAssertFalse(MeshPoke.paneRunsClaude(result(bad)), bad)
+        }
+    }
+}
+
+final class MeshNickResolutionTests: XCTestCase {
+    private var dir: URL!
+
+    override func setUp() {
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("mesh-test-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir.appendingPathComponent("mesh-state"), withIntermediateDirectories: true)
+        setenv("PHAROS_MESH_DIR", dir.path, 1)
+    }
+    override func tearDown() {
+        unsetenv("PHAROS_MESH_DIR")
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    private func writePresence(_ nicks: [String: MeshPresenceEntry]) throws {
+        let d = try JSONEncoder().encode(MeshPresence(v: 1, nicks: nicks))
+        try d.write(to: dir.appendingPathComponent("mesh-state/presence.json"))
+    }
+
+    private func entry(project: String?, session: String?) -> MeshPresenceEntry {
+        MeshPresenceEntry(project: project, session: session, host: nil, tmuxPane: nil,
+                          state: nil, stateTs: nil, rooms: ["r"], lastSeen: 1, online: true)
+    }
+
+    /// The identity rule (2026-07-11): an entry that declared a session id is
+    /// NEVER claimed via the cwd fallback by a hook carrying a different
+    /// session. Regression guard for the live hijack: a nick joined from $HOME
+    /// was cwd-matched by every unregistered session on the host, which stole
+    /// its unread notices and pinned its state busy.
+    func testForeignSessionCannotClaimByCwdPrefix() throws {
+        try writePresence(["kid": entry(project: "/Users/u", session: "kid-sid")])
+        XCTAssertNil(MeshHooks.resolveNick(cwd: "/Users/u/some/other/project", session: "stranger-sid"))
+        XCTAssertNil(MeshHooks.resolveNick(cwd: "/Users/u", session: nil))
+        // The declared session itself still resolves exactly.
+        XCTAssertEqual(MeshHooks.resolveNick(cwd: "/anywhere", session: "kid-sid"), "kid")
+    }
+
+    /// Session-less joins (legacy cwd-only) keep the old prefix behavior.
+    func testSessionlessEntryStillResolvesByCwd() throws {
+        try writePresence(["olde": entry(project: "/Users/u/proj", session: nil)])
+        XCTAssertEqual(MeshHooks.resolveNick(cwd: "/Users/u/proj/sub", session: "any-sid"), "olde")
+        XCTAssertNil(MeshHooks.resolveNick(cwd: "/Users/u/elsewhere", session: nil))
+    }
+}
+
+final class MeshPaneProbeTests: XCTestCase {
+    /// The unknown-state pane probe: only a visibly idle composer passes.
+    func testPaneIdleDetection() {
+        XCTAssertTrue(MeshPoke.paneLooksIdle("some output\n❯ \n  bypass permissions on"))
+        XCTAssertFalse(MeshPoke.paneLooksIdle("✻ Cooking… (esc to interrupt)"))
+        XCTAssertFalse(MeshPoke.paneLooksIdle("Do you want to proceed?\n❯ 1. Yes\n 2. No"))
+        XCTAssertFalse(MeshPoke.paneLooksIdle("❯ 1. Yes, I trust this folder\nEnter to confirm · Esc to cancel"))
+        XCTAssertFalse(MeshPoke.paneLooksIdle("plain shell output, no composer"))
     }
 }

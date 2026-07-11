@@ -3,19 +3,21 @@ import Foundation
 import Darwin
 #endif
 
-/// `pharos mesh unread` / `pharos mesh install-hooks` — the hook-facing surface
-/// of the mesh, giving @-mentions guaranteed delivery to a live joined session.
+/// `pharos mesh unread` / `mark` / `install-hooks` — the hook-facing surface of
+/// the mesh: guaranteed @-mention delivery, plus live session-state reporting.
 ///
 /// Everything here is FAIL-OPEN and ZERO-DAEMON by design: a hook must never
-/// error, block, or wake the broker. It reads the two local files the broker
-/// mirrors (`mesh-state/unread/<nick>.json`, `mesh-state/presence.json`) and, in
-/// hook mode, exits 0 on every path.
+/// error, block, or SPAWN the broker. Local reads use the files the broker
+/// mirrors (`mesh-state/…`); state reports use `MeshClient.sendIfUp` (talks
+/// only to a broker that's already up); hook modes exit 0 on every path.
 ///
-/// Recorded design decision (2026-07-04): the chat room is tmux-AGNOSTIC — we
-/// don't know whether a session is wrapped in tmux, so a Pharos-side tmux
-/// keystroke push is not a universal delivery option. The hook model works for
-/// ANY session; its ceiling — delivery at the next turn boundary (Stop) or next
-/// human prompt, never mid-idle — is the accepted contract.
+/// Design history: the 2026-07-04 decision made the room tmux-AGNOSTIC — hooks
+/// (turn-boundary delivery) are the guaranteed contract for ANY session.
+/// 2026-07-11 layers OPPORTUNISTIC poke on top: join captures $TMUX_PANE, these
+/// hooks report the session lifecycle (probed ground truth, cc-hook-probe
+/// FINDINGS re-verified on CC v2.1.207), and the GUI send-keys-nudges a target
+/// that is verifiably stopped/idle in a known tmux pane. Every uncertainty
+/// degrades to the old behavior, never to a wrong keystroke.
 enum MeshHooks {
 
     /// Substring identifying our hook entry in a settings.json, whatever the
@@ -23,6 +25,11 @@ enum MeshHooks {
     private static let marker = "mesh unread --hook-stop"
     /// Substring identifying our SessionStart hook entry.
     private static let startMarker = "mesh session-start"
+    /// Substring identifying the state-reporting hook entry (UserPromptSubmit /
+    /// Notification / SessionEnd share one command; it keys off the event name).
+    private static let markMarker = "mesh mark --hook"
+    /// Substring identifying the PostToolUse (poke-mode mid-turn delivery) entry.
+    private static let postToolMarker = "mesh unread --hook-post-tool"
 
     /// The user-scope settings file the `--user` install writes.
     static var userSettingsFile: URL {
@@ -45,15 +52,17 @@ enum MeshHooks {
 
     // MARK: `pharos mesh unread`
 
-    /// Modes: plain peek (`unread [<nick>] [--json]`, never consumes) and
+    /// Modes: plain peek (`unread [<nick>] [--json]`, never consumes),
     /// `--hook-stop` (Claude Code Stop hook: reads the hook JSON on stdin,
-    /// emits a `decision: block` JSON when unread @you messages are pending).
+    /// emits a `decision: block` JSON when unread @you messages are pending)
+    /// and `--hook-post-tool` (PostToolUse: poke-mode mid-turn delivery).
     static func unread(_ args: [String]) -> Int32 {
         let hookStop = args.contains("--hook-stop")
         let json = args.contains("--json")
         let explicitNick = args.first { !$0.hasPrefix("-") }
 
         if hookStop { return stopHook(explicitNick: explicitNick) }
+        if args.contains("--hook-post-tool") { return postToolHook(explicitNick: explicitNick) }
 
         guard let nick = explicitNick ?? resolveNick(cwd: FileManager.default.currentDirectoryPath) else {
             print("no nick given and none joined from this directory — usage: pharos mesh unread <nick>")
@@ -73,38 +82,160 @@ enum MeshHooks {
         return 0
     }
 
+    /// Fire-and-forget a state report for this session (broker resolves the
+    /// nick by session/cwd when none is given). Never spawns a broker.
+    private static func report(_ state: MeshSessionState, nick: String? = nil,
+                               cwd: String, session: String?) {
+        MeshClient.sendIfUp(MeshRequest(cmd: "mark", nick: nick, project: cwd,
+                                        session: session, state: state.rawValue))
+    }
+
     /// Stop-hook body. Every failure path returns 0 with no output: a broken or
-    /// absent mesh must never disturb the session.
+    /// absent mesh must never disturb the session. Doubles as the `stopped`
+    /// state reporter — unless our own block continues the turn, in which case
+    /// the session is working again (`busy`).
     private static func stopHook(explicitNick: String?) -> Int32 {
         var cwd = FileManager.default.currentDirectoryPath
         var session: String?
+        var reentry = false
         if let input = readStdinIfPiped(),
            let obj = try? JSONSerialization.jsonObject(with: input) as? [String: Any] {
-            // Already continuing from a Stop-hook block — never loop; the unread
-            // signal survives for the next turn boundary if the agent ignored it.
-            if obj["stop_hook_active"] as? Bool == true { return 0 }
+            // Continuing from a Stop-hook block — never loop; the unread signal
+            // survives for the next turn boundary if the agent ignored it.
+            reentry = obj["stop_hook_active"] as? Bool == true
             if let c = obj["cwd"] as? String, !c.isEmpty { cwd = c }
             session = obj["session_id"] as? String   // exact per-session addressing
         }
         // Cross-host: a dial-out session has no local presence/unread files, so
         // ask the remote broker (fail-open — unreachable broker never blocks).
         if MeshPaths.dialEndpoint != nil {
-            return stopHookRemote(cwd: cwd, session: session, explicitNick: explicitNick)
+            return stopHookRemote(cwd: cwd, session: session, explicitNick: explicitNick, reentry: reentry)
         }
+        if reentry { report(.stopped, nick: explicitNick, cwd: cwd, session: session); return 0 }
         guard let nick = explicitNick ?? resolveNick(cwd: cwd, session: session),
-              let u = loadUnread(nick), u.count > 0 else { return 0 }
+              let u = loadUnread(nick), u.count > 0 else {
+            report(.stopped, nick: explicitNick, cwd: cwd, session: session)
+            return 0
+        }
         emitBlock(nick: nick, messages: u.messages)
+        report(.busy, nick: nick, cwd: cwd, session: session)   // the block continues the turn
         return 0
     }
 
-    /// Cross-host Stop hook: the broker (reached over TCP) resolves the nick and
-    /// returns its unread. Fail-open — an unreachable broker, no nick, or no
-    /// unread all exit 0 without blocking.
-    private static func stopHookRemote(cwd: String, session: String?, explicitNick: String?) -> Int32 {
+    /// Cross-host Stop hook: one `peek` resolves the nick, returns its unread
+    /// AND piggybacks the `stopped` report. Fail-open — an unreachable broker,
+    /// no nick, or no unread all exit 0 without blocking.
+    private static func stopHookRemote(cwd: String, session: String?, explicitNick: String?,
+                                       reentry: Bool) -> Int32 {
+        if reentry { report(.stopped, nick: explicitNick, cwd: cwd, session: session); return 0 }
         let resp = MeshClient.send(MeshRequest(cmd: "peek", nick: explicitNick,
-                                               project: cwd, session: session))
+                                               project: cwd, session: session,
+                                               state: MeshSessionState.stopped.rawValue))
         guard resp.ok, let msgs = resp.messages, !msgs.isEmpty, let nick = resp.note else { return 0 }
         emitBlock(nick: nick, messages: msgs)
+        report(.busy, nick: nick, cwd: cwd, session: session)   // ditto: turn continues
+        return 0
+    }
+
+    // MARK: `pharos mesh mark` — session-state reporting
+
+    /// `--hook` mode: shared body for the UserPromptSubmit / Notification /
+    /// SessionEnd hooks — maps the event (probed ground truth, cc-hook-probe
+    /// FINDINGS) to a state and reports it. Plain mode (`mark <nick> <state>`)
+    /// is for manual testing. Always exits 0 in hook mode.
+    static func mark(_ args: [String]) -> Int32 {
+        if args.contains("--hook") { return markHook() }
+        guard args.count >= 2, let s = MeshSessionState(rawValue: args[1]) else {
+            print("usage: pharos mesh mark <nick> <busy|blocked|stopped|idle|gone>   (hooks use --hook)")
+            return 2
+        }
+        let r = MeshClient.send(MeshRequest(cmd: "mark", nick: args[0], state: s.rawValue))
+        print(r.ok ? "ok" : "error: \(r.error ?? "?")")
+        return r.ok ? 0 : 1
+    }
+
+    /// Hook event → session state (probed mapping — see MeshSessionState docs).
+    /// nil = an event we deliberately ignore.
+    static func stateFor(event: String, notificationType: String?) -> MeshSessionState? {
+        switch event {
+        case "UserPromptSubmit": .busy       // a turn begins (incl. our own nudge → self-debouncing)
+        case "SessionEnd":       .gone       // never poke again
+        case "Notification":
+            switch notificationType {
+            case "permission_prompt", "elicitation_dialog":
+                .blocked                     // mid-turn, waiting on the HUMAN — poking would type into the dialog
+            case "idle_prompt":
+                .idle                        // fires 60s after Stop: confirmed sitting at the composer
+            default:
+                nil
+            }
+        default: nil
+        }
+    }
+
+    private static func markHook() -> Int32 {
+        guard let input = readStdinIfPiped(),
+              let obj = try? JSONSerialization.jsonObject(with: input) as? [String: Any],
+              let event = obj["hook_event_name"] as? String,
+              let state = stateFor(event: event, notificationType: obj["notification_type"] as? String)
+        else { return 0 }
+        let cwd = (obj["cwd"] as? String) ?? FileManager.default.currentDirectoryPath
+        report(state, cwd: cwd, session: obj["session_id"] as? String)
+        return 0
+    }
+
+    // MARK: PostToolUse — poke mode's mid-turn delivery
+
+    /// PostToolUse hook: refreshes `busy` (which also self-heals a stale
+    /// `blocked` once the human approves), and surfaces unread @mentions RIGHT
+    /// NOW via `additionalContext` (neutral framing, no error label) instead
+    /// of waiting for the turn to end. A marker file de-dups so the same
+    /// messages aren't re-announced on every tool call.
+    private static func postToolHook(explicitNick: String?) -> Int32 {
+        var cwd = FileManager.default.currentDirectoryPath
+        var session: String?
+        if let input = readStdinIfPiped(),
+           let obj = try? JSONSerialization.jsonObject(with: input) as? [String: Any] {
+            if let c = obj["cwd"] as? String, !c.isEmpty { cwd = c }
+            session = obj["session_id"] as? String
+        }
+        var nick: String?
+        var msgs: [MeshMsg] = []
+        if MeshPaths.dialEndpoint != nil {
+            // One round-trip: peek returns unread and piggybacks the busy mark.
+            let resp = MeshClient.send(MeshRequest(cmd: "peek", nick: explicitNick,
+                                                   project: cwd, session: session,
+                                                   state: MeshSessionState.busy.rawValue))
+            nick = resp.note ?? explicitNick
+            msgs = resp.messages ?? []
+        } else {
+            report(.busy, nick: explicitNick, cwd: cwd, session: session)
+            nick = explicitNick ?? resolveNick(cwd: cwd, session: session)
+            if let n = nick, let u = loadUnread(n) { msgs = u.messages }
+        }
+        guard let n = nick, !msgs.isEmpty else { return 0 }
+        // De-dup: only announce messages newer than the last mid-turn notice.
+        let newest = msgs.map(\.ts).max() ?? 0
+        let markerURL = MeshPaths.notifiedFile(n)
+        let last = (try? String(contentsOf: markerURL, encoding: .utf8))
+            .flatMap { Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
+        guard newest > last else { return 0 }
+        try? FileManager.default.createDirectory(at: MeshPaths.stateDir, withIntermediateDirectories: true)
+        try? String(newest).write(to: markerURL, atomically: true, encoding: .utf8)
+
+        var lines = ["New mesh message(s) for @\(n) — \(msgs.count) pending:"]
+        for m in msgs.suffix(10) { lines.append("  [\(m.room)] \(m.from): \(m.text)") }
+        lines.append("When you reach a natural pause, pick them up with `pharos mesh recv \(n)` "
+                     + "and reply in the room if a response is expected.")
+        let payload: [String: Any] = [
+            "hookSpecificOutput": [
+                "hookEventName": "PostToolUse",
+                "additionalContext": lines.joined(separator: "\n"),
+            ]
+        ]
+        if let d = try? JSONSerialization.data(withJSONObject: payload) {
+            print(String(decoding: d, as: UTF8.self))
+        }
         return 0
     }
 
@@ -133,6 +264,15 @@ enum MeshHooks {
 
     /// cwd → nick via presence.json (broker-mirrored). Longest matching project
     /// path wins; ties go to the most recently seen nick.
+    ///
+    /// IDENTITY RULE (2026-07-11): an entry that DECLARED a session id belongs
+    /// to that session alone — a different session's hooks must never claim it
+    /// via the cwd fallback. Without this, any unregistered Claude whose cwd
+    /// sat under a registered project dir hijacked that nick: it received the
+    /// nick's unread notices (could even drain its mailbox) and stomped its
+    /// state (observed live: 娃 joined from $HOME, so EVERY unregistered
+    /// session on the hub cwd-matched it and pinned it "busy" — deadlocking
+    /// the sweeper). The cwd fallback now only serves session-LESS joins.
     static func resolveNick(cwd: String, session: String? = nil) -> String? {
         guard let d = try? Data(contentsOf: MeshPaths.presenceFile),
               let p = try? JSONDecoder().decode(MeshPresence.self, from: d) else { return nil }
@@ -143,10 +283,11 @@ enum MeshHooks {
                              .max { $0.value.lastSeen < $1.value.lastSeen }
             if let hit { return hit.key }
         }
-        // 2. Fall back to cwd: longest project prefix; ties → most recently seen.
+        // 2. Fall back to cwd — session-less entries only (see identity rule).
         let path = URL(fileURLWithPath: cwd).standardizedFileURL.path
         var best: (nick: String, plen: Int, seen: Double)?
         for (nick, e) in p.nicks {
+            guard e.session == nil || e.session!.isEmpty else { continue }
             guard let proj = e.project, !proj.isEmpty else { continue }
             let pr = URL(fileURLWithPath: proj).standardizedFileURL.path
             guard path == pr || path.hasPrefix(pr + "/") else { continue }
@@ -237,17 +378,32 @@ enum MeshHooks {
         }
 
         var hooks = root["hooks"] as? [String: Any] ?? [:]
-        // Two hooks power guaranteed delivery + session addressing:
-        //  • Stop         — surface unread @mentions at turn-end.
-        //  • SessionStart — record cwd/session id so `join` can resolve a nick
-        //                   precisely (two sessions in one dir stay distinct).
-        let s1 = upsertHook(&hooks, event: "Stop",
-                            command: hookCommand("unread --hook-stop"), marker: marker)
-        let s2 = upsertHook(&hooks, event: "SessionStart",
-                            command: hookCommand("session-start"), marker: startMarker)
+        // Six hooks power delivery + session addressing + live state:
+        //  • Stop             — surface unread @mentions at turn-end; reports `stopped`.
+        //  • SessionStart     — record cwd/session id so `join` can resolve a nick
+        //                       precisely (two sessions in one dir stay distinct).
+        //  • UserPromptSubmit / Notification / SessionEnd
+        //                     — report busy / blocked·idle / gone (poke safety).
+        //  • PostToolUse      — refresh busy; poke mode: mid-turn delivery.
+        let markCmd = hookCommand("mark --hook")
+        let results: [(String, UpsertResult)] = [
+            ("Stop", upsertHook(&hooks, event: "Stop",
+                                command: hookCommand("unread --hook-stop"), marker: marker)),
+            ("SessionStart", upsertHook(&hooks, event: "SessionStart",
+                                        command: hookCommand("session-start"), marker: startMarker)),
+            ("UserPromptSubmit", upsertHook(&hooks, event: "UserPromptSubmit",
+                                            command: markCmd, marker: markMarker)),
+            ("Notification", upsertHook(&hooks, event: "Notification",
+                                        command: markCmd, marker: markMarker)),
+            ("SessionEnd", upsertHook(&hooks, event: "SessionEnd",
+                                      command: markCmd, marker: markMarker)),
+            ("PostToolUse", upsertHook(&hooks, event: "PostToolUse",
+                                       command: hookCommand("unread --hook-post-tool"),
+                                       marker: postToolMarker, matcher: "*")),
+        ]
         root["hooks"] = hooks
 
-        if s1 == .unchanged && s2 == .unchanged {
+        if results.allSatisfy({ $0.1 == .unchanged }) {
             print("mesh hooks already installed → \(file.path)")
             return 0
         }
@@ -259,7 +415,7 @@ enum MeshHooks {
             print("error: could not write \(file.path): \(error.localizedDescription)")
             return 1
         }
-        print("Stop hook: \(s1.verb); SessionStart hook: \(s2.verb) → \(file.path)")
+        print(results.map { "\($0.0): \($0.1.verb)" }.joined(separator: "; ") + " → \(file.path)")
         print("(applies to newly started Claude sessions in that scope)")
         return 0
     }
@@ -270,9 +426,11 @@ enum MeshHooks {
 
     /// Idempotently place `command` under `hooks[event]`. Exact match = leave it;
     /// marker match with a different command = upgrade in place (older install);
-    /// no match = append. Never touches unrelated hook entries.
+    /// no match = append (with `matcher` when the event needs one, e.g. the
+    /// tool-name matcher on PostToolUse). Never touches unrelated hook entries.
     private static func upsertHook(_ hooks: inout [String: Any], event: String,
-                                   command: String, marker: String) -> UpsertResult {
+                                   command: String, marker: String,
+                                   matcher: String? = nil) -> UpsertResult {
         var arr = hooks[event] as? [[String: Any]] ?? []
         for (i, entry) in arr.enumerated() {
             guard var inner = entry["hooks"] as? [[String: Any]] else { continue }
@@ -284,7 +442,9 @@ enum MeshHooks {
                 return .updated
             }
         }
-        arr.append(["hooks": [["type": "command", "command": command, "timeout": 10]]])
+        var entry: [String: Any] = ["hooks": [["type": "command", "command": command, "timeout": 10]]]
+        if let m = matcher { entry["matcher"] = m }
+        arr.append(entry)
         hooks[event] = arr
         return .installed
     }

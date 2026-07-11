@@ -202,9 +202,16 @@ enum CLI {
             // --session (the id the SessionStart hook injected) makes it exact.
             var session: String?
             if let i = a.firstIndex(of: "--session"), i + 1 < a.count { session = a[i + 1] }
+            // The CLI runs inside the agent's own shell, so a tmux-wrapped
+            // session exposes its pane right here — captured into presence, it's
+            // what lets the GUI poke a stopped agent (nil = not poke-able).
+            let env = ProcessInfo.processInfo.environment
+            let pane = env["TMUX"] != nil ? env["TMUX_PANE"] : nil
             let r = MeshClient.send(MeshRequest(cmd: "join", room: a[0], nick: a[1],
                                                 project: FileManager.default.currentDirectoryPath,
-                                                session: session))
+                                                session: session,
+                                                host: HostIdentity.current,
+                                                tmuxPane: pane))
             guard r.ok else { return report(r) }
             print("joined \(a[0]) as \(a[1])")
             let history = r.messages ?? []
@@ -249,6 +256,37 @@ enum CLI {
             if msgs.isEmpty { print("(no unread)") }
             for m in msgs { print("[\(m.room)] \(m.from): \(m.text)") }
             return 0
+        case "who":
+            let r = MeshClient.send(MeshRequest(cmd: "who"))
+            guard r.ok else { return report(r) }
+            let members = r.members ?? []
+            if members.isEmpty { print("(nobody has joined yet)") }
+            for m in members {
+                var bits = [m.state ?? "state?"]
+                if let h = m.host { bits.append(h) }
+                bits.append(m.tmuxPane.map { "tmux \($0)" } ?? "no tmux")
+                if let p = m.project { bits.append((p as NSString).abbreviatingWithTildeInPath) }
+                print("\(m.nick)  [\(bits.joined(separator: " · "))]  rooms: \(m.rooms.joined(separator: ", "))")
+            }
+            return 0
+        case "mark":
+            return MeshHooks.mark(a)                // Claude Code state hooks (see MeshHooks)
+        case "poke":
+            // Manual/debug poke — the exact code path the GUI's poke mode runs.
+            guard let nick = a.first else { print("usage: pharos mesh poke <nick>"); return 2 }
+            let who = MeshClient.send(MeshRequest(cmd: "who"))
+            guard who.ok else { return report(who) }
+            guard let m = (who.members ?? []).first(where: { $0.nick == nick }) else {
+                print("error: no such member '\(nick)' (see: pharos mesh who)")
+                return 1
+            }
+            let peer = PharosPrefs.shared.string(forKey: "pharos.peerHost") ?? ""
+            if let why = MeshPoke.nudge(m, peerHost: peer) {
+                print("not poked: \(why)")
+                return 1
+            }
+            print("poked \(nick) (\(m.host ?? "?") \(m.tmuxPane ?? "?"))")
+            return 0
         case "unread":
             return MeshHooks.unread(a)
         case "session-start":
@@ -289,10 +327,13 @@ enum CLI {
       history <room> [--limit N]          recent messages in a room (catch up)
       say    <room> <nick> <text> [@n …]  send; @n reaches that agent (no @ = transcript only)
       recv   <nick>                       drain unread @you across ALL your rooms (non-blocking)
+      who                                 roster: every joined agent + live state/host/tmux pane
       unread [<nick>] [--json]            peek the local unread signal (no daemon, never consumes)
       unread --hook-stop                  Claude Code Stop-hook mode (fail-open, reads hook JSON on stdin)
+      unread --hook-post-tool             Claude Code PostToolUse-hook mode (poke mode: mid-turn delivery)
+      mark --hook                         Claude Code state-hook mode (UserPromptSubmit/Notification/SessionEnd)
       session-start                       Claude Code SessionStart-hook mode (injects session id into context)
-      install-hooks [--project <dir> | --user]   wire the Stop + SessionStart hooks into .claude/settings.json
+      install-hooks [--project <dir> | --user]   wire all mesh hooks into .claude/settings.json
       leave  <room> <nick>                leave a room
       rename <room> <new-name>            rename a room
       delete <room>                       delete a room (drops its transcript)

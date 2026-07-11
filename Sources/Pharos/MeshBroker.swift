@@ -6,7 +6,7 @@ import Darwin
 // MARK: - Wire protocol (newline-delimited JSON over a local unix socket)
 
 struct MeshRequest: Codable {
-    var cmd: String                 // create | list | join | leave | say | recv | daemon
+    var cmd: String                 // create | list | join | leave | say | recv | mark | who | daemon
     var room: String?
     var nick: String?
     var text: String?
@@ -15,6 +15,23 @@ struct MeshRequest: Codable {
     var limit: Int?                 // history / join catch-up size
     var project: String?            // join only: the joiner's cwd, recorded in presence
     var session: String?            // join only: the joiner's CC session id (exact addressing)
+    var host: String?               // join only: the joiner's HostIdentity (poke routing)
+    var tmuxPane: String?           // join only: the joiner's $TMUX_PANE, when tmux-wrapped
+    var state: String?              // mark/peek: hook-reported session state (see MeshSessionState)
+}
+
+/// Hook-reported lifecycle states (probed ground truth, cc-hook-probe FINDINGS,
+/// re-verified on CC v2.1.207 2026-07-11):
+///  busy    — UserPromptSubmit/PostToolUse fired, turn in flight
+///  blocked — Notification{permission_prompt|elicitation_dialog}: mid-turn,
+///            waiting on the HUMAN — send-keys would type into the dialog
+///  stopped — Stop fired: turn over, composer idle → poke-safe
+///  idle    — Notification{idle_prompt} (60s after Stop): confirmed idle
+///  gone    — SessionEnd: never poke
+enum MeshSessionState: String {
+    case busy, blocked, stopped, idle, gone
+    /// May a send-keys nudge safely reach this session's composer?
+    var pokeable: Bool { self == .stopped || self == .idle }
 }
 
 struct MeshMsg: Codable {
@@ -47,9 +64,29 @@ struct MeshUnread: Codable {
 struct MeshPresenceEntry: Codable {
     var project: String?
     var session: String?            // CC session id (from --session at join); nil for older/cwd-only joins
+    var host: String?               // HostIdentity of the joiner's machine (poke routing); nil pre-0.4 joins
+    var tmuxPane: String?           // $TMUX_PANE captured at join; nil = not tmux-wrapped (can't auto-poke)
+    var state: String?              // last hook-reported MeshSessionState; nil = unknown (never poke)
+    var stateTs: Double?            // when `state` was reported
     var rooms: [String]
     var lastSeen: Double
     var online: Bool
+}
+
+/// One member of the mesh as the GUI/CLI sees it — presence plus identity, the
+/// unit `who` returns and `say` echoes back for each @-target so the sender can
+/// poke (or tell the human to). Field meanings mirror MeshPresenceEntry.
+struct MeshMemberInfo: Codable {
+    var nick: String
+    var project: String?
+    var session: String?
+    var host: String?
+    var tmuxPane: String?
+    var state: String?
+    var stateTs: Double?
+    var unread: Int?                // pending mailbox messages across all rooms
+    var rooms: [String]
+    var lastSeen: Double
 }
 
 struct MeshPresence: Codable {
@@ -62,6 +99,7 @@ struct MeshResponse: Codable {
     var error: String?
     var rooms: [MeshRoomInfo]?
     var messages: [MeshMsg]?
+    var members: [MeshMemberInfo]?  // who: full roster; say: the @-targets' presence
     var note: String?
 
     static func okay(_ note: String? = nil) -> MeshResponse { MeshResponse(ok: true, note: note) }
@@ -133,6 +171,13 @@ enum MeshPaths {
     static var stateDir: URL { supportDir.appendingPathComponent("mesh-state", isDirectory: true) }
     static var unreadDir: URL { stateDir.appendingPathComponent("unread", isDirectory: true) }
     static var presenceFile: URL { stateDir.appendingPathComponent("presence.json") }
+
+    /// PostToolUse de-dup marker: the newest unread timestamp already surfaced
+    /// mid-turn for a nick, so consecutive tool calls don't repeat the notice.
+    static func notifiedFile(_ nick: String) -> URL {
+        let safe = String(nick.map { $0.isLetter || $0.isNumber || "._-".contains($0) ? $0 : "_" })
+        return stateDir.appendingPathComponent("notified-\(safe)")
+    }
     static func unreadFile(_ nick: String) -> URL {
         let safe = String(nick.map { $0.isLetter || $0.isNumber || "._-".contains($0) ? $0 : "_" })
         return unreadDir.appendingPathComponent("\(safe).json")
@@ -211,10 +256,31 @@ final class MeshBroker {
         try? FileManager.default.createDirectory(at: MeshPaths.supportDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: MeshPaths.transcriptDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: MeshPaths.unreadDir, withIntermediateDirectories: true)
-        // Fresh broker = fresh RAM: reset the mirrored state so hooks never see
-        // a signal this broker didn't write. Transcripts (durable) are untouched.
+        // Fresh broker = fresh MAILBOXES: reset the unread signal files so hooks
+        // never see a signal this broker didn't write. Transcripts are durable.
         if let stale = try? FileManager.default.contentsOfDirectory(at: MeshPaths.unreadDir, includingPropertiesForKeys: nil) {
             for f in stale { try? FileManager.default.removeItem(at: f) }
+        }
+        // But RESTORE registration identity (nick → session/host/pane/project +
+        // room membership) from the previous broker's presence mirror. Without
+        // this, a broker restart stranded every joined agent: hooks resolve
+        // nicks via presence, so delivery/state/avatars all went dark (gray)
+        // until each agent manually re-joined (observed 2026-07-11). States are
+        // dropped — a stale busy/idle must never steer a poke; the agent's next
+        // hook event repopulates them.
+        if let d = try? Data(contentsOf: MeshPaths.presenceFile),
+           let prev = try? JSONDecoder().decode(MeshPresence.self, from: d) {
+            for (nick, entry) in prev.nicks {
+                var e = entry
+                e.state = nil
+                e.stateTs = nil
+                presence[nick] = e
+                for r in e.rooms {
+                    if rooms[r] == nil { rooms[r] = Room() }
+                    rooms[r]!.members.insert(nick)
+                    if rooms[r]!.mailboxes[nick] == nil { rooms[r]!.mailboxes[nick] = [] }
+                }
+            }
         }
         writePresenceLocked()
 
@@ -301,10 +367,23 @@ final class MeshBroker {
 
         case "list":
             lock.lock()
-            let info = rooms.map { MeshRoomInfo(name: $0.key, members: Array($0.value.members).sorted()) }
-                            .sorted { $0.name < $1.name }
+            var info = rooms.map { MeshRoomInfo(name: $0.key, members: Array($0.value.members).sorted()) }
             lock.unlock()
-            return MeshResponse(ok: true, rooms: info)
+            // Rooms are RAM, transcripts are disk: after a broker restart the
+            // registry is empty but every room's history still exists. List
+            // transcript-backed rooms too (no members yet), so chat history
+            // survives restarts in the GUI and `history`/`join` keep working.
+            let known = Set(info.map(\.name))
+            if let files = try? FileManager.default.contentsOfDirectory(at: MeshPaths.transcriptDir,
+                                                                        includingPropertiesForKeys: nil) {
+                for f in files where f.pathExtension == "jsonl" {
+                    let name = f.deletingPathExtension().lastPathComponent
+                    if !name.isEmpty && !known.contains(name) {
+                        info.append(MeshRoomInfo(name: name, members: []))
+                    }
+                }
+            }
+            return MeshResponse(ok: true, rooms: info.sorted { $0.name < $1.name })
 
         case "join":
             guard let r = req.room, let n = req.nick else { return .fail("room and nick required") }
@@ -312,7 +391,11 @@ final class MeshBroker {
             if rooms[r] == nil { rooms[r] = Room() }
             rooms[r]!.members.insert(n)
             if rooms[r]!.mailboxes[n] == nil { rooms[r]!.mailboxes[n] = [] }
-            touchPresenceLocked(n, project: req.project, session: req.session)
+            // A joining agent is mid-turn by definition (the CLI runs in its
+            // Bash tool) — seed state busy until its hooks report otherwise.
+            touchPresenceLocked(n, project: req.project, session: req.session,
+                                host: req.host, tmuxPane: req.tmuxPane,
+                                state: MeshSessionState.busy.rawValue)
             lock.unlock()
             // Hand the joiner the recent conversation so it can catch up.
             return MeshResponse(ok: true, messages: recentTranscript(r, limit: req.limit ?? 30))
@@ -334,16 +417,58 @@ final class MeshBroker {
         case "say":
             guard let r = req.room, let n = req.nick, let t = req.text else { return .fail("room, nick and text required") }
             deliver(room: r, from: n, text: t, to: req.to)
+            // Echo EVERY @-target's presence so the sender can act on delivery:
+            // poke a stopped/idle tmux session, tell the human to nudge a
+            // session we can't reach (no pane / blocked on a dialog) — and an
+            // UNREGISTERED nick gets a bare placeholder, so mentioning someone
+            // who never joined (or whose registration was lost) is never silent.
+            lock.lock()
+            let targetInfo = (req.to ?? []).map { nick in
+                memberInfoLocked(nick)
+                    ?? MeshMemberInfo(nick: nick, project: nil, session: nil, host: nil,
+                                      tmuxPane: nil, state: nil, stateTs: nil, unread: nil,
+                                      rooms: [], lastSeen: 0)
+            }
+            lock.unlock()
+            return MeshResponse(ok: true, members: targetInfo.isEmpty ? nil : targetInfo)
+
+        case "mark":
+            // Hook-reported session state (fire-and-forget from the reporter's
+            // point of view). Resolve the agent by explicit nick, else by
+            // (session, cwd) — same rules as peek. Unknown agent = silently ok:
+            // a hook must never propagate an error back into a session.
+            guard let s = req.state, MeshSessionState(rawValue: s) != nil else { return .fail("valid state required") }
+            lock.lock()
+            if let n = req.nick ?? resolveNickLocked(cwd: req.project, session: req.session),
+               presence[n] != nil {
+                presence[n]!.state = s
+                presence[n]!.stateTs = Date().timeIntervalSince1970
+                writePresenceLocked()
+            }
+            lock.unlock()
             return .okay()
+
+        case "who":
+            lock.lock()
+            let roster = presence.keys.sorted().compactMap { memberInfoLocked($0) }
+            lock.unlock()
+            return MeshResponse(ok: true, members: roster)
 
         case "peek":
             // Cross-host Stop-hook query: resolve (cwd, session) → nick on the
             // broker (a dial-out host has no local presence/unread files), then
             // return that nick's unread WITHOUT draining. `note` carries the
             // resolved nick so the remote hook can format its block message.
+            // A `state` in the request piggybacks the hook's state report
+            // (e.g. the Stop hook marks `stopped`) on the same round-trip.
             lock.lock()
             let who = req.nick ?? resolveNickLocked(cwd: req.project, session: req.session)
             guard let n = who else { lock.unlock(); return MeshResponse(ok: true, messages: []) }
+            if let s = req.state, MeshSessionState(rawValue: s) != nil, presence[n] != nil {
+                presence[n]!.state = s
+                presence[n]!.stateTs = Date().timeIntervalSince1970
+                writePresenceLocked()
+            }
             var pending: [MeshMsg] = []
             for (_, room) in rooms {
                 if let box = room.mailboxes[n], !box.isEmpty { pending.append(contentsOf: box) }
@@ -366,7 +491,8 @@ final class MeshBroker {
             }
             out.sort { $0.ts < $1.ts }
             syncUnreadLocked(n)
-            touchPresenceLocked(n)
+            // recv runs inside the agent's Bash tool → it's mid-turn right now.
+            touchPresenceLocked(n, state: MeshSessionState.busy.rawValue)
             lock.unlock()
             return MeshResponse(ok: true, messages: out, note: out.isEmpty ? "idle" : nil)
 
@@ -446,15 +572,27 @@ final class MeshBroker {
         if let d = try? JSONEncoder().encode(snap) { try? d.write(to: url, options: .atomic) }
     }
 
-    /// Bump a nick's presence (lastSeen, membership, optionally its project dir)
-    /// and mirror to disk. Skips nicks that are members of nothing and were never
-    /// seen — e.g. the GUI's "human" sender — so presence stays a roster of agents.
-    private func touchPresenceLocked(_ nick: String, project: String? = nil, session: String? = nil) {
+    /// Bump a nick's presence (lastSeen, membership, optionally its project dir /
+    /// host / tmux pane / state) and mirror to disk. Skips nicks that are members
+    /// of nothing and were never seen — e.g. the GUI's "human" sender — so
+    /// presence stays a roster of agents.
+    private func touchPresenceLocked(_ nick: String, project: String? = nil, session: String? = nil,
+                                     host: String? = nil, tmuxPane: String? = nil, state: String? = nil) {
         let memberOf = rooms.filter { $0.value.members.contains(nick) }.map(\.key).sorted()
         if presence[nick] == nil && memberOf.isEmpty { return }
-        var e = presence[nick] ?? MeshPresenceEntry(project: nil, session: nil, rooms: [], lastSeen: 0, online: true)
+        var e = presence[nick] ?? MeshPresenceEntry(project: nil, session: nil, host: nil, tmuxPane: nil,
+                                                    state: nil, stateTs: nil, rooms: [], lastSeen: 0, online: true)
         if let p = project, !p.isEmpty { e.project = p }
         if let s = session, !s.isEmpty { e.session = s }
+        if let h = host, !h.isEmpty { e.host = h }
+        // A re-join OUTSIDE tmux must clear a stale pane from an earlier
+        // tmux-wrapped join, so join always overwrites (nil included) when it
+        // carries identity; plain touches (say/recv) leave it alone.
+        if session != nil || project != nil { e.tmuxPane = tmuxPane }
+        if let st = state {
+            e.state = st
+            e.stateTs = Date().timeIntervalSince1970
+        }
         e.rooms = memberOf
         e.lastSeen = Date().timeIntervalSince1970
         e.online = true
@@ -462,9 +600,19 @@ final class MeshBroker {
         writePresenceLocked()
     }
 
+    /// Presence entry → the wire shape `who`/`say` return. Call with `lock` held.
+    private func memberInfoLocked(_ nick: String) -> MeshMemberInfo? {
+        guard let e = presence[nick] else { return nil }
+        let unread = rooms.values.reduce(0) { $0 + ($1.mailboxes[nick]?.count ?? 0) }
+        return MeshMemberInfo(nick: nick, project: e.project, session: e.session, host: e.host,
+                              tmuxPane: e.tmuxPane, state: e.state, stateTs: e.stateTs,
+                              unread: unread, rooms: e.rooms, lastSeen: e.lastSeen)
+    }
+
     /// Broker-side nick resolution from (cwd, session) — mirrors
-    /// `MeshHooks.resolveNick` but against in-RAM presence, for the cross-host
-    /// `peek`. Session exact-match wins; else longest cwd-prefix, ties → recent.
+    /// `MeshHooks.resolveNick` (INCLUDING its identity rule: entries that
+    /// declared a session are never cwd-claimed by other sessions) but against
+    /// in-RAM presence, for the cross-host `peek`/`mark`.
     private func resolveNickLocked(cwd: String?, session: String?) -> String? {
         if let s = session, !s.isEmpty {
             let hit = presence.filter { $0.value.session == s }
@@ -475,6 +623,7 @@ final class MeshBroker {
         let path = URL(fileURLWithPath: cwd).standardizedFileURL.path
         var best: (nick: String, plen: Int, seen: Double)?
         for (nick, e) in presence {
+            guard e.session == nil || e.session!.isEmpty else { continue }
             guard let proj = e.project, !proj.isEmpty else { continue }
             let pr = URL(fileURLWithPath: proj).standardizedFileURL.path
             guard path == pr || path.hasPrefix(pr + "/") else { continue }

@@ -514,6 +514,7 @@ final class ProjectStore {
         save()
     }
 
+
     /// The registry file. Resolved from the shared `DataLocation` (honoring the
     /// `pharos.dataDir` pref + `PHAROS_REGISTRY`) so the GUI and CLI always agree,
     /// and so switching to iCloud Drive re-points it live.
@@ -630,6 +631,55 @@ final class ProjectStore {
 
         runningSessions = live
         updateDockBadge()
+        await sweepMeshUnread()
+    }
+
+    /// Poke sweeper: an agent sitting stopped/idle WITH unread pending missed
+    /// its turn-boundary delivery (it ignored the Stop-hook notice, or the
+    /// message landed just as its turn ended) — the send-time poke in the
+    /// chat view can't catch those. Poke it now; if it has no tmux pane, raise
+    /// a macOS notification so the human nudges it. Each Mac sweeps only ITS
+    /// OWN agents (host match), so paired Macs never double-poke; per-nick
+    /// debounce stops a stuck agent from being hammered every poll tick.
+    private var meshSweepDebounce: [String: Date] = [:]
+
+    @MainActor
+    private func sweepMeshUnread() async {
+        let peer = peerHost
+        let members = await Task.detached(priority: .utility) {
+            MeshClient.sendIfUp(MeshRequest(cmd: "who"))?.members
+        }.value
+        guard let members else { return }
+        let now = Date()
+        for m in members {
+            // stopped/idle poke on the hooks' word; UNKNOWN state is allowed
+            // through because MeshPoke.nudge probes the pane first (post-broker-
+            // restart limbo would otherwise deadlock: unknown ⇒ never poked ⇒
+            // never reports ⇒ stays unknown). busy/blocked/gone still refuse.
+            let st = MeshSessionState(rawValue: m.state ?? "")
+            guard m.host == HostIdentity.current,
+                  (m.unread ?? 0) > 0,
+                  st?.pokeable == true || (st == nil && m.state == nil),
+                  now.timeIntervalSince(meshSweepDebounce[m.nick] ?? .distantPast) > 120 else { continue }
+            meshSweepDebounce[m.nick] = now
+            if m.tmuxPane != nil {
+                Task.detached(priority: .utility) { _ = MeshPoke.nudge(m, peerHost: peer) }
+            } else {
+                postMeshNudgeNotification(m)
+            }
+        }
+    }
+
+    private func postMeshNudgeNotification(_ m: MeshMemberInfo) {
+        let content = UNMutableNotificationContent()
+        content.title = "@\(m.nick) has unread mesh messages"
+        let proj = m.project.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "its session"
+        content.body = "It's idle but not in tmux, so Pharos can't poke it — "
+                     + "nudge it yourself in \(proj) (it should run: pharos mesh recv \(m.nick))"
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "pharos-mesh-nudge-\(m.nick)-\(Date().timeIntervalSince1970)",
+            content: content, trigger: nil))
     }
 
     private func postFinishedNotification(sessionName: String) {
