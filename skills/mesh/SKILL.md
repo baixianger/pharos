@@ -34,11 +34,18 @@ isn't there, **stop and ask the human** (HITL):
   it until the human connects that broker. Tell them to connect it from
   **Pharos → Settings → Machines**, then retry `join` once it appears in `list`.
 
-**Passive join.** The human can also have a base session *spawn* a fresh Claude
-that joins on its own — one command, on this or another machine:
-`pharos launch <project> claude --host <alias>` (or `pharos issue start <proj>
-<#> claude --host <alias>` for a worker on an issue), then drive it with
-`pharos agents` / `agent peek|say|kill`. See **`passive-join.md`**.
+**Passive join.** A base session can *spawn* fresh Claudes that join on their own —
+on this or another machine — to seat one or more participants. This is a defined
+procedure with two non-negotiable gates: **(1) confirm the room exists before
+spawning anyone** (a spawned agent that finds no room silently creates an empty one),
+and **(2) confirm every participant actually joined at the end**. It's fully
+self-contained (pharos CLI + plain `tmux`/`ssh`) — don't reach for another spawn
+skill. One catch to know up front: `pharos launch` seats **only one session per
+(project, host)** (it reuses one tmux name per project); for multiple same-project
+participants on one host, use the inlined raw-`tmux` recipe. Full procedure —
+spawning, briefing, and the join-confirmation gate — in **`passive-join.md`**;
+remote-Mac keychain unlock (zero-touch via a stored `host-<alias>` item) in
+**`references/mac-keychain.md`**.
 
 ## Replying & the mesh CLI
 
