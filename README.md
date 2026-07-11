@@ -81,7 +81,9 @@
 
 ### Agent Mesh
 
-**Agent↔agent chat rooms.** Agents talk to each other through the CLI — no MCP server, nothing preloaded into context: `pharos mesh join/say/recv`, with `@mention` delivery, durable per-room transcripts, and a read-only room view in the app. Session-precise addressing comes from a `SessionStart` hook, and a `Stop` hook surfaces unread mentions to parked agents (`pharos mesh install-hooks`).
+**Agent↔agent chat rooms.** Agents talk to each other through the CLI — no MCP server, nothing preloaded into context: `pharos mesh join/say/recv`, with `@mention` delivery, durable per-room transcripts, and a messenger-style room view in the app (room tabs, avatar bubbles with live agent status, `@` member autocomplete). Session-precise addressing comes from a `SessionStart` hook, and a `Stop` hook surfaces unread mentions to parked agents (`pharos mesh install-hooks`).
+
+**Idle agents get poked — automatically.** Your @mention *wakes* an idle agent for real: lifecycle hooks report each session's state (busy / blocked-on-permission / stopped / idle), `join` records its tmux pane, and Pharos types a nudge into that pane — on this Mac or the paired one over SSH — only when the agent is verifiably idle. Busy agents get the message mid-turn (PostToolUse hook); a background sweeper re-pokes anyone left idle with unread; anything unreachable (not in tmux, waiting on a dialog) is handed back to you in a notice or notification instead of guessed at.
 
 **Cross-host rooms with exactly one hub.** Rooms span your Macs over Tailscale. Which machine hosts the broker is stored in the *synced* data (`meshHubHostID`) — every Mac reads the same answer, so a split-brain second hub is impossible. Satellites pair automatically at app launch and their agents/CLI follow the hub with zero per-agent configuration; a deposed hub demotes itself on its next launch.
 
@@ -157,7 +159,7 @@ Run `pharos help` for the authoritative list. Summary:
 | Issues & log | `issue add <project> "<title>" [--priority …] [--body …] [--attach <file>]… [--label L]…` · `issue list <project> [--all] [--status S] [--priority P] [--label L] [--milestone M]` · `issue status\|priority <project> <#> <value>` · `issue label add\|rm <project> <#> <label>` · `issue milestone <project> <#> <name\|none>` · `issue parent <project> <#> <parent#\|none>` · `issue link\|unlink <project> <#> <relates\|blocks\|blocked-by\|duplicate> <#>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `attach add\|list\|rm <project> <#> …` · `update add <project> "<text>" [--issue <#>]` |
 | Milestones | `milestone add <project> "<name>" [--due yyyy-MM-dd]` · `milestone list <project>` · `milestone rm <project> <name>` |
 | Registry | `add <name> [--path] [--remote] [--tag]… [--notes]` · `remove <project>` · `rename <project> <new>` · `describe <project> <text…>` · `group create\|delete\|add\|remove …` · `yolo`/`tmux <project> <on\|off>` · `trash restore <id>` · `trash empty` |
-| Mesh | `mesh create\|list\|join\|say\|recv\|unread\|history\|leave\|rename\|delete` · `mesh install-hooks [--project <dir> \| --user]` (also invocable as `chat`) |
+| Mesh | `mesh create\|list\|join\|say\|recv\|who\|poke\|unread\|history\|leave\|rename\|delete` · `mesh install-hooks [--project <dir> \| --user]` (also invocable as `chat`) |
 | Cross-host | `launch <project> <agent> --host <ssh-alias>` · `issue start <project> <#> <agent> --host <alias>` · `agents [--host]` · `agent peek\|say\|kill <session> [--host]` |
 | Multi-machine | `host` · `path <project> <path>` · `path <project> --clear` |
 

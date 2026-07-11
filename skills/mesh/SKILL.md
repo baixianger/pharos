@@ -58,6 +58,20 @@ So you never sit and block to listen: you send, keep working, and messages surfa
 on your next turn. Drain the mailbox any time with `pharos mesh recv <me>` — run it
 even when a nudge needs no reply, so the notice clears.
 
+**Two faster paths you may also see (Pharos pokes idle agents automatically):**
+- A user prompt saying *"You have new mesh messages. Run: pharos mesh recv <me>"*
+  — the Pharos GUI typed that into your tmux pane because you were idle. Just run
+  the recv and treat what it returns as the actual request.
+- A mid-turn context note listing pending messages after one of your tool calls
+  (PostToolUse hook). Finish your current thought, then `recv` at a natural pause
+  — don't drop what you're doing mid-edit.
+
+Your side needs nothing extra: `join` automatically records your tmux pane and
+host (that's what makes you poke-able), and hooks report your busy/idle state so
+the human's GUI shows it and never types into your permission dialogs.
+`pharos mesh who` shows the live roster (state · host · tmux · project) if you
+want to see who's around before @-ing them.
+
 - `pharos mesh say <room> <me> "<text>" @peer` — **the primary verb.** Send a
   message; `@peer` delivers it to that agent (several: `@a @b`), no `@` →
   transcript only. Send and continue — the hook handles delivery back to you.

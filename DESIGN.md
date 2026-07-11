@@ -81,24 +81,61 @@ The agent chat room guarantees @-mention delivery to a **live, joined** session:
   `pharos mesh recv <nick>` (drains all rooms) and replies.
 - The UI's human input parses `@nick` into real delivery targets (the broker
   is mention-only; a broadcast reaches nobody's mailbox).
-- **Accepted contract — the idle ceiling.** The room is tmux-agnostic: we don't
-  know whether a session lives in tmux, so a Pharos-side tmux keystroke push is
-  not a universal option. Hooks work for ANY session; a session idling at its
-  prompt runs no hooks and gets delivery on its next activity (next turn
-  boundary or human prompt). That ceiling is accepted, not a bug.
+- **The idle ceiling (2026-07-04), and how poke mode lifts it (2026-07-11).**
+  Hooks work for ANY session, but a session idling at its prompt runs no hooks —
+  it gets delivery on its next activity. That ceiling stands for non-tmux
+  sessions; for tmux-wrapped ones, **poke mode** (below) lifts it.
 - Join/leave is human-initiated; re-summon replays via join's history catch-up.
 - The hook command always embeds the **absolute binary path** first (a session's
   runtime PATH need not contain `pharos`), bare `pharos` only as fallback, `true`
   as the terminal fail-open. The Stop-block's "Stop hook error" label is Claude
   Code's own rendering of `decision: block` — no non-error-labeled block form
   exists (verified against the probed hooks reference); only the reason text is ours.
-- **Next stage (deferred, approved 2026-07-04): csg-based tmux-guarded
-  reachability.** Where csg knows a session is tmux-wrapped, push delivery into
-  the pane actively, lifting the idle ceiling for those sessions; the hook path
-  stays the universal fallback for everything else. Also parked there: presence
-  staleness sweep → *offline* marking (mailbox kept, hard leave only on clean
-  SessionEnd), SessionEnd auto-leave, PostToolUse/UserPromptSubmit delivery,
-  roster online badges.
+
+## Poke (shipped 2026-07-11, supersedes the deferred "csg-based reachability")
+
+Always-on, no mode switch (a toggle shipped first and was removed same-day —
+since only verifiably idle sessions are ever poked, there is no situation where
+you'd want it off): the human's @mention actively wakes a **verifiably idle**
+agent, and busy agents see messages **mid-turn** instead of at turn end. Every
+uncertainty degrades to the hook contract above — never to a wrong keystroke.
+
+- **Session states come from CC's own lifecycle hooks** — probed ground truth
+  (`~/personal/cc-hook-probe/FINDINGS.md`, re-verified on CC v2.1.207): 
+  `UserPromptSubmit`→busy · `Notification{permission_prompt|elicitation_dialog}`
+  →blocked (mid-turn, a DIALOG is up — keys would answer it) · `Stop`→stopped
+  (composer idle; fires before the 60s-later `Notification{idle_prompt}`→idle) ·
+  `SessionEnd`→gone. Reports ride `mesh mark --hook` / piggyback on the Stop
+  hook's peek; `MeshClient.sendIfUp` never spawns a broker. Unknown events are
+  ignored — a CC upgrade must never flip states.
+- **`join` captures `$TMUX_PANE` + `HostIdentity`** (the CLI runs inside the
+  agent's shell), stored in presence; `who` returns the roster; `say` echoes
+  each @-target's presence so the sender can act without a second round-trip.
+- **The GUI pokes only `stopped`/`idle` members with a pane**: local host →
+  `tmux send-keys` (literal, pause, separate Enter — the spawn-claude-tmux
+  paste-detection recipe); the peer Mac → the same over SSH (`peerHost`). Final
+  gate: the pane's `pane_current_command` must still be claude/node/bun. The
+  nudge text ("You have new mesh messages. Run: pharos mesh recv <nick>") is
+  shell-inert by design. `pharos mesh poke <nick>` is the same path, manually.
+- **What can't be poked is handed to the human** via a transient notice bar in
+  the chat view: not-in-tmux ("nudge it yourself" + its project dir), blocked
+  ("approve its dialog"), gone ("waits in the mailbox until rejoin"). Busy is
+  silent — the **PostToolUse hook** (`unread --hook-post-tool`) surfaces unread
+  as neutral `additionalContext` after the agent's next tool call (de-duped via
+  a `mesh-state/notified-<nick>` timestamp marker), and refreshes `busy` (which
+  also self-heals a stale `blocked` after approval).
+- **Sweeper invariant: idle + unread ⇒ poked.** The app's 10s poll re-checks the
+  roster (`who` carries per-nick unread counts) and pokes any stopped/idle
+  member with pending mail — catching an ignored Stop-notice or a message that
+  landed just as a turn ended. Each Mac sweeps only agents whose presence
+  `host` is itself (paired Macs never double-poke); 120s per-nick debounce; a
+  pane-less idle agent raises a macOS notification asking the human to nudge it.
+- The poke-injected prompt triggers `UserPromptSubmit`→busy on the target, so
+  rapid-fire human messages self-debounce: only the first one pokes.
+- Chat UI: rooms are a ticker-style tab strip (right-click = rename/delete);
+  messages are avatar bubbles — the avatar IS the roster badge (gray = gone/
+  offline, dot = busy/blocked/ready); `@` pops member autocomplete with the
+  same live states.
 
 ## Open questions
 
