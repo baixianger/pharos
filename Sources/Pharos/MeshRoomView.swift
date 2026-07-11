@@ -1,16 +1,24 @@
 import SwiftUI
 
-/// In-window chat-room pane: the conversation in the middle, the room list on the
-/// right. Reads the per-room transcript JSONL the broker writes, refreshing on a
-/// timer. The human input box at the bottom delivers @mentions for real: a
-/// mentioned agent is woken if parked in `wait`, else notified at its next turn
-/// boundary via the mesh Stop hook (see MeshHooks).
+/// In-window chat-room pane: the conversation, with a room-switcher dropdown in
+/// the title row (rename/delete live in the `…` menu beside it). Reads the
+/// per-room transcript JSONL the broker writes, refreshing on a timer. The
+/// human input box at the bottom delivers @mentions for real: a
+/// mentioned agent is notified at its next turn boundary via the mesh Stop hook
+/// (see MeshHooks). Typing `@` pops a member autocomplete fed by the same
+/// `list` poll (↑↓ choose, ⇥/⏎ complete, esc dismiss).
 struct MeshRoomView: View {
     @Environment(ProjectStore.self) private var store
     @State private var rooms: [String] = []
+    @State private var membersByRoom: [String: [String]] = [:]
+    @State private var membersInfo: [String: MeshMemberInfo] = [:]
     @State private var room: String = ""
     @State private var messages: [MeshMsg] = []
     @State private var draft: String = ""
+    @State private var mentionSel = 0
+    @State private var mentionDismissed: String?
+    @State private var notices: [Notice] = []
+    @FocusState private var inputFocused: Bool
     @State private var renameTarget: String?
     @State private var renameText: String = ""
     @State private var issueRef: IssueRef?
@@ -21,11 +29,7 @@ struct MeshRoomView: View {
     private let tick = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        HStack(spacing: 0) {
-            chatPane
-            Divider()
-            roomList.frame(width: 210)
-        }
+        chatPane
         .navigationTitle("Chat Rooms")
         .task(id: store.peerHost) { await resolveRemote() }   // resolve transport BEFORE first load
         .onReceive(tick) { _ in reload() }
@@ -53,29 +57,20 @@ struct MeshRoomView: View {
         .sheet(item: $issueRef) { issuePopup($0) }
     }
 
-    /// Turn `project#number` tokens into tappable issue links.
-    private func attributed(_ text: String) -> AttributedString {
-        guard let regex = try? NSRegularExpression(pattern: "([A-Za-z0-9._-]+)#([0-9]+)") else { return AttributedString(text) }
+    /// Turn `project#number` tokens into markdown links on our custom scheme,
+    /// so the MarkdownText-rendered message keeps tappable issue references
+    /// (caught by this view's `openURL` handler).
+    private func linkifyIssueRefs(_ text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: "([A-Za-z0-9._-]+)#([0-9]+)") else { return text }
         let ns = text as NSString
-        let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
-        guard !matches.isEmpty else { return AttributedString(text) }
-        var result = AttributedString()
-        var idx = 0
-        for m in matches {
-            if m.range.location > idx {
-                result += AttributedString(ns.substring(with: NSRange(location: idx, length: m.range.location - idx)))
-            }
+        var result = text
+        for m in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)).reversed() {
             let proj = ns.substring(with: m.range(at: 1))
             let num = ns.substring(with: m.range(at: 2))
-            var run = AttributedString(ns.substring(with: m.range))
             let enc = proj.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? proj
-            run.link = URL(string: "pharosissue://x/\(enc)/\(num)")
-            run.foregroundColor = .accentColor
-            run.underlineStyle = .single
-            result += run
-            idx = m.range.location + m.range.length
+            let link = "[\(ns.substring(with: m.range))](pharosissue://x/\(enc)/\(num))"
+            if let r = Range(m.range, in: result) { result.replaceSubrange(r, with: link) }
         }
-        if idx < ns.length { result += AttributedString(ns.substring(from: idx)) }
         return result
     }
 
@@ -131,10 +126,21 @@ struct MeshRoomView: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "message.fill").foregroundStyle(.tint)
-                Text(room.isEmpty ? "Chat Rooms" : room).font(.headline)
+                if rooms.isEmpty {
+                    Text("Chat Rooms").font(.headline)
+                } else {
+                    // Rooms as a ticker-style tab strip: one click to switch,
+                    // every room visible, right-click a tab to rename/delete.
+                    // (Replaced the old 210pt right-hand list — usually 1–3 rooms.)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) {
+                            ForEach(rooms, id: \.self) { r in roomTab(r) }
+                        }
+                    }
+                }
                 Spacer()
             }
-            .padding(12)
+            .padding(.horizontal, 12).padding(.vertical, 9)
             Divider()
 
             if room.isEmpty {
@@ -144,12 +150,57 @@ struct MeshRoomView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 transcript
+                    .overlay(alignment: .bottomLeading) {
+                        if !mentionSuggestions.isEmpty { mentionPopup.padding(10) }
+                    }
             }
 
             Divider()
+            noticeBar
             inputBar
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: poke notices — what the human must handle by hand
+
+    private struct Notice: Identifiable { let id = UUID(); let text: String }
+
+    /// Transient per-send feedback: "poked @x", "@y needs you to approve a
+    /// dialog", "@z isn't in tmux — nudge it yourself". Auto-expires.
+    @ViewBuilder
+    private var noticeBar: some View {
+        if !notices.isEmpty {
+            VStack(spacing: 1) {
+                ForEach(notices) { n in
+                    HStack(spacing: 6) {
+                        Image(systemName: n.text.hasPrefix("⚡") ? "bolt.fill" : "info.circle")
+                            .font(.caption).foregroundStyle(n.text.hasPrefix("⚡") ? .green : .orange)
+                        Text(n.text).font(.caption).lineLimit(2)
+                        Spacer()
+                        Button { notices.removeAll { $0.id == n.id } } label: {
+                            Image(systemName: "xmark").font(.caption2)
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 4)
+                }
+            }
+            .padding(.vertical, 2)
+            .background(.quaternary.opacity(0.25))
+            Divider()
+        }
+    }
+
+    private func addNotices(_ texts: [String]) {
+        for t in texts {
+            let n = Notice(text: t)
+            notices.append(n)
+            Task {   // auto-expire; manual ✕ already removed it → removeAll is a no-op
+                try? await Task.sleep(for: .seconds(15))
+                notices.removeAll { $0.id == n.id }
+            }
+        }
     }
 
     private var transcript: some View {
@@ -168,34 +219,189 @@ struct MeshRoomView: View {
         }
     }
 
+    /// Messenger-style row: avatar beside a bubble, the human's own messages
+    /// right-aligned. The avatar doubles as the member's live status display
+    /// (gray = offline/gone, badge dot = busy/blocked/ready).
     private func row(_ m: MeshMsg) -> some View {
         let mine = m.from == "human"
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Text(m.from).font(.callout.weight(.semibold)).foregroundStyle(mine ? Color.secondary : Color.accentColor)
-                if !m.to.isEmpty {
-                    Text("→ " + m.to.map { "@\($0)" }.joined(separator: " ")).font(.caption2).foregroundStyle(.secondary)
+        return HStack(alignment: .top, spacing: 8) {
+            if mine { Spacer(minLength: 60) } else { avatar(m.from) }
+            VStack(alignment: mine ? .trailing : .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(m.from).font(.caption.weight(.semibold))
+                        .foregroundStyle(mine ? Color.secondary : Color.accentColor)
+                    if !m.to.isEmpty {
+                        Text("→ " + m.to.map { "@\($0)" }.joined(separator: " "))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Text(Date(timeIntervalSince1970: m.ts).formatted(date: .omitted, time: .standard))
+                        .font(.caption2).foregroundStyle(.tertiary)
                 }
-                Spacer()
-                Text(Date(timeIntervalSince1970: m.ts).formatted(date: .omitted, time: .standard))
-                    .font(.caption2).foregroundStyle(.secondary)
+                .environment(\.layoutDirection, mine ? .rightToLeft : .leftToRight)
+                // Full markdown body (Wick-derived MarkdownText — same renderer
+                // as issue bodies), with project#number kept tappable.
+                MarkdownText(text: linkifyIssueRefs(m.text)).font(.callout).textSelection(.enabled)
+                    .padding(.horizontal, 11).padding(.vertical, 7)
+                    .background(mine ? AnyShapeStyle(Color.accentColor.opacity(0.16))
+                                     : AnyShapeStyle(.quaternary.opacity(0.55)),
+                                in: RoundedRectangle(cornerRadius: 11, style: .continuous))
             }
-            Text(attributed(m.text)).font(.callout).textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if mine { avatar(m.from) } else { Spacer(minLength: 60) }
         }
-        .padding(10)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: mine ? .trailing : .leading)
     }
 
-    /// Human input. `@nick` delivers to that agent: it wakes a parked `wait`
-    /// immediately, or surfaces via the unread signal at the agent's next turn
-    /// boundary (Stop hook). No @ = transcript only.
+    // MARK: avatars — Clawd poses ARE the member-status surface
+
+    /// Deterministic per-nick avatar tint (stable across launches/machines).
+    private static func nickColor(_ nick: String) -> Color {
+        let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo, .mint, .brown]
+        return palette[stableHash(nick) % palette.count]
+    }
+
+    /// djb2 — Swift's `hashValue` is seed-randomized per launch, so pose/color
+    /// picks would flicker across restarts (and differ between the two Macs).
+    private static func stableHash(_ s: String) -> Int {
+        abs(s.unicodeScalars.reduce(5381) { ($0 << 5) &+ $0 &+ Int($1.value) })
+    }
+
+    /// busy → working, blocked → needs the human, stopped/idle → poke-ready,
+    /// registered-but-silent (e.g. right after a broker restart) → gray dot:
+    /// the member is PRESENT, its state just hasn't been re-reported yet —
+    /// without the gray dot this read as "offline" (user confusion 2026-07-11).
+    private static func statusDot(_ state: String?) -> Color? {
+        switch state.flatMap(MeshSessionState.init(rawValue:)) {
+        case .busy: .orange
+        case .blocked: .red
+        case .stopped, .idle: .green
+        case .gone: nil
+        case nil: .gray
+        }
+    }
+
+    /// Clawd pose pools per session state (pixel-art frames from the user's
+    /// clawd-watchface project, pre-cropped into Resources/Avatars). The nick
+    /// hash picks a stable variant, so each agent keeps its own working/idle
+    /// pose — identity through pose + tint, live status through the pool.
+    private static let clawdPools: [MeshSessionState: [String]] = [
+        .busy: ["working-thinking", "working-building", "working-juggling",
+                "working-typing", "working-wizard", "working-debugger",
+                "working-carrying", "working-conducting", "working-sweeping",
+                "working-ultrathink"],
+        .stopped: ["idle-reading", "idle-look", "idle-living", "idle-follow", "happy"],
+        .idle: ["idle-doze", "idle-yawn"],
+        .blocked: ["mini-alert", "error", "notification", "react-annoyed"],
+        .gone: ["sleeping", "collapse-sleep"],
+    ]
+
+    /// Where the pose PNGs may live. NEVER `Bundle.module`: its generated
+    /// accessor only checks the .app ROOT (not Contents/Resources) plus the
+    /// build machine's absolute `.build` path — and `fatalError`s when both
+    /// miss, which crashed the app on any Mac without the repo checkout
+    /// (observed on home-ts, 2026-07-11). Plain file probing can't crash.
+    private static let clawdSearchURLs: [URL] = {
+        var candidates: [URL] = []
+        if let r = Bundle.main.resourceURL {
+            candidates.append(r.appendingPathComponent("Avatars", isDirectory: true))              // .app: raw Resources copy
+            candidates.append(r.appendingPathComponent("Pharos_Pharos.bundle", isDirectory: true)) // .app: SwiftPM bundle (flat)
+        }
+        candidates.append(Bundle.main.bundleURL.appendingPathComponent("Pharos_Pharos.bundle", isDirectory: true)) // swift build/run
+        return candidates
+    }()
+
+    nonisolated(unsafe) private static var avatarCache: [String: NSImage] = [:]
+    /// Bundled avatar PNG by basename (cached — only ever touched from the
+    /// main actor). nil (→ symbol/letter fallback) when the asset is missing.
+    private static func avatarAsset(_ name: String) -> NSImage? {
+        if let hit = avatarCache[name] { return hit }
+        for dir in clawdSearchURLs {
+            let url = dir.appendingPathComponent("\(name).png")
+            if let img = NSImage(contentsOf: url) {
+                avatarCache[name] = img
+                return img
+            }
+        }
+        return nil
+    }
+
+    private static func clawdPose(nick: String, state: MeshSessionState?) -> String {
+        guard let state, let pool = clawdPools[state] else { return "static-base" }
+        return pool[stableHash(nick) % pool.count]
+    }
+
+    /// Clawd avatar on a per-nick tinted circle. The pose tracks the member's
+    /// live state (working/reading/dozing/alarmed/asleep); gray = gone/unknown.
+    private func avatar(_ nick: String) -> some View {
+        let human = nick == "human"
+        let info = membersInfo[nick]
+        let state = MeshSessionState(rawValue: info?.state ?? "")
+        let offline = !human && (info == nil || state == .gone)
+        return Circle()
+            .fill(offline ? AnyShapeStyle(Color.gray.opacity(0.22))
+                          : AnyShapeStyle((human ? Color.accentColor : Self.nickColor(nick)).opacity(0.25)))
+            .frame(width: 34, height: 34)
+            .overlay {
+                if human {
+                    // The human's portrait (user-provided cartoon, head crop).
+                    if let img = Self.avatarAsset("human") {
+                        Image(nsImage: img)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 34, height: 34)
+                            .clipShape(Circle())
+                    } else {
+                        Image(systemName: "person.fill").font(.system(size: 15))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                } else if let img = Self.avatarAsset("clawd-" + Self.clawdPose(nick: nick, state: state)) {
+                    Image(nsImage: img)
+                        .resizable()
+                        .interpolation(.none)          // keep the pixel art crisp
+                        .scaledToFit()
+                        .frame(width: 26, height: 26)
+                        .grayscale(offline ? 1 : 0)
+                        .opacity(offline ? 0.55 : 1)
+                } else {
+                    Text(String(nick.prefix(1)).uppercased())   // asset-missing fallback
+                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if !human, !offline, let dot = Self.statusDot(info?.state) {
+                    Circle().fill(dot)
+                        .frame(width: 9, height: 9)
+                        .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
+                        .offset(x: 1, y: 1)
+                }
+            }
+            .help(human ? "you" : "\(nick) — \(info?.state ?? "offline")")
+    }
+
+    /// Human input. `@nick` delivers to that agent: it surfaces via the unread
+    /// signal at the agent's next turn boundary (Stop hook). No @ = transcript
+    /// only. While an `@…` token is being typed, the arrow/tab/return/escape
+    /// keys drive the member autocomplete popup instead of the field.
     private var inputBar: some View {
         HStack(spacing: 8) {
             TextField("Message the room — @nick to deliver to an agent",
                       text: $draft)
                 .textFieldStyle(.roundedBorder)
+                .focused($inputFocused)
                 .onSubmit(send)
+                .onKeyPress(.upArrow) { mentionMove(-1) }
+                .onKeyPress(.downArrow) { mentionMove(1) }
+                .onKeyPress(.tab) { mentionAccept() }
+                .onKeyPress(.return) { mentionAccept() }
+                .onKeyPress(.escape) {
+                    guard !mentionSuggestions.isEmpty else { return .ignored }
+                    mentionDismissed = activeMentionToken
+                    return .handled
+                }
+                .onChange(of: draft) { _, _ in
+                    mentionSel = 0
+                    // An esc-dismissed popup stays hidden only for that token.
+                    if let d = mentionDismissed, d != activeMentionToken { mentionDismissed = nil }
+                }
                 .disabled(room.isEmpty)
             Button(action: send) {
                 Image(systemName: "paperplane.fill")
@@ -205,43 +411,106 @@ struct MeshRoomView: View {
         .padding(10)
     }
 
-    // MARK: right — the room list
+    // MARK: @-mention autocomplete
 
-    private var roomList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("ROOMS")
-                .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 6)
-            if rooms.isEmpty {
-                Text("none yet").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14)
-            }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(rooms, id: \.self) { r in
-                        Button { room = r } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "bubble.left.and.bubble.right").font(.caption)
-                                Text(r).font(.callout).lineLimit(1)
-                                Spacer()
-                            }
-                            .padding(.horizontal, 10).padding(.vertical, 6)
-                            .background(r == room ? Color.accentColor.opacity(0.15) : .clear,
-                                        in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            .contentShape(Rectangle())
+    /// The trailing `@…` token still being typed (nil once whitespace ends it).
+    /// Only end-of-draft mentions autocomplete — SwiftUI's TextField exposes no
+    /// caret position, and chat composition is effectively always append-at-end.
+    private var activeMentionToken: String? {
+        guard let last = draft.last, !last.isWhitespace,
+              let tok = draft.split(whereSeparator: { $0.isWhitespace }).last,
+              tok.hasPrefix("@") else { return nil }
+        return String(tok)
+    }
+
+    /// Popup rows: the current room's members (from the same `list` poll that
+    /// feeds the tab strip) PLUS everyone who has spoken in the loaded
+    /// transcript — so @-completion keeps working even when registrations were
+    /// lost (e.g. agents that haven't re-joined since a broker restart),
+    /// filtered to whatever continues what's typed after `@`.
+    private var mentionSuggestions: [String] {
+        guard let tok = activeMentionToken, tok != mentionDismissed else { return [] }
+        let query = tok.dropFirst().lowercased()
+        var pool = membersByRoom[room] ?? []
+        for m in messages where !pool.contains(m.from) { pool.append(m.from) }
+        pool.removeAll { $0 == "human" }
+        let hits = query.isEmpty ? pool : pool.filter { $0.lowercased().hasPrefix(query) }
+        return Array(hits.prefix(8))
+    }
+
+    private func mentionMove(_ delta: Int) -> KeyPress.Result {
+        let n = mentionSuggestions.count
+        guard n > 0 else { return .ignored }
+        mentionSel = ((mentionSel + delta) % n + n) % n
+        return .handled
+    }
+
+    /// Complete the highlighted suggestion. `.ignored` when no popup is up, so
+    /// a plain ⏎ still falls through to `onSubmit` and sends the message.
+    private func mentionAccept() -> KeyPress.Result {
+        let s = mentionSuggestions
+        guard !s.isEmpty else { return .ignored }
+        completeMention(s[min(mentionSel, s.count - 1)])
+        return .handled
+    }
+
+    private func completeMention(_ nick: String) {
+        guard let tok = activeMentionToken else { return }
+        draft = String(draft.dropLast(tok.count)) + "@\(nick) "
+        inputFocused = true               // a mouse pick must not strand focus
+    }
+
+    /// Floating member picker, anchored just above the input bar.
+    private var mentionPopup: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            ForEach(Array(mentionSuggestions.enumerated()), id: \.element) { i, nick in
+                Button { completeMention(nick) } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "at").font(.caption).foregroundStyle(.secondary)
+                        Text(nick).font(.callout)
+                        Spacer(minLength: 0)
+                        if let dot = Self.statusDot(membersInfo[nick]?.state) {
+                            Circle().fill(dot).frame(width: 7, height: 7)
                         }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            Button { renameText = r; renameTarget = r } label: { Label("Rename…", systemImage: "pencil") }
-                            Button(role: .destructive) { deleteRoom(r) } label: { Label("Delete", systemImage: "trash") }
-                        }
+                        Text(membersInfo[nick]?.state ?? "offline")
+                            .font(.caption2).foregroundStyle(.tertiary)
                     }
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(i == mentionSel ? Color.accentColor.opacity(0.18) : .clear,
+                                in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 8)
+                .buttonStyle(.plain)
             }
-            Spacer(minLength: 0)
+            Text("↑↓ choose · ⇥ or ⏎ complete · esc dismiss")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .padding(.horizontal, 8).padding(.top, 2)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(.quaternary.opacity(0.18))
+        .padding(6)
+        .frame(width: 250, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(.quaternary))
+        .shadow(color: .black.opacity(0.18), radius: 10, y: 3)
+    }
+
+    /// One room tab: click to switch, double-click to rename, right-click for
+    /// rename/delete (delete drops the room AND its transcript). Not a Button —
+    /// a plain-style Button swallows right-clicks on macOS, which killed the
+    /// context menu; plain gestures + contentShape keep both working.
+    private func roomTab(_ r: String) -> some View {
+        Text(r)
+            .font(.callout.weight(r == room ? .semibold : .regular))
+            .foregroundStyle(r == room ? Color.primary : Color.secondary)
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(r == room ? Color.accentColor.opacity(0.16) : .clear, in: Capsule())
+            .contentShape(Capsule())
+            .onTapGesture(count: 2) { renameText = r; renameTarget = r }
+            .onTapGesture { room = r }
+            .contextMenu {
+                Button { renameText = r; renameTarget = r } label: { Label("Rename…", systemImage: "pencil") }
+                Button(role: .destructive) { deleteRoom(r) } label: { Label("Delete", systemImage: "trash") }
+            }
+            .help("Click to switch · double-click to rename · right-click for more")
     }
 
     // MARK: data
@@ -253,10 +522,20 @@ struct MeshRoomView: View {
         draft = ""
         // The broker is mention-only (to: nil reaches nobody's mailbox), so
         // @tokens in the human text must become real delivery targets. Shared
-        // parser with the CLI `say`/`ask` so both surfaces behave identically.
+        // parser with the CLI `say` so both surfaces behave identically.
         let mentions = MeshHooks.parseTextMentions(text)
         let to = mentions.isEmpty ? nil : mentions
-        Task.detached { _ = MeshClient.send(MeshRequest(cmd: "say", room: r, nick: "human", text: text, to: to)) }
+        let peer = store.peerHost
+        Task {
+            // say echoes each target's presence; act on it: nudge the
+            // stopped/idle, and report what needs the human's hands.
+            let notes = await Task.detached { () -> [String] in
+                let resp = MeshClient.send(MeshRequest(cmd: "say", room: r, nick: "human", text: text, to: to))
+                guard let targets = resp.members, !targets.isEmpty else { return [] }
+                return MeshPoke.followUp(targets: targets, peerHost: peer)
+            }.value
+            addNotices(notes)
+        }
     }
 
     /// Poll the broker (which may be REMOTE over TCP — see MeshClient) for the
@@ -273,6 +552,8 @@ struct MeshRoomView: View {
             // Remote broker unreachable (e.g. peer daemon died) → re-bootstrap.
             if !snap.ok && MeshClient.remoteEndpoint != nil { await resolveRemote(); return }
             rooms = snap.rooms
+            membersByRoom = snap.members
+            membersInfo = snap.info
             room = snap.pick
             messages = snap.messages
         }
@@ -301,18 +582,28 @@ struct MeshRoomView: View {
         reload()
     }
 
-    private struct Snapshot { let ok: Bool; let rooms: [String]; let pick: String; let messages: [MeshMsg] }
+    private struct Snapshot {
+        let ok: Bool; let rooms: [String]; let members: [String: [String]]
+        let info: [String: MeshMemberInfo]
+        let pick: String; let messages: [MeshMsg]
+    }
 
-    /// Off-main broker query: room list, then history for the room that stays
-    /// selected (or the first, if none/deleted). `ok` reflects broker reachability.
+    /// Off-main broker query: room list (names + members, feeding the tab strip
+    /// and the @-autocomplete), the presence roster (avatar states), then
+    /// history for the room that stays selected (or the first, if
+    /// none/deleted). `ok` reflects broker reachability.
     private static func fetch(selected: String) async -> Snapshot {
         await Task.detached {
             let listResp = MeshClient.send(MeshRequest(cmd: "list"))
-            let names = (listResp.rooms ?? []).map(\.name).sorted()
+            let infos = listResp.rooms ?? []
+            let names = infos.map(\.name).sorted()
+            let members = Dictionary(infos.map { ($0.name, $0.members) }, uniquingKeysWith: { a, _ in a })
+            let roster = MeshClient.send(MeshRequest(cmd: "who")).members ?? []
+            let info = Dictionary(roster.map { ($0.nick, $0) }, uniquingKeysWith: { a, _ in a })
             let pick = selected.isEmpty || !names.contains(selected) ? (names.first ?? "") : selected
             let msgs: [MeshMsg] = pick.isEmpty ? []
                 : (MeshClient.send(MeshRequest(cmd: "history", room: pick, limit: 200)).messages ?? [])
-            return Snapshot(ok: listResp.ok, rooms: names, pick: pick, messages: msgs)
+            return Snapshot(ok: listResp.ok, rooms: names, members: members, info: info, pick: pick, messages: msgs)
         }.value
     }
 
