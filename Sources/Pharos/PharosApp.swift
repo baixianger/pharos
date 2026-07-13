@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Real entry point. Two front doors share one binary:
 ///   • a CLI subcommand   → the `pharos` CLI (e.g. `Pharos list`, `Pharos launch …`)
@@ -17,6 +18,14 @@ enum PharosMain {
         }
         if let first = args.first, CLI.isCommand(first) {
             exit(CLI.run(args))
+        }
+        // Snapshot mode: become an ACCESSORY app BEFORE any window exists, so it
+        // never activates, never steals focus, and never switches Spaces — the
+        // capture window lives off-screen and the user's foreground app is
+        // untouched. Referencing NSApplication.shared here (pre-`main()`)
+        // creates the app instance so the very first window inherits the policy.
+        if ProcessInfo.processInfo.environment["PHAROS_SNAPSHOT"]?.isEmpty == false {
+            NSApplication.shared.setActivationPolicy(.accessory)
         }
         PharosApp.main()
     }

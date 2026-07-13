@@ -9,6 +9,7 @@ private nonisolated(unsafe) var launchCountedThisProcess = false
 
 struct ContentView: View {
     @Environment(ProjectStore.self) private var store
+    @State private var snapSettingsTab: Int?   // snapshot mode: Settings shown as a sheet
     @AppStorage("pharos.onboarded")    private var onboarded  = false
     @AppStorage("pharos.launchCount")  private var launchCount = 0
     @State private var selectedProject: Project.ID?
@@ -34,7 +35,10 @@ struct ContentView: View {
             ProjectsSidebar(selectedProject: $selectedProject, searchText: searchText)
                 .navigationSplitViewColumnWidth(min: 248, ideal: 300, max: 400)
         } detail: {
-            if let id = selectedProject, store.project(id) != nil {
+            if let t = snapSettingsTab {
+                SettingsView(initialTab: t)   // snapshot mode: Settings inline in the detail pane
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let id = selectedProject, store.project(id) != nil {
                 ProjectDetailView(projectID: id)
             } else if store.homeRoute == .rooms {
                 MeshRoomView()
@@ -43,6 +47,8 @@ struct ContentView: View {
             }
         }
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search")
+        .task { await SnapshotMode.run(store: store, select: { selectedProject = $0 },
+                                       showSettings: { snapSettingsTab = $0 }) }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button { store.refreshAllGit() } label: {

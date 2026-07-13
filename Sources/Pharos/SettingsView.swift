@@ -24,18 +24,27 @@ struct HelpBadge: View {
 }
 
 struct SettingsView: View {
+    var initialTab: Int? = nil
+    // Seeded by SnapshotMode (screenshot runs open a specific tab); defaults to General.
+    @State private var tab: Int
+
+    init(initialTab: Int? = nil) {
+        self.initialTab = initialTab
+        _tab = State(initialValue: initialTab ?? SnapshotMode.settingsTab ?? 0)
+    }
+
     var body: some View {
-        TabView {
+        TabView(selection: $tab) {
             GeneralSettingsTab()
-                .tabItem { Label("General", systemImage: "gearshape") }
+                .tabItem { Label("General", systemImage: "gearshape") }.tag(0)
             LaunchSettingsTab()
-                .tabItem { Label("Launch", systemImage: "paperplane.fill") }
+                .tabItem { Label("Launch", systemImage: "paperplane.fill") }.tag(1)
             ProjectsSettingsTab()
-                .tabItem { Label("Projects", systemImage: "folder") }
+                .tabItem { Label("Projects", systemImage: "folder") }.tag(2)
             CLISettingsTab()
-                .tabItem { Label("CLI", systemImage: "terminal") }
+                .tabItem { Label("CLI", systemImage: "terminal") }.tag(3)
             MachinesSettingsTab()
-                .tabItem { Label("Machines", systemImage: "macbook.and.iphone") }
+                .tabItem { Label("Machines", systemImage: "macbook.and.iphone") }.tag(4)
         }
         .frame(width: 520, height: 480)
     }
