@@ -116,7 +116,7 @@
 
 1. Grab the latest **`Pharos-<version>.dmg`** from [Releases](https://github.com/baixianger/pharos/releases).
 2. Open the DMG and drag **Pharos.app** to your Applications folder.
-3. Launch. Current builds are **ad-hoc signed** — on first launch **right-click → Open** (or `xattr -dr com.apple.quarantine /Applications/Pharos.app`).
+3. Launch — done. Releases are **signed with a Developer ID and notarized by Apple**, so they open with no Gatekeeper prompt.
 
 > **Requirements:** macOS 26 (Tahoe) · Apple Silicon (arm64)
 
