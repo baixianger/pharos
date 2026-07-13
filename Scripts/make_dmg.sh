@@ -90,4 +90,38 @@ rm -f "$DMG_FINAL"
 hdiutil convert "$DMG_TMP" -format UDZO -imagekey zlib-level=9 -o "$DMG_FINAL" >/dev/null
 
 echo "Created $DMG_FINAL ($(du -h "$DMG_FINAL" | cut -f1))"
-echo "Note: for distribution, codesign + notarize + staple the .dmg (see docs/RELEASE.md)."
+
+# ---------------------------------------------------------------------------
+# Optional: Developer ID sign + notarize + staple the DMG itself, so a
+# downloaded DMG opens without a Gatekeeper prompt. Skipped entirely when
+# APP_IDENTITY is unset (the ad-hoc default — first launch needs right-click →
+# Open). For a fully clean release the app INSIDE should already be
+# Developer-ID-signed + stapled — run Scripts/sign-and-notarize.sh first, or use
+# Scripts/release.sh which chains both.
+# ---------------------------------------------------------------------------
+if [[ -n "${APP_IDENTITY:-}" ]]; then
+  echo "==> signing DMG with $APP_IDENTITY"
+  codesign --force --sign "$APP_IDENTITY" --timestamp "$DMG_FINAL"
+
+  echo "==> submitting DMG to the Apple Notary Service (a few minutes)…"
+  if [[ -n "${NOTARYTOOL_PROFILE:-}" ]]; then
+    xcrun notarytool submit "$DMG_FINAL" --keychain-profile "$NOTARYTOOL_PROFILE" --wait
+  elif [[ -n "${NOTARYTOOL_APPLE_ID:-}" && -n "${NOTARYTOOL_TEAM_ID:-}" && -n "${NOTARYTOOL_APP_PASSWORD:-}" ]]; then
+    xcrun notarytool submit "$DMG_FINAL" \
+      --apple-id "$NOTARYTOOL_APPLE_ID" --team-id "$NOTARYTOOL_TEAM_ID" \
+      --password "$NOTARYTOOL_APP_PASSWORD" --wait
+  else
+    echo "ERROR: APP_IDENTITY set but no notarytool credentials." >&2
+    echo "       Set NOTARYTOOL_PROFILE, or NOTARYTOOL_APPLE_ID/TEAM_ID/APP_PASSWORD." >&2
+    exit 1
+  fi
+
+  echo "==> stapling ticket to DMG"
+  xcrun stapler staple "$DMG_FINAL"
+  xcrun stapler validate "$DMG_FINAL"
+  spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_FINAL" || true
+  echo "Notarized + stapled: $DMG_FINAL — downloads open without a Gatekeeper prompt."
+else
+  echo "Note: ad-hoc DMG (no APP_IDENTITY). First launch needs right-click → Open."
+  echo "      For a notarized DMG, run Scripts/release.sh (see docs/RELEASE.md)."
+fi

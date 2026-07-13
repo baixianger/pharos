@@ -93,42 +93,43 @@ BUILD_NUMBER=42            # monotonically increasing
 
 ---
 
-## Release steps (Option A — keychain profile)
+## Release steps — one command (recommended)
+
+`Scripts/release.sh` chains both halves and produces a **notarized DMG that
+opens with no Gatekeeper prompt** (plus the zip):
 
 ```sh
 # 1. Verify your Developer ID cert is available
 security find-identity -v -p codesigning | grep "Developer ID Application"
 
-# 2. Set env vars
-export APP_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-export NOTARYTOOL_PROFILE="pharos-notary"
-
-# 3. (Optional) Build universal binary
-export ARCHES="arm64 x86_64"
-
-# 4. Run the release script
-Scripts/sign-and-notarize.sh
+# 2. Run the release (Option A — keychain profile)
+APP_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+NOTARYTOOL_PROFILE="pharos-notary" \
+Scripts/release.sh
 ```
 
-The script will:
-1. Build `Pharos.app` via `Scripts/package_app.sh` (release config, signed with
-   `--options runtime --timestamp`)
-2. Guard against accidental sandbox entitlement
-3. Upload to Apple Notary Service and wait for acceptance
-4. Staple the notarization ticket to `Pharos.app`
-5. Verify with `spctl` and `stapler validate`
-6. Produce `Pharos-<version>.zip` ready for distribution
+It runs, in order:
+1. `sign-and-notarize.sh` → build + Developer ID sign (hardened runtime) +
+   notarize + staple `Pharos.app`, and emit `Pharos-<version>.zip`.
+2. `make_dmg.sh` → build the styled DMG from the stapled app, then **sign +
+   notarize + staple the DMG itself** (make_dmg does this automatically when
+   `APP_IDENTITY` is set; without it, the DMG stays ad-hoc).
 
-## Release steps (Option B — inline credentials)
+Attach the resulting `Pharos-<version>.dmg` to the GitHub Release.
 
-```sh
-export APP_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-export NOTARYTOOL_APPLE_ID="you@example.com"
-export NOTARYTOOL_TEAM_ID="ABCDE12345"
-export NOTARYTOOL_APP_PASSWORD="xxxx-xxxx-xxxx-xxxx"
+**Option B — inline credentials** (CI / no stored profile): set
+`NOTARYTOOL_APPLE_ID`, `NOTARYTOOL_TEAM_ID`, `NOTARYTOOL_APP_PASSWORD` instead of
+`NOTARYTOOL_PROFILE`.
 
-Scripts/sign-and-notarize.sh
-```
+### Just the app (no DMG)
+
+Run `Scripts/sign-and-notarize.sh` alone for a notarized, stapled `Pharos.app`
++ zip (steps 1 above), without building a DMG.
+
+### Ad-hoc build (no Apple Developer account)
+
+`Scripts/package_app.sh release && Scripts/make_dmg.sh` — an unsigned DMG whose
+first launch needs **right-click → Open**. This is what shipped through 0.4.0.
 
 ---
 
