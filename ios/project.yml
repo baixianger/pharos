@@ -1,0 +1,85 @@
+name: PharosMobile
+options:
+  bundleIdPrefix: me.pai
+  deploymentTarget:
+    iOS: "26.0"
+  developmentLanguage: en
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    DEVELOPMENT_TEAM: TN7ZDD72P2
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  MarkdownUI:
+    url: https://github.com/gonzalezreal/swift-markdown-ui
+    from: 2.4.1
+  Citadel:
+    url: https://github.com/orlandos-nl/Citadel
+    from: 0.12.1
+targets:
+  PharosMobile:
+    type: application
+    platform: iOS
+    sources:
+      - path: PharosMobile
+    dependencies:
+      - package: MarkdownUI
+        product: MarkdownUI
+      - package: Citadel
+        product: Citadel
+    info:
+      path: PharosMobile/Info.plist
+      properties:
+        CFBundleDisplayName: Pharos
+        NSHumanReadableCopyright: "© 2026 Pai"
+        LSApplicationCategoryType: public.app-category.developer-tools
+        ITSAppUsesNonExemptEncryption: false
+        NSLocalNetworkUsageDescription: "Pharos connects to your private Mesh broker and SSH hosts over Tailscale."
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    entitlements:
+      path: PharosMobile/PharosMobile.entitlements
+      properties:
+        com.apple.developer.ubiquity-kvstore-identifier: $(TeamIdentifierPrefix)me.pai.pharos.mobile
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.pai.pharos.mobile
+        PRODUCT_NAME: PharosMobile
+        PRODUCT_MODULE_NAME: PharosMobile
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_ENTITLEMENTS: PharosMobile/PharosMobile.entitlements
+  PharosMobileTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: PharosMobileTests
+    dependencies:
+      - target: PharosMobile
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.pai.pharos.mobile.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  PharosMobile:
+    build:
+      targets:
+        PharosMobile: all
+        PharosMobileTests: [test]
+    test:
+      targets:
+        - PharosMobileTests
