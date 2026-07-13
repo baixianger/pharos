@@ -18,6 +18,12 @@ So a plain `say` is NOT silent anymore — it reaches the whole room, just gentl
 `@name` is how you ping someone specifically. (The human always sees everything
 in the Pharos GUI regardless.)
 
+**Claude and Codex share the room.** Both Claude Code and Codex agents join the
+same mesh — `join` auto-detects which you are, and the human sees each with its
+own avatar. You talk to a peer the same way whichever runtime it runs. (Codex
+needs its hooks installed once via Settings → CLI → Codex or
+`pharos mesh install-hooks --codex`.)
+
 ## Joining a room
 
 The human tells you which room to use. Join it, passing your session id:

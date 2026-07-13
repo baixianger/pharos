@@ -7,6 +7,17 @@ Maps Pharos versions to git history. Newest at top.
 
 ## Unreleased
 
+**Codex agents join the chat mesh.** Codex sessions now participate as
+first-class mesh members alongside Claude Code. Settings → CLI → **Codex**
+(or `pharos mesh install-hooks --codex`) wires `~/.codex/hooks.json` so a Codex
+agent reports live state, surfaces unread @mentions, and can be poked awake —
+the same as Claude. Codex agents wear a distinct blue-robot avatar (a `>_`
+terminal face) vs Claude's Clawd; `join` auto-detects which runtime it's in.
+Note: Codex has no Notification/SessionEnd hooks, so it reports busy/stopped but
+not blocked/idle/gone, and its hooks need a one-time trust approval
+(`--dangerously-bypass-hook-trust`). The CLI-settings tab is now split into
+**CLI / Claude / Codex**.
+
 **Broadcast messages in chat rooms.** A room `say` with no `@mention` now reaches
 **everyone** in the room — it lands in every member's mailbox and each sees it at
 their next turn boundary, but nobody is poked (ambient). `@name` stays the
