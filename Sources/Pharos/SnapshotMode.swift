@@ -73,8 +73,12 @@ enum SnapshotMode {
             }
             select(p.id)
         case let r where r.hasPrefix("settings:"):
-            select(nil); store.homeRoute = .dashboard
-            showSettings(settingsTab ?? 0)   // present the Settings sheet on the main window
+            // Capture the Settings panel as its OWN standalone window (like the
+            // real ⌘, panel) — NOT embedded in the main window, which read as
+            // "still inside the app". The SwiftUI Settings scene won't open for
+            // an .accessory app, so host SettingsView in a dedicated window.
+            await captureSettingsWindow(store: store, tab: settingsTab ?? 0, out: spec.out, settle: spec.settle)
+            return   // captureSettingsWindow exits
         default:
             fputs("snapshot: unknown route \(spec.route)\n", stderr); exit(2)
         }
@@ -103,6 +107,34 @@ enum SnapshotMode {
             exit(3)
         }
         exit(0)
+    }
+
+    /// Host `SettingsView` in a dedicated off-screen window (the same content
+    /// the real ⌘, panel shows) and capture just it — a clean standalone
+    /// Settings screenshot, no main-window sidebar.
+    private static func captureSettingsWindow(store: ProjectStore, tab: Int, out: String, settle: Double) async {
+        let view = SettingsView(initialTab: tab).environment(store)
+        let hosting = NSHostingView(rootView: view)
+        let size = hosting.fittingSize
+        let win = NSWindow(contentRect: NSRect(x: -6000, y: 200,
+                                               width: size.width > 0 ? size.width : 520,
+                                               height: size.height > 0 ? size.height : 500),
+                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        win.title = "Settings"
+        win.titlebarAppearsTransparent = false
+        win.contentView = hosting
+        win.orderFront(nil)
+        try? await Task.sleep(for: .seconds(settle))
+        diag("settings window num=\(win.windowNumber) frame=\(win.frame)")
+        do {
+            let png = try await capture(win)
+            try png.write(to: URL(fileURLWithPath: out))
+            diag("WROTE \(out) bytes=\(png.count)")
+            exit(0)
+        } catch {
+            diag("CAPTURE FAILED: \(error)")
+            exit(3)
+        }
     }
 
     /// Pixel-true capture of one of OUR OWN windows via ScreenCaptureKit.

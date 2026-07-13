@@ -80,7 +80,7 @@ bundle** — the binary at `Pharos.app/Contents/MacOS/Pharos` *is* the CLI; syml
 it onto your `PATH` as `pharos`:
 
 <div align="center">
-  <img src="site/shots/settings-cli.png" width="720" alt="Settings → CLI — one-click install of the pharos/chat symlinks and agent hooks">
+  <img src="site/shots/settings-cli.png" width="520" alt="Settings → CLI — one-click install of the pharos/chat symlinks and agent hooks">
 </div>
 
 ```bash
@@ -123,7 +123,7 @@ also post their own progress with `pharos update add`.
 ## Multi-machine sync (iCloud)
 
 <div align="center">
-  <img src="site/shots/settings-machines.png" width="720" alt="Settings → Machines — iCloud data location, mesh host, and Mac pairing">
+  <img src="site/shots/settings-machines.png" width="520" alt="Settings → Machines — iCloud data location, mesh host, and Mac pairing">
 </div>
 
 Settings → **Data location** can move Pharos's data into **iCloud Drive**, so
