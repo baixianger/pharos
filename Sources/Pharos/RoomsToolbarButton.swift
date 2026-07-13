@@ -8,6 +8,7 @@ struct RoomsToolbarButton: View {
     @Binding var openRoom: String?
     @State private var rooms: [String] = []
     @State private var show = false
+    @State private var opening = false
     @State private var newName = ""
     @State private var renaming: String?
     @State private var renameText = ""
@@ -15,12 +16,14 @@ struct RoomsToolbarButton: View {
     private let tick = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        Button { show.toggle() } label: {
+        Button { togglePopover() } label: {
             Label("Chat rooms", systemImage: "bubble.left.and.bubble.right")
         }
+        .disabled(opening)
         .help("Switch, add, or manage chat rooms")
         .accessibilityLabel("Chat rooms")
         .onReceive(tick) { _ in if show { refresh() } }
+        .task { refresh() } // warm the cache, but opening still awaits fresh data
         .popover(isPresented: $show, arrowEdge: .bottom) { popover }
         .alert("Rename room", isPresented: Binding(get: { renaming != nil },
                                                    set: { if !$0 { renaming = nil } })) {
@@ -98,12 +101,30 @@ struct RoomsToolbarButton: View {
 
     // MARK: data
 
+    /// Do not present from an empty/stale snapshot. SwiftUI fixes a popover's
+    /// initial layout before its async `onAppear` refresh completes, which made
+    /// the first click show only the first room; the second click used the now-
+    /// warm cache. Fetch first, then present one complete snapshot.
+    private func togglePopover() {
+        if show { show = false; return }
+        guard !opening else { return }
+        opening = true
+        Task {
+            rooms = await fetchRooms()
+            opening = false
+            show = true
+        }
+    }
+
+    private func fetchRooms() async -> [String] {
+        await Task.detached {
+            (MeshClient.send(MeshRequest(cmd: "list")).rooms ?? []).map(\.name).sorted()
+        }.value
+    }
+
     private func refresh() {
         Task {
-            let names = await Task.detached { () -> [String] in
-                (MeshClient.send(MeshRequest(cmd: "list")).rooms ?? []).map(\.name).sorted()
-            }.value
-            rooms = names
+            rooms = await fetchRooms()
         }
     }
 

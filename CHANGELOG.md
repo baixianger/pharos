@@ -7,6 +7,10 @@ Maps Pharos versions to git history. Newest at top.
 
 ## Unreleased
 
+**Complete chat-room toolbar on first click.** The toolbar now fetches the
+current room snapshot before presenting its popover, instead of opening from an
+empty cache and filling it after SwiftUI has committed the first layout.
+
 **Room-scoped agent identity.** Mesh delivery, unread mailboxes, state hooks,
 and poke routing now use the immutable coding-agent session ID; `@codex` is
 resolved as a display alias inside the current room. Two rooms may therefore
