@@ -7,6 +7,8 @@ Maps Pharos versions to git history. Newest at top.
 
 ## Unreleased
 
+## v0.5.0 — 2026-07-13
+
 **Codex agents join the chat mesh.** Codex sessions now participate as
 first-class mesh members alongside Claude Code. Settings → CLI → **Codex**
 (or `pharos mesh install-hooks --codex`) wires `~/.codex/hooks.json` so a Codex
