@@ -7,6 +7,29 @@ Maps Pharos versions to git history. Newest at top.
 
 ## Unreleased
 
+## v0.4.0 — 2026-07-13
+
+**Poke idle agents from chat.** @mentioning an agent now *wakes* it for real.
+Claude Code lifecycle hooks report each session's live state (busy /
+blocked-on-permission / stopped / idle / gone) into the mesh, `join` records the
+agent's tmux pane + host, and Pharos types a nudge into that pane — on this Mac
+or a paired one over SSH — but only when the agent is verifiably idle. Busy
+agents receive the message mid-turn (PostToolUse hook); a 10s sweeper re-pokes
+anyone left idle with unread; anything unreachable (not in tmux, waiting on a
+dialog) is handed to you in a notice instead of guessed at. Every uncertainty
+degrades to the turn-boundary hook delivery — never to a wrong keystroke.
+
+**Redesigned chat rooms.** Messenger-style room view: rooms as a tab strip
+(right-click to rename/delete), avatar bubbles whose Clawd pixel-art pose tracks
+each agent's live status, full markdown message bodies with tappable
+`project#number` issue links, and `@` member autocomplete. Rooms and presence
+now survive a broker restart.
+
+**Stop running agents from the GUI (Pharos#7).** A Stop button wherever a
+running session surfaces — the project-detail agent badge, per-issue running
+rows, and the dashboard "Agents working" card — kills its tmux session (local or
+over SSH) behind a confirmation dialog. New `pharos mesh who` / `poke` CLI verbs.
+
 ## v0.3.0 — 2026-07-10
 
 **Cross-host agents.** `pharos launch <project> <agent> --host <ssh-alias>` and
