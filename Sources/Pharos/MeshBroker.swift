@@ -18,6 +18,8 @@ struct MeshRequest: Codable {
     var host: String?               // join only: the joiner's HostIdentity (poke routing)
     var tmuxPane: String?           // join only: the joiner's $TMUX_PANE, when tmux-wrapped
     var state: String?              // mark/peek: hook-reported session state (see MeshSessionState)
+    var expectedState: String?      // mark only: compare-and-set guard for observer corrections
+    var expectedStateTs: Double?    // mark only: reject a correction if a newer hook already won
     var kind: String?               // join only: "claude" | "codex" (drives the avatar set)
 }
 
@@ -254,6 +256,13 @@ final class MeshBroker {
         exit(0)   // unreachable
     }
 
+    /// Observer-driven corrections use compare-and-set semantics: a hook event
+    /// that lands after the observer's snapshot must never be overwritten.
+    static func markMatchesSnapshot(_ entry: MeshPresenceEntry, request: MeshRequest) -> Bool {
+        (request.expectedState == nil || entry.state == request.expectedState)
+            && (request.expectedStateTs == nil || entry.stateTs == request.expectedStateTs)
+    }
+
     func serve() {
         signal(SIGPIPE, SIG_IGN)        // a hung-up client must not kill the daemon
         try? FileManager.default.createDirectory(at: MeshPaths.supportDir, withIntermediateDirectories: true)
@@ -443,7 +452,8 @@ final class MeshBroker {
             guard let s = req.state, MeshSessionState(rawValue: s) != nil else { return .fail("valid state required") }
             lock.lock()
             if let n = req.nick ?? resolveNickLocked(cwd: req.project, session: req.session),
-               presence[n] != nil {
+               presence[n] != nil,
+               Self.markMatchesSnapshot(presence[n]!, request: req) {
                 presence[n]!.state = s
                 presence[n]!.stateTs = Date().timeIntervalSince1970
                 writePresenceLocked()

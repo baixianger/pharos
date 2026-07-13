@@ -7,6 +7,13 @@ Maps Pharos versions to git history. Newest at top.
 
 ## Unreleased
 
+**Self-healing Codex presence.** Pharos no longer leaves an idle Codex member
+shown as busy when its Stop hook goes missing. A periodic ground-truth check
+requires the registered tmux pane, a live Codex process in that pane's full
+process tree, and the visible idle composer before correcting the roster. The
+broker applies that correction conditionally, so a newer busy hook always wins;
+every automatic poke also repeats the pane check immediately before typing.
+
 **Add chat members on either Mac.** The room toolbar's Add Member sheet now
 chooses this Mac or the paired Mac, then uses the same SSH, tmux, and per-server
 Keychain-unlock path as remote project launches. `pharos mesh spawn` gains

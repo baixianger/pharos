@@ -8,9 +8,8 @@ import Foundation
 /// idempotent (`recv` drains once).
 ///
 /// Safety model (why this can't type into the wrong thing):
-///  1. States `stopped`/`idle` are poke-safe. `blocked` never is. A Codex
-///     `busy` may be stale when its Stop hook is missed, but then the pane must
-///     visibly show the idle `›` composer; `Working` always refuses.
+///  1. `blocked`/`gone` are never poke-safe. For every other accepted state,
+///     the pane must visibly show an idle composer; `Working` always refuses.
 ///  2. The pane's foreground command must still look like a Claude or Codex
 ///     session; a dead agent leaving a bare shell is skipped.
 ///  3. The nudge text contains no backticks/quotes/metacharacters, so even the
@@ -64,16 +63,38 @@ enum MeshPoke {
         return t.contains("❯") || t.contains("›")   // composer prompt visible (claude / codex)
     }
 
-    /// nil = refuse; false = hook state proves idle; true = the pane itself
-    /// must prove idle. Codex's Stop hook is known to occasionally leave a
+    /// nil = refuse; true = the pane itself must prove idle. Codex's Stop hook
+    /// is known to occasionally leave a
     /// stale `busy` after the composer returns, so Codex alone may recover via
     /// the visual probe. A genuinely working Codex pane fails `paneLooksIdle`.
     static func probeRequirement(for m: MeshMemberInfo) -> Bool? {
         let state = MeshSessionState(rawValue: m.state ?? "")
-        if state?.pokeable == true { return false }
+        // Even a pokeable hook state can be stale by the time send-keys runs.
+        // Always re-check the composer pixels immediately before typing.
+        if state?.pokeable == true { return true }
         if state == nil { return true }
         if state == .busy && m.kind == AgentKind.codex.rawValue { return true }
         return nil
+    }
+
+    /// Ground-truth correction for Codex's occasionally stale `busy` hook
+    /// state. This NEVER sends keys: it verifies the pane still belongs to a
+    /// coding agent and that its pixels show an idle composer. Callers may then
+    /// mark the member `stopped` in the broker so the roster/avatar stops lying.
+    static func codexBusyPaneIsIdle(_ m: MeshMemberInfo, peerHost: String) -> Bool {
+        guard m.kind == AgentKind.codex.rawValue,
+              MeshSessionState(rawValue: m.state ?? "") == .busy else { return false }
+        switch route(for: m, peerHost: peerHost) {
+        case .unpokeable:
+            return false
+        case .local(let pane):
+            guard let tmux = localTmux(),
+                  localPaneRunsAgent(tmux: tmux, pane: pane, kind: .codex) else { return false }
+            return paneLooksIdle(Shell.run(tmux, ["capture-pane", "-p", "-t", pane]).out)
+        case .remote(let pane, let host):
+            let script = "\(pathShim); " + remoteIdleProbe(pane: pane, kind: .codex)
+            return Shell.run("/usr/bin/ssh", sshOpts + [host, script]).ok
+        }
     }
 
     /// Nudge `m`'s session. BLOCKING (tmux and possibly SSH) — call off-main.
@@ -94,13 +115,13 @@ enum MeshPoke {
             return why
         case .local(let pane):
             guard let tmux = localTmux() else { return "tmux not found on this Mac" }
-            guard paneRunsAgent(Shell.run(tmux, ["display-message", "-p", "-t", pane,
-                                                 "#{pane_current_command}"])) else {
+            guard localPaneRunsAgent(tmux: tmux, pane: pane,
+                                     kind: m.kind.flatMap(AgentKind.init(rawValue:))) else {
                 return "tmux pane \(pane) is no longer a coding-agent session"
             }
             if mustProbe {
                 guard paneLooksIdle(Shell.run(tmux, ["capture-pane", "-p", "-t", pane]).out) else {
-                    return "state unknown and the pane doesn't look safely idle"
+                    return "the pane doesn't look safely idle"
                 }
             }
             guard Shell.run(tmux, ["send-keys", "-t", pane, "-l", "--", text]).ok else {
@@ -112,15 +133,14 @@ enum MeshPoke {
         case .remote(let pane, let host):
             // One SSH round-trip does check + (probe) + type + pause + Enter.
             let p = sq(pane), t = sq(text)
-            let probe = mustProbe ? """
-            pv=$(tmux capture-pane -p -t \(p) 2>/dev/null)
-            pl=$(printf '%s' "$pv" | tr '[:upper:]' '[:lower:]')
-            case "$pl" in *'esc to interrupt'*|*'working'*|*'do you want to proceed'*|*'enter to confirm'*|*'esc to cancel'*) exit 4 ;; esac
-            case "$pv" in *'❯'*|*'›'*) ;; *) exit 4 ;; esac
-            """ : ""
-            let script = """
-            \(pathShim); c=$(tmux display-message -p -t \(p) '#{pane_current_command}' 2>/dev/null) || exit 3
+            let probe = mustProbe ? remoteIdleProbe(
+                pane: pane, kind: m.kind.flatMap(AgentKind.init(rawValue:))
+            ) : """
+            c=$(tmux display-message -p -t \(p) '#{pane_current_command}' 2>/dev/null) || exit 3
             case "$c" in claude|node|bun|codex*|[0-9]*.[0-9]*.[0-9]*) ;; *) exit 3 ;; esac
+            """
+            let script = """
+            \(pathShim)
             \(probe)
             tmux send-keys -t \(p) -l -- \(t) && sleep 0.35 && tmux send-keys -t \(p) Enter
             """
@@ -187,18 +207,102 @@ enum MeshPoke {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
+    /// Remote shell fragment that exits 0 only for a live, visibly idle
+    /// Claude/Codex composer. Kept shared by correction and nudge so their
+    /// safety gates cannot drift apart.
+    private static func remoteIdleProbe(pane: String, kind: AgentKind?) -> String {
+        let p = sq(pane)
+        let executablePattern: String
+        switch kind {
+        case .codex: executablePattern = "codex.*"
+        case .claude: executablePattern = #"claude|node|bun|[0-9]+\.[0-9]+\.[0-9]+"#
+        case nil: executablePattern = #"claude|node|bun|codex.*|[0-9]+\.[0-9]+\.[0-9]+"#
+        }
+        return """
+        root=$(tmux display-message -p -t \(p) '#{pane_pid}' 2>/dev/null) || exit 3
+        ps -axo pid=,ppid=,comm= | awk -v root="$root" '
+          { pid[NR]=$1; ppid[NR]=$2; cmd[NR]=$3 }
+          END {
+            live[root]=1; changed=1
+            while (changed) {
+              changed=0
+              for (i=1; i<=NR; i++) if (live[ppid[i]] && !live[pid[i]]) {
+                live[pid[i]]=1; changed=1
+              }
+            }
+            for (i=1; i<=NR; i++) if (live[pid[i]]) {
+              sub(".*/", "", cmd[i])
+              if (cmd[i] ~ /^(\(executablePattern))$/) exit 0
+            }
+            exit 1
+          }
+        ' || exit 3
+        pv=$(tmux capture-pane -p -t \(p) 2>/dev/null) || exit 4
+        pl=$(printf '%s' "$pv" | tr '[:upper:]' '[:lower:]')
+        case "$pl" in *'esc to interrupt'*|*'working'*|*'do you want to proceed'*|*'enter to confirm'*|*'esc to cancel'*) exit 4 ;; esac
+        case "$pv" in *'❯'*|*'›'*) exit 0 ;; *) exit 4 ;; esac
+        """
+    }
+
     /// True if the pane's foreground process looks like a live coding-agent CLI
     /// we may type into. Claude reads as claude/node/bun — or a bare VERSION
     /// NUMBER ("2.1.207": the launcher execs a versioned binary, observed live
     /// 2026-07-11). Codex reads as `codex` / `codex-aarch64-*` (the versioned
     /// codex binary, observed 2026-07-13). Anything else means the agent exited
     /// and a nudge would hit whatever took over the pane.
-    static func paneRunsAgent(_ r: Shell.Result) -> Bool {
+    static func paneRunsAgent(_ r: Shell.Result, kind: AgentKind? = nil) -> Bool {
         guard r.ok else { return false }
         let cmd = r.out.trimmingCharacters(in: .whitespacesAndNewlines)
-        return ["claude", "node", "bun"].contains(cmd)
-            || cmd.hasPrefix("codex")
+        return isAgentExecutable(cmd, kind: kind)
+    }
+
+    /// tmux often reports the wrapper shell (`zsh -lc codex …`) as the pane's
+    /// current command. Fall back to the pane root's descendant process tree,
+    /// then pair this evidence with `paneLooksIdle` before any correction/poke.
+    private static func localPaneRunsAgent(tmux: String, pane: String, kind: AgentKind?) -> Bool {
+        if paneRunsAgent(Shell.run(tmux, ["display-message", "-p", "-t", pane,
+                                          "#{pane_current_command}"]), kind: kind) { return true }
+        let root = Shell.run(tmux, ["display-message", "-p", "-t", pane, "#{pane_pid}"])
+        guard root.ok, let pid = Int(root.out.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return false
+        }
+        return processTreeContainsAgent(Shell.run("/bin/ps", ["-axo", "pid=,ppid=,comm="]).out,
+                                        rootPID: pid, kind: kind)
+    }
+
+    /// Pure parser kept internal for regression tests. Walks descendants rather
+    /// than trusting only the immediate foreground-command label.
+    static func processTreeContainsAgent(_ output: String, rootPID: Int,
+                                         kind: AgentKind? = nil) -> Bool {
+        struct Row { let pid: Int; let ppid: Int; let command: String }
+        let rows: [Row] = output.split(separator: "\n").compactMap { line in
+            let f = line.split(maxSplits: 2, whereSeparator: { $0.isWhitespace })
+            guard f.count == 3, let pid = Int(f[0]), let ppid = Int(f[1]) else { return nil }
+            return Row(pid: pid, ppid: ppid, command: String(f[2]))
+        }
+        var ancestry: Set<Int> = [rootPID]
+        var changed = true
+        while changed {
+            changed = false
+            for row in rows where ancestry.contains(row.ppid) && !ancestry.contains(row.pid) {
+                ancestry.insert(row.pid)
+                changed = true
+                if isAgentExecutable(row.command, kind: kind) { return true }
+            }
+        }
+        return false
+    }
+
+    private static func isAgentExecutable(_ command: String, kind: AgentKind? = nil) -> Bool {
+        let cmd = URL(fileURLWithPath: command).lastPathComponent
+        let claude = ["claude", "node", "bun"].contains(cmd)
             || cmd.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil
+        let codex = cmd.hasPrefix("codex")
+        switch kind {
+        case .claude: return claude
+        case .codex: return codex
+        case nil: return claude || codex
+        }
     }
 
     private static func localTmux() -> String? {

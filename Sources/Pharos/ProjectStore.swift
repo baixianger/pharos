@@ -638,6 +638,9 @@ final class ProjectStore {
     /// OWN agents (host match), so paired Macs never double-poke; per-nick
     /// debounce stops a stuck agent from being hammered every poll tick.
     private var meshSweepDebounce: [String: Date] = [:]
+    /// Limit ground-truth pane probes for Codex stale-busy correction. The
+    /// normal store poll is frequent; SSH/tmux probes need only run every 10s.
+    private var meshStateProbeDebounce: [String: Date] = [:]
 
     @MainActor
     private func sweepMeshUnread() async {
@@ -648,6 +651,18 @@ final class ProjectStore {
         guard let members else { return }
         let now = Date()
         for m in members {
+            if m.kind == AgentKind.codex.rawValue,
+               MeshSessionState(rawValue: m.state ?? "") == .busy,
+               now.timeIntervalSince(meshStateProbeDebounce[m.nick] ?? .distantPast) > 10 {
+                meshStateProbeDebounce[m.nick] = now
+                Task.detached(priority: .utility) {
+                    guard MeshPoke.codexBusyPaneIsIdle(m, peerHost: peer) else { return }
+                    MeshClient.sendIfUp(MeshRequest(cmd: "mark", nick: m.nick,
+                                                    state: MeshSessionState.stopped.rawValue,
+                                                    expectedState: MeshSessionState.busy.rawValue,
+                                                    expectedStateTs: m.stateTs))
+                }
+            }
             // stopped/idle poke on the hooks' word; UNKNOWN state is allowed
             // through because MeshPoke.nudge probes the pane first (post-broker-
             // restart limbo would otherwise deadlock: unknown ⇒ never poked ⇒

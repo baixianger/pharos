@@ -1113,8 +1113,34 @@ final class MeshPokePaneCommandTests: XCTestCase {
         }
         XCTAssertEqual(MeshPoke.probeRequirement(for: member(kind: .codex, state: "busy")), true)
         XCTAssertNil(MeshPoke.probeRequirement(for: member(kind: .claude, state: "busy")))
-        XCTAssertEqual(MeshPoke.probeRequirement(for: member(kind: .codex, state: "stopped")), false)
+        XCTAssertEqual(MeshPoke.probeRequirement(for: member(kind: .codex, state: "stopped")), true)
         XCTAssertEqual(MeshPoke.probeRequirement(for: member(kind: .codex, state: nil)), true)
+    }
+
+    func testAgentDetectedBehindTmuxWrapperShell() {
+        let codex = """
+          100     1 /bin/zsh
+          101   100 /opt/homebrew/bin/codex
+          102   101 /usr/bin/helper
+        """
+        XCTAssertTrue(MeshPoke.processTreeContainsAgent(codex, rootPID: 100))
+        XCTAssertTrue(MeshPoke.processTreeContainsAgent(codex, rootPID: 100, kind: .codex))
+        XCTAssertFalse(MeshPoke.processTreeContainsAgent(codex, rootPID: 100, kind: .claude))
+
+        let nestedClaude = """
+          200     1 /bin/zsh
+          201   200 /usr/bin/env
+          202   201 /Users/u/.local/bin/claude
+        """
+        XCTAssertTrue(MeshPoke.processTreeContainsAgent(nestedClaude, rootPID: 200))
+        XCTAssertFalse(MeshPoke.processTreeContainsAgent(nestedClaude, rootPID: 200, kind: .codex),
+                       "a stale Codex registration must not claim a Claude pane")
+
+        let shellOnly = """
+          300     1 /bin/zsh
+          301   300 /usr/bin/vim
+        """
+        XCTAssertFalse(MeshPoke.processTreeContainsAgent(shellOnly, rootPID: 300))
     }
 }
 
@@ -1159,6 +1185,29 @@ final class MeshNickResolutionTests: XCTestCase {
         try writePresence(["olde": entry(project: "/Users/u/proj", session: nil)])
         XCTAssertEqual(MeshHooks.resolveNick(cwd: "/Users/u/proj/sub", session: "any-sid"), "olde")
         XCTAssertNil(MeshHooks.resolveNick(cwd: "/Users/u/elsewhere", session: nil))
+    }
+}
+
+final class MeshStateCorrectionTests: XCTestCase {
+    private func entry(state: String, ts: Double) -> MeshPresenceEntry {
+        MeshPresenceEntry(project: "/p", session: "s", host: "h", tmuxPane: "%1",
+                          state: state, stateTs: ts, kind: "codex", rooms: ["r"],
+                          lastSeen: 1, online: true)
+    }
+
+    func testCorrectionOnlyAppliesToTheObservedBusyVersion() {
+        let correction = MeshRequest(cmd: "mark", nick: "codex", state: "stopped",
+                                     expectedState: "busy", expectedStateTs: 10)
+        XCTAssertTrue(MeshBroker.markMatchesSnapshot(entry(state: "busy", ts: 10),
+                                                      request: correction))
+        XCTAssertFalse(MeshBroker.markMatchesSnapshot(entry(state: "busy", ts: 11),
+                                                       request: correction),
+                       "a newer busy hook must win over an old idle probe")
+        XCTAssertFalse(MeshBroker.markMatchesSnapshot(entry(state: "stopped", ts: 10),
+                                                       request: correction))
+        XCTAssertTrue(MeshBroker.markMatchesSnapshot(entry(state: "busy", ts: 11),
+                                                      request: MeshRequest(cmd: "mark", state: "stopped")),
+                      "ordinary hook marks remain unconditional")
     }
 }
 
