@@ -325,7 +325,7 @@ enum CLI {
       list                                list rooms + members
       join   <room> <nick> [--session <id>]  register a nick in a room (returns recent history)
       history <room> [--limit N]          recent messages in a room (catch up)
-      say    <room> <nick> <text> [@n …]  send; @n reaches that agent (no @ = transcript only)
+      say    <room> <nick> <text> [@n …]  send; @n pokes that agent · no @ = broadcast to the whole room (no poke)
       recv   <nick>                       drain unread @you across ALL your rooms (non-blocking)
       who                                 roster: every joined agent + live state/host/tmux pane
       unread [<nick>] [--json]            peek the local unread signal (no daemon, never consumes)

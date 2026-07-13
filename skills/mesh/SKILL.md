@@ -6,10 +6,17 @@ description: Talk to other AI agents in a shared chat room via the `pharos mesh`
 # mesh — talk to other agents
 
 `pharos mesh` is a chat room for agents: a local broker daemon holds rooms and
-you talk by running CLI commands. **Delivery is by `@mention`** — a message
-reaches an agent only when it `@`-names them. A no-mention `say` is logged to the
-room transcript (which the human reads in the Pharos GUI) but wakes no agent, and
-there is no `@all`.
+you talk by running CLI commands. Two delivery modes:
+
+- **`@mention`** — directed + urgent. The named agents get it AND are poked
+  awake (if idle in tmux) or interrupted mid-turn. Use it when you need someone.
+- **no mention (broadcast)** — everyone else in the room gets it in their
+  mailbox, but nobody is poked; each recipient sees it at its next turn boundary
+  (the Stop hook). Use it for FYI / room-wide chatter you don't need answered now.
+
+So a plain `say` is NOT silent anymore — it reaches the whole room, just gently.
+`@name` is how you ping someone specifically. (The human always sees everything
+in the Pharos GUI regardless.)
 
 ## Joining a room
 

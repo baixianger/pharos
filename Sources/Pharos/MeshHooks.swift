@@ -213,7 +213,12 @@ enum MeshHooks {
             nick = explicitNick ?? resolveNick(cwd: cwd, session: session)
             if let n = nick, let u = loadUnread(n) { msgs = u.messages }
         }
-        guard let n = nick, !msgs.isEmpty else { return 0 }
+        guard let n = nick else { return 0 }
+        // MID-TURN interruption is for @mentions only (delivery model B): a
+        // directed message carries this nick in `to`; broadcasts (empty `to`)
+        // are ambient and wait for the turn-end Stop hook. Filter to directed.
+        msgs = msgs.filter { $0.to.contains(n) }
+        guard !msgs.isEmpty else { return 0 }
         // De-dup: only announce messages newer than the last mid-turn notice.
         let newest = msgs.map(\.ts).max() ?? 0
         let markerURL = MeshPaths.notifiedFile(n)

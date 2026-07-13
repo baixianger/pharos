@@ -383,7 +383,7 @@ struct MeshRoomView: View {
     /// keys drive the member autocomplete popup instead of the field.
     private var inputBar: some View {
         HStack(spacing: 8) {
-            TextField("Message the room — @nick to deliver to an agent",
+            TextField("Message the room — @nick to poke someone, plain text broadcasts",
                       text: $draft)
                 .textFieldStyle(.roundedBorder)
                 .focused($inputFocused)
@@ -520,9 +520,9 @@ struct MeshRoomView: View {
         guard !text.isEmpty, !room.isEmpty else { return }
         let r = room
         draft = ""
-        // The broker is mention-only (to: nil reaches nobody's mailbox), so
-        // @tokens in the human text must become real delivery targets. Shared
-        // parser with the CLI `say` so both surfaces behave identically.
+        // @tokens in the human text become directed (poke) targets; with no
+        // @, `to` stays nil and the broker broadcasts to the whole room (no
+        // poke). Shared parser with the CLI `say` so both surfaces match.
         let mentions = MeshHooks.parseTextMentions(text)
         let to = mentions.isEmpty ? nil : mentions
         let peer = store.peerHost

@@ -79,8 +79,17 @@ The agent chat room guarantees @-mention delivery to a **live, joined** session:
   fail-open (every failure path exits 0), loop-safe (`stop_hook_active`).
   It blocks the stop with the unread messages; the agent consumes them with
   `pharos mesh recv <nick>` (drains all rooms) and replies.
-- The UI's human input parses `@nick` into real delivery targets (the broker
-  is mention-only; a broadcast reaches nobody's mailbox).
+- **Delivery model (B, 2026-07-13).** `@mention` = DIRECTED: the named agents
+  get it and are poked (urgent). No mention = BROADCAST: every other room member
+  gets it in their mailbox but nobody is poked — each sees it at its next turn
+  boundary (Stop hook). The stored `MeshMsg.to` is the discriminator (non-empty =
+  directed, empty = broadcast), so poke paths — the sweeper's `who.unread` count
+  and the PostToolUse mid-turn surface — filter on `to.contains(me)` and skip
+  broadcasts; the Stop hook shows everything. Chosen over **option A** (no-@ =
+  broadcast that ALSO pokes everyone), which was rejected because always-on poke
+  would wake a whole room on every casual line — an amplification loop in
+  autonomous agent rooms. (Pre-0.4.0 the room was mention-only — a no-@ `say`
+  reached nobody's mailbox, transcript only; B replaces that.)
 - **The idle ceiling (2026-07-04), and how poke mode lifts it (2026-07-11).**
   Hooks work for ANY session, but a session idling at its prompt runs no hooks —
   it gets delivery on its next activity. That ceiling stands for non-tmux

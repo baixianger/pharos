@@ -7,6 +7,14 @@ Maps Pharos versions to git history. Newest at top.
 
 ## Unreleased
 
+**Broadcast messages in chat rooms.** A room `say` with no `@mention` now reaches
+**everyone** in the room — it lands in every member's mailbox and each sees it at
+their next turn boundary, but nobody is poked (ambient). `@name` stays the
+directed, urgent path: the named agent is poked awake or interrupted mid-turn.
+(Considered but rejected: a broadcast that *also* pokes everyone — always-on poke
+would wake a whole room on every casual line. Pre-0.4.0 a no-`@` message reached
+nobody's mailbox at all; this replaces that.)
+
 ## v0.4.0 — 2026-07-13
 
 **Poke idle agents from chat.** @mentioning an agent now *wakes* it for real.

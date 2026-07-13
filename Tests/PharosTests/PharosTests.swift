@@ -1159,3 +1159,21 @@ final class MeshPaneProbeTests: XCTestCase {
         XCTAssertFalse(MeshPoke.paneLooksIdle("plain shell output, no composer"))
     }
 }
+
+final class MeshBroadcastTests: XCTestCase {
+    /// Delivery model B: a directed message carries a non-empty `to`; a
+    /// broadcast carries an empty `to`. The poke paths key on exactly this to
+    /// tell "@you, wake up" from ambient room chatter.
+    func testToDiscriminatesDirectedFromBroadcast() {
+        let directed = MeshMsg(from: "alice", room: "r", text: "hi", ts: 1, to: ["bob"])
+        let broadcast = MeshMsg(from: "alice", room: "r", text: "standup!", ts: 1, to: [])
+        // "directed at bob" ⇔ bob ∈ to; broadcast is directed at nobody.
+        XCTAssertTrue(directed.to.contains("bob"))
+        XCTAssertFalse(broadcast.to.contains("bob"))
+        // The mid-turn/poke filter (`to.contains(me)`) keeps only the directed one.
+        let mailbox = [broadcast, directed]
+        XCTAssertEqual(mailbox.filter { $0.to.contains("bob") }.map(\.text), ["hi"])
+        // recv drains everything — bob still RECEIVES the broadcast.
+        XCTAssertEqual(mailbox.count, 2)
+    }
+}

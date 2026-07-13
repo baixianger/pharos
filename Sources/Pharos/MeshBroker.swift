@@ -530,16 +530,26 @@ final class MeshBroker {
         }
     }
 
-    /// Post a message: mention-only. Each @-target gets it in their durable
-    /// mailbox; the Stop hook surfaces it at the target's next turn boundary.
+    /// Post a message (delivery model B, 2026-07-13):
+    ///  • `@mention`  → DIRECTED: the named agents get it, and it pokes them
+    ///    (a directed message carries a non-empty `to`).
+    ///  • no mention  → BROADCAST: every OTHER room member gets it in their
+    ///    mailbox (carries an empty `to`), so everyone receives it — but it does
+    ///    NOT poke; each recipient sees it at its next turn boundary (Stop hook).
+    /// The empty-vs-non-empty `to` on the stored `MeshMsg` is exactly what the
+    /// poke path keys on, so no separate flag is needed.
     private func deliver(room r: String, from n: String, text t: String, to: [String]?) {
         let msg = MeshMsg(from: n, room: r, text: t, ts: Date().timeIntervalSince1970, to: to ?? [])
         lock.lock()
         if rooms[r] == nil { rooms[r] = Room() }
-        // Mention-only: only @-targets are delivered. A no-mention say is logged
-        // to the transcript and reaches nobody's mailbox. To reach several agents,
-        // list them (`@a @b @c`) — there is no `@all`.
-        let targets = to ?? []
+        let targets: [String]
+        if let to, !to.isEmpty {
+            targets = to                                          // directed → the named agents
+        } else {
+            // Broadcast → everyone in the room except the sender (and never the
+            // human, who reads the transcript in the GUI and has no mailbox/hook).
+            targets = rooms[r]!.members.filter { $0 != n && $0 != "human" }.sorted()
+        }
         for tg in targets { rooms[r]!.mailboxes[tg, default: []].append(msg) }
         for tg in targets { syncUnreadLocked(tg) }     // signal file: the hooks' zero-daemon read
         touchPresenceLocked(n)
@@ -601,9 +611,14 @@ final class MeshBroker {
     }
 
     /// Presence entry → the wire shape `who`/`say` return. Call with `lock` held.
+    /// `unread` counts only DIRECTED (@mention) messages — broadcasts (empty
+    /// `to`) are delivered but must never trigger a poke, so the sweeper, which
+    /// keys on this count, leaves broadcast-only recipients alone.
     private func memberInfoLocked(_ nick: String) -> MeshMemberInfo? {
         guard let e = presence[nick] else { return nil }
-        let unread = rooms.values.reduce(0) { $0 + ($1.mailboxes[nick]?.count ?? 0) }
+        let unread = rooms.values.reduce(0) { acc, room in
+            acc + (room.mailboxes[nick]?.filter { $0.to.contains(nick) }.count ?? 0)
+        }
         return MeshMemberInfo(nick: nick, project: e.project, session: e.session, host: e.host,
                               tmuxPane: e.tmuxPane, state: e.state, stateTs: e.stateTs,
                               unread: unread, rooms: e.rooms, lastSeen: e.lastSeen)
