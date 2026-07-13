@@ -13,6 +13,10 @@ struct ContentView: View {
     @AppStorage("pharos.onboarded")    private var onboarded  = false
     @AppStorage("pharos.launchCount")  private var launchCount = 0
     @State private var selectedProject: Project.ID?
+    /// Per-tab chat-room route: nil = not in the rooms view (show project /
+    /// dashboard); non-nil = this tab is a chat room showing that room (""
+    /// until the first is picked). Per window tab, so tabs never co-switch.
+    @State private var openRoom: String?
     @State private var showAdd = false
     @State private var showImport = false
     @State private var showPalette = false
@@ -25,6 +29,7 @@ struct ContentView: View {
     /// list never looks like some other app. No project selected → the dashboard,
     /// titled just "Pharos".
     private var tabTitle: String {
+        if let r = openRoom { return r.isEmpty ? "Chat Rooms" : "💬 \(r)" }
         if let id = selectedProject, let p = store.project(id) { return "\(p.name) — Pharos" }
         return "Pharos"
     }
@@ -32,25 +37,31 @@ struct ContentView: View {
     var body: some View {
         @Bindable var store = store
         NavigationSplitView {
-            ProjectsSidebar(selectedProject: $selectedProject, searchText: searchText)
+            ProjectsSidebar(selectedProject: $selectedProject, openRoom: $openRoom, searchText: searchText)
                 .navigationSplitViewColumnWidth(min: 248, ideal: 300, max: 400)
         } detail: {
             if let t = snapSettingsTab {
                 SettingsView(initialTab: t)   // snapshot mode: Settings inline in the detail pane
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if openRoom != nil {
+                MeshRoomView(room: Binding(get: { openRoom ?? "" }, set: { openRoom = $0 }))
             } else if let id = selectedProject, store.project(id) != nil {
                 ProjectDetailView(projectID: id)
-            } else if store.homeRoute == .rooms {
-                MeshRoomView()
             } else {
-                DashboardView(selectedProject: $selectedProject)
+                DashboardView(selectedProject: $selectedProject, openRoom: $openRoom)
             }
         }
+        // Project ⇄ room are mutually exclusive within a tab.
+        .onChange(of: selectedProject) { _, id in if id != nil { openRoom = nil } }
+        .onChange(of: openRoom) { _, r in if r != nil { selectedProject = nil } }
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search")
         .task { await SnapshotMode.run(store: store, select: { selectedProject = $0 },
+                                       openRoom: { openRoom = $0 },
                                        showSettings: { snapSettingsTab = $0 }) }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
+                RoomsToolbarButton(openRoom: $openRoom)
+
                 Button { store.refreshAllGit() } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }

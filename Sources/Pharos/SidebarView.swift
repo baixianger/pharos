@@ -5,6 +5,7 @@ import SwiftUI
 struct ProjectsSidebar: View {
     @Environment(ProjectStore.self) private var store
     @Binding var selectedProject: Project.ID?
+    @Binding var openRoom: String?
     let searchText: String
     @State private var newGroupShown = false
     @State private var newGroupName = ""
@@ -56,14 +57,14 @@ struct ProjectsSidebar: View {
     /// badge + title + subtitle. Draw their own highlight (not List rows).
     private var dashboardHeader: some View {
         pinnedRow("Dashboard", "Stats · activity · all projects", "rectangle.3.group",
-                  selected: selectedProject == nil && store.homeRoute == .dashboard,
-                  topPad: 10) { selectedProject = nil; store.homeRoute = .dashboard }
+                  selected: selectedProject == nil && openRoom == nil,
+                  topPad: 10) { openRoom = nil; selectedProject = nil }
     }
 
     private var roomsHeader: some View {
         pinnedRow("Chat Rooms", "watch agents talk", "message.fill",
-                  selected: selectedProject == nil && store.homeRoute == .rooms,
-                  topPad: 0) { selectedProject = nil; store.homeRoute = .rooms }
+                  selected: openRoom != nil,
+                  topPad: 0) { openRoom = "" }   // enter rooms; onChange clears selectedProject
     }
 
     private func pinnedRow(_ title: String, _ subtitle: String, _ symbol: String,

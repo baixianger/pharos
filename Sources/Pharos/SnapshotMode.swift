@@ -69,6 +69,7 @@ enum SnapshotMode {
     /// Settings SCENE won't open for an `.accessory` (silent) app, so we capture
     /// the main window with the sheet up instead.
     static func run(store: ProjectStore, select: @escaping (Project.ID?) -> Void,
+                    openRoom: @escaping (String?) -> Void,
                     showSettings: @escaping (Int?) -> Void) async {
         guard let spec else { return }
         diag("route=\(spec.route) registry=\(PharosCore.registryURL.path) "
@@ -76,9 +77,9 @@ enum SnapshotMode {
              + "projects=\(store.projects.count)")
         switch spec.route {
         case "dashboard":
-            select(nil); store.homeRoute = .dashboard
+            select(nil); openRoom(nil)
         case "chat":
-            select(nil); store.showRooms()
+            select(nil); openRoom("")
         case let r where r.hasPrefix("project:"):
             let name = String(r.dropFirst("project:".count))
             guard let p = store.projects.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else {

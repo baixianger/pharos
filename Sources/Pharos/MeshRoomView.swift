@@ -8,19 +8,20 @@ import SwiftUI
 /// (see MeshHooks). Typing `@` pops a member autocomplete fed by the same
 /// `list` poll (↑↓ choose, ⇥/⏎ complete, esc dismiss).
 struct MeshRoomView: View {
+    /// The room this tab is showing, OWNED by ContentView (per window tab) so
+    /// each tab keeps its own room and the tab title tracks it. Empty = none
+    /// picked yet (reload seeds the first).
+    @Binding var room: String
     @Environment(ProjectStore.self) private var store
     @State private var rooms: [String] = []
     @State private var membersByRoom: [String: [String]] = [:]
     @State private var membersInfo: [String: MeshMemberInfo] = [:]
-    @State private var room: String = ""
     @State private var messages: [MeshMsg] = []
     @State private var draft: String = ""
     @State private var mentionSel = 0
     @State private var mentionDismissed: String?
     @State private var notices: [Notice] = []
     @FocusState private var inputFocused: Bool
-    @State private var renameTarget: String?
-    @State private var renameText: String = ""
     @State private var issueRef: IssueRef?
     @State private var loading = false
     @State private var resolving = false
@@ -34,17 +35,6 @@ struct MeshRoomView: View {
         .task(id: store.peerHost) { await resolveRemote() }   // resolve transport BEFORE first load
         .onReceive(tick) { _ in reload() }
         .onChange(of: room) { _, r in Task { messages = await Self.history(r) } }
-        .alert("Rename room", isPresented: Binding(
-            get: { renameTarget != nil },
-            set: { if !$0 { renameTarget = nil } }
-        )) {
-            TextField("Name", text: $renameText)
-            Button("Cancel", role: .cancel) { renameTarget = nil }
-            Button("Rename") {
-                if let old = renameTarget { renameRoom(old, to: renameText) }
-                renameTarget = nil
-            }
-        }
         // Issue references (project#number) in messages are tappable links.
         .environment(\.openURL, OpenURLAction { url in
             guard url.scheme == "pharosissue" else { return .systemAction }
@@ -106,47 +96,29 @@ struct MeshRoomView: View {
         .frame(width: 440, height: 340)
     }
 
-    private func deleteRoom(_ r: String) {
-        rooms.removeAll { $0 == r }                 // optimistic
-        if room == r { room = rooms.first ?? "" }
-        Task.detached { _ = MeshClient.send(MeshRequest(cmd: "delete", room: r)) }
-    }
-
-    private func renameRoom(_ old: String, to newName: String) {
-        let n = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !n.isEmpty, n != old else { return }
-        Task.detached { _ = MeshClient.send(MeshRequest(cmd: "rename", room: old, text: n)) }
-        if let i = rooms.firstIndex(of: old) { rooms[i] = n; rooms.sort() }   // optimistic
-        if room == old { room = n }
-    }
-
     // MARK: middle — the conversation
 
     private var chatPane: some View {
         VStack(spacing: 0) {
+            // Room title only — switching/adding/managing rooms lives in the
+            // toolbar's chat-room button (RoomsToolbarButton); each window tab
+            // is one room.
             HStack(spacing: 8) {
-                Image(systemName: "message.fill").foregroundStyle(.tint)
-                if rooms.isEmpty {
-                    Text("Chat Rooms").font(.headline)
-                } else {
-                    // Rooms as a ticker-style tab strip: one click to switch,
-                    // every room visible, right-click a tab to rename/delete.
-                    // (Replaced the old 210pt right-hand list — usually 1–3 rooms.)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 4) {
-                            ForEach(rooms, id: \.self) { r in roomTab(r) }
-                        }
-                    }
+                Image(systemName: "bubble.left.and.bubble.right.fill").foregroundStyle(.tint)
+                Text(room.isEmpty ? "Chat Rooms" : room).font(.headline)
+                if !room.isEmpty, let m = membersByRoom[room]?.filter({ $0 != "human" }), !m.isEmpty {
+                    Text("· \(m.count) member\(m.count == 1 ? "" : "s")")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
             }
-            .padding(.horizontal, 12).padding(.vertical, 9)
+            .padding(.horizontal, 14).padding(.vertical, 10)
             Divider()
 
             if room.isEmpty {
-                ContentUnavailableView("No chat rooms yet",
-                    systemImage: "message",
-                    description: Text("When agents talk via `pharos mesh`, rooms appear on the right."))
+                ContentUnavailableView("No room open",
+                    systemImage: "bubble.left.and.bubble.right",
+                    description: Text("Pick or add a room from the chat-room button in the toolbar."))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 transcript
@@ -507,26 +479,6 @@ struct MeshRoomView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(.quaternary))
         .shadow(color: .black.opacity(0.18), radius: 10, y: 3)
-    }
-
-    /// One room tab: click to switch, double-click to rename, right-click for
-    /// rename/delete (delete drops the room AND its transcript). Not a Button —
-    /// a plain-style Button swallows right-clicks on macOS, which killed the
-    /// context menu; plain gestures + contentShape keep both working.
-    private func roomTab(_ r: String) -> some View {
-        Text(r)
-            .font(.callout.weight(r == room ? .semibold : .regular))
-            .foregroundStyle(r == room ? Color.primary : Color.secondary)
-            .padding(.horizontal, 10).padding(.vertical, 4)
-            .background(r == room ? Color.accentColor.opacity(0.16) : .clear, in: Capsule())
-            .contentShape(Capsule())
-            .onTapGesture(count: 2) { renameText = r; renameTarget = r }
-            .onTapGesture { room = r }
-            .contextMenu {
-                Button { renameText = r; renameTarget = r } label: { Label("Rename…", systemImage: "pencil") }
-                Button(role: .destructive) { deleteRoom(r) } label: { Label("Delete", systemImage: "trash") }
-            }
-            .help("Click to switch · double-click to rename · right-click for more")
     }
 
     // MARK: data

@@ -24,6 +24,7 @@ enum ActivityEntry: Identifiable {
 struct DashboardView: View {
     @Environment(ProjectStore.self) private var store
     @Binding var selectedProject: Project.ID?
+    @Binding var openRoom: String?
 
     enum ActivityFilter: String, CaseIterable, Identifiable {
         case all = "All", issues = "Issues", updates = "Updates"
@@ -94,7 +95,7 @@ struct DashboardView: View {
         return card("Chat rooms · \(rooms) active") {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(meshMessages.prefix(6).enumerated()), id: \.offset) { _, m in
-                    Button { store.showRooms() } label: {
+                    Button { openRoom = m.room } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "bubble.left.and.bubble.right").foregroundStyle(.tint).font(.caption)
                             Text(m.from).font(.callout.weight(.medium))
@@ -105,7 +106,7 @@ struct DashboardView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                Button { store.showRooms() } label: {
+                Button { openRoom = "" } label: {
                     Label("Open chat rooms", systemImage: "arrow.up.forward.app").font(.caption)
                 }
                 .buttonStyle(.plain).foregroundStyle(.tint).padding(.top, 2)

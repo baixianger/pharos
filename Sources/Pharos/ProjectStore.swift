@@ -3,9 +3,6 @@ import Observation
 import AppKit
 @preconcurrency import UserNotifications
 
-/// Which home screen the detail pane shows when no project is selected.
-enum HomeRoute: Equatable { case dashboard, rooms }
-
 /// On-disk shape of the registry.
 struct StoreData: Codable {
     var projects: [Project] = []
@@ -459,7 +456,6 @@ final class ProjectStore {
     var importRequested = false
     var paletteRequested = false
     var trashRequested = false
-    var homeRoute: HomeRoute = .dashboard
     var lastError: String?
     var terminal: TerminalApp = .ghostty {
         didSet { PharosPrefs.shared.set(terminal.rawValue, forKey: "pharos.terminal") }
@@ -1092,7 +1088,6 @@ final class ProjectStore {
     }
 
     func requestTrash() { trashRequested = true }
-    func showRooms() { homeRoute = .rooms }
     func dismissUndo() { lastUndo = nil }
 
     /// A request (from ⌘K) to open a specific issue. The owning project's detail
