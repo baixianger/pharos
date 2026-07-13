@@ -38,75 +38,10 @@
 
 ---
 
-## Features
+## What it does
 
-### Organize
-
-**Local and GitHub projects in one registry.** Add a local folder, a GitHub remote URL, or both — Pharos keeps a single unified project list regardless of where code lives.
-
-**Tag groups and a watchlist-style sidebar.** Assign any number of tag-based groups to a project; the sidebar shows each group as a named section, exactly like a stock-app watchlist. Switch between "All Projects" and any group in one click.
-
-**Commit-activity sparklines.** Every row in the project list shows a compact commit-frequency sparkline so you can see which repos have been active without opening them.
-
-**Commit-activity heatmap.** The project detail view surfaces a GitHub-style heatmap of daily commit counts, giving you an at-a-glance history of how heavily a project has been worked.
-
-**GitHub import with multi-select.** Pharos can fetch your GitHub repo list via `gh` and let you checkbox-select multiple repos at once, optionally assigning them to a group on import.
-
-**Per-project notes and description.** Each project has a free-text notes/description field shown in the detail pane — useful for capturing context, links, or the current task for each repo.
-
-### Launch Agents
-
-**One-click launch of Claude Code or Codex.** Pick a project, pick an agent, and Pharos opens your configured terminal and starts the agent in that project's directory. No manual `cd` or command-line invocations required.
-
-**Per-project yolo and tmux defaults.** Toggle yolo mode (passes `--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`) and tmux mode (wraps the agent in a persistent tmux session) per project — set them once, launch fast forever.
-
-**Terminal and editor choice.** Pharos respects your preference: choose Ghostty, macOS Terminal, iTerm, Warp, or WezTerm as your terminal, and VS Code, Cursor, Zed, Xcode, or Sublime Text as your editor. The same preference drives both GUI launches and CLI launches.
-
-**Desktop and Space placement.** Configure which macOS desktop Space agent windows should land on, so your agent never hijacks the wrong Space.
-
-**Per-project playbooks.** Save named shell commands ("run tests", "deploy staging", etc.) as playbooks attached to a project. Run them in one click from the UI or via the `pharos playbook` CLI command.
-
-### Resume and Parallelize
-
-**Browse and resume past sessions.** Pharos indexes `~/.claude/projects/` for Claude Code sessions and `~/.codex/sessions/` for Codex sessions, listing them newest-first per project. Resuming a session is a single click — Pharos opens the right terminal with the correct resume flag.
-
-**Git worktree manager.** Create, list, switch, and delete git worktrees from within Pharos. Each worktree gets its own checkout on a separate branch, so multiple agents can work the same repo in parallel without stepping on each other.
-
-**Running-agent detection and attach.** Pharos detects active agent processes and lets you attach to an existing session rather than launching a duplicate.
-
-### Cockpit
-
-**⌘K command palette.** A fuzzy-search palette lets you jump to any project, trigger any quick action (launch, open terminal, open editor, reveal in Finder), or jump straight to an issue (by number, title, or label) from the keyboard, anywhere in the app.
-
-**Menu-bar quick launch.** The Pharos menu-bar item shows a per-project submenu, letting you launch an agent or open a terminal without switching to the main window.
-
-**Native macOS window tabs.** Pharos uses standard macOS tab bars — open one tab per project and switch between them like browser tabs, without losing your place in any project's detail view.
-
-**Agent-finish notifications.** macOS notifications fire when a watched agent process exits, so you know when a long-running task is done without polling.
-
-**Issues, list or board.** Per project, track issues (status, priority, freeform labels, **cycles/milestones**, markdown bodies, image/file attachments) as a filterable list or a **kanban board** grouped by status — drag cards between columns to change status or reorder. The headline trick: launch an agent *on* an issue and Pharos auto-logs an update to the project log when it finishes.
-
-**Dashboard.** A home overview (toolbar → Overview / no project selected) rolling up all projects, groups, open-issue counts by status & priority, blocked issues, milestone progress, active agents, and recent activity — click anything to jump to it. Same numbers from the CLI via `pharos overview`.
-
-**Recent activity feed.** A cross-project view (toolbar → Activity) of all recent issues and project-log updates, newest first — click any entry to jump straight to it.
-
-**Sub-tasks & relations.** Nest issues under a parent and link them (`blocks` / `blocked-by` / `relates` / `duplicate`); rows flag blocked issues and sub-task counts. ⌘K and `pharos search` search issue titles, bodies, and labels across every project.
-
-### Agent Mesh
-
-**Agent↔agent chat rooms.** Agents talk to each other through the CLI — no MCP server, nothing preloaded into context: `pharos mesh join/say/recv`, with `@mention` delivery, durable per-room transcripts, and a messenger-style room view in the app (room tabs, avatar bubbles with live agent status, `@` member autocomplete). Session-precise addressing comes from a `SessionStart` hook, and a `Stop` hook surfaces unread mentions to parked agents (`pharos mesh install-hooks`).
-
-**Idle agents get poked — automatically.** Your @mention *wakes* an idle agent for real: lifecycle hooks report each session's state (busy / blocked-on-permission / stopped / idle), `join` records its tmux pane, and Pharos types a nudge into that pane — on this Mac or the paired one over SSH — only when the agent is verifiably idle. Busy agents get the message mid-turn (PostToolUse hook); a background sweeper re-pokes anyone left idle with unread; anything unreachable (not in tmux, waiting on a dialog) is handed back to you in a notice or notification instead of guessed at.
-
-**Cross-host rooms with exactly one hub.** Rooms span your Macs over Tailscale. Which machine hosts the broker is stored in the *synced* data (`meshHubHostID`) — every Mac reads the same answer, so a split-brain second hub is impossible. Satellites pair automatically at app launch and their agents/CLI follow the hub with zero per-agent configuration; a deposed hub demotes itself on its next launch.
-
-### Git and Multi-Machine
-
-**Per-project git panel.** The project detail view shows current branch, dirty/clean status, commits ahead and behind the remote, and the most recent commit — pulled live via git.
-
-**Open PRs and CI status.** For GitHub-backed projects, Pharos uses `gh` to surface the count of open pull requests and the conclusion of the latest CI run (success, failure, in progress) alongside the local git state.
-
-**Launch agents on your other Mac.** `pharos launch <project> claude --host <ssh-alias>` spawns a detached tmux agent on a paired Mac — the synced registry resolves that machine's checkout path, the keychain is auto-unlocked, and Pharos prints the Remote Control URL. Drive any live session from anywhere (`pharos agent peek|say|kill <session> [--host]`), and remotely-started issues stay tracked across the SSH link.
+- **Mission control for AI coding agents** — launch, resume, and parallelize Claude Code or Codex across every repo, with issues, git, and playbooks in one window.
+- **Agents that coordinate** — a built-in chat mesh where your agents talk to each other, and you wake an idle one with an `@mention` (on this Mac or a paired one).
 
 ---
 
