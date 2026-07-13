@@ -82,21 +82,22 @@ enum MeshHooks {
         if hookStop { return stopHook(explicitNick: explicitNick) }
         if args.contains("--hook-post-tool") { return postToolHook(explicitNick: explicitNick) }
 
-        guard let nick = explicitNick ?? resolveNick(cwd: FileManager.default.currentDirectoryPath) else {
+        guard let member = resolveMember(cwd: FileManager.default.currentDirectoryPath,
+                                         preferredNick: explicitNick) else {
             print("no nick given and none joined from this directory — usage: pharos mesh unread <nick>")
             return 2
         }
-        guard let u = loadUnread(nick) else {
-            print(json ? #"{"nick":"\#(nick)","count":0}"# : "(no unread for \(nick))")
+        guard let u = loadUnread(member.id) else {
+            print(json ? #"{"nick":"\#(member.nick)","count":0}"# : "(no unread for \(member.nick))")
             return 0
         }
-        if json, let d = try? Data(contentsOf: MeshPaths.unreadFile(nick)) {
+        if json, let d = try? Data(contentsOf: MeshPaths.unreadFile(member.id)) {
             print(String(decoding: d, as: UTF8.self))
             return 0
         }
-        print("\(u.count) unread for \(nick):")
+        print("\(u.count) unread for \(member.nick):")
         for m in u.messages { print("[\(m.room)] \(m.from): \(m.text)") }
-        print("(peek only — consume with: pharos mesh recv \(nick))")
+        print("(peek only — consume with: pharos mesh recv \(member.nick) --member \(member.id))")
         return 0
     }
 
@@ -130,13 +131,13 @@ enum MeshHooks {
             return stopHookRemote(cwd: cwd, session: session, explicitNick: explicitNick, reentry: reentry)
         }
         if reentry { report(.stopped, nick: explicitNick, cwd: cwd, session: session); return 0 }
-        guard let nick = explicitNick ?? resolveNick(cwd: cwd, session: session),
-              let u = loadUnread(nick), u.count > 0 else {
+        guard let member = resolveMember(cwd: cwd, session: session, preferredNick: explicitNick),
+              let u = loadUnread(member.id), u.count > 0 else {
             report(.stopped, nick: explicitNick, cwd: cwd, session: session)
             return 0
         }
-        emitBlock(nick: nick, messages: u.messages)
-        report(.busy, nick: nick, cwd: cwd, session: session)   // the block continues the turn
+        emitBlock(nick: member.nick, memberID: member.id, messages: u.messages)
+        report(.busy, nick: member.nick, cwd: cwd, session: session)   // the block continues the turn
         return 0
     }
 
@@ -150,7 +151,7 @@ enum MeshHooks {
                                                project: cwd, session: session,
                                                state: MeshSessionState.stopped.rawValue))
         guard resp.ok, let msgs = resp.messages, !msgs.isEmpty, let nick = resp.note else { return 0 }
-        emitBlock(nick: nick, messages: msgs)
+        emitBlock(nick: nick, memberID: resp.memberID, messages: msgs)
         report(.busy, nick: nick, cwd: cwd, session: session)   // ditto: turn continues
         return 0
     }
@@ -218,6 +219,7 @@ enum MeshHooks {
             session = obj["session_id"] as? String
         }
         var nick: String?
+        var memberID: String?
         var msgs: [MeshMsg] = []
         if MeshPaths.dialEndpoint != nil {
             // One round-trip: peek returns unread and piggybacks the busy mark.
@@ -225,21 +227,25 @@ enum MeshHooks {
                                                    project: cwd, session: session,
                                                    state: MeshSessionState.busy.rawValue))
             nick = resp.note ?? explicitNick
+            memberID = resp.memberID
             msgs = resp.messages ?? []
         } else {
             report(.busy, nick: explicitNick, cwd: cwd, session: session)
-            nick = explicitNick ?? resolveNick(cwd: cwd, session: session)
-            if let n = nick, let u = loadUnread(n) { msgs = u.messages }
+            if let member = resolveMember(cwd: cwd, session: session, preferredNick: explicitNick) {
+                nick = member.nick
+                memberID = member.id
+                if let u = loadUnread(member.id) { msgs = u.messages }
+            }
         }
         guard let n = nick else { return 0 }
-        // MID-TURN interruption is for @mentions only (delivery model B): a
-        // directed message carries this nick in `to`; broadcasts (empty `to`)
-        // are ambient and wait for the turn-end Stop hook. Filter to directed.
-        msgs = msgs.filter { $0.to.contains(n) }
+        // The mailbox is already addressed by immutable member id. A non-empty
+        // `to` means directed @mention; aliases may differ between this
+        // session's rooms, so never re-filter by one display nick here.
+        msgs = msgs.filter { !$0.to.isEmpty }
         guard !msgs.isEmpty else { return 0 }
         // De-dup: only announce messages newer than the last mid-turn notice.
         let newest = msgs.map(\.ts).max() ?? 0
-        let markerURL = MeshPaths.notifiedFile(n)
+        let markerURL = MeshPaths.notifiedFile(memberID ?? n)
         let last = (try? String(contentsOf: markerURL, encoding: .utf8))
             .flatMap { Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
         guard newest > last else { return 0 }
@@ -248,7 +254,8 @@ enum MeshHooks {
 
         var lines = ["New mesh message(s) for @\(n) — \(msgs.count) pending:"]
         for m in msgs.suffix(10) { lines.append("  [\(m.room)] \(m.from): \(m.text)") }
-        lines.append("When you reach a natural pause, pick them up with `pharos mesh recv \(n)` "
+        let memberArg = memberID.map { " --member \($0)" } ?? ""
+        lines.append("When you reach a natural pause, pick them up with `pharos mesh recv \(n)\(memberArg)` "
                      + "and reply in the room if a response is expected.")
         let payload: [String: Any] = [
             "hookSpecificOutput": [
@@ -268,13 +275,14 @@ enum MeshHooks {
     /// "Stop hook error" label — there is no non-error-labeled block form
     /// (verified against the probed hooks reference, 2026-07-04). Only the
     /// reason text below is ours, so keep it friendly.
-    private static func emitBlock(nick: String, messages: [MeshMsg]) {
+    private static func emitBlock(nick: String, memberID: String?, messages: [MeshMsg]) {
         var perRoom: [String: Int] = [:]
         for m in messages { perRoom[m.room, default: 0] += 1 }
         var lines = ["New mesh message(s) for @\(nick) — \(messages.count) pending in "
                      + "\(perRoom.keys.sorted().joined(separator: ", ")) (not an error):"]
         for m in messages.suffix(10) { lines.append("  [\(m.room)] \(m.from): \(m.text)") }
-        lines.append("Pick them up with `pharos mesh recv \(nick)`, then reply in the room "
+        let memberArg = memberID.map { " --member \($0)" } ?? ""
+        lines.append("Pick them up with `pharos mesh recv \(nick)\(memberArg)`, then reply in the room "
                      + "(`pharos mesh say <room> \(nick) \"…\" @<sender>` or `ask` to wait for an answer). "
                      + "Run recv even if no reply is needed, so this notice clears.")
         let payload: [String: Any] = ["decision": "block", "reason": lines.joined(separator: "\n")]
@@ -296,30 +304,39 @@ enum MeshHooks {
     /// state (observed live: 娃 joined from $HOME, so EVERY unregistered
     /// session on the hub cwd-matched it and pinned it "busy" — deadlocking
     /// the sweeper). The cwd fallback now only serves session-LESS joins.
-    static func resolveNick(cwd: String, session: String? = nil) -> String? {
+    struct ResolvedMember { let id: String; let nick: String }
+
+    static func resolveMember(cwd: String, session: String? = nil,
+                              preferredNick: String? = nil) -> ResolvedMember? {
         guard let d = try? Data(contentsOf: MeshPaths.presenceFile),
               let p = try? JSONDecoder().decode(MeshPresence.self, from: d) else { return nil }
-        // 1. Exact session match wins — precise even when several nicks joined
-        //    from the same directory. Ties (a nick re-joined) → most recent.
         if let s = session, !s.isEmpty {
-            let hit = p.nicks.filter { $0.value.session == s }
-                             .max { $0.value.lastSeen < $1.value.lastSeen }
-            if let hit { return hit.key }
+            if let e = p.members[s] {
+                let nick = preferredNick.flatMap { wanted in
+                    e.aliases.values.first(where: { $0 == wanted })
+                } ?? e.aliases.values.sorted().first ?? "agent"
+                return ResolvedMember(id: s, nick: nick)
+            }
+            return nil
         }
-        // 2. Fall back to cwd — session-less entries only (see identity rule).
         let path = URL(fileURLWithPath: cwd).standardizedFileURL.path
-        var best: (nick: String, plen: Int, seen: Double)?
-        for (nick, e) in p.nicks {
-            guard e.session == nil || e.session!.isEmpty else { continue }
+        var best: (member: ResolvedMember, plen: Int, seen: Double)?
+        for (id, e) in p.members {
+            if let preferredNick, !e.aliases.values.contains(preferredNick) { continue }
             guard let proj = e.project, !proj.isEmpty else { continue }
             let pr = URL(fileURLWithPath: proj).standardizedFileURL.path
             guard path == pr || path.hasPrefix(pr + "/") else { continue }
             if best == nil || pr.count > best!.plen
                 || (pr.count == best!.plen && e.lastSeen > best!.seen) {
-                best = (nick, pr.count, e.lastSeen)
+                let nick = preferredNick ?? e.aliases.values.sorted().first ?? "agent"
+                best = (ResolvedMember(id: id, nick: nick), pr.count, e.lastSeen)
             }
         }
-        return best?.nick
+        return best?.member
+    }
+
+    static func resolveNick(cwd: String, session: String? = nil) -> String? {
+        resolveMember(cwd: cwd, session: session)?.nick
     }
 
     /// Extract `@nick` mentions from free message text. The broker is
@@ -337,8 +354,8 @@ enum MeshHooks {
         return out
     }
 
-    private static func loadUnread(_ nick: String) -> MeshUnread? {
-        guard let d = try? Data(contentsOf: MeshPaths.unreadFile(nick)) else { return nil }
+    private static func loadUnread(_ memberID: String) -> MeshUnread? {
+        guard let d = try? Data(contentsOf: MeshPaths.unreadFile(memberID)) else { return nil }
         return try? JSONDecoder().decode(MeshUnread.self, from: d)
     }
 

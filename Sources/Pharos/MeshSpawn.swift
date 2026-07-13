@@ -14,14 +14,16 @@ enum MeshSpawn {
     struct Progress { let phase: Phase; let detail: String }
 
     /// tmux session name for a spawned mesh member.
-    static func sessionName(_ nick: String) -> String { "pharos-mesh-\(safe(nick))" }
+    static func sessionName(room: String, nick: String) -> String {
+        "pharos-mesh-\(safe(room))-\(safe(nick))"
+    }
 
     /// A scratch working dir per spawned member (keeps cwd stable + off the
     /// user's real projects). The nick + --session + --kind make it addressable
     /// regardless of cwd, so a neutral dir is fine.
-    private static func agentDir(_ nick: String) -> String {
+    private static func agentDir(room: String, nick: String) -> String {
         let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".pharos/mesh-agents/\(safe(nick))", isDirectory: true)
+            .appendingPathComponent(".pharos/mesh-agents/\(safe(room))/\(safe(nick))", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.path
     }
@@ -79,9 +81,9 @@ enum MeshSpawn {
         guard let tmux = LaunchService.tmuxPath else {
             onProgress(Progress(phase: .failed, detail: "tmux not found on this Mac")); return
         }
-        let name = sessionName(nick)
+        let name = sessionName(room: room, nick: nick)
         _ = Shell.run(tmux, ["kill-session", "-t", name])   // clear a stale one
-        guard Shell.run(tmux, ["new-session", "-d", "-s", name, "-c", agentDir(nick),
+        guard Shell.run(tmux, ["new-session", "-d", "-s", name, "-c", agentDir(room: room, nick: nick),
                                "-x", "200", "-y", "50", launchCommand(kind)]).ok else {
             onProgress(Progress(phase: .failed, detail: "couldn't start the tmux session")); return
         }

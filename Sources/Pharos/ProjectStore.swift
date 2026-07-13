@@ -653,11 +653,11 @@ final class ProjectStore {
         for m in members {
             if m.kind == AgentKind.codex.rawValue,
                MeshSessionState(rawValue: m.state ?? "") == .busy,
-               now.timeIntervalSince(meshStateProbeDebounce[m.nick] ?? .distantPast) > 10 {
-                meshStateProbeDebounce[m.nick] = now
+               now.timeIntervalSince(meshStateProbeDebounce[m.id] ?? .distantPast) > 10 {
+                meshStateProbeDebounce[m.id] = now
                 Task.detached(priority: .utility) {
                     guard MeshPoke.codexBusyPaneIsIdle(m, peerHost: peer) else { return }
-                    MeshClient.sendIfUp(MeshRequest(cmd: "mark", nick: m.nick,
+                    MeshClient.sendIfUp(MeshRequest(cmd: "mark", nick: m.nick, memberID: m.id,
                                                     state: MeshSessionState.stopped.rawValue,
                                                     expectedState: MeshSessionState.busy.rawValue,
                                                     expectedStateTs: m.stateTs))
@@ -674,8 +674,8 @@ final class ProjectStore {
                   (m.unread ?? 0) > 0,
                   st?.pokeable == true || (st == nil && m.state == nil)
                     || (st == .busy && m.kind == AgentKind.codex.rawValue),
-                  now.timeIntervalSince(meshSweepDebounce[m.nick] ?? .distantPast) > 120 else { continue }
-            meshSweepDebounce[m.nick] = now
+                  now.timeIntervalSince(meshSweepDebounce[m.id] ?? .distantPast) > 120 else { continue }
+            meshSweepDebounce[m.id] = now
             if m.tmuxPane != nil {
                 Task.detached(priority: .utility) { _ = MeshPoke.nudge(m, peerHost: peer) }
             } else {
@@ -689,10 +689,10 @@ final class ProjectStore {
         content.title = "@\(m.nick) has unread mesh messages"
         let proj = m.project.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "its session"
         content.body = "It's idle but not in tmux, so Pharos can't poke it — "
-                     + "nudge it yourself in \(proj) (it should run: pharos mesh recv \(m.nick))"
+                     + "nudge it yourself in \(proj) (it should run: pharos mesh recv \(m.nick) --member \(m.id))"
         content.sound = .default
         UNUserNotificationCenter.current().add(UNNotificationRequest(
-            identifier: "pharos-mesh-nudge-\(m.nick)-\(Date().timeIntervalSince1970)",
+            identifier: "pharos-mesh-nudge-\(m.id)-\(Date().timeIntervalSince1970)",
             content: content, trigger: nil))
     }
 

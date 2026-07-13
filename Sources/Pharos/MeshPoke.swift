@@ -42,8 +42,9 @@ enum MeshPoke {
     }
 
     /// The typed prompt. Free of shell metacharacters by design (safety rule 3).
-    static func nudgeText(for nick: String) -> String {
-        "You have new mesh messages. Run: pharos mesh recv \(nick)"
+    static func nudgeText(for nick: String, memberID: String? = nil) -> String {
+        let member = memberID.map { " --member \($0)" } ?? ""
+        return "You have new mesh messages. Run: pharos mesh recv \(nick)\(member)"
     }
 
     /// Does this captured pane text show an idle Claude/Codex composer we may type
@@ -109,7 +110,7 @@ enum MeshPoke {
         guard let mustProbe = probeRequirement(for: m) else {
             return "state is \(m.state ?? "?"), not poking"
         }
-        let text = nudgeText(for: m.nick)
+        let text = nudgeText(for: m.nick, memberID: m.id.isEmpty ? nil : m.id)
         switch route(for: m, peerHost: peerHost) {
         case .unpokeable(let why):
             return why

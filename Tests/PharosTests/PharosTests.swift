@@ -1026,7 +1026,7 @@ final class MeshPokeRouteTests: XCTestCase {
     override func tearDown() { unsetenv("PHAROS_HOST") }
 
     private func member(pane: String?, host: String?) -> MeshMemberInfo {
-        MeshMemberInfo(nick: "bot", project: "/tmp/x", session: "s", host: host,
+        MeshMemberInfo(id: "s", nick: "bot", project: "/tmp/x", session: "s", host: host,
                        tmuxPane: pane, state: "stopped", stateTs: 0, rooms: ["r"], lastSeen: 0)
     }
 
@@ -1069,16 +1069,13 @@ final class MeshPokeRouteTests: XCTestCase {
     }
 }
 
-final class MeshWireCompatTests: XCTestCase {
+final class MeshWireTests: XCTestCase {
 
-    /// Pre-0.4 presence entries (no host/pane/state keys) must keep decoding —
-    /// same tolerance rule as the registry itself.
-    func testOldPresenceEntryDecodes() throws {
-        let old = #"{"v":1,"nicks":{"bot":{"project":"/tmp/x","rooms":["r"],"lastSeen":1.0,"online":true}}}"#
-        let p = try JSONDecoder().decode(MeshPresence.self, from: Data(old.utf8))
-        XCTAssertEqual(p.nicks["bot"]?.rooms, ["r"])
-        XCTAssertNil(p.nicks["bot"]?.tmuxPane)
-        XCTAssertNil(p.nicks["bot"]?.state)
+    func testSessionKeyedPresenceDecodes() throws {
+        let raw = #"{"v":2,"members":{"sid":{"project":"/tmp/x","session":"sid","aliases":{"r":"bot"},"rooms":["r"],"lastSeen":1.0,"online":true}}}"#
+        let p = try JSONDecoder().decode(MeshPresence.self, from: Data(raw.utf8))
+        XCTAssertEqual(p.members["sid"]?.aliases["r"], "bot")
+        XCTAssertEqual(p.members["sid"]?.session, "sid")
     }
 
     /// Text-mention parsing feeds both the GUI input and CLI say — the poke
@@ -1107,7 +1104,7 @@ final class MeshPokePaneCommandTests: XCTestCase {
 
     func testCodexStaleBusyRequiresProbeButClaudeBusyRefuses() {
         func member(kind: AgentKind, state: String?) -> MeshMemberInfo {
-            MeshMemberInfo(nick: "bot", project: "/tmp", session: "s", host: "mac",
+            MeshMemberInfo(id: "s", nick: "bot", project: "/tmp", session: "s", host: "mac",
                            tmuxPane: "%1", state: state, stateTs: 1, kind: kind.rawValue,
                            rooms: ["r"], lastSeen: 1)
         }
@@ -1157,14 +1154,15 @@ final class MeshNickResolutionTests: XCTestCase {
         try? FileManager.default.removeItem(at: dir)
     }
 
-    private func writePresence(_ nicks: [String: MeshPresenceEntry]) throws {
-        let d = try JSONEncoder().encode(MeshPresence(v: 1, nicks: nicks))
+    private func writePresence(_ members: [String: MeshPresenceEntry]) throws {
+        let d = try JSONEncoder().encode(MeshPresence(v: 2, members: members))
         try d.write(to: dir.appendingPathComponent("mesh-state/presence.json"))
     }
 
     private func entry(project: String?, session: String?) -> MeshPresenceEntry {
         MeshPresenceEntry(project: project, session: session, host: nil, tmuxPane: nil,
-                          state: nil, stateTs: nil, rooms: ["r"], lastSeen: 1, online: true)
+                          state: nil, stateTs: nil, aliases: ["r": "kid"], rooms: ["r"],
+                          lastSeen: 1, online: true)
     }
 
     /// The identity rule (2026-07-11): an entry that declared a session id is
@@ -1173,17 +1171,20 @@ final class MeshNickResolutionTests: XCTestCase {
     /// was cwd-matched by every unregistered session on the host, which stole
     /// its unread notices and pinned its state busy.
     func testForeignSessionCannotClaimByCwdPrefix() throws {
-        try writePresence(["kid": entry(project: "/Users/u", session: "kid-sid")])
+        try writePresence(["kid-sid": entry(project: "/Users/u", session: "kid-sid")])
         XCTAssertNil(MeshHooks.resolveNick(cwd: "/Users/u/some/other/project", session: "stranger-sid"))
-        XCTAssertNil(MeshHooks.resolveNick(cwd: "/Users/u", session: nil))
+        XCTAssertEqual(MeshHooks.resolveNick(cwd: "/Users/u", session: nil), "kid")
         // The declared session itself still resolves exactly.
         XCTAssertEqual(MeshHooks.resolveNick(cwd: "/anywhere", session: "kid-sid"), "kid")
     }
 
-    /// Session-less joins (legacy cwd-only) keep the old prefix behavior.
-    func testSessionlessEntryStillResolvesByCwd() throws {
-        try writePresence(["olde": entry(project: "/Users/u/proj", session: nil)])
-        XCTAssertEqual(MeshHooks.resolveNick(cwd: "/Users/u/proj/sub", session: "any-sid"), "olde")
+    /// An interactive recv command has no hook payload; cwd still resolves its
+    /// own registered session, while a foreign hook session never can.
+    func testCwdResolutionWithoutHookSession() throws {
+        var e = entry(project: "/Users/u/proj", session: "sid")
+        e.aliases = ["r": "olde"]
+        try writePresence(["sid": e])
+        XCTAssertEqual(MeshHooks.resolveNick(cwd: "/Users/u/proj/sub", session: nil), "olde")
         XCTAssertNil(MeshHooks.resolveNick(cwd: "/Users/u/elsewhere", session: nil))
     }
 }
@@ -1191,7 +1192,7 @@ final class MeshNickResolutionTests: XCTestCase {
 final class MeshStateCorrectionTests: XCTestCase {
     private func entry(state: String, ts: Double) -> MeshPresenceEntry {
         MeshPresenceEntry(project: "/p", session: "s", host: "h", tmuxPane: "%1",
-                          state: state, stateTs: ts, kind: "codex", rooms: ["r"],
+                          state: state, stateTs: ts, kind: "codex", aliases: ["r": "codex"], rooms: ["r"],
                           lastSeen: 1, online: true)
     }
 
@@ -1208,6 +1209,74 @@ final class MeshStateCorrectionTests: XCTestCase {
         XCTAssertTrue(MeshBroker.markMatchesSnapshot(entry(state: "busy", ts: 11),
                                                       request: MeshRequest(cmd: "mark", state: "stopped")),
                       "ordinary hook marks remain unconditional")
+    }
+}
+
+final class MeshRoomScopedIdentityTests: XCTestCase {
+    private var dir: URL!
+
+    override func setUp() {
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("mesh-room-id-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir.appendingPathComponent("mesh-state/unread"),
+                                                 withIntermediateDirectories: true)
+        setenv("PHAROS_MESH_DIR", dir.path, 1)
+        setenv("PHAROS_REGISTRY", dir.appendingPathComponent("projects.json").path, 1)
+    }
+
+    override func tearDown() {
+        unsetenv("PHAROS_MESH_DIR")
+        unsetenv("PHAROS_REGISTRY")
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    func testSameAliasInTwoRoomsRoutesToEachSession() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "orbidash-dev", nick: "codex",
+                                                 project: "/orbidash", session: "session-orbidash",
+                                                 host: "mac", tmuxPane: "%19", kind: "codex")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "lelantos-dev", nick: "codex",
+                                                 project: "/lelantos", session: "session-lelantos",
+                                                 host: "mac", tmuxPane: "%22", kind: "codex")).ok)
+
+        let orbi = broker.process(MeshRequest(cmd: "say", room: "orbidash-dev", nick: "human",
+                                              text: "@codex plan", to: ["codex"]))
+        XCTAssertEqual(orbi.members?.first?.id, "session-orbidash")
+        XCTAssertEqual(orbi.members?.first?.tmuxPane, "%19")
+
+        let lel = broker.process(MeshRequest(cmd: "say", room: "lelantos-dev", nick: "human",
+                                             text: "@codex deploy", to: ["codex"]))
+        XCTAssertEqual(lel.members?.first?.id, "session-lelantos")
+        XCTAssertEqual(lel.members?.first?.tmuxPane, "%22")
+
+        let orbiInbox = broker.process(MeshRequest(cmd: "recv", nick: "codex",
+                                                   memberID: "session-orbidash"))
+        XCTAssertEqual(orbiInbox.messages?.map(\.text), ["@codex plan"])
+        let lelInbox = broker.process(MeshRequest(cmd: "recv", nick: "codex",
+                                                  memberID: "session-lelantos"))
+        XCTAssertEqual(lelInbox.messages?.map(\.text), ["@codex deploy"])
+
+        let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
+        XCTAssertEqual(Set(roster.filter { $0.nick == "codex" }.map(\.id)),
+                       ["session-orbidash", "session-lelantos"])
+    }
+
+    func testRejoinReplacesAliasOnlyInsideThatRoom() {
+        let broker = MeshBroker()
+        _ = broker.process(MeshRequest(cmd: "join", room: "room-a", nick: "codex",
+                                       session: "old-a", host: "mac", tmuxPane: "%1"))
+        _ = broker.process(MeshRequest(cmd: "join", room: "room-b", nick: "codex",
+                                       session: "stable-b", host: "mac", tmuxPane: "%2"))
+        _ = broker.process(MeshRequest(cmd: "join", room: "room-a", nick: "codex",
+                                       session: "new-a", host: "mac", tmuxPane: "%3"))
+
+        let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
+        XCTAssertEqual(roster.first { $0.rooms == ["room-a"] }?.id, "new-a")
+        XCTAssertEqual(roster.first { $0.rooms == ["room-b"] }?.id, "stable-b")
+    }
+
+    func testSpawnedTmuxNameIsRoomScoped() {
+        XCTAssertNotEqual(MeshSpawn.sessionName(room: "room-a", nick: "codex"),
+                          MeshSpawn.sessionName(room: "room-b", nick: "codex"))
     }
 }
 

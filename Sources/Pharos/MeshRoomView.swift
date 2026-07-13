@@ -15,7 +15,7 @@ struct MeshRoomView: View {
     @Environment(ProjectStore.self) private var store
     @State private var rooms: [String] = []
     @State private var membersByRoom: [String: [String]] = [:]
-    @State private var membersInfo: [String: MeshMemberInfo] = [:]
+    @State private var membersInfoByRoom: [String: [String: MeshMemberInfo]] = [:]
     @State private var messages: [MeshMsg] = []
     @State private var draft: String = ""
     @State private var mentionSel = 0
@@ -24,6 +24,7 @@ struct MeshRoomView: View {
     @FocusState private var inputFocused: Bool
     @State private var issueRef: IssueRef?
     @State private var loading = false
+    private var membersInfo: [String: MeshMemberInfo] { membersInfoByRoom[room] ?? [:] }
     @State private var resolving = false
     @State private var resolved = false
     private struct IssueRef: Identifiable { let project: String; let number: Int; var id: String { "\(project)#\(number)" } }
@@ -521,7 +522,7 @@ struct MeshRoomView: View {
             if !snap.ok && MeshClient.remoteEndpoint != nil { await resolveRemote(); return }
             rooms = snap.rooms
             membersByRoom = snap.members
-            membersInfo = snap.info
+            membersInfoByRoom = snap.info
             room = snap.pick
             messages = snap.messages
         }
@@ -552,7 +553,7 @@ struct MeshRoomView: View {
 
     private struct Snapshot {
         let ok: Bool; let rooms: [String]; let members: [String: [String]]
-        let info: [String: MeshMemberInfo]
+        let info: [String: [String: MeshMemberInfo]]
         let pick: String; let messages: [MeshMsg]
     }
 
@@ -567,7 +568,10 @@ struct MeshRoomView: View {
             let names = infos.map(\.name).sorted()
             let members = Dictionary(infos.map { ($0.name, $0.members) }, uniquingKeysWith: { a, _ in a })
             let roster = MeshClient.send(MeshRequest(cmd: "who")).members ?? []
-            let info = Dictionary(roster.map { ($0.nick, $0) }, uniquingKeysWith: { a, _ in a })
+            var info: [String: [String: MeshMemberInfo]] = [:]
+            for member in roster {
+                for room in member.rooms { info[room, default: [:]][member.nick] = member }
+            }
             let pick = selected.isEmpty || !names.contains(selected) ? (names.first ?? "") : selected
             let msgs: [MeshMsg] = pick.isEmpty ? []
                 : (MeshClient.send(MeshRequest(cmd: "history", room: pick, limit: 200)).messages ?? [])

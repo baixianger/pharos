@@ -7,6 +7,12 @@ Maps Pharos versions to git history. Newest at top.
 
 ## Unreleased
 
+**Room-scoped agent identity.** Mesh delivery, unread mailboxes, state hooks,
+and poke routing now use the immutable coding-agent session ID; `@codex` is
+resolved as a display alias inside the current room. Two rooms may therefore
+each contain a member named `codex` without the later join stealing the other
+room's pane. Local and remote spawned-agent tmux names are room-scoped too.
+
 **Self-healing Codex presence.** Pharos no longer leaves an idle Codex member
 shown as busy when its Stop hook goes missing. A periodic ground-truth check
 requires the registered tmux pane, a live Codex process in that pane's full

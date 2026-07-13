@@ -175,13 +175,13 @@ enum RemoteLaunch {
             fail("couldn't resolve the home folder on \(host)")
             return
         }
-        let dir = home + "/.pharos/mesh-agents/" + MeshSpawn.safe(nick)
+        let dir = home + "/.pharos/mesh-agents/" + MeshSpawn.safe(room) + "/" + MeshSpawn.safe(nick)
         guard ssh(host, "mkdir -p \(sq(dir))").ok else {
             fail("couldn't create the agent folder on \(host)")
             return
         }
 
-        let name = MeshSpawn.sessionName(nick)
+        let name = MeshSpawn.sessionName(room: room, nick: nick)
         _ = tmux(host, ["kill-session", "-t", "=\(name)"]) // clear a stale spawn
         guard tmux(host, ["new-session", "-d", "-s", name, "-c", dir,
                           "-x", "200", "-y", "50"]).ok else {

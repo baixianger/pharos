@@ -197,11 +197,15 @@ enum CLI {
             for ri in rooms { print("\(ri.name)  [\(ri.members.joined(separator: ", "))]") }
             return 0
         case "join":
-            guard a.count >= 2 else { print("usage: pharos mesh join <room> <nick> [--session <id>] [--kind claude|codex]"); return 2 }
+            guard a.count >= 2 else { print("usage: pharos mesh join <room> <nick> --session <id> [--kind claude|codex]"); return 2 }
             // cwd is recorded as the nick's project so hooks can resolve cwd → nick;
             // --session (the id the SessionStart hook injected) makes it exact.
             var session: String?
             if let i = a.firstIndex(of: "--session"), i + 1 < a.count { session = a[i + 1] }
+            guard session?.isEmpty == false else {
+                print("error: --session is required (the SessionStart hook prints the id)")
+                return 2
+            }
             // The CLI runs inside the agent's own shell, so a tmux-wrapped
             // session exposes its pane right here — captured into presence, it's
             // what lets the GUI poke a stopped agent (nil = not poke-able).
@@ -260,8 +264,10 @@ enum CLI {
             }
             return code
         case "recv":
-            guard let nick = a.first else { print("usage: pharos mesh recv <nick>"); return 2 }
-            let r = MeshClient.send(MeshRequest(cmd: "recv", nick: nick))
+            guard let nick = a.first else { print("usage: pharos mesh recv <nick> [--member <session-id>]"); return 2 }
+            let memberID = a.firstIndex(of: "--member").flatMap { i in i + 1 < a.count ? a[i + 1] : nil }
+            let r = MeshClient.send(MeshRequest(cmd: "recv", nick: nick, memberID: memberID,
+                                                project: FileManager.default.currentDirectoryPath))
             guard r.ok else { return report(r) }
             let msgs = r.messages ?? []
             if msgs.isEmpty { print("(no unread)") }
@@ -278,6 +284,7 @@ enum CLI {
                 if let h = m.host { bits.append(h) }
                 bits.append(m.tmuxPane.map { "tmux \($0)" } ?? "no tmux")
                 if let p = m.project { bits.append((p as NSString).abbreviatingWithTildeInPath) }
+                bits.append("session \(m.id.prefix(8))")
                 print("\(m.nick)  [\(bits.joined(separator: " · "))]  rooms: \(m.rooms.joined(separator: ", "))")
             }
             return 0
@@ -313,11 +320,16 @@ enum CLI {
             }
             return final == .joined ? 0 : 1
         case "poke":
-            // Manual/debug poke — the exact code path the GUI's poke mode runs.
-            guard let nick = a.first else { print("usage: pharos mesh poke <nick>"); return 2 }
+            // Manual/debug poke — aliases can repeat across rooms, so accept
+            // `poke <room> <nick>` and reject ambiguous legacy `poke <nick>`.
+            guard let last = a.last else { print("usage: pharos mesh poke [<room>] <nick>"); return 2 }
+            let room = a.count >= 2 ? a[0] : nil
+            let nick = last
             let who = MeshClient.send(MeshRequest(cmd: "who"))
             guard who.ok else { return report(who) }
-            guard let m = (who.members ?? []).first(where: { $0.nick == nick }) else {
+            let matches = (who.members ?? []).filter { $0.nick == nick && (room == nil || $0.rooms.contains(room!)) }
+            guard matches.count == 1, let m = matches.first else {
+                if matches.count > 1 { print("error: '\(nick)' is in multiple rooms; use: pharos mesh poke <room> \(nick)"); return 2 }
                 print("error: no such member '\(nick)' (see: pharos mesh who)")
                 return 1
             }
@@ -375,12 +387,13 @@ enum CLI {
     pharos mesh — agent chat room
       create <room>                       create a room
       list                                list rooms + members
-      join   <room> <nick> [--session <id>]  register a nick in a room (returns recent history)
+      join   <room> <nick> --session <id>     register this session under a room-local alias
       history <room> [--limit N]          recent messages in a room (catch up)
       say    <room> <nick> <text> [@n …]  send; @n pokes that agent · no @ = broadcast to the whole room (no poke)
-      recv   <nick>                       drain unread @you across ALL your rooms (non-blocking)
+      recv   <nick> [--member <id>]       drain unread for this session across ALL its rooms
       who                                 roster: every joined agent + live state/host/tmux pane
       spawn  <room> <nick> [claude|codex] [--host <ssh>]  spawn local/remote + confirm join (GUI "add member")
+      poke   [<room>] <nick>              manually run the safe auto-poke path
       unread [<nick>] [--json]            peek the local unread signal (no daemon, never consumes)
       unread --hook-stop                  Claude Code Stop-hook mode (fail-open, reads hook JSON on stdin)
       unread --hook-post-tool             Claude Code PostToolUse-hook mode (poke mode: mid-turn delivery)
