@@ -18,9 +18,22 @@
 ---
 
 <div align="center">
-  <img src="site/shots/x1.png" width="760" alt="Pharos — project sidebar and a project's detail view">
+  <img src="site/shots/dashboard.png" width="840" alt="Pharos dashboard — every project, issue, and agent at a glance">
   <br>
-  <sub>One window for every repo and every coding agent.</sub>
+  <sub>One home for every repo, issue, and coding agent.</sub>
+</div>
+
+<div align="center">
+  <table>
+    <tr>
+      <td width="50%"><img src="site/shots/chat.png" alt="Agent chat rooms with live status avatars"></td>
+      <td width="50%"><img src="site/shots/project.png" alt="Per-project detail — actions, git, notes"></td>
+    </tr>
+    <tr>
+      <td><sub>Agents talk in chat rooms — live status, @mentions, poke-to-wake.</sub></td>
+      <td><sub>Every project: one-click agent launch, git, issues, playbooks.</sub></td>
+    </tr>
+  </table>
 </div>
 
 ---
@@ -93,7 +106,7 @@
 
 **Open PRs and CI status.** For GitHub-backed projects, Pharos uses `gh` to surface the count of open pull requests and the conclusion of the latest CI run (success, failure, in progress) alongside the local git state.
 
-**Launch agents on your other Mac.** `pharos launch <project> claude --host <ssh-alias>` (or `pharos issue start <project> <#> claude --host …`) spawns a detached tmux agent on a paired Mac: the synced registry resolves that machine's checkout path, the macOS keychain is auto-unlocked for the session, and Pharos waits for the ready prompt and prints the Remote Control URL. Drive any live session from anywhere: `pharos agents [--host]`, `pharos agent peek|say|kill <session> [--host]`. Remotely-started issues stay tracked — the reconcile sweep probes the remote host's tmux over SSH and logs "Agent finished" when the session ends (and never clears links for an unreachable host).
+**Launch agents on your other Mac.** `pharos launch <project> claude --host <ssh-alias>` spawns a detached tmux agent on a paired Mac — the synced registry resolves that machine's checkout path, the keychain is auto-unlocked, and Pharos prints the Remote Control URL. Drive any live session from anywhere (`pharos agent peek|say|kill <session> [--host]`), and remotely-started issues stay tracked across the SSH link.
 
 ---
 
@@ -130,6 +143,10 @@ project state, manage issues, and post progress — no separate server to run, a
 nothing preloaded into the agent's context. The CLI ships **inside the app
 bundle** — the binary at `Pharos.app/Contents/MacOS/Pharos` *is* the CLI; symlink
 it onto your `PATH` as `pharos`:
+
+<div align="center">
+  <img src="site/shots/settings-cli.png" width="720" alt="Settings → CLI — one-click install of the pharos/chat symlinks and agent hooks">
+</div>
 
 ```bash
 ln -s /Applications/Pharos.app/Contents/MacOS/Pharos /usr/local/bin/pharos
@@ -169,6 +186,10 @@ agent finishes (tmux), Pharos auto-posts an update to the project log. Agents ca
 also post their own progress with `pharos update add`.
 
 ## Multi-machine sync (iCloud)
+
+<div align="center">
+  <img src="site/shots/settings-machines.png" width="720" alt="Settings → Machines — iCloud data location, mesh host, and Mac pairing">
+</div>
 
 Settings → **Data location** can move Pharos's data into **iCloud Drive**, so
 your projects, issues, and logs sync across your Macs (plain iCloud Drive — no
@@ -212,7 +233,7 @@ PRs are welcome. The project uses **pure SwiftPM** — no `.xcodeproj`, no Cocoa
 git clone https://github.com/baixianger/pharos.git
 cd pharos
 swift build          # compile
-swift test           # run the 22-test suite
+swift test           # run the test suite
 bash Scripts/dev.sh  # build + launch locally
 ```
 
