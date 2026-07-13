@@ -32,10 +32,19 @@ struct MeshRoomView: View {
 
     var body: some View {
         chatPane
-        .navigationTitle("Chat Rooms")
+        // A fixed "Chat Rooms" here used to overwrite `NSWindow.title` after
+        // the tab had already navigated to a concrete room.
+        .navigationTitle(PharosWindowTitle.room(room))
         .task(id: store.peerHost) { await resolveRemote() }   // resolve transport BEFORE first load
         .onReceive(tick) { _ in reload() }
-        .onChange(of: room) { _, r in Task { messages = await Self.history(r) } }
+        .task(id: room) {
+            // Rapid switches can leave several detached history reads in
+            // flight. Only the room still visible may update the transcript.
+            let requested = room
+            let loaded = await Self.history(requested)
+            guard !Task.isCancelled, room == requested else { return }
+            messages = loaded
+        }
         // Issue references (project#number) in messages are tappable links.
         .environment(\.openURL, OpenURLAction { url in
             guard url.scheme == "pharosissue" else { return .systemAction }
@@ -523,6 +532,10 @@ struct MeshRoomView: View {
             rooms = snap.rooms
             membersByRoom = snap.members
             membersInfoByRoom = snap.info
+            // The user may have switched rooms while this remote query was in
+            // flight. Keep its metadata, but never navigate the tab back or
+            // replace the new room's transcript with the stale selection.
+            guard room == selected else { return }
             room = snap.pick
             messages = snap.messages
         }

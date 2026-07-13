@@ -44,14 +44,53 @@ enum PairingService {
             .split(separator: "\n").first.map(String.init) ?? ""
         let status = Shell.run(bin, ["status"])
         guard status.ok else { return [] }
+        return parsePeers(status.out, excluding: selfIP)
+    }
+
+    /// Tailscale status also contains phones, Linux nodes, and long-offline
+    /// machines. The settings control promises "Macs", and legacy migration
+    /// must not spend five-second SSH timeouts probing irrelevant devices.
+    static func parsePeers(_ status: String, excluding selfIP: String) -> [Peer] {
         var peers: [Peer] = []
-        for line in status.out.split(separator: "\n") {
+        for line in status.split(separator: "\n") {
             let f = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
                         .map(String.init).filter { !$0.isEmpty }
-            guard f.count >= 2, isIPv4(f[0]), f[0] != selfIP else { continue }
+            guard f.count >= 4, isIPv4(f[0]), f[0] != selfIP,
+                  f.contains("macOS"), !f.contains(where: { $0.hasPrefix("offline") }) else { continue }
             peers.append(Peer(name: f[1], ip: f[0]))
         }
         return peers
+    }
+
+    /// One-time bridge from the pre-2026-07-08 pairing preference, which kept
+    /// the peer's macOS ComputerName separately in `pharos.peerHostKey`. The
+    /// newer chat-only pairing stores the Tailscale IP in `peerHost`; without a
+    /// migration, an upgraded installation can look unpaired and remote pokes
+    /// silently lose their route even though the old peer is still reachable.
+    ///
+    /// The injected probe keeps matching deterministic in tests. Production
+    /// probes only discovered Tailscale peers over BatchMode SSH and accepts an
+    /// exact ComputerName match — never guesses between machines.
+    static func peer(matchingLegacyComputerName legacy: String,
+                     among peers: [Peer],
+                     computerName: (Peer) -> String?) -> Peer? {
+        let wanted = legacy.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !wanted.isEmpty else { return nil }
+        return peers.first { peer in
+            guard let found = computerName(peer)?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+                return false
+            }
+            return found.caseInsensitiveCompare(wanted) == .orderedSame
+        }
+    }
+
+    static func recoverLegacyPeer(named legacy: String) -> Peer? {
+        peer(matchingLegacyComputerName: legacy, among: discoverPeers()) { peer in
+            let r = Shell.run("/usr/bin/ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+                                                peer.ip,
+                                                "scutil --get ComputerName 2>/dev/null || hostname -s"])
+            return r.ok ? r.out : nil
+        }
     }
 
     /// Validate (and bring up) a peer: SSH reachable → Tailscale IP → mesh broker

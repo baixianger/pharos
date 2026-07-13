@@ -502,6 +502,24 @@ final class ProjectStore {
     /// MeshHosting). Derived, never stored per-machine.
     var isMeshHub: Bool { meshHubHostID == HostIdentity.current }
 
+    /// Recover an existing pre-refactor Mac pairing without overwriting an
+    /// explicit modern value. Runs once at app startup, offloading Tailscale +
+    /// SSH probes so the window never blocks. The obsolete key is removed only
+    /// after an exact reachable match succeeds.
+    @MainActor
+    func recoverLegacyPeerIfNeeded() async {
+        guard peerHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let legacy = PharosPrefs.shared.string(forKey: "pharos.peerHostKey"),
+              !legacy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let match = await Task.detached(priority: .utility) {
+            PairingService.recoverLegacyPeer(named: legacy)
+        }.value
+        guard peerHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let match else { return }
+        peerHost = match.ip
+        PharosPrefs.shared.removeObject(forKey: "pharos.peerHostKey")
+    }
+
     /// Claim or release the hub role for THIS Mac. Claiming overwrites whichever
     /// machine held it — there is exactly one hub per pairing; a deposed hub
     /// demotes itself on its next launch (PharosApp `.task`).

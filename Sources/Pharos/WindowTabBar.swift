@@ -1,6 +1,15 @@
 import AppKit
 import SwiftUI
 
+/// One source of truth for native window/tab labels. SwiftUI's
+/// `navigationTitle` and AppKit's `NSWindow.title` can both write the title, so
+/// every room surface must use the exact same value.
+enum PharosWindowTitle {
+    static func room(_ room: String) -> String {
+        room.isEmpty ? "Chat Rooms" : "💬 \(room)"
+    }
+}
+
 /// Pins the native macOS window tab bar visible (even at a single tab) and
 /// mirrors `title` onto the window, so each open Pharos window is a native tab
 /// labeled with its project — the "one project per tab" model.
@@ -22,28 +31,36 @@ struct WindowTabBar: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
-        let t = title
-        DispatchQueue.main.async { [weak view] in
-            guard let window = view?.window else { return }
-            context.coordinator.attach(to: window)
-            context.coordinator.apply(title: t, to: window)
-        }
+        context.coordinator.update(title: title, from: view)
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        let t = title
-        DispatchQueue.main.async { [weak nsView] in
-            guard let window = nsView?.window else { return }
-            context.coordinator.attach(to: window)
-            context.coordinator.apply(title: t, to: window)
-        }
+        context.coordinator.update(title: title, from: nsView)
     }
 
     @MainActor
     final class Coordinator {
         private weak var bound: NSWindow?
         private var observation: NSKeyValueObservation?
+        /// Read when deferred window adoption runs. A newly created native tab
+        /// can receive several SwiftUI updates before `view.window` exists; an
+        /// older captured value must never win later.
+        private var desiredTitle = "Pharos"
+
+        func update(title: String, from view: NSView) {
+            desiredTitle = title
+            if let window = view.window {
+                attach(to: window)
+                apply(title: desiredTitle, to: window)
+                return
+            }
+            DispatchQueue.main.async { [weak self, weak view] in
+                guard let self, let window = view?.window else { return }
+                self.attach(to: window)
+                self.apply(title: self.desiredTitle, to: window)
+            }
+        }
 
         func apply(title: String, to window: NSWindow) {
             window.titleVisibility = .hidden

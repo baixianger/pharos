@@ -43,6 +43,9 @@ struct PharosApp: App {
                 .environment(store)
                 .preferredColorScheme(store.appearance.colorScheme)
                 .task {
+                    // Upgrade bridge: restore a reachable legacy Mac pairing
+                    // before mesh routing/spawn/poke reads `peerHost`.
+                    await store.recoverLegacyPeerIfNeeded()
                     // The hub role comes from the synced store (Pharos#5 P2), so
                     // every Mac reads the same answer. Hub: bind the broker to TCP
                     // so peers can dial in. Everyone else: demote any stray

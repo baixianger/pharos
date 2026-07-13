@@ -29,7 +29,7 @@ struct ContentView: View {
     /// list never looks like some other app. No project selected → the dashboard,
     /// titled just "Pharos".
     private var tabTitle: String {
-        if let r = openRoom { return r.isEmpty ? "Chat Rooms" : "💬 \(r)" }
+        if let r = openRoom { return PharosWindowTitle.room(r) }
         if let id = selectedProject, let p = store.project(id) { return "\(p.name) — Pharos" }
         return "Pharos"
     }

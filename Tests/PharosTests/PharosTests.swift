@@ -1293,6 +1293,63 @@ final class MeshPaneProbeTests: XCTestCase {
     }
 }
 
+// MARK: - Native tab titles
+
+final class WindowTabTitleTests: XCTestCase {
+    func testRoomTitleHasOneCanonicalValue() {
+        XCTAssertEqual(PharosWindowTitle.room(""), "Chat Rooms")
+        XCTAssertEqual(PharosWindowTitle.room("team"), "💬 team")
+        XCTAssertEqual(PharosWindowTitle.room("lelantos-dev"), "💬 lelantos-dev")
+    }
+
+    @MainActor
+    func testCoordinatorAppliesLatestRoomTitle() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let view = NSView(frame: .zero)
+        window.contentView = view
+        let coordinator = WindowTabBar.Coordinator()
+
+        coordinator.update(title: PharosWindowTitle.room(""), from: view)
+        coordinator.update(title: PharosWindowTitle.room("team"), from: view)
+
+        XCTAssertEqual(window.title, "💬 team")
+        XCTAssertEqual(window.titleVisibility, .hidden)
+    }
+}
+
+final class LegacyPeerMigrationTests: XCTestCase {
+    func testPeerDiscoveryKeepsOnlyOnlineMacs() {
+        let status = """
+        100.0.0.1  mac-mini      user@  macOS  -
+        100.0.0.2  macbook-air   user@  macOS  active; direct
+        100.0.0.3  old-mac       user@  macOS  offline, last seen 2d ago
+        100.0.0.4  linux-box     user@  linux  -
+        100.0.0.5  iphone        user@  iOS    -
+        """
+        XCTAssertEqual(PairingService.parsePeers(status, excluding: "100.0.0.1").map(\.ip),
+                       ["100.0.0.2"])
+    }
+
+    func testMatchesExactReachableComputerNameWithoutGuessing() {
+        let peers = [
+            PairingService.Peer(name: "mac-mini", ip: "100.0.0.1"),
+            PairingService.Peer(name: "macbook-air", ip: "100.0.0.2")
+        ]
+        let names = ["100.0.0.1": "Xiang's Mac mini", "100.0.0.2": "白富贵"]
+        let match = PairingService.peer(matchingLegacyComputerName: "白富贵", among: peers) {
+            names[$0.ip]
+        }
+        XCTAssertEqual(match?.ip, "100.0.0.2")
+    }
+
+    func testNoReachableExactMatchLeavesPairingUnset() {
+        let peers = [PairingService.Peer(name: "macbook-air", ip: "100.0.0.2")]
+        XCTAssertNil(PairingService.peer(matchingLegacyComputerName: "other", among: peers) { _ in "白富贵" })
+        XCTAssertNil(PairingService.peer(matchingLegacyComputerName: "白富贵", among: peers) { _ in nil })
+    }
+}
+
 final class MeshBroadcastTests: XCTestCase {
     /// Delivery model B: a directed message carries a non-empty `to`; a
     /// broadcast carries an empty `to`. The poke paths key on exactly this to

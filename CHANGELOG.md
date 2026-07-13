@@ -7,6 +7,20 @@ Maps Pharos versions to git history. Newest at top.
 
 ## Unreleased
 
+**Stable room names across native tabs.** A room now supplies the same dynamic
+title to SwiftUI navigation and the underlying AppKit window, instead of the
+room view racing the tab bar with a fixed `Chat Rooms` title. Deferred window
+adoption always reads the newest title, and stale room-list/history requests no
+longer navigate a tab back or replace the transcript after a fast room switch.
+
+**Restore remote wake after upgrading an old pairing.** If the modern
+`peerHost` route is empty but the retired ComputerName preference still exists,
+Pharos now searches the current Tailscale Macs and restores the peer IP only
+after an exact reachable SSH match. Existing modern pairings are never changed,
+and ambiguous or offline machines remain unpaired instead of being guessed.
+Peer discovery now also excludes phones, Linux nodes, and offline Macs instead
+of listing or SSH-probing them as pairing candidates.
+
 **Complete chat-room toolbar on first click.** The toolbar now fetches the
 current room snapshot before presenting its popover, instead of opening from an
 empty cache and filling it after SwiftUI has committed the first layout.
