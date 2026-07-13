@@ -24,6 +24,12 @@ struct ProjectDetailView: View {
     @State private var ghStatus: GitHubStatus? = nil
     @State private var ghLoading = false
     @State private var worktreeToRemove: Worktree?
+    /// Pending "stop this agent?" confirmation (session name + host + label).
+    @State private var agentToStop: StopTarget?
+    private struct StopTarget: Identifiable {
+        let session: String; let host: String?; let label: String
+        var id: String { session }
+    }
     @State private var worktreeDirtyCount = 0
     @State private var worktreeConfirmText = ""
     @State private var worktreeRemoving = false
@@ -111,6 +117,18 @@ struct ProjectDetailView: View {
                 }
                 .sheet(item: $worktreeToRemove) { wt in
                     worktreeRemoveSheet(wt)
+                }
+                .confirmationDialog("Stop agent \(agentToStop?.label ?? "")?",
+                                    isPresented: Binding(get: { agentToStop != nil },
+                                                         set: { if !$0 { agentToStop = nil } }),
+                                    titleVisibility: .visible,
+                                    presenting: agentToStop) { t in
+                    Button("Stop agent", role: .destructive) {
+                        store.stopAgent(session: t.session, host: t.host)
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: { t in
+                    Text("Kills its tmux session \(t.host.map { "on \($0)" } ?? "on this Mac"). Unsaved work in the session is lost.")
                 }
                 .onChange(of: store.requestedIssue) { _, req in openRequestedIssue(req) }
                 .onAppear { openRequestedIssue(store.requestedIssue) }
@@ -664,6 +682,14 @@ struct ProjectDetailView: View {
                             if let session = issue.activeSession, store.allRunningSessions.contains(session) {
                                 Label("agent running", systemImage: "circle.fill")
                                     .font(.caption2).foregroundStyle(.green).labelStyle(.titleAndIcon)
+                                Button {
+                                    agentToStop = StopTarget(session: session, host: issue.activeSessionHost,
+                                                             label: "#\(issue.number)")
+                                } label: {
+                                    Image(systemName: "stop.circle").font(.caption2)
+                                }
+                                .buttonStyle(.plain).foregroundStyle(.red)
+                                .help("Stop this agent")
                             }
                         }
                     }
@@ -1043,6 +1069,15 @@ struct ProjectDetailView: View {
             .buttonStyle(.borderless)
             .controlSize(.small)
             .tint(.accentColor)
+            Button {
+                agentToStop = StopTarget(session: sessionName, host: nil, label: kind.label)
+            } label: {
+                Label("Stop", systemImage: "stop.circle")
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .tint(.red)
+            .help("Kill this agent's tmux session")
         }
     }
 

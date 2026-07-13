@@ -1231,6 +1231,25 @@ final class ProjectStore {
     /// The set of live tmux session names for Pharos-launched agents.
     var runningSessions: Set<String> = []
 
+    /// Kill a running agent's tmux session — local (host nil/this Mac) or on a
+    /// paired Mac (`host`). Off-main (may SSH). Optimistically drops the session
+    /// from `runningSessions` for instant UI feedback, then the reconcile sweep
+    /// clears any linked issue and logs "Agent finished".
+    func stopAgent(session: String, host: String? = nil) {
+        runningSessions.remove(session)          // optimistic
+        remoteRunningSessions.remove(session)
+        updateDockBadge()
+        let h = (host == nil || host == HostIdentity.current) ? nil : host
+        Task {
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<String, Error> in
+                do { return .success(try RemoteLaunch.kill(session: session, host: h)) }
+                catch { return .failure(error) }
+            }.value
+            if case .failure(let e) = result { lastError = "Couldn't stop \(session): \(e)" }
+            refreshRunningAgents()               // authoritative re-probe + reconcile
+        }
+    }
+
     /// Queries tmux for live sessions and updates `runningSessions`.
     func refreshRunningAgents() {
         Task {

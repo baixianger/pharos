@@ -32,6 +32,11 @@ struct DashboardView: View {
     @State private var groupFilter: String?           // nil = all groups
     @State private var activityFilter: ActivityFilter = .all
     @State private var meshMessages: [MeshMsg] = []    // recent agent chatter (read from transcripts)
+    @State private var agentToStop: StopTarget?
+    private struct StopTarget: Identifiable {
+        let session: String; let host: String?; let label: String
+        var id: String { session }
+    }
     private let meshTick = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     /// Projects in scope, narrowed by the selected group tab.
@@ -70,6 +75,16 @@ struct DashboardView: View {
         .navigationTitle("Dashboard")
         .onAppear(perform: loadMesh)
         .onReceive(meshTick) { _ in loadMesh() }
+        .confirmationDialog("Stop agent on \(agentToStop?.label ?? "")?",
+                            isPresented: Binding(get: { agentToStop != nil },
+                                                 set: { if !$0 { agentToStop = nil } }),
+                            titleVisibility: .visible,
+                            presenting: agentToStop) { t in
+            Button("Stop agent", role: .destructive) { store.stopAgent(session: t.session, host: t.host) }
+            Button("Cancel", role: .cancel) {}
+        } message: { t in
+            Text("Kills its tmux session \(t.host.map { "on \($0)" } ?? "on this Mac"). Unsaved work is lost.")
+        }
     }
 
     // MARK: Chat rooms (agents talking)
@@ -207,7 +222,27 @@ struct DashboardView: View {
         card("Agents working") {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(activeAgents.prefix(8), id: \.i.id) { row in
-                    issueRow(row.p, row.i, leading: "circle.fill", tint: .green, note: "running")
+                    HStack(spacing: 8) {
+                        Button { open(row.p, row.i) } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "circle.fill").foregroundStyle(.green).font(.caption)
+                                Text("#\(row.i.number) \(row.i.title)").font(.callout).lineLimit(1)
+                                Text("· \(row.p.name)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        Spacer()
+                        if let session = row.i.activeSession {
+                            Button {
+                                agentToStop = StopTarget(session: session, host: row.i.activeSessionHost,
+                                                         label: "#\(row.i.number)")
+                            } label: {
+                                Label("Stop", systemImage: "stop.circle").font(.caption2)
+                            }
+                            .buttonStyle(.borderless).controlSize(.small).tint(.red)
+                            .help("Stop this agent")
+                        }
+                    }
                 }
             }
         }
