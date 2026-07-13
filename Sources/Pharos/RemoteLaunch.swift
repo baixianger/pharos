@@ -146,6 +146,119 @@ enum RemoteLaunch {
         return lines.joined(separator: "\n")
     }
 
+    // MARK: - Mesh member spawn
+
+    /// Remote counterpart of `MeshSpawn.spawnLocal`: create a neutral scratch
+    /// session on the paired Mac, unlock that tmux server's keychain security
+    /// session, boot Claude/Codex, brief it to join, and confirm at the broker.
+    /// Blocking; callers run it off-main.
+    static func spawnMeshAgent(room: String, nick: String, kind: AgentKind, host: String,
+                               onProgress: @escaping (MeshSpawn.Progress) -> Void) {
+        func fail(_ detail: String) {
+            onProgress(.init(phase: .failed, detail: detail))
+        }
+
+        guard Shell.run("/usr/bin/ssh", sshOpts + [host, "true"]).ok else {
+            fail("can't SSH to \(host) (check Settings → Machines)")
+            return
+        }
+
+        let hookArgs = kind == .codex ? "--codex" : "--user"
+        guard ssh(host, "pharos mesh install-hooks \(hookArgs) >/dev/null").ok else {
+            fail("couldn't install \(kind.rawValue) mesh hooks on \(host)")
+            return
+        }
+
+        let homeProbe = ssh(host, #"printf %s "$HOME""#)
+        let home = homeProbe.out.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard homeProbe.ok, home.hasPrefix("/") else {
+            fail("couldn't resolve the home folder on \(host)")
+            return
+        }
+        let dir = home + "/.pharos/mesh-agents/" + MeshSpawn.safe(nick)
+        guard ssh(host, "mkdir -p \(sq(dir))").ok else {
+            fail("couldn't create the agent folder on \(host)")
+            return
+        }
+
+        let name = MeshSpawn.sessionName(nick)
+        _ = tmux(host, ["kill-session", "-t", "=\(name)"]) // clear a stale spawn
+        guard tmux(host, ["new-session", "-d", "-s", name, "-c", dir,
+                          "-x", "200", "-y", "50"]).ok else {
+            fail("couldn't start tmux on \(host)")
+            return
+        }
+
+        // Keep the server alive before probing/unlocking: the login keychain's
+        // security session is scoped to this tmux server on macOS.
+        let os = ssh(host, "uname").out.trimmingCharacters(in: .whitespacesAndNewlines)
+        var keychainNote = ""
+        if os == "Darwin" {
+            keychainNote = keychainReady(host: host)
+            sendLine(host, name,
+                     #"export SSH_AUTH_SOCK="$(find /var/run /private/tmp -maxdepth 2 -name Listeners -user "$(whoami)" 2>/dev/null | head -1)""#)
+            pause(0.8)
+        }
+
+        onProgress(.init(phase: .booting,
+                         detail: "starting \(kind.rawValue) on \(host)…"
+                             + (keychainNote.isEmpty ? "" : "  \(keychainNote)")))
+        sendLine(host, name, MeshSpawn.launchCommand(kind))
+
+        let ready: Bool
+        if kind == .claude {
+            ready = waitBoot(host: host, name: name, timeout: 90).0 == "ready"
+        } else {
+            ready = waitCodexBoot(host: host, name: name, timeout: 60)
+        }
+        guard ready else {
+            fail("\(kind.rawValue) didn't reach its prompt — peek: ssh -t \(host) tmux attach -t \(name)")
+            return
+        }
+
+        onProgress(.init(phase: .joining, detail: "asking it on \(host) to join \(room)…"))
+        sendLine(host, name, MeshSpawn.joinBrief(room: room, nick: nick, kind: kind))
+
+        for _ in 0..<25 {
+            pause(2)
+            if MeshSpawn.didJoin(room: room, nick: nick) {
+                onProgress(.init(phase: .joined, detail: "joined \(room) from \(host)"))
+                return
+            }
+        }
+        fail("spawned on \(host) but hasn't joined — peek: ssh -t \(host) tmux attach -t \(name)")
+    }
+
+    /// Codex-ready detection for remote mesh spawning. Trust/interstitial
+    /// screens are submitted separately; the hook-trust prompt itself is
+    /// bypassed by MeshSpawn's launch command.
+    private static func waitCodexBoot(host: String, name: String, timeout: Int) -> Bool {
+        let deadline = Date().addingTimeInterval(TimeInterval(timeout))
+        var lastScreen = ""
+        while Date() < deadline {
+            let pane = tmux(host, ["capture-pane", "-p", "-t", name]).out
+            let lower = pane.lowercased()
+            var screen = ""
+            if lower.contains("trust this folder") || lower.contains("do you trust") { screen = "trust" }
+            else if lower.contains("choose") && lower.contains("theme") { screen = "theme" }
+            else if lower.contains("press enter to continue") { screen = "continue" }
+            if !screen.isEmpty && screen != lastScreen {
+                _ = tmux(host, ["send-keys", "-t", name, "Enter"])
+                lastScreen = screen
+                pause(2)
+                continue
+            }
+            // Check readiness only after interstitials: Codex uses `›` both as
+            // its composer and as the selection cursor on the trust screen.
+            if screen.isEmpty && (pane.contains("›") || lower.contains("full access")
+                                  || lower.contains("for shortcuts")) {
+                return true
+            }
+            pause(2)
+        }
+        return false
+    }
+
     // MARK: - Keychain readiness (macOS 26: per-security-session, per tmux server)
 
     /// Probe the remote tmux server's session; unlock from the local
@@ -208,7 +321,7 @@ enum RemoteLaunch {
             }
             var screen = ""
             if matches(pane, "choose the text style|dark mode") { screen = "theme" }
-            else if matches(pane, "do you trust") { screen = "trust" }
+            else if matches(pane, "do you trust|trust this folder|accessing workspace") { screen = "trust" }
             else if matches(pane, "yes, i accept") { screen = "bypass" }
             else if matches(pane, "press enter to continue") { screen = "continue" }
             if !screen.isEmpty && screen != lastScreen {

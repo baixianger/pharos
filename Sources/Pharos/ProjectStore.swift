@@ -651,11 +651,14 @@ final class ProjectStore {
             // stopped/idle poke on the hooks' word; UNKNOWN state is allowed
             // through because MeshPoke.nudge probes the pane first (post-broker-
             // restart limbo would otherwise deadlock: unknown ⇒ never poked ⇒
-            // never reports ⇒ stays unknown). busy/blocked/gone still refuse.
+            // never reports ⇒ stays unknown). Codex busy is also allowed through
+            // because its Stop hook can stay stale; nudge probes for an idle `›`
+            // and rejects a genuinely Working pane. Claude busy/blocked/gone refuse.
             let st = MeshSessionState(rawValue: m.state ?? "")
             guard m.host == HostIdentity.current,
                   (m.unread ?? 0) > 0,
-                  st?.pokeable == true || (st == nil && m.state == nil),
+                  st?.pokeable == true || (st == nil && m.state == nil)
+                    || (st == .busy && m.kind == AgentKind.codex.rawValue),
                   now.timeIntervalSince(meshSweepDebounce[m.nick] ?? .distantPast) > 120 else { continue }
             meshSweepDebounce[m.nick] = now
             if m.tmuxPane != nil {

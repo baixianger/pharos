@@ -4,10 +4,10 @@ import Foundation
 /// JOIN a mesh chat room, then confirm it actually joined — the passive-join
 /// flow from the CLI skill, exposed to the GUI's "add member" action.
 ///
-/// First cut is LOCAL only (this Mac). Remote-host spawn (over SSH, with
-/// keychain unlock) reuses RemoteLaunch and is a follow-up.
+/// The target may be this Mac or the paired Mac over SSH. Remote spawning
+/// delegates to `RemoteLaunch`, including its per-tmux-server keychain unlock.
 ///
-/// All steps block (tmux + polling) — always call `spawnLocal` off the main
+/// All steps block (tmux + polling) — always call `spawn` off the main
 /// thread and hop progress back to the main actor in the caller.
 enum MeshSpawn {
     enum Phase: String { case booting, joining, joined, failed }
@@ -26,12 +26,12 @@ enum MeshSpawn {
         return dir.path
     }
 
-    private static func safe(_ s: String) -> String {
+    static func safe(_ s: String) -> String {
         String(s.map { $0.isLetter || $0.isNumber || "._-".contains($0) ? $0 : "-" })
     }
 
     /// The shell command tmux runs as the session's foreground process.
-    private static func launchCommand(_ kind: AgentKind) -> String {
+    static func launchCommand(_ kind: AgentKind) -> String {
         switch kind {
         case .claude: return "claude --dangerously-skip-permissions"
         // Codex needs the hook-trust bypass so the mesh hooks (~/.codex/hooks.json)
@@ -40,10 +40,42 @@ enum MeshSpawn {
         }
     }
 
+    /// Brief typed into either agent after its composer is ready. Keeping this
+    /// shared guarantees local and remote spawn register the same identity.
+    static func joinBrief(room: String, nick: String, kind: AgentKind) -> String {
+        "Join the mesh chat room \(room) as nick \(nick): run  "
+            + "pharos mesh join \(room) \(nick) --session <the session id the Pharos mesh "
+            + "SessionStart hook gave you in your context> --kind \(kind.rawValue). "
+            + "Then run  pharos mesh say \(room) \(nick) \"\(nick) joined\". "
+            + "Return to the idle composer after announcing; do not run a listener or polling command. "
+            + "Pharos hooks and nudges will wake you for new messages. Do nothing else."
+    }
+
+    /// One entry point for GUI and CLI. `host == nil` means this Mac; otherwise
+    /// it is an SSH alias/IP for the paired Mac.
+    static func spawn(room: String, nick: String, kind: AgentKind, host: String? = nil,
+                      onProgress: @escaping (Progress) -> Void) {
+        if let host, !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            RemoteLaunch.spawnMeshAgent(room: room, nick: nick, kind: kind,
+                                        host: host.trimmingCharacters(in: .whitespacesAndNewlines),
+                                        onProgress: onProgress)
+        } else {
+            spawnLocal(room: room, nick: nick, kind: kind, onProgress: onProgress)
+        }
+    }
+
     /// Spawn `kind` locally in tmux and brief it to join `room` as `nick`.
     /// Reports progress; returns once joined or failed.
     static func spawnLocal(room: String, nick: String, kind: AgentKind,
                            onProgress: @escaping (Progress) -> Void) {
+        // Spawn is expected to work from one click even if Settings was never
+        // opened. The installers are idempotent; Codex's trust prompt is
+        // bypassed by launchCommand below.
+        let hookStatus = MeshHooks.installHooks(kind == .codex ? ["--codex"] : ["--user"])
+        guard hookStatus == 0 else {
+            onProgress(Progress(phase: .failed, detail: "couldn't install \(kind.rawValue) mesh hooks"))
+            return
+        }
         guard let tmux = LaunchService.tmuxPath else {
             onProgress(Progress(phase: .failed, detail: "tmux not found on this Mac")); return
         }
@@ -63,12 +95,7 @@ enum MeshSpawn {
         passFirstRun(tmux, name)   // trust/theme/first-run screens
 
         onProgress(Progress(phase: .joining, detail: "asking it to join \(room)…"))
-        let brief = "Join the mesh chat room \(room) as nick \(nick): run  "
-            + "pharos mesh join \(room) \(nick) --session <the session id the Pharos mesh "
-            + "SessionStart hook gave you in your context> --kind \(kind.rawValue). "
-            + "Then run  pharos mesh say \(room) \(nick) \"\(nick) joined\"  and wait for messages. "
-            + "Do nothing else."
-        sendLine(tmux, name, brief)
+        sendLine(tmux, name, joinBrief(room: room, nick: nick, kind: kind))
 
         // Confirm it actually joined (~40s).
         for _ in 0..<20 {

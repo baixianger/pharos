@@ -253,7 +253,12 @@ enum CLI {
             // otherwise wake nobody (matches the GUI input's behavior).
             for m in MeshHooks.parseTextMentions(a[2]) where !to.contains(m) { to.append(m) }
             let r = MeshClient.send(MeshRequest(cmd: "say", room: a[0], nick: a[1], text: a[2], to: to))
-            return report(r)
+            let code = report(r)
+            if r.ok, let targets = r.members, !targets.isEmpty {
+                let peer = PharosPrefs.shared.string(forKey: "pharos.peerHost") ?? ""
+                for note in MeshPoke.followUp(targets: targets, peerHost: peer) { print(note) }
+            }
+            return code
         case "recv":
             guard let nick = a.first else { print("usage: pharos mesh recv <nick>"); return 2 }
             let r = MeshClient.send(MeshRequest(cmd: "recv", nick: nick))
@@ -280,11 +285,29 @@ enum CLI {
             return MeshHooks.mark(a)                // Claude Code state hooks (see MeshHooks)
         case "spawn":
             // Spawn an agent into a room + confirm it joined (same path the GUI
-            // "add member" uses). usage: mesh spawn <room> <nick> [claude|codex]
-            guard a.count >= 2 else { print("usage: pharos mesh spawn <room> <nick> [claude|codex]"); return 2 }
-            let kind = AgentKind(rawValue: a.count > 2 ? a[2] : "claude") ?? .claude
+            // "add member" uses), locally or on the paired Mac over SSH.
+            guard a.count >= 2 else {
+                print("usage: pharos mesh spawn <room> <nick> [claude|codex] [--host <ssh>]")
+                return 2
+            }
+            var kind = AgentKind.claude
+            var host: String?
+            var i = 2
+            while i < a.count {
+                if a[i] == "--host" {
+                    guard i + 1 < a.count else { print("error: --host needs an SSH alias or IP"); return 2 }
+                    host = a[i + 1]
+                    i += 2
+                } else if let parsed = AgentKind(rawValue: a[i]) {
+                    kind = parsed
+                    i += 1
+                } else {
+                    print("error: expected claude, codex, or --host <ssh>; got '\(a[i])'")
+                    return 2
+                }
+            }
             var final = MeshSpawn.Phase.failed
-            MeshSpawn.spawnLocal(room: a[0], nick: a[1], kind: kind) { p in
+            MeshSpawn.spawn(room: a[0], nick: a[1], kind: kind, host: host) { p in
                 print("[\(p.phase.rawValue)] \(p.detail)")
                 final = p.phase
             }
@@ -357,7 +380,7 @@ enum CLI {
       say    <room> <nick> <text> [@n …]  send; @n pokes that agent · no @ = broadcast to the whole room (no poke)
       recv   <nick>                       drain unread @you across ALL your rooms (non-blocking)
       who                                 roster: every joined agent + live state/host/tmux pane
-      spawn  <room> <nick> [claude|codex] spawn an agent into a room + confirm it joined (GUI "add member")
+      spawn  <room> <nick> [claude|codex] [--host <ssh>]  spawn local/remote + confirm join (GUI "add member")
       unread [<nick>] [--json]            peek the local unread signal (no daemon, never consumes)
       unread --hook-stop                  Claude Code Stop-hook mode (fail-open, reads hook JSON on stdin)
       unread --hook-post-tool             Claude Code PostToolUse-hook mode (poke mode: mid-turn delivery)

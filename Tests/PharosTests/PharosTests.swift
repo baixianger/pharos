@@ -1096,12 +1096,25 @@ final class MeshPokePaneCommandTests: XCTestCase {
     /// ("2.1.207") on current installs, where the launcher execs a versioned
     /// binary (observed live 2026-07-11).
     func testAcceptedPaneCommands() {
-        for ok in ["claude", "node", "bun", "2.1.207", "10.0.1"] {
-            XCTAssertTrue(MeshPoke.paneRunsClaude(result(ok)), ok)
+        for ok in ["claude", "node", "bun", "2.1.207", "10.0.1",
+                   "codex", "codex-aarch64-apple-darwin"] {
+            XCTAssertTrue(MeshPoke.paneRunsAgent(result(ok)), ok)
         }
         for bad in ["zsh", "bash", "vim", "2.1", "2.1.207-beta", "python3.11"] {
-            XCTAssertFalse(MeshPoke.paneRunsClaude(result(bad)), bad)
+            XCTAssertFalse(MeshPoke.paneRunsAgent(result(bad)), bad)
         }
+    }
+
+    func testCodexStaleBusyRequiresProbeButClaudeBusyRefuses() {
+        func member(kind: AgentKind, state: String?) -> MeshMemberInfo {
+            MeshMemberInfo(nick: "bot", project: "/tmp", session: "s", host: "mac",
+                           tmuxPane: "%1", state: state, stateTs: 1, kind: kind.rawValue,
+                           rooms: ["r"], lastSeen: 1)
+        }
+        XCTAssertEqual(MeshPoke.probeRequirement(for: member(kind: .codex, state: "busy")), true)
+        XCTAssertNil(MeshPoke.probeRequirement(for: member(kind: .claude, state: "busy")))
+        XCTAssertEqual(MeshPoke.probeRequirement(for: member(kind: .codex, state: "stopped")), false)
+        XCTAssertEqual(MeshPoke.probeRequirement(for: member(kind: .codex, state: nil)), true)
     }
 }
 
@@ -1153,7 +1166,9 @@ final class MeshPaneProbeTests: XCTestCase {
     /// The unknown-state pane probe: only a visibly idle composer passes.
     func testPaneIdleDetection() {
         XCTAssertTrue(MeshPoke.paneLooksIdle("some output\n❯ \n  bypass permissions on"))
+        XCTAssertTrue(MeshPoke.paneLooksIdle("ready\n› "), "Codex composer is pokeable")
         XCTAssertFalse(MeshPoke.paneLooksIdle("✻ Cooking… (esc to interrupt)"))
+        XCTAssertFalse(MeshPoke.paneLooksIdle("Working\n› "), "busy Codex must never be poked")
         XCTAssertFalse(MeshPoke.paneLooksIdle("Do you want to proceed?\n❯ 1. Yes\n 2. No"))
         XCTAssertFalse(MeshPoke.paneLooksIdle("❯ 1. Yes, I trust this folder\nEnter to confirm · Esc to cancel"))
         XCTAssertFalse(MeshPoke.paneLooksIdle("plain shell output, no composer"))

@@ -8,11 +8,11 @@ import Foundation
 /// idempotent (`recv` drains once).
 ///
 /// Safety model (why this can't type into the wrong thing):
-///  1. Only states `stopped`/`idle` are poked — `blocked` (a permission or
-///     elicitation dialog is up; keys would answer IT) and `busy` never are.
-///     States come from CC's own lifecycle hooks (see MeshHooks), not guesses.
-///  2. The pane's foreground command must still look like a Claude session
-///     (`claude`/`node`/`bun`); a dead agent leaving a bare shell is skipped.
+///  1. States `stopped`/`idle` are poke-safe. `blocked` never is. A Codex
+///     `busy` may be stale when its Stop hook is missed, but then the pane must
+///     visibly show the idle `›` composer; `Working` always refuses.
+///  2. The pane's foreground command must still look like a Claude or Codex
+///     session; a dead agent leaving a bare shell is skipped.
 ///  3. The nudge text contains no backticks/quotes/metacharacters, so even the
 ///     worst case — a shell executing it — is a harmless "command not found".
 ///
@@ -47,7 +47,7 @@ enum MeshPoke {
         "You have new mesh messages. Run: pharos mesh recv \(nick)"
     }
 
-    /// Does this captured pane text show an idle Claude composer we may type
+    /// Does this captured pane text show an idle Claude/Codex composer we may type
     /// into? Rejects a running turn ("esc to interrupt") and any pending
     /// dialog (permission/trust prompts) — used ONLY when the hook-reported
     /// state is unknown (e.g. right after a broker restart) and the state
@@ -64,19 +64,29 @@ enum MeshPoke {
         return t.contains("❯") || t.contains("›")   // composer prompt visible (claude / codex)
     }
 
+    /// nil = refuse; false = hook state proves idle; true = the pane itself
+    /// must prove idle. Codex's Stop hook is known to occasionally leave a
+    /// stale `busy` after the composer returns, so Codex alone may recover via
+    /// the visual probe. A genuinely working Codex pane fails `paneLooksIdle`.
+    static func probeRequirement(for m: MeshMemberInfo) -> Bool? {
+        let state = MeshSessionState(rawValue: m.state ?? "")
+        if state?.pokeable == true { return false }
+        if state == nil { return true }
+        if state == .busy && m.kind == AgentKind.codex.rawValue { return true }
+        return nil
+    }
+
     /// Nudge `m`'s session. BLOCKING (tmux and possibly SSH) — call off-main.
     /// Returns nil on success, else a human-readable reason the poke was
     /// skipped (surfaced in the chat view's notice bar).
     ///
     /// States: stopped/idle poke directly (the hooks vouch for the composer).
-    /// UNKNOWN state falls back to a visual pane probe (`paneLooksIdle`).
-    /// busy/blocked/gone always refuse.
+    /// UNKNOWN state falls back to a visual pane probe (`paneLooksIdle`). A
+    /// Codex `busy` uses the same probe because its Stop hook can remain stale;
+    /// Claude busy plus blocked/gone always refuse.
     static func nudge(_ m: MeshMemberInfo, peerHost: String) -> String? {
-        let state = MeshSessionState(rawValue: m.state ?? "")
-        var mustProbe = false
-        if state?.pokeable != true {
-            guard state == nil else { return "state is \(m.state ?? "?"), not poking" }
-            mustProbe = true   // unknown: let the pane's own pixels decide
+        guard let mustProbe = probeRequirement(for: m) else {
+            return "state is \(m.state ?? "?"), not poking"
         }
         let text = nudgeText(for: m.nick)
         switch route(for: m, peerHost: peerHost) {
@@ -84,9 +94,9 @@ enum MeshPoke {
             return why
         case .local(let pane):
             guard let tmux = localTmux() else { return "tmux not found on this Mac" }
-            guard paneRunsClaude(Shell.run(tmux, ["display-message", "-p", "-t", pane,
-                                                  "#{pane_current_command}"])) else {
-                return "tmux pane \(pane) is no longer a Claude session"
+            guard paneRunsAgent(Shell.run(tmux, ["display-message", "-p", "-t", pane,
+                                                 "#{pane_current_command}"])) else {
+                return "tmux pane \(pane) is no longer a coding-agent session"
             }
             if mustProbe {
                 guard paneLooksIdle(Shell.run(tmux, ["capture-pane", "-p", "-t", pane]).out) else {
@@ -104,8 +114,9 @@ enum MeshPoke {
             let p = sq(pane), t = sq(text)
             let probe = mustProbe ? """
             pv=$(tmux capture-pane -p -t \(p) 2>/dev/null)
-            case "$pv" in *'esc to interrupt'*|*'Do you want to proceed'*|*'Enter to confirm'*|*'Esc to cancel'*) exit 4 ;; esac
-            case "$pv" in *'❯'*) ;; *) exit 4 ;; esac
+            pl=$(printf '%s' "$pv" | tr '[:upper:]' '[:lower:]')
+            case "$pl" in *'esc to interrupt'*|*'working'*|*'do you want to proceed'*|*'enter to confirm'*|*'esc to cancel'*) exit 4 ;; esac
+            case "$pv" in *'❯'*|*'›'*) ;; *) exit 4 ;; esac
             """ : ""
             let script = """
             \(pathShim); c=$(tmux display-message -p -t \(p) '#{pane_current_command}' 2>/dev/null) || exit 3
@@ -140,7 +151,14 @@ enum MeshPoke {
                 notes.append("@\(t.nick)'s session has ended — the message waits in its "
                              + "mailbox until \(t.nick) rejoins.")
             case .busy:
-                break   // working: the PostToolUse/Stop hooks deliver it shortly
+                // Codex can leave a stale busy after returning to its composer.
+                // nudge() probes its pane and succeeds only on a visible idle
+                // `›`; a real Working turn is rejected silently and keeps the
+                // normal PostToolUse/Stop delivery path.
+                if t.kind == AgentKind.codex.rawValue,
+                   nudge(t, peerHost: peerHost) == nil {
+                    notes.append("⚡ poked @\(t.nick) (Codex composer verified idle)")
+                }
             case nil:
                 if t.session == nil && t.host == nil && t.tmuxPane == nil && t.project == nil {
                     // Never joined, or its registration predates a broker restart.
@@ -175,7 +193,7 @@ enum MeshPoke {
     /// 2026-07-11). Codex reads as `codex` / `codex-aarch64-*` (the versioned
     /// codex binary, observed 2026-07-13). Anything else means the agent exited
     /// and a nudge would hit whatever took over the pane.
-    static func paneRunsClaude(_ r: Shell.Result) -> Bool {
+    static func paneRunsAgent(_ r: Shell.Result) -> Bool {
         guard r.ok else { return false }
         let cmd = r.out.trimmingCharacters(in: .whitespacesAndNewlines)
         return ["claude", "node", "bun"].contains(cmd)

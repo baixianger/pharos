@@ -7,6 +7,17 @@ Maps Pharos versions to git history. Newest at top.
 
 ## Unreleased
 
+**Add chat members on either Mac.** The room toolbar's Add Member sheet now
+chooses this Mac or the paired Mac, then uses the same SSH, tmux, and per-server
+Keychain-unlock path as remote project launches. `pharos mesh spawn` gains
+`--host <ssh>`. Claude and Codex both boot, join, and are confirmed through the
+shared mesh broker.
+
+**Codex auto-poke parity in group chat.** An `@CodexMember` mention now follows
+the same automatic nudge path as Claude, locally or over SSH. The safe unknown-
+state probe recognizes Codex's `›` composer and rejects its `Working` state;
+ambient broadcasts without an @mention still do not wake the whole room.
+
 ## v0.5.0 — 2026-07-13
 
 **Codex agents join the chat mesh.** Codex sessions now participate as

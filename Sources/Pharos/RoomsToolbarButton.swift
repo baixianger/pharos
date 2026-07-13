@@ -136,7 +136,10 @@ struct RoomsToolbarButton: View {
 struct AddMemberSheet: View {
     let room: String
     @Environment(\.dismiss) private var dismiss
+    @Environment(ProjectStore.self) private var store
+    private enum SpawnHost: Hashable { case local, peer }
     @State private var kind: AgentKind = .claude
+    @State private var spawnHost: SpawnHost = .local
     @State private var nick = ""
     @State private var spawning = false
     @State private var phase: MeshSpawn.Phase?
@@ -151,6 +154,15 @@ struct AddMemberSheet: View {
                 Text("Codex").tag(AgentKind.codex)
             }
             .pickerStyle(.segmented)
+            .disabled(spawning)
+
+            Picker("Host", selection: $spawnHost) {
+                Text("This Mac · \(HostIdentity.current)").tag(SpawnHost.local)
+                if !store.peerHost.isEmpty {
+                    Text("Paired Mac · \(store.peerHost)").tag(SpawnHost.peer)
+                }
+            }
+            .pickerStyle(.radioGroup)
             .disabled(spawning)
 
             HStack {
@@ -172,7 +184,9 @@ struct AddMemberSheet: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                Text("Spawns \(kind == .claude ? "Claude" : "Codex") in a tmux session on this Mac, then has it join the room. Confirms once it's in.")
+                Text("Spawns \(kind == .claude ? "Claude" : "Codex") in a tmux session "
+                     + (spawnHost == .local ? "on this Mac" : "on \(store.peerHost) over SSH")
+                     + ", then has it join the room. Confirms once it's in.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
@@ -194,8 +208,9 @@ struct AddMemberSheet: View {
         spawning = true
         phase = .booting; detail = "starting…"
         let k = kind
+        let host = spawnHost == .peer ? store.peerHost : nil
         Task.detached {
-            MeshSpawn.spawnLocal(room: room, nick: n, kind: k) { p in
+            MeshSpawn.spawn(room: room, nick: n, kind: k, host: host) { p in
                 Task { @MainActor in
                     phase = p.phase; detail = p.detail
                     if p.phase == .joined || p.phase == .failed { spawning = false }
