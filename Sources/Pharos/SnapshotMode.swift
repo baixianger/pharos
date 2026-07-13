@@ -28,17 +28,30 @@ enum SnapshotMode {
                     settle: parts.count > 2 ? (Double(parts[2]) ?? 3) : 3)
     }()
 
-    /// Which tab the Settings window opens on when the route targets settings
-    /// (SettingsView seeds its TabView selection from this).
+    /// Route `settings:<outer>[:<inner>]` — e.g. `settings:cli:codex`. The outer
+    /// segment picks the Settings TabView tab; the optional inner segment picks
+    /// the CLI tab's CLI/Claude/Codex sub-strip.
+    private static var settingsParts: [String] {
+        guard let r = spec?.route, r.hasPrefix("settings:") else { return [] }
+        return String(r.dropFirst("settings:".count)).split(separator: ":").map(String.init)
+    }
+
+    /// Which tab the Settings window opens on (SettingsView seeds its selection).
     static var settingsTab: Int? {
-        guard let r = spec?.route, r.hasPrefix("settings:") else { return nil }
-        switch String(r.dropFirst("settings:".count)) {
+        switch settingsParts.first {
         case "launch": return 1
         case "projects": return 2
         case "cli": return 3
         case "machines": return 4
-        default: return 0
+        case .some: return 0
+        case nil: return nil
         }
+    }
+
+    /// The CLI settings sub-tab ("cli" | "claude" | "codex") — CLISettingsTab
+    /// seeds its inner picker from this. nil = default (cli).
+    static var settingsSubTab: String? {
+        settingsParts.count > 1 ? settingsParts[1] : nil
     }
 
     private static func diag(_ s: String) {

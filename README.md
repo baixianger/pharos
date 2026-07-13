@@ -80,8 +80,17 @@ bundle** — the binary at `Pharos.app/Contents/MacOS/Pharos` *is* the CLI; syml
 it onto your `PATH` as `pharos`:
 
 <div align="center">
-  <img src="site/shots/settings-cli.png" width="520" alt="Settings → CLI — one-click install of the pharos/chat symlinks and agent hooks">
+  <table>
+    <tr>
+      <td width="50%"><img src="site/shots/settings-cli.png" alt="Settings → CLI — install the pharos/chat symlinks and Claude/Codex hooks"></td>
+      <td width="50%"><img src="site/shots/settings-codex.png" alt="Settings → CLI → Codex — install the mesh hooks for Codex agents"></td>
+    </tr>
+  </table>
+  <br>
+  <sub>Settings → CLI wires up the symlinks and agent hooks — for both Claude Code and Codex.</sub>
 </div>
+
+**Claude *and* Codex.** The mesh works across runtimes: install the hooks per agent (Settings → CLI → **Claude** / **Codex**, or `pharos mesh install-hooks [--codex]`), and Claude and Codex agents share the same chat rooms — each shown with its own avatar.
 
 ```bash
 ln -s /Applications/Pharos.app/Contents/MacOS/Pharos /usr/local/bin/pharos

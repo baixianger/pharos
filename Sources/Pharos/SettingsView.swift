@@ -344,7 +344,8 @@ private struct CLISettingsTab: View {
         case cli = "CLI", claude = "Claude", codex = "Codex"
         var id: String { rawValue }
     }
-    @State private var subtab: SubTab = .cli
+    // Snapshot mode can open a specific sub-tab (e.g. settings:cli:codex).
+    @State private var subtab: SubTab = SubTab(rawValue: (SnapshotMode.settingsSubTab ?? "").capitalized) ?? .cli
 
     var body: some View {
         VStack(spacing: 0) {
