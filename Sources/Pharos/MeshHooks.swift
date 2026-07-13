@@ -50,6 +50,24 @@ enum MeshHooks {
         }
     }
 
+    /// The Codex user-scope hooks file the `--codex` install writes.
+    static var codexHooksFile: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/hooks.json")
+    }
+
+    /// True if the Codex mesh Stop hook is present in ~/.codex/hooks.json.
+    static func codexHookInstalled() -> Bool {
+        guard let d = try? Data(contentsOf: codexHooksFile),
+              let root = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+              let hooks = root["hooks"] as? [String: Any],
+              let stops = hooks["Stop"] as? [[String: Any]] else { return false }
+        return stops.contains { entry in
+            ((entry["hooks"] as? [[String: Any]]) ?? []).contains {
+                ($0["command"] as? String)?.contains(marker) == true
+            }
+        }
+    }
+
     // MARK: `pharos mesh unread`
 
     /// Modes: plain peek (`unread [<nick>] [--json]`, never consumes),
@@ -365,6 +383,7 @@ enum MeshHooks {
     /// project's by default, `--user` for ~/.claude). Never clobbers a file it
     /// can't parse.
     static func installHooks(_ args: [String]) -> Int32 {
+        if args.contains("--codex") { return installCodexHooks() }
         let fm = FileManager.default
         var dir = fm.currentDirectoryPath
         if let i = args.firstIndex(of: "--project"), i + 1 < args.count { dir = args[i + 1] }
@@ -422,6 +441,61 @@ enum MeshHooks {
         }
         print(results.map { "\($0.0): \($0.1.verb)" }.joined(separator: "; ") + " → \(file.path)")
         print("(applies to newly started Claude sessions in that scope)")
+        return 0
+    }
+
+    /// `install-hooks --codex` — wire the SAME `pharos mesh` hook commands into
+    /// Codex's `~/.codex/hooks.json`. Codex ships a Claude-Code-parity hook
+    /// engine (JSON on stdin, PascalCase event names), so the existing handlers
+    /// (`mark --hook`, `unread --hook-stop/--hook-post-tool`, `session-start`)
+    /// work unchanged. Two events Codex lacks — Notification and SessionEnd —
+    /// are simply not wired: a Codex agent reports busy/stopped but not
+    /// blocked/idle/gone (the mesh degrades gracefully). NOTE: Codex prompts to
+    /// TRUST new/changed hooks on first run; spawn Codex with
+    /// `--dangerously-bypass-hook-trust` (or approve once) so this takes effect.
+    private static func installCodexHooks() -> Int32 {
+        let fm = FileManager.default
+        let base = fm.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
+        let file = base.appendingPathComponent("hooks.json")
+
+        var root: [String: Any] = [:]
+        if let data = try? Data(contentsOf: file) {
+            guard let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                print("error: \(file.path) exists but is not valid JSON — fix it first, nothing written")
+                return 1
+            }
+            root = parsed
+        }
+        var hooks = root["hooks"] as? [String: Any] ?? [:]
+        let results: [(String, UpsertResult)] = [
+            ("Stop", upsertHook(&hooks, event: "Stop",
+                                command: hookCommand("unread --hook-stop"), marker: marker)),
+            ("SessionStart", upsertHook(&hooks, event: "SessionStart",
+                                        command: hookCommand("session-start"), marker: startMarker)),
+            ("UserPromptSubmit", upsertHook(&hooks, event: "UserPromptSubmit",
+                                            command: hookCommand("mark --hook"), marker: markMarker)),
+            ("PostToolUse", upsertHook(&hooks, event: "PostToolUse",
+                                       command: hookCommand("unread --hook-post-tool"),
+                                       marker: postToolMarker, matcher: "*")),
+        ]
+        root["hooks"] = hooks
+        if root["description"] == nil { root["description"] = "Pharos mesh — agent chat delivery + live state" }
+
+        if results.allSatisfy({ $0.1 == .unchanged }) {
+            print("Codex mesh hooks already installed → \(file.path)")
+            return 0
+        }
+        do {
+            try fm.createDirectory(at: base, withIntermediateDirectories: true)
+            let out = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+            try out.write(to: file, options: .atomic)
+        } catch {
+            print("error: could not write \(file.path): \(error.localizedDescription)")
+            return 1
+        }
+        print(results.map { "\($0.0): \($0.1.verb)" }.joined(separator: "; ") + " → \(file.path)")
+        print("(Codex has no Notification/SessionEnd hooks — blocked/idle/gone won't report.)")
+        print("(first run: Codex prompts to trust hooks — spawn with --dangerously-bypass-hook-trust)")
         return 0
     }
 

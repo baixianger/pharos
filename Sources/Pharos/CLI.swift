@@ -197,7 +197,7 @@ enum CLI {
             for ri in rooms { print("\(ri.name)  [\(ri.members.joined(separator: ", "))]") }
             return 0
         case "join":
-            guard a.count >= 2 else { print("usage: pharos mesh join <room> <nick> [--session <id>]"); return 2 }
+            guard a.count >= 2 else { print("usage: pharos mesh join <room> <nick> [--session <id>] [--kind claude|codex]"); return 2 }
             // cwd is recorded as the nick's project so hooks can resolve cwd → nick;
             // --session (the id the SessionStart hook injected) makes it exact.
             var session: String?
@@ -207,11 +207,17 @@ enum CLI {
             // what lets the GUI poke a stopped agent (nil = not poke-able).
             let env = ProcessInfo.processInfo.environment
             let pane = env["TMUX"] != nil ? env["TMUX_PANE"] : nil
+            // Agent kind → which avatar set the GUI shows. Explicit --kind wins;
+            // else auto-detect from the runtime the CLI is running inside.
+            var kind: String?
+            if let i = a.firstIndex(of: "--kind"), i + 1 < a.count { kind = a[i + 1] }
+            kind = kind ?? detectAgentKind(env)
             let r = MeshClient.send(MeshRequest(cmd: "join", room: a[0], nick: a[1],
                                                 project: FileManager.default.currentDirectoryPath,
                                                 session: session,
                                                 host: HostIdentity.current,
-                                                tmuxPane: pane))
+                                                tmuxPane: pane,
+                                                kind: kind))
             guard r.ok else { return report(r) }
             print("joined \(a[0]) as \(a[1])")
             let history = r.messages ?? []
@@ -263,6 +269,7 @@ enum CLI {
             if members.isEmpty { print("(nobody has joined yet)") }
             for m in members {
                 var bits = [m.state ?? "state?"]
+                if let k = m.kind { bits.append(k) }
                 if let h = m.host { bits.append(h) }
                 bits.append(m.tmuxPane.map { "tmux \($0)" } ?? "no tmux")
                 if let p = m.project { bits.append((p as NSString).abbreviatingWithTildeInPath) }
@@ -296,6 +303,17 @@ enum CLI {
         default:
             print(meshUsage); return 2
         }
+    }
+
+    /// Which coding agent is this CLI running inside? Claude Code exports
+    /// `CLAUDECODE=1`; Codex runs inside its `codex.system` cryptex sandbox and
+    /// exports `CODEX_*` (and its bootstrap dir is on PATH). nil = unknown →
+    /// the GUI treats it as Claude (the default avatar set).
+    private static func detectAgentKind(_ env: [String: String]) -> String? {
+        if env["CLAUDECODE"] != nil || env["CLAUDE_CODE_ENTRYPOINT"] != nil { return "claude" }
+        if env.keys.contains(where: { $0.hasPrefix("CODEX_") })
+            || (env["PATH"]?.contains("codex.system") ?? false) { return "codex" }
+        return nil
     }
 
     /// `pharos skill …` — install the bundled agent skills into Claude's skills dir.
@@ -334,6 +352,7 @@ enum CLI {
       mark --hook                         Claude Code state-hook mode (UserPromptSubmit/Notification/SessionEnd)
       session-start                       Claude Code SessionStart-hook mode (injects session id into context)
       install-hooks [--project <dir> | --user]   wire all mesh hooks into .claude/settings.json
+      install-hooks --codex                      wire mesh hooks into ~/.codex/hooks.json (Codex agents)
       leave  <room> <nick>                leave a room
       rename <room> <new-name>            rename a room
       delete <room>                       delete a room (drops its transcript)

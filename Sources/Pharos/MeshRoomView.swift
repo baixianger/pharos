@@ -279,10 +279,12 @@ struct MeshRoomView: View {
         }
     }
 
-    /// Clawd pose pools per session state (pixel-art frames from the user's
-    /// clawd-watchface project, pre-cropped into Resources/Avatars). The nick
-    /// hash picks a stable variant, so each agent keeps its own working/idle
-    /// pose — identity through pose + tint, live status through the pool.
+    /// Per-state pose pools, one set per agent KIND. The nick hash picks a
+    /// stable variant, so each agent keeps its own working/idle pose — identity
+    /// through pose + tint, live status through the pool. Claude agents wear the
+    /// Clawd set (from the user's clawd-watchface project); Codex agents wear a
+    /// blue-robot set with a `>_` terminal face. Both pre-cropped into
+    /// Resources/Avatars (`clawd-*` / `codex-*`).
     private static let clawdPools: [MeshSessionState: [String]] = [
         .busy: ["working-thinking", "working-building", "working-juggling",
                 "working-typing", "working-wizard", "working-debugger",
@@ -293,6 +295,24 @@ struct MeshRoomView: View {
         .blocked: ["mini-alert", "error", "notification", "react-annoyed"],
         .gone: ["sleeping", "collapse-sleep"],
     ]
+    private static let codexPools: [MeshSessionState: [String]] = [
+        .busy: ["working", "typing", "walk"],
+        .stopped: ["idle", "wave", "happy", "sparkle", "love"],
+        .idle: ["coffee", "reading", "sing"],
+        .blocked: ["alert", "think"],
+        .gone: ["sleep", "away"],
+    ]
+
+    /// The full pose asset basename (with kind prefix) for a member, e.g.
+    /// `codex-working` / `clawd-idle-doze`. Unknown state → the kind's neutral base.
+    private static func avatarBasename(kind: String?, nick: String, state: MeshSessionState?) -> String {
+        let codex = kind == "codex"
+        let pools = codex ? codexPools : clawdPools
+        let base = codex ? "codex-idle" : "clawd-static-base"
+        guard let state, let pool = pools[state], !pool.isEmpty else { return base }
+        let pose = pool[stableHash(nick) % pool.count]
+        return (codex ? "codex-" : "clawd-") + pose
+    }
 
     /// Where the pose PNGs may live. NEVER `Bundle.module`: its generated
     /// accessor only checks the .app ROOT (not Contents/Resources) plus the
@@ -324,13 +344,9 @@ struct MeshRoomView: View {
         return nil
     }
 
-    private static func clawdPose(nick: String, state: MeshSessionState?) -> String {
-        guard let state, let pool = clawdPools[state] else { return "static-base" }
-        return pool[stableHash(nick) % pool.count]
-    }
-
-    /// Clawd avatar on a per-nick tinted circle. The pose tracks the member's
-    /// live state (working/reading/dozing/alarmed/asleep); gray = gone/unknown.
+    /// Pixel avatar on a per-nick tinted circle. The pose tracks the member's
+    /// live state (working/idle/dozing/alarmed/asleep) and the sprite set tracks
+    /// its agent kind (Claude → Clawd, Codex → blue robot); gray = gone/unknown.
     private func avatar(_ nick: String) -> some View {
         let human = nick == "human"
         let info = membersInfo[nick]
@@ -353,7 +369,7 @@ struct MeshRoomView: View {
                         Image(systemName: "person.fill").font(.system(size: 15))
                             .foregroundStyle(Color.accentColor)
                     }
-                } else if let img = Self.avatarAsset("clawd-" + Self.clawdPose(nick: nick, state: state)) {
+                } else if let img = Self.avatarAsset(Self.avatarBasename(kind: info?.kind, nick: nick, state: state)) {
                     Image(nsImage: img)
                         .resizable()
                         .interpolation(.none)          // keep the pixel art crisp

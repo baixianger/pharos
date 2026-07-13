@@ -296,6 +296,8 @@ private struct CLISettingsTab: View {
     @State private var skillStatus: String?
     @State private var meshHookInstalled = false
     @State private var meshHookStatus: String?
+    @State private var codexHookInstalled = false
+    @State private var codexHookStatus: String?
 
     private static var exec: String { Bundle.main.executablePath ?? "<Pharos.app>/Contents/MacOS/Pharos" }
 
@@ -338,65 +340,127 @@ private struct CLISettingsTab: View {
         return "Couldn't auto-install — copy the command below (no sudo needed)."
     }
 
+    private enum SubTab: String, CaseIterable, Identifiable {
+        case cli = "CLI", claude = "Claude", codex = "Codex"
+        var id: String { rawValue }
+    }
+    @State private var subtab: SubTab = .cli
+
     var body: some View {
-        Form {
-            Section("pharos — project & issue control") {
-                commandRow("pharos", status: $pharosStatus,
-                           help: "How agents drive Pharos: a Claude Code / Codex session shells out to read and update issues and post progress — e.g. `pharos list --json`, `pharos issue start <project> 3 claude`, `pharos overview`.")
+        VStack(spacing: 0) {
+            Picker("", selection: $subtab) {
+                ForEach(SubTab.allCases) { Text($0.rawValue).tag($0) }
             }
-            Section("chat — agent chat room") {
-                commandRow("chat", status: $chatStatus,
-                           help: "Shorthand for `pharos mesh`: agents talk to each other — `chat join <room> <nick>`, `chat ask <room> <nick> \"…\" @peer`, `chat wait <room> <nick>`. Same binary, invoked as `chat`.")
-            }
-            Section("Mesh delivery hooks (Claude Code)") {
-                HStack {
-                    Image(systemName: meshHookInstalled ? "checkmark.circle.fill" : "circle.dashed")
-                        .foregroundStyle(meshHookInstalled ? Color.green : Color.secondary)
-                    Text(meshHookInstalled ? "Installed → ~/.claude/settings.json" : "Not installed")
-                        .font(.callout)
-                    Spacer()
-                    Button(meshHookInstalled ? "Reinstall / update" : "Install globally (~/.claude)") {
-                        _ = MeshHooks.installHooks(["--user"])
-                        meshHookInstalled = MeshHooks.userHookInstalled()
-                        meshHookStatus = meshHookInstalled
-                            ? "Installed — applies to newly started Claude sessions."
-                            : "Install failed — check ~/.claude/settings.json (a file with invalid JSON is never overwritten)."
-                    }
-                    .buttonStyle(.borderedProminent)
-                    HelpBadge(text: "Installs two Claude Code hooks: a Stop hook that surfaces unread @mentions at a session's turn-end, and a SessionStart hook that injects the session id so a joined agent can address messages to its exact session (telling apart two agents in one folder). Per-repo alternative: `pharos mesh install-hooks --project <dir>`. Safe to install globally — un-joined sessions no-op.")
-                }
-                if let s = meshHookStatus {
-                    Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 16).padding(.top, 12)
+            Form {
+                switch subtab {
+                case .cli:    cliSection
+                case .claude: claudeSection
+                case .codex:  codexSection
                 }
             }
-            Section("Agent skills (Claude Code)") {
-                if skillNames.isEmpty {
-                    Text("(no bundled skills found)").font(.caption).foregroundStyle(.secondary)
-                } else {
-                    ForEach(skillNames, id: \.self) { name in
-                        HStack {
-                            Image(systemName: "doc.text").foregroundStyle(.secondary)
-                            Text(name).font(.system(.body, design: .monospaced))
-                            Spacer()
-                            Button("Install") { skillStatus = SkillInstall.install(name, projectDir: nil).joined(separator: "\n") }
-                        }
-                    }
-                    HStack {
-                        Button("Install all → ~/.claude/skills") {
-                            skillStatus = SkillInstall.install("all", projectDir: nil).joined(separator: "\n")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        Spacer()
-                        HelpBadge(text: "Symlink the bundled skills into ~/.claude/skills so every Claude session auto-loads them. For a single repo, use `pharos skill install <name> --project <dir>`.")
-                    }
+            .formStyle(.grouped)
+        }
+        .onAppear {
+            meshHookInstalled = MeshHooks.userHookInstalled()
+            codexHookInstalled = MeshHooks.codexHookInstalled()
+        }
+    }
+
+    // MARK: CLI — symlink the pharos/chat binaries onto PATH
+
+    @ViewBuilder private var cliSection: some View {
+        Section("pharos — project & issue control") {
+            commandRow("pharos", status: $pharosStatus,
+                       help: "How agents drive Pharos: a Claude Code / Codex session shells out to read and update issues and post progress — e.g. `pharos list --json`, `pharos issue start <project> 3 claude`, `pharos overview`.")
+        }
+        Section("chat — agent chat room") {
+            commandRow("chat", status: $chatStatus,
+                       help: "Shorthand for `pharos mesh`: agents talk to each other — `chat join <room> <nick>`, `chat say <room> <nick> \"…\" @peer`. Same binary, invoked as `chat`.")
+        }
+    }
+
+    // MARK: Claude — mesh hooks + agent skills
+
+    @ViewBuilder private var claudeSection: some View {
+        Section("Mesh delivery hooks (Claude Code)") {
+            HStack {
+                Image(systemName: meshHookInstalled ? "checkmark.circle.fill" : "circle.dashed")
+                    .foregroundStyle(meshHookInstalled ? Color.green : Color.secondary)
+                Text(meshHookInstalled ? "Installed → ~/.claude/settings.json" : "Not installed")
+                    .font(.callout)
+                Spacer()
+                Button(meshHookInstalled ? "Reinstall / update" : "Install globally (~/.claude)") {
+                    _ = MeshHooks.installHooks(["--user"])
+                    meshHookInstalled = MeshHooks.userHookInstalled()
+                    meshHookStatus = meshHookInstalled
+                        ? "Installed — applies to newly started Claude sessions."
+                        : "Install failed — check ~/.claude/settings.json (a file with invalid JSON is never overwritten)."
                 }
-                if let s = skillStatus {
-                    Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
+                .buttonStyle(.borderedProminent)
+                HelpBadge(text: "Installs the Claude Code hooks that power the agent mesh: Stop surfaces unread @mentions at turn-end, SessionStart injects the session id, and UserPromptSubmit / Notification / PostToolUse report live state (busy / blocked / idle) so idle agents can be poked awake. Per-repo alternative: `pharos mesh install-hooks --project <dir>`. Safe globally — un-joined sessions no-op.")
+            }
+            if let s = meshHookStatus {
+                Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .formStyle(.grouped)
-        .onAppear { meshHookInstalled = MeshHooks.userHookInstalled() }
+        Section("Agent skills (Claude Code)") {
+            if skillNames.isEmpty {
+                Text("(no bundled skills found)").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(skillNames, id: \.self) { name in
+                    HStack {
+                        Image(systemName: "doc.text").foregroundStyle(.secondary)
+                        Text(name).font(.system(.body, design: .monospaced))
+                        Spacer()
+                        Button("Install") { skillStatus = SkillInstall.install(name, projectDir: nil).joined(separator: "\n") }
+                    }
+                }
+                HStack {
+                    Button("Install all → ~/.claude/skills") {
+                        skillStatus = SkillInstall.install("all", projectDir: nil).joined(separator: "\n")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Spacer()
+                    HelpBadge(text: "Symlink the bundled skills into ~/.claude/skills so every Claude session auto-loads them. For a single repo, use `pharos skill install <name> --project <dir>`.")
+                }
+            }
+            if let s = skillStatus {
+                Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    // MARK: Codex — mesh hooks (skills TBD)
+
+    @ViewBuilder private var codexSection: some View {
+        Section("Mesh delivery hooks (Codex)") {
+            HStack {
+                Image(systemName: codexHookInstalled ? "checkmark.circle.fill" : "circle.dashed")
+                    .foregroundStyle(codexHookInstalled ? Color.green : Color.secondary)
+                Text(codexHookInstalled ? "Installed → ~/.codex/hooks.json" : "Not installed")
+                    .font(.callout)
+                Spacer()
+                Button(codexHookInstalled ? "Reinstall / update" : "Install (~/.codex)") {
+                    _ = MeshHooks.installHooks(["--codex"])
+                    codexHookInstalled = MeshHooks.codexHookInstalled()
+                    codexHookStatus = codexHookInstalled
+                        ? "Installed → ~/.codex/hooks.json. First run: Codex prompts to trust hooks — start it with --dangerously-bypass-hook-trust, or approve once."
+                        : "Install failed — check ~/.codex/hooks.json (invalid JSON is never overwritten)."
+                }
+                .buttonStyle(.borderedProminent)
+                HelpBadge(text: "Codex ships a Claude-parity hook engine, so the same mesh commands wire in: Stop (unread + stopped), SessionStart (session id), UserPromptSubmit + PostToolUse (busy + mid-turn delivery). Codex has no Notification/SessionEnd hooks, so a Codex agent reports busy/stopped but not blocked/idle/gone. Needs a recent Codex build (older ones only have `notify`).")
+            }
+            if let s = codexHookStatus {
+                Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        Section("Agent skills (Codex)") {
+            Text("Codex skill install isn't wired yet (tracked as Pharos#2 — write into AGENTS.md). Use the Claude tab for now.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var skillNames: [String] { SkillInstall.available() }

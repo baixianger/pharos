@@ -18,6 +18,7 @@ struct MeshRequest: Codable {
     var host: String?               // join only: the joiner's HostIdentity (poke routing)
     var tmuxPane: String?           // join only: the joiner's $TMUX_PANE, when tmux-wrapped
     var state: String?              // mark/peek: hook-reported session state (see MeshSessionState)
+    var kind: String?               // join only: "claude" | "codex" (drives the avatar set)
 }
 
 /// Hook-reported lifecycle states (probed ground truth, cc-hook-probe FINDINGS,
@@ -68,6 +69,7 @@ struct MeshPresenceEntry: Codable {
     var tmuxPane: String?           // $TMUX_PANE captured at join; nil = not tmux-wrapped (can't auto-poke)
     var state: String?              // last hook-reported MeshSessionState; nil = unknown (never poke)
     var stateTs: Double?            // when `state` was reported
+    var kind: String?               // "claude" | "codex" (avatar set); nil = unknown → claude default
     var rooms: [String]
     var lastSeen: Double
     var online: Bool
@@ -85,6 +87,7 @@ struct MeshMemberInfo: Codable {
     var state: String?
     var stateTs: Double?
     var unread: Int?                // pending mailbox messages across all rooms
+    var kind: String?               // "claude" | "codex" — which avatar set the GUI shows
     var rooms: [String]
     var lastSeen: Double
 }
@@ -395,7 +398,7 @@ final class MeshBroker {
             // Bash tool) — seed state busy until its hooks report otherwise.
             touchPresenceLocked(n, project: req.project, session: req.session,
                                 host: req.host, tmuxPane: req.tmuxPane,
-                                state: MeshSessionState.busy.rawValue)
+                                state: MeshSessionState.busy.rawValue, kind: req.kind)
             lock.unlock()
             // Hand the joiner the recent conversation so it can catch up.
             return MeshResponse(ok: true, messages: recentTranscript(r, limit: req.limit ?? 30))
@@ -427,7 +430,7 @@ final class MeshBroker {
                 memberInfoLocked(nick)
                     ?? MeshMemberInfo(nick: nick, project: nil, session: nil, host: nil,
                                       tmuxPane: nil, state: nil, stateTs: nil, unread: nil,
-                                      rooms: [], lastSeen: 0)
+                                      kind: nil, rooms: [], lastSeen: 0)
             }
             lock.unlock()
             return MeshResponse(ok: true, members: targetInfo.isEmpty ? nil : targetInfo)
@@ -587,14 +590,16 @@ final class MeshBroker {
     /// of nothing and were never seen — e.g. the GUI's "human" sender — so
     /// presence stays a roster of agents.
     private func touchPresenceLocked(_ nick: String, project: String? = nil, session: String? = nil,
-                                     host: String? = nil, tmuxPane: String? = nil, state: String? = nil) {
+                                     host: String? = nil, tmuxPane: String? = nil, state: String? = nil,
+                                     kind: String? = nil) {
         let memberOf = rooms.filter { $0.value.members.contains(nick) }.map(\.key).sorted()
         if presence[nick] == nil && memberOf.isEmpty { return }
         var e = presence[nick] ?? MeshPresenceEntry(project: nil, session: nil, host: nil, tmuxPane: nil,
-                                                    state: nil, stateTs: nil, rooms: [], lastSeen: 0, online: true)
+                                                    state: nil, stateTs: nil, kind: nil, rooms: [], lastSeen: 0, online: true)
         if let p = project, !p.isEmpty { e.project = p }
         if let s = session, !s.isEmpty { e.session = s }
         if let h = host, !h.isEmpty { e.host = h }
+        if let k = kind, !k.isEmpty { e.kind = k }
         // A re-join OUTSIDE tmux must clear a stale pane from an earlier
         // tmux-wrapped join, so join always overwrites (nil included) when it
         // carries identity; plain touches (say/recv) leave it alone.
@@ -621,7 +626,7 @@ final class MeshBroker {
         }
         return MeshMemberInfo(nick: nick, project: e.project, session: e.session, host: e.host,
                               tmuxPane: e.tmuxPane, state: e.state, stateTs: e.stateTs,
-                              unread: unread, rooms: e.rooms, lastSeen: e.lastSeen)
+                              unread: unread, kind: e.kind, rooms: e.rooms, lastSeen: e.lastSeen)
     }
 
     /// Broker-side nick resolution from (cwd, session) — mirrors

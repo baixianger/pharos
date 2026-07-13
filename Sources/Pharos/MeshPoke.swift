@@ -54,13 +54,14 @@ enum MeshPoke {
     /// machine can't vouch for the composer itself.
     static func paneLooksIdle(_ text: String) -> Bool {
         let t = text.lowercased()
-        if t.contains("esc to interrupt")          // mid-turn
+        if t.contains("esc to interrupt")          // mid-turn (claude)
+            || t.contains("working")                // mid-turn (codex shows a working spinner)
             || t.contains("do you want to proceed") // permission dialog
             || t.contains("enter to confirm")       // trust/select dialog
             || t.contains("esc to cancel") {        // any other modal
             return false
         }
-        return t.contains("❯")                      // the composer prompt is visible
+        return t.contains("❯") || t.contains("›")   // composer prompt visible (claude / codex)
     }
 
     /// Nudge `m`'s session. BLOCKING (tmux and possibly SSH) — call off-main.
@@ -108,7 +109,7 @@ enum MeshPoke {
             """ : ""
             let script = """
             \(pathShim); c=$(tmux display-message -p -t \(p) '#{pane_current_command}' 2>/dev/null) || exit 3
-            case "$c" in claude|node|bun|[0-9]*.[0-9]*.[0-9]*) ;; *) exit 3 ;; esac
+            case "$c" in claude|node|bun|codex*|[0-9]*.[0-9]*.[0-9]*) ;; *) exit 3 ;; esac
             \(probe)
             tmux send-keys -t \(p) -l -- \(t) && sleep 0.35 && tmux send-keys -t \(p) Enter
             """
@@ -168,14 +169,17 @@ enum MeshPoke {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    /// The `claude` CLI's foreground process reads as claude/node/bun — or, on
-    /// current installs, a bare VERSION NUMBER ("2.1.207": the launcher execs a
-    /// versioned binary; observed live 2026-07-11). Anything else means the
-    /// agent exited and a nudge would hit whatever took over the pane.
+    /// True if the pane's foreground process looks like a live coding-agent CLI
+    /// we may type into. Claude reads as claude/node/bun — or a bare VERSION
+    /// NUMBER ("2.1.207": the launcher execs a versioned binary, observed live
+    /// 2026-07-11). Codex reads as `codex` / `codex-aarch64-*` (the versioned
+    /// codex binary, observed 2026-07-13). Anything else means the agent exited
+    /// and a nudge would hit whatever took over the pane.
     static func paneRunsClaude(_ r: Shell.Result) -> Bool {
         guard r.ok else { return false }
         let cmd = r.out.trimmingCharacters(in: .whitespacesAndNewlines)
         return ["claude", "node", "bun"].contains(cmd)
+            || cmd.hasPrefix("codex")
             || cmd.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil
     }
 
