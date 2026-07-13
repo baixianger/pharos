@@ -11,6 +11,7 @@ struct RoomsToolbarButton: View {
     @State private var newName = ""
     @State private var renaming: String?
     @State private var renameText = ""
+    @State private var addMemberTo: String?
     private let tick = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -30,7 +31,13 @@ struct RoomsToolbarButton: View {
                 renaming = nil
             }
         }
+        .sheet(item: Binding(get: { addMemberTo.map { RoomBox(name: $0) } },
+                             set: { addMemberTo = $0?.name })) { box in
+            AddMemberSheet(room: box.name)
+        }
     }
+
+    private struct RoomBox: Identifiable { let name: String; var id: String { name } }
 
     private var popover: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -75,6 +82,8 @@ struct RoomsToolbarButton: View {
             Text(r).font(.callout).lineLimit(1)
                 .foregroundStyle(r == openRoom ? Color.primary : .primary)
             Spacer(minLength: 8)
+            Button { addMemberTo = r; show = false } label: { Image(systemName: "person.badge.plus") }
+                .buttonStyle(.plain).foregroundStyle(.secondary).help("Add an agent to this room")
             Button { renameText = r; renaming = r } label: { Image(systemName: "pencil") }
                 .buttonStyle(.plain).foregroundStyle(.secondary).help("Rename")
             Button(role: .destructive) { deleteRoom(r) } label: { Image(systemName: "trash") }
@@ -119,5 +128,79 @@ struct RoomsToolbarButton: View {
         rooms.removeAll { $0 == r }
         if openRoom == r { openRoom = rooms.first ?? "" }
         Task.detached { _ = MeshClient.send(MeshRequest(cmd: "delete", room: r)) }
+    }
+}
+
+/// Spawn a Claude or Codex agent into a tmux session and drive it to join a
+/// room, with live status. Ports the passive-join flow to a GUI sheet.
+struct AddMemberSheet: View {
+    let room: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var kind: AgentKind = .claude
+    @State private var nick = ""
+    @State private var spawning = false
+    @State private var phase: MeshSpawn.Phase?
+    @State private var detail = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add an agent to \(room)").font(.headline)
+
+            Picker("Agent", selection: $kind) {
+                Text("Claude").tag(AgentKind.claude)
+                Text("Codex").tag(AgentKind.codex)
+            }
+            .pickerStyle(.segmented)
+            .disabled(spawning)
+
+            HStack {
+                Text("Nick").foregroundStyle(.secondary)
+                TextField("e.g. reviewer", text: $nick)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(spawning)
+                    .onSubmit(spawn)
+            }
+
+            if let phase {
+                HStack(spacing: 8) {
+                    switch phase {
+                    case .joined:  Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    case .failed:  Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    default:       ProgressView().controlSize(.small)
+                    }
+                    Text(detail).font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                Text("Spawns \(kind == .claude ? "Claude" : "Codex") in a tmux session on this Mac, then has it join the room. Confirms once it's in.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button(phase == .joined ? "Done" : "Cancel") { dismiss() }
+                Button("Spawn & join") { spawn() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(spawning || nick.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(18)
+        .frame(width: 380)
+    }
+
+    private func spawn() {
+        let n = nick.trimmingCharacters(in: .whitespaces)
+        guard !n.isEmpty, !spawning else { return }
+        spawning = true
+        phase = .booting; detail = "starting…"
+        let k = kind
+        Task.detached {
+            MeshSpawn.spawnLocal(room: room, nick: n, kind: k) { p in
+                Task { @MainActor in
+                    phase = p.phase; detail = p.detail
+                    if p.phase == .joined || p.phase == .failed { spawning = false }
+                }
+            }
+        }
     }
 }

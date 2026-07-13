@@ -278,6 +278,17 @@ enum CLI {
             return 0
         case "mark":
             return MeshHooks.mark(a)                // Claude Code state hooks (see MeshHooks)
+        case "spawn":
+            // Spawn an agent into a room + confirm it joined (same path the GUI
+            // "add member" uses). usage: mesh spawn <room> <nick> [claude|codex]
+            guard a.count >= 2 else { print("usage: pharos mesh spawn <room> <nick> [claude|codex]"); return 2 }
+            let kind = AgentKind(rawValue: a.count > 2 ? a[2] : "claude") ?? .claude
+            var final = MeshSpawn.Phase.failed
+            MeshSpawn.spawnLocal(room: a[0], nick: a[1], kind: kind) { p in
+                print("[\(p.phase.rawValue)] \(p.detail)")
+                final = p.phase
+            }
+            return final == .joined ? 0 : 1
         case "poke":
             // Manual/debug poke — the exact code path the GUI's poke mode runs.
             guard let nick = a.first else { print("usage: pharos mesh poke <nick>"); return 2 }
@@ -346,6 +357,7 @@ enum CLI {
       say    <room> <nick> <text> [@n …]  send; @n pokes that agent · no @ = broadcast to the whole room (no poke)
       recv   <nick>                       drain unread @you across ALL your rooms (non-blocking)
       who                                 roster: every joined agent + live state/host/tmux pane
+      spawn  <room> <nick> [claude|codex] spawn an agent into a room + confirm it joined (GUI "add member")
       unread [<nick>] [--json]            peek the local unread signal (no daemon, never consumes)
       unread --hook-stop                  Claude Code Stop-hook mode (fail-open, reads hook JSON on stdin)
       unread --hook-post-tool             Claude Code PostToolUse-hook mode (poke mode: mid-turn delivery)
