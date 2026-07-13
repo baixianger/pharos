@@ -64,6 +64,32 @@ xcrun notarytool history --keychain-profile pharos-notary
 Generate an **app-specific password** at [appleid.apple.com](https://appleid.apple.com)
 (Sign-In & Security → App-Specific Passwords). Do **not** use your Apple ID password.
 
+### 4. Authorize codesign to use the key without a prompt (one-time, per Mac)
+
+**Do this once on each signing machine, or every release fails with
+`errSecInternalComponent`.** When codesign reaches for the Developer ID private
+key it asks the keychain for permission via a GUI dialog. Any signing run that
+isn't attached to your Aqua login session — a CI job, a detached `tmux`, a
+script driven by another tool — can't show that dialog and dies immediately with
+`errSecInternalComponent` (build succeeds, signing the Sparkle XPCs fails).
+
+Fix it by adding `codesign` to the key's partition list (the standard CI
+prep — it authorizes the tool so no dialog is ever needed):
+
+```sh
+# Prompts for your LOGIN keychain password (usually your macOS login password),
+# read silently so it never lands in shell history:
+printf 'login keychain password: '; read -rs KP; echo
+security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+  -k "$KP" ~/Library/Keychains/login.keychain-db
+unset KP
+```
+
+`→ 1 identity(ies) partitioned.` means it worked. After this, `release.sh` signs
+non-interactively from any context — no keychain dialog, ever. (Clicking **Always
+Allow** on the dialog achieves the same thing, but only when a run can actually
+surface the dialog.)
+
 ---
 
 ## Environment variables
