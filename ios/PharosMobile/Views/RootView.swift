@@ -3,7 +3,7 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(RoomStore.self) private var store
-    @State private var showSettings = false
+    @State private var sheet: RootSheet?
     @State private var showNewRoom = false
     @State private var newRoomName = ""
 
@@ -14,7 +14,7 @@ struct RootView: View {
                 .navigationTitle("Pharos")
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button("Settings", systemImage: "gear") { showSettings = true }
+                        Button("Settings", systemImage: "gear") { sheet = .settings }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("New room", systemImage: "plus") { showNewRoom = true }
@@ -27,7 +27,7 @@ struct RootView: View {
                 } description: {
                     Text("Add the Tailscale address of the Mac hosting Pharos Mesh.")
                 } actions: {
-                    Button("Open Settings") { showSettings = true }
+                    Button("Open Settings") { sheet = .settings }
                 }
             } else if store.selectedRoom != nil {
                 ConversationView()
@@ -35,7 +35,7 @@ struct RootView: View {
                 ContentUnavailableView("No rooms", systemImage: "bubble.left.and.bubble.right")
             }
         }
-        .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(item: $sheet) { _ in SettingsView() }
         .alert("New room", isPresented: $showNewRoom) {
             TextField("Room name", text: $newRoomName)
             Button("Cancel", role: .cancel) { newRoomName = "" }
@@ -56,3 +56,7 @@ struct RootView: View {
     }
 }
 
+private enum RootSheet: String, Identifiable {
+    case settings
+    var id: String { rawValue }
+}

@@ -30,15 +30,18 @@ final class RoomStore {
             async let list = request(MeshRequest(cmd: "list"))
             async let roster = request(MeshRequest(cmd: "who"))
             let (listResponse, rosterResponse) = try await (list, roster)
-            rooms = listResponse.rooms ?? []
-            members = RosterIndex.byNick(rosterResponse.members ?? [])
+            let nextRooms = listResponse.rooms ?? []
+            let nextMembers = RosterIndex.byNick(rosterResponse.members ?? [])
+            if rooms != nextRooms { rooms = nextRooms }
+            if members != nextMembers { members = nextMembers }
             if selectedRoom == nil || !rooms.contains(where: { $0.name == selectedRoom }) {
                 selectedRoom = rooms.first?.name
             }
             if let selectedRoom {
-                messages = try await request(MeshRequest(cmd: "history", room: selectedRoom, limit: 200)).messages ?? []
+                let nextMessages = try await request(MeshRequest(cmd: "history", room: selectedRoom, limit: 200)).messages ?? []
+                if messages != nextMessages { messages = nextMessages }
             } else {
-                messages = []
+                if !messages.isEmpty { messages = [] }
             }
             error = nil
         } catch {
@@ -49,7 +52,8 @@ final class RoomStore {
     func select(room: String) async {
         selectedRoom = room
         do {
-            messages = try await request(MeshRequest(cmd: "history", room: room, limit: 200)).messages ?? []
+            let nextMessages = try await request(MeshRequest(cmd: "history", room: room, limit: 200)).messages ?? []
+            if messages != nextMessages { messages = nextMessages }
             error = nil
         } catch { self.error = error.localizedDescription }
     }
@@ -72,7 +76,8 @@ final class RoomStore {
         do {
             let response = try await request(MeshRequest(cmd: "say", room: room, nick: "human", text: trimmed,
                                                          to: targets.isEmpty ? nil : targets))
-            messages = try await request(MeshRequest(cmd: "history", room: room, limit: 200)).messages ?? []
+            let nextMessages = try await request(MeshRequest(cmd: "history", room: room, limit: 200)).messages ?? []
+            if messages != nextMessages { messages = nextMessages }
             error = nil
             if let targets = response.members { await pokeEligibleTargets(targets) }
             return true
@@ -88,6 +93,8 @@ final class RoomStore {
     }
 
     func dismissNotice() { notice = nil }
+
+    func refreshAfterRemoteAction() async { await refresh() }
 
     private func request(_ request: MeshRequest) async throws -> MeshResponse {
         try await mesh.send(request, host: settings.mesh.host, port: settings.mesh.port)

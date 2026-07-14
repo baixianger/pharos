@@ -19,6 +19,12 @@ packages:
   Citadel:
     url: https://github.com/orlandos-nl/Citadel
     from: 0.12.1
+  SwiftNIOSSH:
+    url: https://github.com/Wellz26/swift-nio-ssh.git
+    from: 0.3.6
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    from: 1.14.0
 targets:
   PharosMobile:
     type: application
@@ -30,6 +36,10 @@ targets:
         product: MarkdownUI
       - package: Citadel
         product: Citadel
+      - package: SwiftNIOSSH
+        product: NIOSSH
+      - package: SwiftTerm
+        product: SwiftTerm
     info:
       path: PharosMobile/Info.plist
       properties:

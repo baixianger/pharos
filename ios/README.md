@@ -10,6 +10,8 @@ existing Pharos agent mesh from iPhone and iPad.
 | Rooms, roster, history, `say` | Pharos Mesh broker on the hub Mac | newline-delimited JSON over TCP `47800` | the broker must bind only to its Tailscale address; Tailscale ACLs are the current authentication boundary |
 | Live refresh | iOS app while foregrounded | one request per TCP connection, polled every 2 seconds | no arbitrary-LAN endpoint should be configured |
 | Agent wake-up | iOS app to the agent's Mac | SSH over Tailscale, then guarded `tmux capture-pane` + `send-keys` | device-local Ed25519 key; explicit opt-in while host keys remain unpinned |
+| Interactive control | iOS app to the member's Mac | Citadel PTY + SwiftTerm, resolving the reported pane to its exact tmux session | explicit target confirmation; same device-local key and host-key opt-in |
+| Spawn member | selected member host | SSH command invoking that host's `pharos mesh spawn` | shared CLI owns hooks, tmux, launch flags, and join confirmation |
 | Non-secret configuration | iPhone/iPad devices | `NSUbiquitousKeyValueStore` | iCloud syncs Mesh and SSH host mappings only |
 | SSH private key | one iOS device | Keychain, `AfterFirstUnlockThisDeviceOnly` | never iCloud-synced |
 
@@ -29,6 +31,10 @@ shared package once both apps can migrate together.
   through the private tailnet.
 - A poke is attempted only for `stopped`/`idle` members, a numeric tmux pane,
   a recognized Claude/Codex foreground process, and a visibly idle composer.
+- Remote control shows the host, SSH user, member, and pane before attaching.
+  Closing the full-screen terminal disconnects SSH.
+- Mobile spawn delegates to the remote host's installed Pharos CLI; the iOS app
+  deliberately does not duplicate desktop hook, keychain, or tmux bootstrap logic.
 
 ## References used
 
@@ -50,6 +56,8 @@ shared package once both apps can migrate together.
   layout.
 - [Citadel](https://github.com/orlandos-nl/Citadel) 0.12.1 provides SSH command
   execution using the same dependency and identity path as Hetznerly.
+- [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) 1.14.0 renders the
+  interactive terminal; the Wellz26 NIOSSH fork matches Citadel's dependency.
 
 ## Build and test
 
@@ -76,8 +84,10 @@ limitation.
 
 2026-07-14:
 
-- six Swift Testing cases passed on an iPhone 17 Pro Max simulator;
+- ten Swift Testing cases passed on an iPhone 17 Pro Max simulator;
 - the app built and launched on an iPad Air 13-inch simulator;
+- interactive SSH/tmux and remote-spawn command paths compile under Swift 6
+  strict concurrency; safety tests cover exact pane resolution and injection;
 - a read-only TCP probe reached the live Tailscale-bound broker (`list`: three
   rooms), and both simulators rendered the live roster and transcript;
 - the live probe exposed and regression-tested duplicate `who` rows for agents

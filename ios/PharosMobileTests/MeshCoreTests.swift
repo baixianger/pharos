@@ -42,4 +42,25 @@ struct MeshCoreTests {
         #expect(index.count == 1)
         #expect(index["codex"]?.rooms == ["a", "b"])
     }
+
+    @Test func attachCommandTargetsExactPaneSession() throws {
+        let command = try RemoteCommandBuilder.attach(pane: "%12")
+        #expect(command.contains("display-message -p -t '%12'"))
+        #expect(command.contains("attach-session -t \"=$s\""))
+    }
+
+    @Test func attachCommandRejectsInjection() {
+        #expect(throws: (any Error).self) { try RemoteCommandBuilder.attach(pane: "%12; reboot") }
+    }
+
+    @Test func spawnCommandUsesRemotePharosCLI() throws {
+        let command = try RemoteCommandBuilder.spawn(room: "team", nick: "codex-02", kind: .codex)
+        #expect(command.contains("pharos mesh spawn team codex-02 codex"))
+    }
+
+    @Test func spawnCommandRejectsUnsafeNick() {
+        #expect(throws: (any Error).self) {
+            try RemoteCommandBuilder.spawn(room: "team", nick: "codex; reboot", kind: .codex)
+        }
+    }
 }

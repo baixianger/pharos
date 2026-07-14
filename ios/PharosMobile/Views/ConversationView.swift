@@ -2,7 +2,9 @@ import SwiftUI
 
 struct ConversationView: View {
     @Environment(RoomStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var draft = ""
+    @State private var destination: ConversationSheet?
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -13,7 +15,21 @@ struct ConversationView: View {
         }
         .navigationTitle(store.selectedRoom ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button("Remote control", systemImage: "terminal") { destination = .members }
+                Button("Spawn member", systemImage: "person.badge.plus") { destination = .spawn }
+            }
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+        .sheet(item: $destination) { destination in
+            if let room = store.selectedRoom {
+                switch destination {
+                case .members: MemberControlView(room: room)
+                case .spawn: SpawnAgentView(room: room)
+                }
+            }
+        }
     }
 
     private var transcript: some View {
@@ -27,7 +43,9 @@ struct ConversationView: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .onChange(of: store.messages.count) {
-                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
             }
         }
     }
@@ -54,7 +72,7 @@ struct ConversationView: View {
                     let text = draft
                     Task { if await store.send(text) { draft = "" } }
                 } label: {
-                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 34))
+                    Image(systemName: "arrow.up.circle.fill").font(.title)
                 }
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .accessibilityLabel("Send message")
@@ -89,3 +107,7 @@ struct ConversationView: View {
     }
 }
 
+private enum ConversationSheet: String, Identifiable {
+    case members, spawn
+    var id: String { rawValue }
+}
