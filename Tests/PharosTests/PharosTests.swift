@@ -1488,13 +1488,16 @@ final class RemoteLaunchTmuxIdentityTests: XCTestCase {
         XCTAssertEqual(error.localizedDescription, "exact failure")
     }
 
-    func testLegacyRemoteStopFailsBeforeUnsafeTmuxLookup() {
-        XCTAssertThrowsError(try RemoteLaunch.kill(pane: "%22", host: "home-ts", socket: nil)) { error in
-            guard let remoteError = error as? RemoteLaunch.RemoteError else {
-                return XCTFail("expected RemoteError")
-            }
-            XCTAssertEqual(remoteError.reason, .legacyRemoteRegistration)
-            XCTAssertTrue(remoteError.localizedDescription.contains("rejoin"))
-        }
+    func testLegacyRemoteSocketDiscoveryDeduplicatesAndRejectsRelativePaths() {
+        let output = """
+        /private/tmp/tmux-501/default
+        relative/socket
+        /private/tmp/tmux-501/agent
+        /private/tmp/tmux-501/default
+        """
+        XCTAssertEqual(RemoteLaunch.legacySocketMatches(output), [
+            "/private/tmp/tmux-501/agent",
+            "/private/tmp/tmux-501/default"
+        ])
     }
 }

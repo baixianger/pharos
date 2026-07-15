@@ -16,7 +16,7 @@ import Foundation
 ///    `host-<alias>`, delivered stdin → tmux buffer, never argv/ps.
 enum RemoteLaunch {
     struct RemoteError: LocalizedError, CustomStringConvertible {
-        enum Reason { case generic, paneUnavailable, legacyRemoteRegistration }
+        enum Reason { case generic, paneUnavailable }
         let message: String
         var reason: Reason = .generic
         var description: String { message }
@@ -48,6 +48,36 @@ enum RemoteLaunch {
 
     static func validTmuxSocket(_ socket: String) -> Bool {
         socket.hasPrefix("/") && !socket.contains("\n") && !socket.contains("\r") && !socket.contains("\0")
+    }
+
+    /// Parse socket paths returned by the remote legacy discovery script.
+    /// Kept pure/internal so filtering and de-duplication have regression tests.
+    static func legacySocketMatches(_ output: String) -> [String] {
+        Array(Set(output.split(separator: "\n").map(String.init).filter(validTmuxSocket))).sorted()
+    }
+
+    /// Older mesh registrations contain only a pane id. Enumerate the peer's
+    /// live tmux server sockets and return every server that currently owns it.
+    /// The caller proceeds only for one exact match; duplicate pane ids across
+    /// servers remain deliberately ambiguous.
+    private static func legacyRemoteSockets(pane: String, host: String) throws -> [String] {
+        let p = sq(pane)
+        let script = """
+        {
+          /usr/sbin/lsof -n -a -c tmux -U -Fn 2>/dev/null | /usr/bin/sed -n 's|^n\\(/.*\\)$|\\1|p'
+          /usr/bin/find /private/tmp/tmux-$(id -u) -maxdepth 2 -type s -print 2>/dev/null
+        } | /usr/bin/sort -u | while IFS= read -r socket; do
+          case "$socket" in /*) ;; *) continue ;; esac
+          [ -S "$socket" ] || continue
+          tmux -S "$socket" display-message -p -t \(p) '#{session_name}' >/dev/null 2>&1 \
+            && /usr/bin/printf '%s\\n' "$socket"
+        done
+        """
+        let result = ssh(host, script)
+        guard result.ok else {
+            throw RemoteError(message: "Cannot inspect tmux servers on \(host): \(result.err.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        return legacySocketMatches(result.out)
     }
 
     /// ssh with data written to the remote command's stdin (for secrets — the
@@ -486,20 +516,27 @@ enum RemoteLaunch {
         if let socket, !validTmuxSocket(socket) {
             throw RemoteError(message: "invalid tmux server identity")
         }
-        if host?.isEmpty == false, socket == nil {
-            throw RemoteError(
-                message: "This agent joined before Pharos recorded its tmux server. Update Pharos on that Mac and have the agent rejoin the room before stopping it safely.",
-                reason: .legacyRemoteRegistration
-            )
+        var resolvedSocket = socket
+        if let host, !host.isEmpty, resolvedSocket == nil {
+            let matches = try legacyRemoteSockets(pane: pane, host: host)
+            if matches.isEmpty {
+                throw RemoteError(message: "The remote tmux pane '\(pane)' no longer exists on \(host).",
+                                  reason: .paneUnavailable)
+            }
+            guard matches.count == 1 else {
+                throw RemoteError(message: "Pane '\(pane)' exists in multiple tmux servers on \(host); have the agent rejoin before stopping it safely.")
+            }
+            resolvedSocket = matches[0]
         }
-        let probe = tmuxAny(host, ["display-message", "-p", "-t", pane, "#{session_name}"], socket: socket)
+        let probe = tmuxAny(host, ["display-message", "-p", "-t", pane, "#{session_name}"],
+                            socket: resolvedSocket)
         let session = probe.out.trimmingCharacters(in: .whitespacesAndNewlines)
         guard probe.ok, !session.isEmpty else {
-            let hint = socket == nil ? " Rejoin the room so Pharos can record its exact tmux server." : ""
+            let hint = resolvedSocket == nil ? " Rejoin the room so Pharos can record its exact tmux server." : ""
             throw RemoteError(message: "Cannot resolve tmux pane '\(pane)'\(at(host)).\(hint)",
                               reason: .paneUnavailable)
         }
-        let stopped = tmuxAny(host, ["kill-session", "-t", "=\(session)"], socket: socket)
+        let stopped = tmuxAny(host, ["kill-session", "-t", "=\(session)"], socket: resolvedSocket)
         guard stopped.ok else {
             throw RemoteError(message: "Cannot stop '\(session)'\(at(host)): \(stopped.err.trimmingCharacters(in: .whitespacesAndNewlines))")
         }

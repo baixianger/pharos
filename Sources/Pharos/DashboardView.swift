@@ -225,8 +225,7 @@ struct DashboardView: View {
             case .failure(let error):
                 // A missing pane on this Mac means the process is already gone;
                 // finish the requested close by deleting its stale mesh rows.
-                if host == nil,
-                   let remoteError = error as? RemoteLaunch.RemoteError,
+                if let remoteError = error as? RemoteLaunch.RemoteError,
                    remoteError.reason == .paneUnavailable {
                     if let cleanupError = await removeMeshRegistrations(registrations, memberID: m.id) {
                         agentActionError = cleanupError
