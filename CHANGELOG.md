@@ -5,7 +5,7 @@ Maps Pharos versions to git history. Newest at top.
 
 ---
 
-## Unreleased
+## v0.6.0 — 2026-07-15
 
 **Stable room names across native tabs.** A room now supplies the same dynamic
 title to SwiftUI navigation and the underlying AppKit window, instead of the
@@ -48,6 +48,32 @@ shared mesh broker.
 the same automatic nudge path as Claude, locally or over SSH. The safe unknown-
 state probe recognizes Codex's `›` composer and rejects its `Working` state;
 ambient broadcasts without an @mention still do not wake the whole room.
+
+**Centralized agent management.** The Dashboard is now the single place to
+rename, attach, stop, and remove mesh agents. Display names can change without
+changing the immutable session identity, and room managers can remove stale or
+unwanted members. Stopping an agent removes all of that session's room aliases.
+
+**Reliable local and remote agent controls.** Pharos records the exact tmux
+server behind every pane, so Attach, Stop, and wake actions reach the intended
+session even across Macs. Older registrations are resolved safely by inspecting
+the peer's live tmux servers; already-ended sessions are cleaned from the
+Dashboard, while ambiguous matches are refused instead of risking the wrong
+process.
+
+**Independent window and tab titles.** Dashboard, Chat Rooms, and Project keep
+stable content titles while native macOS tabs show Dashboard, the selected room,
+or the selected project. Switching or creating tabs no longer lets the window
+title overwrite the tab label.
+
+**Broader Codex installation support.** Pharos now launches the CLI bundled
+inside Codex.app as well as Homebrew, local-bin, npm-global, nvm/fnm, mise,
+asdf, and Volta installations. Detection and launch use the same resolved
+executable, eliminating false “Codex not found” errors from GUI PATH differences.
+
+**Pharos for iPhone foundation.** The companion app now includes Projects,
+Agents, Issues, Chat, and Settings tabs, mesh-backed registry access, SSH key
+setup, remote tmux control, agent spawning, and an interactive remote terminal.
 
 ## v0.5.0 — 2026-07-13
 
