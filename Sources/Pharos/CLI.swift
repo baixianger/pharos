@@ -221,7 +221,8 @@ enum CLI {
                                                 session: session,
                                                 host: HostIdentity.current,
                                                 tmuxPane: pane,
-                                                kind: kind))
+                                                kind: kind,
+                                                tailscaleIP: detectTailscaleIP()))
             guard r.ok else { return report(r) }
             print("joined \(a[0]) as \(a[1])")
             let history = r.messages ?? []
@@ -282,6 +283,7 @@ enum CLI {
                 var bits = [m.state ?? "state?"]
                 if let k = m.kind { bits.append(k) }
                 if let h = m.host { bits.append(h) }
+                if let ip = m.tailscaleIP { bits.append(ip) }
                 bits.append(m.tmuxPane.map { "tmux \($0)" } ?? "no tmux")
                 if let p = m.project { bits.append((p as NSString).abbreviatingWithTildeInPath) }
                 bits.append("session \(m.id.prefix(8))")
@@ -294,27 +296,36 @@ enum CLI {
             // Spawn an agent into a room + confirm it joined (same path the GUI
             // "add member" uses), locally or on the paired Mac over SSH.
             guard a.count >= 2 else {
-                print("usage: pharos mesh spawn <room> <nick> [claude|codex] [--host <ssh>]")
+                print("usage: pharos mesh spawn <room> <nick> [claude|codex] [--host <ssh>] [--cwd <dir> | --project <name>]")
                 return 2
             }
             var kind = AgentKind.claude
             var host: String?
+            var cwd: String?
+            var projectName: String?
             var i = 2
             while i < a.count {
-                if a[i] == "--host" {
+                switch a[i] {
+                case "--host":
                     guard i + 1 < a.count else { print("error: --host needs an SSH alias or IP"); return 2 }
-                    host = a[i + 1]
-                    i += 2
-                } else if let parsed = AgentKind(rawValue: a[i]) {
-                    kind = parsed
-                    i += 1
-                } else {
-                    print("error: expected claude, codex, or --host <ssh>; got '\(a[i])'")
-                    return 2
+                    host = a[i + 1]; i += 2
+                case "--cwd", "--dir":
+                    guard i + 1 < a.count else { print("error: --cwd needs a directory path"); return 2 }
+                    cwd = a[i + 1]; i += 2
+                case "--project":
+                    guard i + 1 < a.count else { print("error: --project needs a project name"); return 2 }
+                    projectName = a[i + 1]; i += 2
+                default:
+                    if let parsed = AgentKind(rawValue: a[i]) { kind = parsed; i += 1 }
+                    else { print("error: expected claude, codex, --host, --cwd, or --project; got '\(a[i])'"); return 2 }
                 }
             }
+            if cwd != nil, projectName != nil {
+                print("error: use either --cwd or --project, not both"); return 2
+            }
+            let workDir: MeshSpawn.WorkDir = cwd.map { .path($0) } ?? projectName.map { .project($0) } ?? .scratch
             var final = MeshSpawn.Phase.failed
-            MeshSpawn.spawn(room: a[0], nick: a[1], kind: kind, host: host) { p in
+            MeshSpawn.spawn(room: a[0], nick: a[1], kind: kind, host: host, workDir: workDir) { p in
                 print("[\(p.phase.rawValue)] \(p.detail)")
                 final = p.phase
             }
@@ -359,6 +370,22 @@ enum CLI {
         if env["CLAUDECODE"] != nil || env["CLAUDE_CODE_ENTRYPOINT"] != nil { return "claude" }
         if env.keys.contains(where: { $0.hasPrefix("CODEX_") })
             || (env["PATH"]?.contains("codex.system") ?? false) { return "codex" }
+        return nil
+    }
+
+    /// This machine's own Tailscale IPv4, captured at join so the mobile app can
+    /// auto-fill the SSH host for a member without the user typing it. Best-effort
+    /// — nil if Tailscale isn't installed/logged in.
+    private static func detectTailscaleIP() -> String? {
+        let candidates = ["/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale",
+                          "/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/usr/bin/tailscale"]
+        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            let out = Shell.run(path, ["ip", "-4"]).out
+            if let line = out.split(whereSeparator: \.isNewline).first {
+                let ip = line.trimmingCharacters(in: .whitespaces)
+                if ip.split(separator: ".").count == 4 { return ip }
+            }
+        }
         return nil
     }
 

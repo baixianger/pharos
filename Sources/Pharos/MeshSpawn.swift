@@ -13,6 +13,44 @@ enum MeshSpawn {
     enum Phase: String { case booting, joining, joined, failed }
     struct Progress { let phase: Phase; let detail: String }
 
+    /// Where a spawned agent's tmux session should start. Resolved on whichever
+    /// machine actually runs the session, so `.project` always maps to that
+    /// host's own registered checkout path.
+    enum WorkDir: Sendable, Equatable {
+        case scratch              // neutral per-member dir (the default, off real projects)
+        case path(String)         // an explicit absolute directory
+        case project(String)      // a registered project name → its per-host path
+
+        var isDefault: Bool { self == .scratch }
+    }
+
+    /// Outcome of resolving a `WorkDir` to a concrete directory.
+    enum ResolvedDir { case ok(String), fail(String) }
+
+    /// Resolve a `WorkDir` against THIS Mac's filesystem + project registry.
+    static func resolveLocal(_ workDir: WorkDir, room: String, nick: String) -> ResolvedDir {
+        switch workDir {
+        case .scratch:
+            return .ok(agentDir(room: room, nick: nick))
+        case .path(let raw):
+            let p = (raw as NSString).expandingTildeInPath
+            guard isDirectory(p) else { return .fail("directory not found: \(p)") }
+            return .ok(p)
+        case .project(let name):
+            guard let project = PharosCore.findProject(name) else { return .fail("project not found: \(name)") }
+            guard let path = project.resolvedLocalPath(forHost: HostIdentity.current), !path.isEmpty else {
+                return .fail("project '\(name)' has no path registered on this Mac")
+            }
+            guard isDirectory(path) else { return .fail("project path missing: \(path)") }
+            return .ok(path)
+        }
+    }
+
+    private static func isDirectory(_ path: String) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+    }
+
     /// tmux session name for a spawned mesh member.
     static func sessionName(room: String, nick: String) -> String {
         "pharos-mesh-\(safe(room))-\(safe(nick))"
@@ -56,20 +94,27 @@ enum MeshSpawn {
     /// One entry point for GUI and CLI. `host == nil` means this Mac; otherwise
     /// it is an SSH alias/IP for the paired Mac.
     static func spawn(room: String, nick: String, kind: AgentKind, host: String? = nil,
+                      workDir: WorkDir = .scratch,
                       onProgress: @escaping (Progress) -> Void) {
         if let host, !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             RemoteLaunch.spawnMeshAgent(room: room, nick: nick, kind: kind,
                                         host: host.trimmingCharacters(in: .whitespacesAndNewlines),
-                                        onProgress: onProgress)
+                                        workDir: workDir, onProgress: onProgress)
         } else {
-            spawnLocal(room: room, nick: nick, kind: kind, onProgress: onProgress)
+            spawnLocal(room: room, nick: nick, kind: kind, workDir: workDir, onProgress: onProgress)
         }
     }
 
     /// Spawn `kind` locally in tmux and brief it to join `room` as `nick`.
     /// Reports progress; returns once joined or failed.
     static func spawnLocal(room: String, nick: String, kind: AgentKind,
+                           workDir: WorkDir = .scratch,
                            onProgress: @escaping (Progress) -> Void) {
+        let dir: String
+        switch resolveLocal(workDir, room: room, nick: nick) {
+        case .ok(let d): dir = d
+        case .fail(let why): onProgress(Progress(phase: .failed, detail: why)); return
+        }
         // Spawn is expected to work from one click even if Settings was never
         // opened. The installers are idempotent; Codex's trust prompt is
         // bypassed by launchCommand below.
@@ -83,11 +128,17 @@ enum MeshSpawn {
         }
         let name = sessionName(room: room, nick: nick)
         _ = Shell.run(tmux, ["kill-session", "-t", name])   // clear a stale one
-        guard Shell.run(tmux, ["new-session", "-d", "-s", name, "-c", agentDir(room: room, nick: nick),
+        guard Shell.run(tmux, ["new-session", "-d", "-s", name, "-c", dir,
                                "-x", "200", "-y", "50", launchCommand(kind)]).ok else {
             onProgress(Progress(phase: .failed, detail: "couldn't start the tmux session")); return
         }
-        onProgress(Progress(phase: .booting, detail: "starting \(kind.rawValue)…"))
+        // Size the window to whichever client is currently driving it, instead of
+        // the smallest attached one — so a phone/desktop attaching later doesn't
+        // make the agent's TUI redraw-fight (the "flushing" screen). Best-effort.
+        _ = Shell.run(tmux, ["set-option", "-t", name, "window-size", "latest"])
+        _ = Shell.run(tmux, ["set-window-option", "-t", name, "aggressive-resize", "on"])
+        let where_ = workDir.isDefault ? "" : " in \((dir as NSString).abbreviatingWithTildeInPath)"
+        onProgress(Progress(phase: .booting, detail: "starting \(kind.rawValue)\(where_)…"))
 
         guard waitForBoot(tmux, name) else {
             onProgress(Progress(phase: .failed,

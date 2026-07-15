@@ -22,6 +22,7 @@ struct MeshRequest: Codable {
     var expectedState: String?      // mark only: compare-and-set guard for observer corrections
     var expectedStateTs: Double?    // mark only: reject a correction if a newer hook already won
     var kind: String?               // join only: "claude" | "codex" (drives the avatar set)
+    var tailscaleIP: String?        // join only: the joiner's own `tailscale ip -4`, for SSH auto-fill
 }
 
 /// Hook-reported lifecycle states (probed ground truth, cc-hook-probe FINDINGS,
@@ -74,6 +75,7 @@ struct MeshPresenceEntry: Codable {
     var state: String?              // last hook-reported MeshSessionState; nil = unknown (never poke)
     var stateTs: Double?            // when `state` was reported
     var kind: String?               // "claude" | "codex" (avatar set); nil = unknown → claude default
+    var tailscaleIP: String?        // the joiner's own `tailscale ip -4`; nil pre-0.5 joins
     var aliases: [String: String]
     var rooms: [String]
     var lastSeen: Double
@@ -94,6 +96,7 @@ struct MeshMemberInfo: Codable {
     var stateTs: Double?
     var unread: Int?                // pending mailbox messages across all rooms
     var kind: String?               // "claude" | "codex" — which avatar set the GUI shows
+    var tailscaleIP: String?        // the member's own `tailscale ip -4`, for SSH host auto-fill
     var rooms: [String]
     var lastSeen: Double
 }
@@ -111,6 +114,7 @@ struct MeshResponse: Codable {
     var members: [MeshMemberInfo]?  // who: full roster; say: the @-targets' presence
     var note: String?
     var memberID: String?
+    var payload: String?            // projects/issues: registry JSON the hub is the source of truth for
 
     static func okay(_ note: String? = nil) -> MeshResponse { MeshResponse(ok: true, note: note) }
     static func fail(_ e: String) -> MeshResponse { MeshResponse(ok: false, error: e) }
@@ -427,7 +431,8 @@ final class MeshBroker {
             // Bash tool) — seed state busy until its hooks report otherwise.
             touchPresenceLocked(memberID, project: req.project, session: req.session,
                                 host: req.host, tmuxPane: req.tmuxPane,
-                                state: MeshSessionState.busy.rawValue, kind: req.kind)
+                                state: MeshSessionState.busy.rawValue, kind: req.kind,
+                                tailscaleIP: req.tailscaleIP)
             syncUnreadLocked(memberID)
             lock.unlock()
             // Hand the joiner the recent conversation so it can catch up.
@@ -462,7 +467,7 @@ final class MeshBroker {
                 memberInfoLocked(room: r, nick: nick)
                     ?? MeshMemberInfo(id: "", nick: nick, project: nil, session: nil, host: nil,
                                       tmuxPane: nil, state: nil, stateTs: nil, unread: nil,
-                                      kind: nil, rooms: [], lastSeen: 0)
+                                      kind: nil, tailscaleIP: nil, rooms: [], lastSeen: 0)
             }
             lock.unlock()
             return MeshResponse(ok: true, members: targetInfo.isEmpty ? nil : targetInfo)
@@ -491,6 +496,14 @@ final class MeshBroker {
             }
             lock.unlock()
             return MeshResponse(ok: true, members: roster)
+
+        case "projects":
+            // The hub is the single source of truth for the project registry.
+            // Clients read it over this connection instead of iCloud or per-client SSH.
+            return MeshResponse(ok: true, payload: registryProjectsJSON())
+
+        case "issues":
+            return MeshResponse(ok: true, payload: registryIssuesJSON())
 
         case "peek":
             // Cross-host Stop-hook query: resolve (cwd, session) → nick on the
@@ -637,18 +650,19 @@ final class MeshBroker {
     /// presence stays a roster of agents.
     private func touchPresenceLocked(_ memberID: String, project: String? = nil, session: String? = nil,
                                      host: String? = nil, tmuxPane: String? = nil, state: String? = nil,
-                                     kind: String? = nil) {
+                                     kind: String? = nil, tailscaleIP: String? = nil) {
         let aliases = Dictionary(uniqueKeysWithValues: rooms.compactMap { room, value in
             value.members.first(where: { $0.value == memberID }).map { (room, $0.key) }
         })
         if presence[memberID] == nil && aliases.isEmpty { return }
         var e = presence[memberID] ?? MeshPresenceEntry(project: nil, session: nil, host: nil, tmuxPane: nil,
-                                                        state: nil, stateTs: nil, kind: nil, aliases: [:],
-                                                        rooms: [], lastSeen: 0, online: true)
+                                                        state: nil, stateTs: nil, kind: nil, tailscaleIP: nil,
+                                                        aliases: [:], rooms: [], lastSeen: 0, online: true)
         if let p = project, !p.isEmpty { e.project = p }
         if let s = session, !s.isEmpty { e.session = s }
         if let h = host, !h.isEmpty { e.host = h }
         if let k = kind, !k.isEmpty { e.kind = k }
+        if let ip = tailscaleIP, !ip.isEmpty { e.tailscaleIP = ip }
         // A re-join OUTSIDE tmux must clear a stale pane from an earlier
         // tmux-wrapped join, so join always overwrites (nil included) when it
         // carries identity; plain touches (say/recv) leave it alone.
@@ -677,7 +691,40 @@ final class MeshBroker {
         }
         return MeshMemberInfo(id: memberID, nick: nick, project: e.project, session: e.session, host: e.host,
                               tmuxPane: e.tmuxPane, state: e.state, stateTs: e.stateTs,
-                              unread: unread, kind: e.kind, rooms: [room], lastSeen: e.lastSeen)
+                              unread: unread, kind: e.kind, tailscaleIP: e.tailscaleIP,
+                              rooms: [room], lastSeen: e.lastSeen)
+    }
+
+    // MARK: - Registry (the hub is the source of truth; clients read over mesh)
+
+    /// All registered projects as JSON matching the mobile parser
+    /// (`{"projects":[{name, localPath, githubRemote, tags}]}`).
+    private func registryProjectsJSON() -> String {
+        let rows: [[String: Any]] = PharosCore.loadProjects().map { p in
+            ["name": p.name,
+             "localPath": p.localPath ?? NSNull(),
+             "githubRemote": p.githubRemote ?? NSNull(),
+             "tags": p.tags]
+        }
+        return Self.jsonString(["projects": rows]) ?? #"{"projects":[]}"#
+    }
+
+    /// Every open issue across all projects
+    /// (`{"issues":[{project, number, title, status, priority, labels}]}`).
+    private func registryIssuesJSON() -> String {
+        var out: [[String: Any]] = []
+        for p in PharosCore.loadProjects() {
+            for i in p.issues where i.status.isOpen {
+                out.append(["project": p.name, "number": i.number, "title": i.title,
+                            "status": i.status.rawValue, "priority": i.priority.rawValue, "labels": i.labels])
+            }
+        }
+        return Self.jsonString(["issues": out]) ?? #"{"issues":[]}"#
+    }
+
+    private static func jsonString(_ obj: [String: Any]) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     /// Broker-side nick resolution from (cwd, session) — mirrors

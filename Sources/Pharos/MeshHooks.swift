@@ -345,11 +345,25 @@ enum MeshHooks {
     /// trimmed; order-preserving + de-duplicated. Shared by the CLI `say`/`ask`
     /// and the GUI chat input so both surfaces deliver text mentions identically.
     static func parseTextMentions(_ text: String) -> [String] {
+        // A nick is [A-Za-z0-9._-] (matches the broker's `safe()` charset). Scan
+        // each `@` and take the maximal run of nick chars, stopping at the first
+        // non-nick character. Splitting on whitespace alone was wrong for CJK,
+        // where "@nick你好" has no space: it swallowed "你好" into the nick (so a
+        // real mention never matched), and bare "@我"/"@，" became bogus targets.
+        func isNickChar(_ c: Character) -> Bool {
+            c.isASCII && (c.isLetter || c.isNumber || "._-".contains(c))
+        }
         var out: [String] = []
-        for tok in text.split(whereSeparator: { $0.isWhitespace }) where tok.hasPrefix("@") {
-            let name = tok.dropFirst()
-                .trimmingCharacters(in: CharacterSet(charactersIn: ".,:;!?()[]{}<>'\""))
+        let chars = Array(text)
+        var i = 0
+        while i < chars.count {
+            guard chars[i] == "@" else { i += 1; continue }
+            var j = i + 1
+            while j < chars.count, isNickChar(chars[j]) { j += 1 }
+            var name = String(chars[(i + 1)..<j])
+            while name.hasSuffix(".") { name.removeLast() }   // trailing sentence period
             if !name.isEmpty && !out.contains(name) { out.append(name) }
+            i = j
         }
         return out
     }

@@ -162,6 +162,12 @@ enum LaunchService {
         openInTerminal(terminal, path: path, command: nil)
     }
 
+    /// Open a terminal window in the home dir and run `command` — used to attach
+    /// a mesh agent's tmux session from the Dashboard.
+    static func openTerminal(command: String, terminal: TerminalApp) {
+        openInTerminal(terminal, path: NSHomeDirectory(), command: command)
+    }
+
     /// Launch the agent in the chosen terminal. With `project.tmux`, it runs
     /// inside a persistent tmux session (attach-or-create); otherwise directly.
     /// If `desktop` is non-nil, switches to that Space (1-based) before launching

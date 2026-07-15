@@ -153,6 +153,7 @@ enum RemoteLaunch {
     /// session, boot Claude/Codex, brief it to join, and confirm at the broker.
     /// Blocking; callers run it off-main.
     static func spawnMeshAgent(room: String, nick: String, kind: AgentKind, host: String,
+                               workDir: MeshSpawn.WorkDir = .scratch,
                                onProgress: @escaping (MeshSpawn.Progress) -> Void) {
         func fail(_ detail: String) {
             onProgress(.init(phase: .failed, detail: detail))
@@ -175,10 +176,40 @@ enum RemoteLaunch {
             fail("couldn't resolve the home folder on \(host)")
             return
         }
-        let dir = home + "/.pharos/mesh-agents/" + MeshSpawn.safe(room) + "/" + MeshSpawn.safe(nick)
-        guard ssh(host, "mkdir -p \(sq(dir))").ok else {
-            fail("couldn't create the agent folder on \(host)")
-            return
+        // Resolve the working directory on the remote host. `.project` maps to
+        // the remote's OWN registered checkout path, so a name means the same
+        // project regardless of which Mac each machine keeps it on.
+        let dir: String
+        switch workDir {
+        case .scratch:
+            dir = home + "/.pharos/mesh-agents/" + MeshSpawn.safe(room) + "/" + MeshSpawn.safe(nick)
+            guard ssh(host, "mkdir -p \(sq(dir))").ok else {
+                fail("couldn't create the agent folder on \(host)")
+                return
+            }
+        case .path(let raw):
+            let p = raw.hasPrefix("~") ? home + String(raw.dropFirst()) : raw
+            guard ssh(host, "test -d \(sq(p))").ok else {
+                fail("directory not found on \(host): \(p)")
+                return
+            }
+            dir = p
+        case .project(let name):
+            let idProbe = ssh(host, #"scutil --get ComputerName 2>/dev/null || hostname"#)
+            let hostKey = idProbe.out.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard idProbe.ok, !hostKey.isEmpty else {
+                fail("couldn't identify \(host) to resolve project '\(name)'"); return
+            }
+            guard let project = PharosCore.findProject(name) else {
+                fail("project not found in registry: \(name)"); return
+            }
+            guard let path = project.resolvedLocalPath(forHost: hostKey), !path.isEmpty else {
+                fail("project '\(name)' has no path registered for \(hostKey)"); return
+            }
+            guard ssh(host, "test -d \(sq(path))").ok else {
+                fail("project path missing on \(hostKey): \(path)"); return
+            }
+            dir = path
         }
 
         let name = MeshSpawn.sessionName(room: room, nick: nick)
@@ -188,6 +219,10 @@ enum RemoteLaunch {
             fail("couldn't start tmux on \(host)")
             return
         }
+        // Size to the driving client, not the smallest — avoids the redraw-fight
+        // ("flushing" screen) when a phone/desktop attaches later. Best-effort.
+        _ = tmux(host, ["set-option", "-t", name, "window-size", "latest"])
+        _ = tmux(host, ["set-window-option", "-t", name, "aggressive-resize", "on"])
 
         // Keep the server alive before probing/unlocking: the login keychain's
         // security session is scoped to this tmux server on macOS.

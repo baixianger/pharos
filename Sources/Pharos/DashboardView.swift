@@ -34,6 +34,8 @@ struct DashboardView: View {
     @State private var activityFilter: ActivityFilter = .all
     @State private var meshMessages: [MeshMsg] = []    // recent agent chatter (read from transcripts)
     @State private var agentToStop: StopTarget?
+    @State private var meshAgents: [MeshMemberInfo] = []  // live roster across all machines (who)
+    @State private var meshAgentToStop: MeshMemberInfo?
     private struct StopTarget: Identifiable {
         let session: String; let host: String?; let label: String
         var id: String { session }
@@ -66,6 +68,7 @@ struct DashboardView: View {
                 statusCard
                 if !blocked.isEmpty || !urgent.isEmpty { attentionCard }
                 if !activeAgents.isEmpty { agentsCard }
+                if !liveMeshAgents.isEmpty { meshAgentsCard }
                 if !meshMessages.isEmpty { meshCard }
                 if projects.contains(where: { !$0.milestones.isEmpty }) { milestonesCard }
                 activityCard
@@ -85,6 +88,16 @@ struct DashboardView: View {
             Button("Cancel", role: .cancel) {}
         } message: { t in
             Text("Kills its tmux session \(t.host.map { "on \($0)" } ?? "on this Mac"). Unsaved work is lost.")
+        }
+        .confirmationDialog("Stop @\(meshAgentToStop?.nick ?? "")?",
+                            isPresented: Binding(get: { meshAgentToStop != nil },
+                                                 set: { if !$0 { meshAgentToStop = nil } }),
+                            titleVisibility: .visible,
+                            presenting: meshAgentToStop) { m in
+            Button("Stop agent", role: .destructive) { stopMeshAgent(m) }
+            Button("Cancel", role: .cancel) {}
+        } message: { m in
+            Text("Kills @\(m.nick)'s tmux session \(m.host.map { "on \($0)" } ?? "on this Mac"). Unsaved work is lost.")
         }
     }
 
@@ -114,6 +127,76 @@ struct DashboardView: View {
         }
     }
 
+    // MARK: Mesh agents (all machines · attach / stop)
+
+    private var liveMeshAgents: [MeshMemberInfo] {
+        meshAgents.filter { $0.nick != "human" }
+            .sorted { ($0.host ?? "", $0.nick) < ($1.host ?? "", $1.nick) }
+    }
+
+    private var meshAgentsCard: some View {
+        card("Agents · \(liveMeshAgents.count) on the mesh") {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(liveMeshAgents, id: \.id) { m in
+                    HStack(spacing: 9) {
+                        Circle().fill(meshStateColor(m.state)).frame(width: 8, height: 8)
+                        Text(m.nick).font(.callout.weight(.medium))
+                        Text(m.kind ?? "claude").font(.caption).foregroundStyle(.secondary)
+                        if let h = m.host { Text(h).font(.caption).foregroundStyle(.secondary) }
+                        if let p = m.project {
+                            Text((p as NSString).abbreviatingWithTildeInPath)
+                                .font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+                        }
+                        Spacer()
+                        if m.tmuxPane != nil {
+                            Button("Attach") { attachMeshAgent(m) }.font(.caption).buttonStyle(.borderless)
+                            Button("Stop") { meshAgentToStop = m }.font(.caption).buttonStyle(.borderless).foregroundStyle(.red)
+                        } else {
+                            Text("no tmux").font(.caption2).foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func meshStateColor(_ raw: String?) -> Color {
+        switch raw.flatMap(MeshSessionState.init(rawValue:)) {
+        case .busy: return .orange
+        case .blocked: return .red
+        case .stopped, .idle: return .green
+        case .gone: return .gray.opacity(0.4)
+        case nil: return .gray
+        }
+    }
+
+    private func attachMeshAgent(_ m: MeshMemberInfo) {
+        guard let cmd = meshTmuxCommand(m, attach: true) else { return }
+        LaunchService.openTerminal(command: cmd, terminal: store.terminal)
+    }
+
+    private func stopMeshAgent(_ m: MeshMemberInfo) {
+        guard let cmd = meshTmuxCommand(m, attach: false) else { return }
+        Task.detached { _ = Shell.run("/bin/sh", ["-c", cmd]); await MainActor.run { loadMesh() } }
+    }
+
+    /// Shell command to attach or kill `m`'s tmux session, resolving its reported
+    /// pane to the session name. Local when the agent is on this Mac; otherwise
+    /// wrapped in `ssh <peer>` (escaped so the local shell hands the script to the
+    /// remote shell verbatim).
+    private func meshTmuxCommand(_ m: MeshMemberInfo, attach: Bool) -> String? {
+        guard let pane = m.tmuxPane, pane.first == "%", pane.dropFirst().allSatisfy(\.isNumber) else { return nil }
+        let action = attach ? "exec tmux attach -t \"=$s\"" : "tmux kill-session -t \"=$s\""
+        let inner = "s=$(tmux display-message -p -t '\(pane)' '#{session_name}') && \(action)"
+        if m.host == nil || m.host == HostIdentity.current { return inner }
+        let peer = store.peerHost
+        guard !peer.isEmpty else { return nil }
+        let escaped = inner.replacingOccurrences(of: "\\", with: "\\\\")
+                           .replacingOccurrences(of: "$", with: "\\$")
+                           .replacingOccurrences(of: "\"", with: "\\\"")
+        return "ssh \(attach ? "-t " : "")\(peer) \"\(escaped)\""
+    }
+
     private func loadMesh() {
         let dir = MeshPaths.transcriptDir
         let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
@@ -126,6 +209,12 @@ struct DashboardView: View {
             }
         }
         meshMessages = all.sorted { $0.ts > $1.ts }
+        // Live roster across every machine — fetched off-main so the socket
+        // round-trip never stutters the dashboard.
+        Task.detached {
+            let roster = MeshClient.send(MeshRequest(cmd: "who")).members ?? []
+            await MainActor.run { meshAgents = roster }
+        }
     }
 
     // MARK: Group tabs

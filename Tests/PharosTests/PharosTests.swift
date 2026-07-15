@@ -1084,6 +1084,18 @@ final class MeshWireTests: XCTestCase {
         XCTAssertEqual(MeshHooks.parseTextMentions("@alice check the PR with @bob, @alice!"), ["alice", "bob"])
         XCTAssertEqual(MeshHooks.parseTextMentions("no mentions here"), [])
     }
+
+    func testParseTextMentionsHandlesCJKAdjacency() {
+        // A CJK char immediately after the nick must NOT be swallowed into it.
+        XCTAssertEqual(MeshHooks.parseTextMentions("@ios-home-claude你看看这个"), ["ios-home-claude"])
+        XCTAssertEqual(MeshHooks.parseTextMentions("@a2a-codex你好 @codex，麻烦了"), ["a2a-codex", "codex"])
+        // A space still works, as before.
+        XCTAssertEqual(MeshHooks.parseTextMentions("@ios-home-claude 其实是通的"), ["ios-home-claude"])
+        // Bare "@" + CJK / CJK punctuation is not a mention.
+        XCTAssertEqual(MeshHooks.parseTextMentions("交给@我，然后@，就会立刻"), [])
+        // Trailing sentence period is trimmed; email-ish text isn't a leading mention.
+        XCTAssertEqual(MeshHooks.parseTextMentions("ping @bob."), ["bob"])
+    }
 }
 
 final class MeshPokePaneCommandTests: XCTestCase {
@@ -1258,6 +1270,42 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
         XCTAssertEqual(Set(roster.filter { $0.nick == "codex" }.map(\.id)),
                        ["session-orbidash", "session-lelantos"])
+    }
+
+    func testJoinReportsTailscaleIPInRosterAndSay() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "ts-room", nick: "ip-agent",
+                                                 session: "session-ip", host: "白富贵",
+                                                 tmuxPane: "%12", kind: "claude",
+                                                 tailscaleIP: "100.91.91.43")).ok)
+        // `who` surfaces the reported IP so the mobile app can auto-fill SSH.
+        let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
+        let m = roster.first { $0.nick == "ip-agent" }
+        XCTAssertEqual(m?.tailscaleIP, "100.91.91.43")
+        XCTAssertEqual(m?.host, "白富贵")
+        // `say` echoes the @-target's IP as well.
+        let echoed = broker.process(MeshRequest(cmd: "say", room: "ts-room", nick: "human",
+                                                text: "@ip-agent hi", to: ["ip-agent"]))
+        XCTAssertEqual(echoed.members?.first?.tailscaleIP, "100.91.91.43")
+    }
+
+    func testJoinWithoutTailscaleIPLeavesItNil() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "ts-room2", nick: "no-ip",
+                                                 session: "session-noip", host: "mac",
+                                                 kind: "codex")).ok)
+        let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
+        XCTAssertNil(roster.first { $0.nick == "no-ip" }?.tailscaleIP)
+    }
+
+    func testBrokerServesRegistryProjectsAndIssues() {
+        let broker = MeshBroker()
+        let projects = broker.process(MeshRequest(cmd: "projects"))
+        XCTAssertTrue(projects.ok)
+        XCTAssertTrue(projects.payload?.contains("\"projects\"") == true)
+        let issues = broker.process(MeshRequest(cmd: "issues"))
+        XCTAssertTrue(issues.ok)
+        XCTAssertTrue(issues.payload?.contains("\"issues\"") == true)
     }
 
     func testRejoinReplacesAliasOnlyInsideThatRoom() {

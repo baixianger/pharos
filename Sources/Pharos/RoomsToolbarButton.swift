@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Toolbar chat-room switcher/manager. Replaces the in-view room tab strip: one
 /// button in the window toolbar opens a popover to switch the current tab's
@@ -159,12 +160,20 @@ struct AddMemberSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(ProjectStore.self) private var store
     private enum SpawnHost: Hashable { case local, peer }
+    private enum DirChoice: Hashable { case scratch, project(String), custom }
     @State private var kind: AgentKind = .claude
     @State private var spawnHost: SpawnHost = .local
     @State private var nick = ""
     @State private var spawning = false
     @State private var phase: MeshSpawn.Phase?
     @State private var detail = ""
+    @State private var dirChoice: DirChoice = .scratch
+    @State private var customPath = ""
+    @State private var showFolderPicker = false
+
+    private var projectNames: [String] {
+        store.projects.filter { $0.localPath != nil || !$0.localPaths.isEmpty }.map(\.name).sorted()
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -185,6 +194,23 @@ struct AddMemberSheet: View {
             }
             .pickerStyle(.radioGroup)
             .disabled(spawning)
+
+            Picker("Directory", selection: $dirChoice) {
+                Text("Scratch (default)").tag(DirChoice.scratch)
+                ForEach(projectNames, id: \.self) { Text($0).tag(DirChoice.project($0)) }
+                Text("Custom folder…").tag(DirChoice.custom)
+            }
+            .disabled(spawning)
+            if dirChoice == .custom {
+                HStack {
+                    Text(customPath.isEmpty ? "No folder chosen"
+                         : (customPath as NSString).abbreviatingWithTildeInPath)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Button("Choose…") { showFolderPicker = true }.disabled(spawning)
+                }
+            }
 
             HStack {
                 Text("Nick").foregroundStyle(.secondary)
@@ -221,17 +247,26 @@ struct AddMemberSheet: View {
         }
         .padding(18)
         .frame(width: 380)
+        .fileImporter(isPresented: $showFolderPicker, allowedContentTypes: [.folder]) { result in
+            if case .success(let url) = result { customPath = url.path }
+        }
     }
 
     private func spawn() {
         let n = nick.trimmingCharacters(in: .whitespaces)
         guard !n.isEmpty, !spawning else { return }
+        let workDir: MeshSpawn.WorkDir
+        switch dirChoice {
+        case .scratch:            workDir = .scratch
+        case .project(let name):  workDir = .project(name)
+        case .custom:             workDir = customPath.isEmpty ? .scratch : .path(customPath)
+        }
         spawning = true
         phase = .booting; detail = "starting…"
         let k = kind
         let host = spawnHost == .peer ? store.peerHost : nil
         Task.detached {
-            MeshSpawn.spawn(room: room, nick: n, kind: k, host: host) { p in
+            MeshSpawn.spawn(room: room, nick: n, kind: k, host: host, workDir: workDir) { p in
                 Task { @MainActor in
                     phase = p.phase; detail = p.detail
                     if p.phase == .joined || p.phase == .failed { spawning = false }
