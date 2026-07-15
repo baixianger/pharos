@@ -53,7 +53,7 @@ struct RemoteTerminalView: View {
             try await session.connect()
             let shell = try await session.openShell()
             feed.onInput = { data in Task { try? await shell.write(data) } }
-            feed.onResize = { cols, rows in Task { await shell.resize(cols: cols, rows: rows) } }
+            feed.resize = { cols, rows in await shell.resize(cols: cols, rows: rows) }
             let command = try RemoteCommandBuilder.attach(pane: target.member.tmuxPane ?? "") + "\n"
             try await shell.write(Data(command.utf8))
             for await chunk in shell.output { feed.write(chunk) }
@@ -68,7 +68,22 @@ struct RemoteTerminalView: View {
 private final class TerminalFeed {
     var write: (Data) -> Void = { _ in }
     var onInput: (Data) -> Void = { _ in }
-    var onResize: (Int, Int) -> Void = { _, _ in }
+    /// The real PTY resize (set by the view to the SSH shell's resize).
+    var resize: (Int, Int) async -> Void = { _, _ in }
+    private var resizeDebounce: Task<Void, Never>?
+
+    /// Coalesce a burst of size changes into ONE PTY resize. Layout settling and
+    /// the terminal's scrollbar toggling can fire sizeChanged repeatedly; sending
+    /// each one as a SIGWINCH makes the remote reflow oscillate (visible flicker).
+    /// Debouncing sends only the final size once the size stops changing.
+    func onResize(_ cols: Int, _ rows: Int) {
+        resizeDebounce?.cancel()
+        resizeDebounce = Task { [resize] in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            await resize(cols, rows)
+        }
+    }
 }
 
 private struct TerminalRepresentable: UIViewControllerRepresentable {

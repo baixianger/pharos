@@ -45,14 +45,8 @@ struct RootView: View {
                 Task { await store.createRoom(named: name) }
             }
         }
-        .task { await pollWhileVisible() }
-    }
-
-    private func pollWhileVisible() async {
-        while !Task.isCancelled {
-            await store.refresh()
-            try? await Task.sleep(for: .seconds(2))
-        }
+        // Polling + the autoSelectsFirstRoom size-class rule are owned by
+        // MainTabView so they apply app-wide, before the Chat tab is opened.
     }
 }
 

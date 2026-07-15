@@ -16,8 +16,9 @@ struct ConversationView: View {
         .navigationTitle(store.selectedRoom ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button("Remote control", systemImage: "terminal") { destination = .members }
+            ToolbarItem(placement: .topBarTrailing) {
+                // Remote Control now lives in the Agents tab (tap an agent). The
+                // room keeps only "add a member" here.
                 Button("Spawn member", systemImage: "person.badge.plus") { destination = .spawn }
             }
         }
@@ -25,7 +26,6 @@ struct ConversationView: View {
         .sheet(item: $destination) { destination in
             if let room = store.selectedRoom {
                 switch destination {
-                case .members: MemberControlView(room: room)
                 case .spawn: SpawnAgentView(room: room)
                 }
             }
@@ -108,6 +108,6 @@ struct ConversationView: View {
 }
 
 private enum ConversationSheet: String, Identifiable {
-    case members, spawn
+    case spawn
     var id: String { rawValue }
 }

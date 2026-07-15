@@ -64,6 +64,12 @@ final class AppSettings {
         return sshHosts.first { $0.meshHost == meshHost }
     }
 
+    /// First SSH host usable for fetching registry/issue data over SSH — needs a
+    /// device key and the host-key opt-in. nil = Projects/Issues can't fetch.
+    var registryHost: SSHHostProfile? {
+        sshHosts.first { $0.identityID != nil && $0.acceptsUnverifiedHostKey }
+    }
+
     func refreshFromICloud() { load(preferCloud: true) }
 
     private func load(preferCloud: Bool = true) {

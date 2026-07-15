@@ -11,6 +11,13 @@ final class RoomStore {
 
     private(set) var rooms: [MeshRoom] = []
     var selectedRoom: String?
+    /// Whether a poll may auto-open the first room when nothing is selected.
+    /// MainTabView sets this from the horizontal size class: a two-column iPad
+    /// layout wants a default detail selection, but a compact iPhone must be
+    /// able to sit on the room list (and reach Settings) without every refresh
+    /// force-pushing the conversation back on top. Defaults to the compact-safe
+    /// value so the app-wide poll can't auto-dive before a view sets it.
+    var autoSelectsFirstRoom = false
     private(set) var messages: [MeshMessage] = []
     private(set) var members: [String: MeshMember] = [:]
     private(set) var isRefreshing = false
@@ -34,7 +41,13 @@ final class RoomStore {
             let nextMembers = RosterIndex.byNick(rosterResponse.members ?? [])
             if rooms != nextRooms { rooms = nextRooms }
             if members != nextMembers { members = nextMembers }
-            if selectedRoom == nil || !rooms.contains(where: { $0.name == selectedRoom }) {
+            // Drop a selection whose room disappeared, but never force-select a
+            // room the user didn't pick on compact layouts — that is what kept
+            // bouncing iPhone back into the conversation and away from Settings.
+            if let selectedRoom, !rooms.contains(where: { $0.name == selectedRoom }) {
+                self.selectedRoom = nil
+            }
+            if selectedRoom == nil, autoSelectsFirstRoom {
                 selectedRoom = rooms.first?.name
             }
             if let selectedRoom {
@@ -95,6 +108,21 @@ final class RoomStore {
     func dismissNotice() { notice = nil }
 
     func refreshAfterRemoteAction() async { await refresh() }
+
+    /// Fetch the project registry from the hub broker (single source of truth).
+    /// Returns nil if the broker is old/unsupported (no payload) so callers can
+    /// fall back to the SSH path.
+    func fetchProjectsOverMesh() async -> [RemoteProject]? {
+        guard !settings.mesh.host.isEmpty,
+              let payload = try? await request(MeshRequest(cmd: "projects")).payload else { return nil }
+        return RemoteAgentService.parseProjects(payload)
+    }
+
+    func fetchIssuesOverMesh() async -> [RemoteIssue]? {
+        guard !settings.mesh.host.isEmpty,
+              let payload = try? await request(MeshRequest(cmd: "issues")).payload else { return nil }
+        return RemoteAgentService.parseIssues(payload)
+    }
 
     private func request(_ request: MeshRequest) async throws -> MeshResponse {
         try await mesh.send(request, host: settings.mesh.host, port: settings.mesh.port)

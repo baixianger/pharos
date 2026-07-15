@@ -21,7 +21,7 @@ private struct AppContainer: View {
     }
 
     var body: some View {
-        RootView()
+        MainTabView()
             .environment(settings)
             .environment(identities)
             .environment(rooms)

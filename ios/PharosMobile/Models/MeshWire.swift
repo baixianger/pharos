@@ -57,6 +57,7 @@ struct MeshMember: Codable, Sendable, Equatable, Identifiable {
     var stateTs: Double?
     var unread: Int?
     var kind: String?
+    var tailscaleIP: String?
     var rooms: [String]
     var lastSeen: Double
 }
@@ -69,6 +70,7 @@ struct MeshResponse: Codable, Sendable, Equatable {
     var members: [MeshMember]?
     var note: String?
     var memberID: String?
+    var payload: String?
 }
 
 enum MentionParser {
