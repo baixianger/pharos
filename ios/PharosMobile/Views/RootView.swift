@@ -11,10 +11,11 @@ struct RootView: View {
         @Bindable var store = store
         NavigationSplitView {
             RoomListView(selection: $store.selectedRoom)
-                .navigationTitle("Pharos")
+                .navigationTitle("Chat")
+                .navigationBarTitleDisplayMode(.large)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button("Settings", systemImage: "gear") { sheet = .settings }
+                        Button("Settings", systemImage: "slider.horizontal.3") { sheet = .settings }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("New room", systemImage: "plus") { showNewRoom = true }

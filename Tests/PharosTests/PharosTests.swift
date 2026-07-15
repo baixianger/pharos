@@ -1265,6 +1265,8 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("mesh-room-id-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir.appendingPathComponent("mesh-state/unread"),
                                                  withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: dir.appendingPathComponent("mesh/attachments"),
+                                                 withIntermediateDirectories: true)
         setenv("PHAROS_MESH_DIR", dir.path, 1)
         setenv("PHAROS_REGISTRY", dir.appendingPathComponent("projects.json").path, 1)
     }
@@ -1343,6 +1345,50 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         let issues = broker.process(MeshRequest(cmd: "issues"))
         XCTAssertTrue(issues.ok)
         XCTAssertTrue(issues.payload?.contains("\"issues\"") == true)
+    }
+
+    func testCapabilitiesAdvertiseHeadlessRepliesAndAttachments() {
+        let capabilities = MeshBroker().process(MeshRequest(cmd: "capabilities")).capabilities ?? []
+        XCTAssertTrue(capabilities.contains("headless-v1"))
+        XCTAssertTrue(capabilities.contains("reply-v1"))
+        XCTAssertTrue(capabilities.contains("attachment-v1"))
+    }
+
+    func testReplyResolvesStableMessageAndPersistsSnapshot() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "dev", nick: "human",
+                                                 text: "original context")).ok)
+        let original = broker.process(MeshRequest(cmd: "history", room: "dev")).messages!.first!
+        XCTAssertFalse(original.stableID.isEmpty)
+
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "dev", nick: "codex",
+                                                 text: "answer", replyToID: original.stableID)).ok)
+        let reply = broker.process(MeshRequest(cmd: "history", room: "dev")).messages!.last!
+        XCTAssertEqual(reply.replyTo?.messageID, original.stableID)
+        XCTAssertEqual(reply.replyTo?.from, "human")
+        XCTAssertEqual(reply.replyTo?.preview, "original context")
+    }
+
+    func testSayCarriesOnlyPreviouslyStoredAttachmentMetadata() throws {
+        let broker = MeshBroker()
+        let attachment = MeshAttachment(id: UUID().uuidString, name: "design.pdf",
+                                        mimeType: "application/pdf", byteSize: 3,
+                                        sha256: String(repeating: "a", count: 64))
+        let attachmentDirectory = MeshPaths.attachmentDirectory(attachment.id)
+        try FileManager.default.createDirectory(at: attachmentDirectory, withIntermediateDirectories: true)
+        try Data("pdf".utf8).write(to: MeshPaths.attachmentData(attachment.id))
+        try JSONEncoder().encode(attachment).write(to: MeshPaths.attachmentMetadata(attachment.id))
+
+        let accepted = broker.process(MeshRequest(cmd: "say", room: "dev", nick: "human",
+                                                  text: "review", attachments: [attachment]))
+        XCTAssertTrue(accepted.ok)
+        XCTAssertEqual(broker.process(MeshRequest(cmd: "history", room: "dev"))
+            .messages?.last?.attachments, [attachment])
+
+        var forged = attachment
+        forged.byteSize = 4
+        XCTAssertFalse(broker.process(MeshRequest(cmd: "say", room: "dev", nick: "human",
+                                                  text: "bad", attachments: [forged])).ok)
     }
 
     func testRejoinReplacesAliasOnlyInsideThatRoom() {

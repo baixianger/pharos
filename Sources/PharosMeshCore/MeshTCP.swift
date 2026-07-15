@@ -1,7 +1,27 @@
 import Foundation
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
 #endif
+
+@inline(__always)
+func meshSocketStream() -> Int32 {
+    #if os(Linux)
+    Int32(SOCK_STREAM.rawValue)
+    #else
+    SOCK_STREAM
+    #endif
+}
+
+@inline(__always)
+func meshSystemConnect(_ fd: Int32, _ address: UnsafePointer<sockaddr>, _ length: socklen_t) -> Int32 {
+    #if canImport(Darwin)
+    Darwin.connect(fd, address, length)
+    #else
+    Glibc.connect(fd, address, length)
+    #endif
+}
 
 // MARK: - Cross-host TCP transport
 //
@@ -16,7 +36,7 @@ import Darwin
 
 /// Split "host:port" (host may be empty → bind any). IPv6 literals unsupported
 /// (Tailscale hands out v4 too; keep it simple).
-func meshSplitHostPort(_ s: String) -> (host: String, port: String)? {
+public func meshSplitHostPort(_ s: String) -> (host: String, port: String)? {
     guard let idx = s.lastIndex(of: ":") else { return nil }
     let host = String(s[s.startIndex..<idx])
     let port = String(s[s.index(after: idx)...])
@@ -26,11 +46,11 @@ func meshSplitHostPort(_ s: String) -> (host: String, port: String)? {
 
 /// Connect to a remote broker with a bounded timeout (a hung dial must never
 /// stall a Stop hook's turn-end). Returns a connected blocking fd, or nil.
-func meshTCPConnect(_ endpoint: String, timeoutSec: Double = 5) -> Int32? {
+public func meshTCPConnect(_ endpoint: String, timeoutSec: Double = 5) -> Int32? {
     guard let (host, port) = meshSplitHostPort(endpoint) else { return nil }
     var hints = addrinfo()
     hints.ai_family = AF_UNSPEC
-    hints.ai_socktype = SOCK_STREAM
+    hints.ai_socktype = meshSocketStream()
     var res: UnsafeMutablePointer<addrinfo>?
     let node = host.isEmpty ? "127.0.0.1" : host
     let rc = node.withCString { np in port.withCString { sp in getaddrinfo(np, sp, &hints, &res) } }
@@ -43,7 +63,7 @@ func meshTCPConnect(_ endpoint: String, timeoutSec: Double = 5) -> Int32? {
         if fd >= 0 {
             let flags = fcntl(fd, F_GETFL, 0)
             _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
-            let cr = Darwin.connect(fd, p.pointee.ai_addr, p.pointee.ai_addrlen)
+            let cr = meshSystemConnect(fd, p.pointee.ai_addr, p.pointee.ai_addrlen)
             if cr == 0 {
                 _ = fcntl(fd, F_SETFL, flags)                 // restore blocking
                 return fd
@@ -70,11 +90,11 @@ func meshTCPConnect(_ endpoint: String, timeoutSec: Double = 5) -> Int32? {
 /// Bind + listen a TCP socket for the broker. host empty → any interface
 /// (INADDR_ANY); otherwise bind that address specifically (e.g. the Tailscale
 /// IP). Returns the listening fd, or nil on failure.
-func meshTCPListen(_ endpoint: String) -> Int32? {
+public func meshTCPListen(_ endpoint: String) -> Int32? {
     guard let (host, port) = meshSplitHostPort(endpoint) else { return nil }
     var hints = addrinfo()
     hints.ai_family = AF_INET
-    hints.ai_socktype = SOCK_STREAM
+    hints.ai_socktype = meshSocketStream()
     hints.ai_flags = AI_PASSIVE
     var res: UnsafeMutablePointer<addrinfo>?
     let rc: Int32 = port.withCString { sp in

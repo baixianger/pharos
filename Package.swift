@@ -6,13 +6,27 @@ let package = Package(
     platforms: [
         .macOS(.v26), // Liquid Glass requires macOS 26 (Tahoe)
     ],
+    products: [
+        .executable(name: "Pharos", targets: ["Pharos"]),
+        .executable(name: "pharos-mesh", targets: ["PharosMesh"]),
+        .library(name: "PharosMeshCore", targets: ["PharosMeshCore"]),
+    ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
+        .package(url: "https://github.com/apple/swift-crypto", from: "3.0.0"),
     ],
     targets: [
+        .target(
+            name: "PharosMeshCore",
+            dependencies: [
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Sources/PharosMeshCore"
+        ),
         .executableTarget(
             name: "Pharos",
             dependencies: [
+                "PharosMeshCore",
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/Pharos",
@@ -27,6 +41,11 @@ let package = Package(
                 // (Updater.swift line 60). One error in Swift 6 mode.
                 .swiftLanguageMode(.v5),
             ]
+        ),
+        .executableTarget(
+            name: "PharosMesh",
+            dependencies: ["PharosMeshCore"],
+            path: "Sources/PharosMesh"
         ),
         .testTarget(
             name: "PharosTests",

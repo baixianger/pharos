@@ -96,7 +96,7 @@ enum MeshHooks {
             return 0
         }
         print("\(u.count) unread for \(member.nick):")
-        for m in u.messages { print("[\(m.room)] \(m.from): \(m.text)") }
+        for m in u.messages { print(messageSummary(m)) }
         print("(peek only — consume with: pharos mesh recv \(member.nick) --member \(member.id))")
         return 0
     }
@@ -253,7 +253,7 @@ enum MeshHooks {
         try? String(newest).write(to: markerURL, atomically: true, encoding: .utf8)
 
         var lines = ["New mesh message(s) for @\(n) — \(msgs.count) pending:"]
-        for m in msgs.suffix(10) { lines.append("  [\(m.room)] \(m.from): \(m.text)") }
+        for m in msgs.suffix(10) { lines.append("  " + messageSummary(m)) }
         let memberArg = memberID.map { " --member \($0)" } ?? ""
         lines.append("When you reach a natural pause, pick them up with `pharos mesh recv \(n)\(memberArg)` "
                      + "and reply in the room if a response is expected.")
@@ -280,7 +280,7 @@ enum MeshHooks {
         for m in messages { perRoom[m.room, default: 0] += 1 }
         var lines = ["New mesh message(s) for @\(nick) — \(messages.count) pending in "
                      + "\(perRoom.keys.sorted().joined(separator: ", ")) (not an error):"]
-        for m in messages.suffix(10) { lines.append("  [\(m.room)] \(m.from): \(m.text)") }
+        for m in messages.suffix(10) { lines.append("  " + messageSummary(m)) }
         let memberArg = memberID.map { " --member \($0)" } ?? ""
         lines.append("Pick them up with `pharos mesh recv \(nick)\(memberArg)`, then reply in the room "
                      + "(`pharos mesh say <room> \(nick) \"…\" @<sender>` or `ask` to wait for an answer). "
@@ -289,6 +289,13 @@ enum MeshHooks {
         if let d = try? JSONSerialization.data(withJSONObject: payload) {
             print(String(decoding: d, as: UTF8.self))
         }
+    }
+
+    private static func messageSummary(_ message: MeshMsg) -> String {
+        let quote = message.replyTo.map { " ↳ \($0.from): \($0.preview)" } ?? ""
+        let files = (message.attachments ?? []).map { "[attachment \($0.name), id \($0.id)]" }
+        let body = ([message.text] + files).filter { !$0.isEmpty }.joined(separator: " ")
+        return "[\(message.room)] \(message.from): \(body)\(quote)"
     }
 
     // MARK: local reads

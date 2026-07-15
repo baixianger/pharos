@@ -182,6 +182,18 @@ enum CLI {
         guard let sub = args.first else { print(meshUsage); return 2 }
         let a = Array(args.dropFirst())
         func report(_ r: MeshResponse) -> Int32 { print(r.ok ? "ok" : "error: \(r.error ?? "?")"); return r.ok ? 0 : 1 }
+        func printMessages(_ messages: [MeshMsg], empty: String) {
+            if messages.isEmpty { print(empty) }
+            for message in messages {
+                print("id: \(message.stableID)")
+                if let reply = message.replyTo { print("  ↳ \(reply.from): \(reply.preview)") }
+                print("[\(message.room)] \(message.from): \(message.text)")
+                for attachment in message.attachments ?? [] {
+                    print("  attachment: \(attachment.name) (\(attachment.byteSize) bytes, id \(attachment.id))")
+                    print("  download: pharos mesh attachment get \(attachment.id) --out \(attachment.name)")
+                }
+            }
+        }
 
         switch sub {
         case "daemon":
@@ -230,7 +242,7 @@ enum CLI {
             let history = r.messages ?? []
             if !history.isEmpty {
                 print("recent:")
-                for m in history { print("  [\(m.room)] \(m.from): \(m.text)") }
+                printMessages(history, empty: "")
             }
             return 0
         case "history":
@@ -239,9 +251,7 @@ enum CLI {
             if let i = a.firstIndex(of: "--limit"), i + 1 < a.count, let n = Int(a[i + 1]) { limit = n }
             let r = MeshClient.send(MeshRequest(cmd: "history", room: room, limit: limit))
             guard r.ok else { return report(r) }
-            let msgs = r.messages ?? []
-            if msgs.isEmpty { print("(no history)") }
-            for m in msgs { print("[\(m.room)] \(m.from): \(m.text)") }
+            printMessages(r.messages ?? [], empty: "(no history)")
             return 0
         case "leave":
             guard a.count >= 2 else { print("usage: pharos mesh leave <room> <nick>"); return 2 }
@@ -256,28 +266,56 @@ enum CLI {
             guard a.count >= 2 else { print("usage: pharos mesh rename <room> <new-name>"); return 2 }
             return report(MeshClient.send(MeshRequest(cmd: "rename", room: a[0], text: a[1])))
         case "say":
-            guard a.count >= 3 else { print("usage: pharos mesh say <room> <nick> <text> [@target …]"); return 2 }
+            guard a.count >= 3 else { print("usage: pharos mesh say <room> <nick> <text> [@target …] [--reply ID] [--attach FILE]"); return 2 }
             var to = a.dropFirst(3).compactMap { $0.hasPrefix("@") ? String($0.dropFirst()) : nil }
             // Also honor @mentions written in the message text — the broker is
             // mention-only, so "@bob" in the body with no trailing @arg would
             // otherwise wake nobody (matches the GUI input's behavior).
             for m in MeshHooks.parseTextMentions(a[2]) where !to.contains(m) { to.append(m) }
-            let r = MeshClient.send(MeshRequest(cmd: "say", room: a[0], nick: a[1], text: a[2], to: to))
+            let replyID = a.firstIndex(of: "--reply").flatMap { $0 + 1 < a.count ? a[$0 + 1] : nil }
+            let attachmentPath = a.firstIndex(of: "--attach").flatMap { $0 + 1 < a.count ? a[$0 + 1] : nil }
+            if replyID != nil || attachmentPath != nil {
+                let capabilities = MeshClient.send(MeshRequest(cmd: "capabilities"))
+                guard capabilities.capabilities?.contains("mesh-v2") == true else {
+                    print("error: update the Mesh broker before sending replies or attachments")
+                    return 1
+                }
+            }
+            var request = MeshRequest(cmd: "say", room: a[0], nick: a[1], text: a[2], to: to)
+            request.replyToID = replyID
+            if let attachmentPath {
+                do { request.attachments = [try MeshClient.uploadAttachment(fileAt: URL(fileURLWithPath: attachmentPath))] }
+                catch { print("error: \(error.localizedDescription)"); return 1 }
+            }
+            let r = MeshClient.send(request)
             let code = report(r)
             if r.ok, let targets = r.members, !targets.isEmpty {
                 let peer = PharosPrefs.shared.string(forKey: "pharos.peerHost") ?? ""
                 for note in MeshPoke.followUp(targets: targets, peerHost: peer) { print(note) }
             }
             return code
+        case "attachment":
+            guard let action = a.first else { print("usage: pharos mesh attachment put|get …"); return 2 }
+            switch action {
+            case "put":
+                guard a.count >= 2 else { print("usage: pharos mesh attachment put <file>"); return 2 }
+                do { print(try MeshClient.uploadAttachment(fileAt: URL(fileURLWithPath: a[1])).id); return 0 }
+                catch { print("error: \(error.localizedDescription)"); return 1 }
+            case "get":
+                guard a.count >= 2 else { print("usage: pharos mesh attachment get <id> [--out path]"); return 2 }
+                let out = a.firstIndex(of: "--out").flatMap { $0 + 1 < a.count ? a[$0 + 1] : nil } ?? a[1]
+                do { print(try MeshClient.downloadAttachment(id: a[1], to: URL(fileURLWithPath: out)).path); return 0 }
+                catch { print("error: \(error.localizedDescription)"); return 1 }
+            default:
+                print("usage: pharos mesh attachment put|get …"); return 2
+            }
         case "recv":
             guard let nick = a.first else { print("usage: pharos mesh recv <nick> [--member <session-id>]"); return 2 }
             let memberID = a.firstIndex(of: "--member").flatMap { i in i + 1 < a.count ? a[i + 1] : nil }
             let r = MeshClient.send(MeshRequest(cmd: "recv", nick: nick, memberID: memberID,
                                                 project: FileManager.default.currentDirectoryPath))
             guard r.ok else { return report(r) }
-            let msgs = r.messages ?? []
-            if msgs.isEmpty { print("(no unread)") }
-            for m in msgs { print("[\(m.room)] \(m.from): \(m.text)") }
+            printMessages(r.messages ?? [], empty: "(no unread)")
             return 0
         case "who":
             let r = MeshClient.send(MeshRequest(cmd: "who"))
@@ -421,7 +459,9 @@ enum CLI {
       list                                list rooms + members
       join   <room> <nick> --session <id>     register this session under a room-local alias
       history <room> [--limit N]          recent messages in a room (catch up)
-      say    <room> <nick> <text> [@n …]  send; @n pokes that agent · no @ = broadcast to the whole room (no poke)
+      say    <room> <nick> <text> [@n …] [--reply ID] [--attach FILE]
+                                          send text, quote a message, or attach an image/PDF
+      attachment put|get …                upload or download a Mesh attachment
       recv   <nick> [--member <id>]       drain unread for this session across ALL its rooms
       who                                 roster: every joined agent + live state/host/tmux pane
       spawn  <room> <nick> [claude|codex] [--host <ssh>]  spawn local/remote + confirm join (GUI "add member")
@@ -644,7 +684,7 @@ enum CLI {
 
     // MARK: Misc
 
-    private static var version: String { "0.6.0" }
+    private static var version: String { "0.7.0" }
 
     private static func prettyJSON(_ obj: Any) -> String {
         guard

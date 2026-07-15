@@ -1,0 +1,160 @@
+name: Release Linux and APT
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing or new release tag, for example v0.7.0
+        required: true
+        type: string
+
+concurrency:
+  group: linux-release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  build-deb:
+    name: Build ${{ matrix.deb_arch }} package
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: amd64
+            swift_triple: x86_64-unknown-linux-gnu
+            deb_arch: amd64
+          - platform: arm64
+            swift_triple: aarch64-unknown-linux-gnu
+            deb_arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: ${{ matrix.platform }}
+
+      - name: Build portable Linux executable
+        run: |
+          docker run --rm --platform linux/${{ matrix.platform }} \
+            -v "$PWD:/workspace" -w /workspace swift:6.2-noble \
+            swift build -c release --product pharos-mesh --static-swift-stdlib
+          sudo chown -R "$USER:$USER" .build
+
+      - name: Build Debian package
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          Scripts/package_deb.sh \
+            "$VERSION" \
+            "${{ matrix.deb_arch }}" \
+            ".build/${{ matrix.swift_triple }}/release/pharos-mesh" \
+            dist
+          dpkg-deb --info "dist/pharos-mesh_${VERSION}_${{ matrix.deb_arch }}.deb"
+          dpkg-deb --contents "dist/pharos-mesh_${VERSION}_${{ matrix.deb_arch }}.deb"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pharos-mesh-${{ matrix.deb_arch }}
+          path: dist/*.deb
+          if-no-files-found: error
+
+  publish-release:
+    name: Upload packages to GitHub Release
+    needs: build-deb
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pharos-mesh-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create release when manually dispatched
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Pharos ${RELEASE_TAG#v}" --generate-notes
+
+      - name: Upload Debian packages and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && sha256sum ./*.deb > SHA256SUMS-linux)
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            dist/*.deb dist/SHA256SUMS-linux --clobber
+
+  publish-apt:
+    name: Sign and deploy APT repository
+    needs: publish-release
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pharos-mesh-*
+          path: packages
+          merge-multiple: true
+
+      - name: Install repository tools
+        run: sudo apt-get update && sudo apt-get install -y reprepro gnupg
+
+      - name: Import repository signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          test -n "$APT_GPG_PRIVATE_KEY"
+          printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          KEY_ID=$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "sec" { print $5; exit }')
+          test -n "$KEY_ID"
+          echo "KEY_ID=$KEY_ID" >> "$GITHUB_ENV"
+
+      - name: Build signed APT repository
+        run: |
+          mkdir -p site/apt/conf
+          cat > site/apt/conf/distributions <<EOF
+          Origin: Pharos
+          Label: Pharos
+          Codename: stable
+          Suite: stable
+          Architectures: amd64 arm64
+          Components: main
+          Description: Pharos Mesh packages
+          SignWith: $KEY_ID
+          EOF
+          for package in packages/*.deb; do
+            reprepro --basedir site/apt includedeb stable "$package"
+          done
+          gpg --batch --armor --export "$KEY_ID" > site/apt/pharos.asc
+          touch site/.nojekyll
+          cat > site/index.html <<'EOF'
+          <!doctype html><meta charset="utf-8"><title>Pharos packages</title>
+          <h1>Pharos APT repository</h1>
+          <p>Repository root: <code>https://baixianger.github.io/pharos/apt</code></p>
+          EOF
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

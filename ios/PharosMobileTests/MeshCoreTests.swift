@@ -18,6 +18,22 @@ struct MeshCoreTests {
         #expect(decoded == value)
     }
 
+    @Test func decodesLegacyMessageWithoutV2Fields() throws {
+        let data = Data(#"{"from":"human","room":"dev","text":"hello","ts":1,"to":[]}"#.utf8)
+        let message = try JSONDecoder().decode(MeshMessage.self, from: data)
+        #expect(message.id == "legacy|dev|1.0|human")
+        #expect(message.replyTo == nil)
+        #expect(message.attachments == nil)
+    }
+
+    @Test func decodesReplyAndAttachmentMessage() throws {
+        let data = Data(#"{"id":"m2","from":"codex","room":"dev","text":"done","ts":2,"to":[],"replyTo":{"messageID":"m1","from":"human","preview":"please review","ts":1},"attachments":[{"id":"a1","name":"design.pdf","mimeType":"application/pdf","byteSize":42,"sha256":"abc"}]}"#.utf8)
+        let message = try JSONDecoder().decode(MeshMessage.self, from: data)
+        #expect(message.id == "m2")
+        #expect(message.replyTo?.messageID == "m1")
+        #expect(message.attachments?.first?.name == "design.pdf")
+    }
+
     @Test func pokeCommandRejectsShellInjection() {
         #expect(throws: (any Error).self) {
             try TmuxPokeCommand.build(nick: "codex;rm", memberID: "session", pane: "%1", kind: "codex")

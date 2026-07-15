@@ -494,6 +494,17 @@ final class ProjectStore {
     var peerHost = "" {
         didSet { PharosPrefs.shared.set(peerHost, forKey: "pharos.peerHost") }
     }
+    /// Optional always-on Mesh broker, normally a Linux `pharos-mesh` service
+    /// reachable over Tailscale. This is intentionally per-machine: project
+    /// data may sync through iCloud, while each client can choose how it reaches
+    /// the broker. A valid value takes precedence over the legacy Mac hub pair.
+    var meshServerEndpoint = "" {
+        didSet { PharosPrefs.shared.set(meshServerEndpoint, forKey: "pharos.meshServerEndpoint") }
+    }
+    var validMeshServerEndpoint: String? {
+        let endpoint = meshServerEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        return meshSplitHostPort(endpoint) == nil ? nil : endpoint
+    }
     /// Which Mac hosts the chat mesh — the synced store is the single source of
     /// truth, so both machines always read the same answer (Pharos#5 P2).
     /// Mutate via `setMeshHub(_:)`; refreshed by `load()` when iCloud syncs.
@@ -557,6 +568,7 @@ final class ProjectStore {
         claudeArgs = d.string(forKey: "pharos.claudeArgs") ?? ""
         codexArgs  = d.string(forKey: "pharos.codexArgs")  ?? ""
         peerHost   = d.string(forKey: "pharos.peerHost")   ?? ""
+        meshServerEndpoint = d.string(forKey: "pharos.meshServerEndpoint") ?? ""
         load()
         // Migrate the pre-P2 per-machine hub flag into the synced store (one
         // shot): a Mac that had "Host mesh" ON claims the hub slot unless the

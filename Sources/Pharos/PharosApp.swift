@@ -53,7 +53,15 @@ struct PharosApp: App {
                     // persist the dial endpoint so CLI/hooks on this Mac follow
                     // it with zero env config — without waiting for the Rooms
                     // view to be opened.
-                    if store.isMeshHub {
+                    if let endpoint = store.validMeshServerEndpoint {
+                        // A persistent headless broker supersedes the old
+                        // Mac-to-Mac hub election. Stop any stale local TCP hub
+                        // and persist the endpoint so CLI/hooks follow it too.
+                        await Task.detached { MeshHosting.demoteStrayHub() }.value
+                        MeshClient.hostTCPEndpoint = nil
+                        MeshClient.remoteEndpoint = endpoint
+                        MeshPaths.setDialEndpointFile(endpoint)
+                    } else if store.isMeshHub {
                         await Task.detached { MeshHosting.apply(hosting: true) }.value
                     } else {
                         await Task.detached { MeshHosting.demoteStrayHub() }.value

@@ -5,6 +5,28 @@ Maps Pharos versions to git history. Newest at top.
 
 ---
 
+## v0.7.0 — 2026-07-15
+
+**Persistent cross-platform Mesh.** The broker and wire protocol now live in a
+portable `PharosMeshCore`, with a standalone `pharos-mesh` executable for Linux
+servers. Messages receive stable IDs, replies retain a safe preview of their
+target, and image/PDF attachments use checksum-verified binary transfer with a
+25 MiB limit and atomic storage.
+
+**Native group-chat interaction.** macOS and iPhone chat views add quoted reply
+cards, attachment pickers, previews and downloads, plus a more compact
+Slack/Discord-inspired room and message layout. Legacy transcripts remain
+readable without migration.
+
+**Always-on personal Broker.** macOS can target an explicit headless Tailscale
+endpoint instead of electing one of the paired Macs as Hub. The Linux service is
+hardened with systemd, persists transcripts and files under
+`/var/lib/pharos-mesh`, and needs none of the AppKit/project-launching CLI.
+
+**Linux Release and APT automation.** GitHub Releases build signed `amd64` and
+`arm64` Debian packages, publish checksums, and deploy a signed APT repository
+through GitHub Pages so Ubuntu/Debian users can install and upgrade with `apt`.
+
 ## v0.6.0 — 2026-07-15
 
 **Stable room names across native tabs.** A room now supplies the same dynamic

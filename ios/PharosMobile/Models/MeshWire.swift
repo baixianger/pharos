@@ -18,6 +18,10 @@ struct MeshRequest: Codable, Sendable, Equatable {
     var expectedState: String?
     var expectedStateTs: Double?
     var kind: String?
+    var replyToID: String?
+    var attachments: [MeshAttachment]?
+    var attachment: MeshAttachment?
+    var attachmentID: String?
 
     init(cmd: String, room: String? = nil, nick: String? = nil, text: String? = nil,
          to: [String]? = nil, limit: Int? = nil) {
@@ -31,14 +35,59 @@ struct MeshRequest: Codable, Sendable, Equatable {
 }
 
 struct MeshMessage: Codable, Sendable, Equatable, Identifiable {
+    var id: String
     var from: String
     var room: String
     var text: String
     var ts: Double
     var to: [String]
+    var replyTo: MeshReply?
+    var attachments: [MeshAttachment]?
 
-    var id: String { "\(room)|\(ts)|\(from)|\(text)" }
     var date: Date { Date(timeIntervalSince1970: ts) }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, from, room, text, ts, to, replyTo, attachments
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        from = try container.decode(String.self, forKey: .from)
+        room = try container.decode(String.self, forKey: .room)
+        text = try container.decode(String.self, forKey: .text)
+        ts = try container.decode(Double.self, forKey: .ts)
+        to = try container.decodeIfPresent([String].self, forKey: .to) ?? []
+        replyTo = try container.decodeIfPresent(MeshReply.self, forKey: .replyTo)
+        attachments = try container.decodeIfPresent([MeshAttachment].self, forKey: .attachments)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? "legacy|\(room)|\(ts)|\(from)"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(from, forKey: .from)
+        try container.encode(room, forKey: .room)
+        try container.encode(text, forKey: .text)
+        try container.encode(ts, forKey: .ts)
+        try container.encode(to, forKey: .to)
+        try container.encodeIfPresent(replyTo, forKey: .replyTo)
+        try container.encodeIfPresent(attachments, forKey: .attachments)
+    }
+}
+
+struct MeshReply: Codable, Sendable, Equatable {
+    var messageID: String
+    var from: String
+    var preview: String
+    var ts: Double
+}
+
+struct MeshAttachment: Codable, Sendable, Equatable, Identifiable {
+    var id: String
+    var name: String
+    var mimeType: String
+    var byteSize: Int
+    var sha256: String
 }
 
 struct MeshRoom: Codable, Sendable, Equatable, Identifiable, Hashable {
@@ -73,6 +122,8 @@ struct MeshResponse: Codable, Sendable, Equatable {
     var note: String?
     var memberID: String?
     var payload: String?
+    var capabilities: [String]?
+    var attachment: MeshAttachment?
 }
 
 enum MentionParser {

@@ -198,6 +198,7 @@ private struct MachinesSettingsTab: View {
                         get: { store.isMeshHub },
                         set: { on in store.setMeshHub(on); Task.detached { MeshHosting.apply(hosting: on) } }
                     ))
+                    .disabled(store.validMeshServerEndpoint != nil)
                     HelpBadge(text: "Exactly ONE Mac in the pairing hosts the mesh (the hub) — the role is stored in your synced project data, so all your Macs agree on it. Turning this ON claims the hub for this Mac (and takes it from whichever Mac had it); OFF releases it. The hub binds its chat broker to your Tailscale address; the other Macs pair to it below.")
                 }
                 if let hub = store.meshHubHostID, hub != HostIdentity.current {
@@ -205,6 +206,23 @@ private struct MachinesSettingsTab: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+            Section("Headless mesh server") {
+                LabeledContent("Tailscale endpoint") {
+                    TextField("100.x.y.z:47800", text: $store.meshServerEndpoint)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 200)
+                }
+                if !store.meshServerEndpoint.isEmpty, store.validMeshServerEndpoint == nil {
+                    Label("Enter an IPv4 address or host name followed by a port.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Text("Use an always-on `pharos-mesh` Broker on Linux or another server. A valid endpoint takes precedence over Mac hub hosting after Pharos is relaunched; CLI and agent hooks use the same endpoint.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             PairingView()
         }

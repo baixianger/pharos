@@ -57,6 +57,21 @@
 
 Pharos uses **Sparkle** for automatic updates — you'll be notified inside the app when a new version is available.
 
+### Headless Mesh on Debian or Ubuntu
+
+```bash
+curl -fsSL https://baixianger.github.io/pharos/apt/pharos.asc \
+  | sudo gpg --dearmor -o /usr/share/keyrings/pharos-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/pharos-archive-keyring.gpg] https://baixianger.github.io/pharos/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/pharos.list
+sudo apt update
+sudo apt install pharos-mesh
+```
+
+The package installs the standalone Linux Broker and CLI, not the macOS project
+launcher. See [the headless Mesh guide](docs/MESH_HEADLESS.md) for Tailscale and
+systemd configuration.
+
 ### Build from Source
 
 ```bash
@@ -152,7 +167,12 @@ synced per-host map.
 
 ## Privacy
 
-Pharos reads `~/.claude/projects/` and `~/.codex/sessions/` **locally only**. No session data, file paths, or identifiers are transmitted to any remote server. All app state lives in `~/Library/Application Support/Pharos/` — or in your own iCloud Drive `Pharos/` folder if you enable multi-machine sync. Cross-host features (mesh, remote launch) talk only to your own paired Macs over SSH/Tailscale.
+Pharos reads `~/.claude/projects/` and `~/.codex/sessions/` **locally only**.
+Project state lives in `~/Library/Application Support/Pharos/` or your own
+iCloud Drive. When you configure cross-host Mesh or remote launch, messages,
+attachments, session routing metadata, and commands travel only between devices
+on your own SSH/Tailscale network; the public Pharos project operates no hosted
+service for this data.
 
 ---
 

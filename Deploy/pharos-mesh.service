@@ -1,0 +1,26 @@
+[Unit]
+Description=Pharos Mesh headless broker
+After=network-online.target tailscaled.service
+Wants=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+User=pharos-mesh
+Group=pharos-mesh
+EnvironmentFile=/etc/pharos-mesh.env
+ExecStart=/usr/local/bin/pharos-mesh serve --bind ${PHAROS_MESH_BIND} --data-dir /var/lib/pharos-mesh
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/pharos-mesh
+
+[Install]
+WantedBy=multi-user.target

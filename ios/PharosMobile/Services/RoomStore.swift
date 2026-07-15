@@ -23,6 +23,7 @@ final class RoomStore {
     private(set) var isRefreshing = false
     private(set) var notice: String?
     private(set) var error: String?
+    private var capabilities: Set<String>?
 
     init(settings: AppSettings, identities: SSHIdentityStore) {
         self.settings = settings
@@ -81,14 +82,24 @@ final class RoomStore {
         } catch { self.error = error.localizedDescription }
     }
 
-    func send(_ text: String) async -> Bool {
+    func send(_ text: String, replyTo: MeshMessage? = nil,
+              attachments: [MeshAttachment] = []) async -> Bool {
         guard let room = selectedRoom else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return false }
+        if replyTo != nil || !attachments.isEmpty {
+            guard await supportsAdvancedMessages() else {
+                error = "Update the Mesh broker before sending replies or attachments."
+                return false
+            }
+        }
         let targets = MentionParser.targets(in: trimmed)
         do {
-            let response = try await request(MeshRequest(cmd: "say", room: room, nick: "human", text: trimmed,
-                                                         to: targets.isEmpty ? nil : targets))
+            var outgoing = MeshRequest(cmd: "say", room: room, nick: "human", text: trimmed,
+                                       to: targets.isEmpty ? nil : targets)
+            outgoing.replyToID = replyTo?.id
+            outgoing.attachments = attachments.isEmpty ? nil : attachments
+            let response = try await request(outgoing)
             let nextMessages = try await request(MeshRequest(cmd: "history", room: room, limit: 200)).messages ?? []
             if messages != nextMessages { messages = nextMessages }
             error = nil
@@ -106,6 +117,41 @@ final class RoomStore {
     }
 
     func dismissNotice() { notice = nil }
+
+    func uploadAttachment(data: Data, name: String, mimeType: String) async -> MeshAttachment? {
+        guard await supportsAdvancedMessages() else {
+            error = "Update the Mesh broker before uploading attachments."
+            return nil
+        }
+        do {
+            let attachment = try await mesh.uploadAttachment(data: data, name: name, mimeType: mimeType,
+                                                             host: settings.mesh.host, port: settings.mesh.port)
+            error = nil
+            return attachment
+        } catch {
+            self.error = error.localizedDescription
+            return nil
+        }
+    }
+
+    func downloadAttachment(_ attachment: MeshAttachment) async -> URL? {
+        do {
+            let (metadata, data) = try await mesh.downloadAttachment(id: attachment.id,
+                                                                     host: settings.mesh.host,
+                                                                     port: settings.mesh.port)
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("PharosMeshAttachments", isDirectory: true)
+                .appendingPathComponent(metadata.id, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let destination = directory.appendingPathComponent(metadata.name)
+            try data.write(to: destination, options: .atomic)
+            error = nil
+            return destination
+        } catch {
+            self.error = error.localizedDescription
+            return nil
+        }
+    }
 
     func refreshAfterRemoteAction() async { await refresh() }
 
@@ -126,6 +172,14 @@ final class RoomStore {
 
     private func request(_ request: MeshRequest) async throws -> MeshResponse {
         try await mesh.send(request, host: settings.mesh.host, port: settings.mesh.port)
+    }
+
+    private func supportsAdvancedMessages() async -> Bool {
+        if let capabilities { return capabilities.contains("mesh-v2") }
+        guard let response = try? await request(MeshRequest(cmd: "capabilities")) else { return false }
+        let values = Set(response.capabilities ?? [])
+        capabilities = values
+        return values.contains("mesh-v2")
     }
 
     private func pokeEligibleTargets(_ targets: [MeshMember]) async {

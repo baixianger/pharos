@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// In-window chat-room pane: the conversation, with a room-switcher dropdown in
 /// the title row (rename/delete live in the `…` menu beside it). Reads the
@@ -18,6 +19,9 @@ struct MeshRoomView: View {
     @State private var membersInfoByRoom: [String: [String: MeshMemberInfo]] = [:]
     @State private var messages: [MeshMsg] = []
     @State private var draft: String = ""
+    @State private var replyingTo: MeshMsg?
+    @State private var pendingAttachments: [MeshAttachment] = []
+    @State private var uploadingAttachment = false
     @State private var mentionSel = 0
     @State private var mentionDismissed: String?
     @State private var notices: [Notice] = []
@@ -220,15 +224,59 @@ struct MeshRoomView: View {
                 .environment(\.layoutDirection, mine ? .rightToLeft : .leftToRight)
                 // Full markdown body (Wick-derived MarkdownText — same renderer
                 // as issue bodies), with project#number kept tappable.
-                MarkdownText(text: linkifyIssueRefs(m.text)).font(.callout).textSelection(.enabled)
-                    .padding(.horizontal, 11).padding(.vertical, 7)
-                    .background(mine ? AnyShapeStyle(Color.accentColor.opacity(0.16))
-                                     : AnyShapeStyle(.quaternary.opacity(0.55)),
-                                in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                VStack(alignment: mine ? .trailing : .leading, spacing: 6) {
+                    if let reply = m.replyTo { replyCard(reply) }
+                    if !m.text.isEmpty {
+                        MarkdownText(text: linkifyIssueRefs(m.text)).font(.callout).textSelection(.enabled)
+                            .padding(.horizontal, 11).padding(.vertical, 7)
+                            .background(mine ? AnyShapeStyle(Color.accentColor.opacity(0.16))
+                                             : AnyShapeStyle(.quaternary.opacity(0.55)),
+                                        in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    }
+                    ForEach(m.attachments ?? []) { attachment in
+                        Button { openAttachment(attachment) } label: { attachmentCard(attachment) }
+                            .buttonStyle(.plain)
+                    }
+                }
             }
             if mine { avatar(m.from) } else { Spacer(minLength: 60) }
         }
         .frame(maxWidth: .infinity, alignment: mine ? .trailing : .leading)
+        .contextMenu {
+            Button("Reply", systemImage: "arrowshape.turn.up.left") {
+                replyingTo = m
+                inputFocused = true
+            }
+            Button("Copy", systemImage: "doc.on.doc") { NSPasteboard.general.setString(m.text, forType: .string) }
+        }
+    }
+
+    private func replyCard(_ reply: MeshReply) -> some View {
+        HStack(spacing: 7) {
+            Capsule().fill(Color.accentColor.opacity(0.6)).frame(width: 3)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(reply.from == "human" ? "You" : reply.from)
+                    .font(.caption.weight(.semibold)).foregroundStyle(.tint)
+                Text(reply.preview).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private func attachmentCard(_ attachment: MeshAttachment) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: attachment.mimeType == "application/pdf" ? "doc.richtext" : "photo")
+                .font(.title3).foregroundStyle(.tint).frame(width: 30)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(attachment.name).font(.callout.weight(.medium)).lineLimit(1)
+                Text(ByteCountFormatter.string(fromByteCount: Int64(attachment.byteSize), countStyle: .file))
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Image(systemName: "arrow.down.circle").foregroundStyle(.secondary)
+        }
+        .padding(9)
+        .frame(maxWidth: 300, alignment: .leading)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
     }
 
     // MARK: avatars — Clawd poses ARE the member-status surface
@@ -378,7 +426,41 @@ struct MeshRoomView: View {
     /// only. While an `@…` token is being typed, the arrow/tab/return/escape
     /// keys drive the member autocomplete popup instead of the field.
     private var inputBar: some View {
-        HStack(spacing: 8) {
+        VStack(spacing: 7) {
+            if let replyingTo {
+                HStack(spacing: 7) {
+                    Capsule().fill(Color.accentColor).frame(width: 3)
+                    Text("Replying to \(replyingTo.from == "human" ? "yourself" : replyingTo.from)")
+                        .font(.caption.weight(.semibold))
+                    Text(replyingTo.text.isEmpty ? "Attachment" : replyingTo.text)
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Spacer()
+                    Button { self.replyingTo = nil } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain)
+                }
+            }
+            if !pendingAttachments.isEmpty || uploadingAttachment {
+                HStack(spacing: 7) {
+                    ForEach(pendingAttachments) { attachment in
+                        HStack(spacing: 5) {
+                            Image(systemName: "paperclip")
+                            Text(attachment.name).lineLimit(1)
+                            Button { pendingAttachments.removeAll { $0.id == attachment.id } } label: {
+                                Image(systemName: "xmark.circle.fill")
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(.quaternary.opacity(0.6), in: Capsule())
+                    }
+                    if uploadingAttachment { ProgressView().controlSize(.small) }
+                    Spacer()
+                }
+            }
+            HStack(spacing: 8) {
+                Button(action: chooseAttachment) { Image(systemName: "plus") }
+                    .disabled(room.isEmpty || uploadingAttachment)
             TextField("Message the room — @nick to poke someone, plain text broadcasts",
                       text: $draft)
                 .textFieldStyle(.roundedBorder)
@@ -402,7 +484,8 @@ struct MeshRoomView: View {
             Button(action: send) {
                 Image(systemName: "paperplane.fill")
             }
-            .disabled(room.isEmpty || draft.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(room.isEmpty || (draft.trimmingCharacters(in: .whitespaces).isEmpty && pendingAttachments.isEmpty))
+            }
         }
         .padding(10)
     }
@@ -491,11 +574,56 @@ struct MeshRoomView: View {
 
     // MARK: data
 
+    private func chooseAttachment() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.image, .pdf]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        uploadingAttachment = true
+        Task {
+            let result = await Task.detached { () -> Result<MeshAttachment, Error> in
+                let capabilities = MeshClient.send(MeshRequest(cmd: "capabilities"))
+                guard capabilities.capabilities?.contains("attachment-v1") == true else {
+                    return .failure(MeshClientError.invalidResponse("Update the Mesh broker before uploading attachments."))
+                }
+                do { return .success(try MeshClient.uploadAttachment(fileAt: url)) }
+                catch { return .failure(error) }
+            }.value
+            uploadingAttachment = false
+            switch result {
+            case .success(let attachment): pendingAttachments.append(attachment)
+            case .failure(let error): addNotices([error.localizedDescription])
+            }
+        }
+    }
+
+    private func openAttachment(_ attachment: MeshAttachment) {
+        Task {
+            let result = await Task.detached { () -> Result<URL, Error> in
+                let directory = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("PharosMeshAttachments", isDirectory: true)
+                    .appendingPathComponent(attachment.id, isDirectory: true)
+                let destination = directory.appendingPathComponent(attachment.name)
+                do { return .success(try MeshClient.downloadAttachment(id: attachment.id, to: destination)) }
+                catch { return .failure(error) }
+            }.value
+            switch result {
+            case .success(let url): NSWorkspace.shared.open(url)
+            case .failure(let error): addNotices([error.localizedDescription])
+            }
+        }
+    }
+
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !room.isEmpty else { return }
+        guard (!text.isEmpty || !pendingAttachments.isEmpty), !room.isEmpty else { return }
         let r = room
+        let reply = replyingTo
+        let attachments = pendingAttachments
         draft = ""
+        replyingTo = nil
+        pendingAttachments = []
         // @tokens in the human text become directed (poke) targets; with no
         // @, `to` stays nil and the broker broadcasts to the whole room (no
         // poke). Shared parser with the CLI `say` so both surfaces match.
@@ -505,12 +633,27 @@ struct MeshRoomView: View {
         Task {
             // say echoes each target's presence; act on it: nudge the
             // stopped/idle, and report what needs the human's hands.
-            let notes = await Task.detached { () -> [String] in
-                let resp = MeshClient.send(MeshRequest(cmd: "say", room: r, nick: "human", text: text, to: to))
-                guard let targets = resp.members, !targets.isEmpty else { return [] }
-                return MeshPoke.followUp(targets: targets, peerHost: peer)
+            let result = await Task.detached { () -> (sent: Bool, notes: [String]) in
+                if reply != nil || !attachments.isEmpty {
+                    let capabilities = MeshClient.send(MeshRequest(cmd: "capabilities"))
+                    guard capabilities.capabilities?.contains("mesh-v2") == true else {
+                        return (false, ["Update the Mesh broker before sending replies or attachments."])
+                    }
+                }
+                var request = MeshRequest(cmd: "say", room: r, nick: "human", text: text, to: to)
+                request.replyToID = reply?.stableID
+                request.attachments = attachments.isEmpty ? nil : attachments
+                let resp = MeshClient.send(request)
+                if !resp.ok { return (false, [resp.error ?? "Message could not be sent."]) }
+                guard let targets = resp.members, !targets.isEmpty else { return (true, []) }
+                return (true, MeshPoke.followUp(targets: targets, peerHost: peer))
             }.value
-            addNotices(notes)
+            if !result.sent {
+                draft = text
+                replyingTo = reply
+                pendingAttachments = attachments
+            }
+            addNotices(result.notes)
         }
     }
 

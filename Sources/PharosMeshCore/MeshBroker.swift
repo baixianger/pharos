@@ -1,29 +1,53 @@
 import Foundation
+import Crypto
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
 #endif
 
 // MARK: - Wire protocol (newline-delimited JSON over a local unix socket)
 
-struct MeshRequest: Codable {
-    var cmd: String                 // create | list | join | leave | rename-member | say | recv | mark | who | daemon
-    var room: String?
-    var nick: String?
-    var memberID: String?            // immutable delivery identity (normally session id)
-    var text: String?
-    var to: [String]?               // mention targets; empty/nil = whole room
-    var timeoutMs: Int?
-    var limit: Int?                 // history / join catch-up size
-    var project: String?            // join only: the joiner's cwd, recorded in presence
-    var session: String?            // join only: the joiner's CC session id (exact addressing)
-    var host: String?               // join only: the joiner's HostIdentity (poke routing)
-    var tmuxPane: String?           // join only: the joiner's $TMUX_PANE, when tmux-wrapped
-    var tmuxSocket: String? = nil   // join only: server socket parsed from $TMUX (pane ids are server-scoped)
-    var state: String?              // mark/peek: hook-reported session state (see MeshSessionState)
-    var expectedState: String?      // mark only: compare-and-set guard for observer corrections
-    var expectedStateTs: Double?    // mark only: reject a correction if a newer hook already won
-    var kind: String?               // join only: "claude" | "codex" (drives the avatar set)
-    var tailscaleIP: String?        // join only: the joiner's own `tailscale ip -4`, for SSH auto-fill
+public struct MeshRequest: Codable, Sendable {
+    public var cmd: String
+    public var room: String?
+    public var nick: String?
+    public var memberID: String?
+    public var text: String?
+    public var to: [String]?
+    public var timeoutMs: Int?
+    public var limit: Int?
+    public var project: String?
+    public var session: String?
+    public var host: String?
+    public var tmuxPane: String?
+    public var tmuxSocket: String? = nil
+    public var state: String?
+    public var expectedState: String?
+    public var expectedStateTs: Double?
+    public var kind: String?
+    public var tailscaleIP: String?
+    public var replyToID: String?
+    public var attachments: [MeshAttachment]?
+    public var attachment: MeshAttachment?
+    public var attachmentID: String?
+
+    public init(cmd: String, room: String? = nil, nick: String? = nil, memberID: String? = nil,
+                text: String? = nil, to: [String]? = nil, timeoutMs: Int? = nil, limit: Int? = nil,
+                project: String? = nil, session: String? = nil, host: String? = nil,
+                tmuxPane: String? = nil, tmuxSocket: String? = nil, state: String? = nil,
+                expectedState: String? = nil, expectedStateTs: Double? = nil, kind: String? = nil,
+                tailscaleIP: String? = nil, replyToID: String? = nil,
+                attachments: [MeshAttachment]? = nil, attachment: MeshAttachment? = nil,
+                attachmentID: String? = nil) {
+        self.cmd = cmd; self.room = room; self.nick = nick; self.memberID = memberID
+        self.text = text; self.to = to; self.timeoutMs = timeoutMs; self.limit = limit
+        self.project = project; self.session = session; self.host = host; self.tmuxPane = tmuxPane
+        self.tmuxSocket = tmuxSocket; self.state = state; self.expectedState = expectedState
+        self.expectedStateTs = expectedStateTs; self.kind = kind; self.tailscaleIP = tailscaleIP
+        self.replyToID = replyToID; self.attachments = attachments; self.attachment = attachment
+        self.attachmentID = attachmentID
+    }
 }
 
 /// Hook-reported lifecycle states (probed ground truth, cc-hook-probe FINDINGS,
@@ -34,21 +58,61 @@ struct MeshRequest: Codable {
 ///  stopped — Stop fired: turn over, composer idle → poke-safe
 ///  idle    — Notification{idle_prompt} (60s after Stop): confirmed idle
 ///  gone    — SessionEnd: never poke
-enum MeshSessionState: String {
+public enum MeshSessionState: String, Codable, Sendable {
     case busy, blocked, stopped, idle, gone
     /// May a send-keys nudge safely reach this session's composer?
-    var pokeable: Bool { self == .stopped || self == .idle }
+    public var pokeable: Bool { self == .stopped || self == .idle }
 }
 
-struct MeshMsg: Codable {
-    var from: String
-    var room: String
-    var text: String
-    var ts: Double
-    var to: [String]
+public struct MeshReply: Codable, Sendable, Equatable {
+    public var messageID: String
+    public var from: String
+    public var preview: String
+    public var ts: Double
+
+    public init(messageID: String, from: String, preview: String, ts: Double) {
+        self.messageID = messageID; self.from = from; self.preview = preview; self.ts = ts
+    }
 }
 
-struct MeshRoomInfo: Codable { var name: String; var members: [String] }
+public struct MeshAttachment: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var name: String
+    public var mimeType: String
+    public var byteSize: Int
+    public var sha256: String
+
+    public init(id: String = UUID().uuidString, name: String, mimeType: String,
+                byteSize: Int, sha256: String) {
+        self.id = id; self.name = name; self.mimeType = mimeType
+        self.byteSize = byteSize; self.sha256 = sha256
+    }
+}
+
+public struct MeshMsg: Codable, Sendable, Equatable, Identifiable {
+    public var id: String?
+    public var from: String
+    public var room: String
+    public var text: String
+    public var ts: Double
+    public var to: [String]
+    public var replyTo: MeshReply?
+    public var attachments: [MeshAttachment]?
+
+    public init(id: String? = nil, from: String, room: String, text: String, ts: Double,
+                to: [String], replyTo: MeshReply? = nil, attachments: [MeshAttachment]? = nil) {
+        self.id = id; self.from = from; self.room = room; self.text = text; self.ts = ts; self.to = to
+        self.replyTo = replyTo; self.attachments = attachments
+    }
+
+    public var stableID: String { id ?? "legacy|\(room)|\(ts)|\(from)" }
+}
+
+public struct MeshRoomInfo: Codable, Sendable, Equatable {
+    public var name: String
+    public var members: [String]
+    public init(name: String, members: [String]) { self.name = name; self.members = members }
+}
 
 // MARK: - Mirrored local state (the zero-daemon surface the hooks read)
 
@@ -56,98 +120,142 @@ struct MeshRoomInfo: Codable { var name: String; var members: [String] }
 /// all rooms, rewritten by the broker on every deliver and every drain. The
 /// file EXISTS iff something is unread — hooks check it with a pure local read,
 /// so a dead broker can never error or trap an agent.
-struct MeshUnread: Codable {
-    var v: Int
-    var memberID: String
-    var nick: String
-    var count: Int
-    var rooms: [String: Int]        // room → unread count
-    var messages: [MeshMsg]         // oldest→newest (capped)
-    var updatedTs: Double
+public struct MeshUnread: Codable, Sendable {
+    public var v: Int
+    public var memberID: String
+    public var nick: String
+    public var count: Int
+    public var rooms: [String: Int]
+    public var messages: [MeshMsg]
+    public var updatedTs: Double
+
+    public init(v: Int, memberID: String, nick: String, count: Int, rooms: [String: Int],
+                messages: [MeshMsg], updatedTs: Double) {
+        self.v = v; self.memberID = memberID; self.nick = nick; self.count = count
+        self.rooms = rooms; self.messages = messages; self.updatedTs = updatedTs
+    }
 }
 
 /// session id → runtime identity. `aliases` is room → display nick; aliases are
 /// room-scoped and never serve as delivery keys.
-struct MeshPresenceEntry: Codable {
-    var project: String?
-    var session: String?            // CC session id (from --session at join); nil for older/cwd-only joins
-    var host: String?               // HostIdentity of the joiner's machine (poke routing); nil pre-0.4 joins
-    var tmuxPane: String?           // $TMUX_PANE captured at join; nil = not tmux-wrapped (can't auto-poke)
-    var tmuxSocket: String? = nil   // tmux server socket; nil for registrations made before socket capture
-    var state: String?              // last hook-reported MeshSessionState; nil = unknown (never poke)
-    var stateTs: Double?            // when `state` was reported
-    var kind: String?               // "claude" | "codex" (avatar set); nil = unknown → claude default
-    var tailscaleIP: String?        // the joiner's own `tailscale ip -4`; nil pre-0.5 joins
-    var aliases: [String: String]
-    var rooms: [String]
-    var lastSeen: Double
-    var online: Bool
+public struct MeshPresenceEntry: Codable, Sendable {
+    public var project: String?
+    public var session: String?
+    public var host: String?
+    public var tmuxPane: String?
+    public var tmuxSocket: String? = nil
+    public var state: String?
+    public var stateTs: Double?
+    public var kind: String?
+    public var tailscaleIP: String?
+    public var aliases: [String: String]
+    public var rooms: [String]
+    public var lastSeen: Double
+    public var online: Bool
+
+    public init(project: String? = nil, session: String? = nil, host: String? = nil,
+                tmuxPane: String? = nil, tmuxSocket: String? = nil,
+                state: String? = nil, stateTs: Double? = nil, kind: String? = nil, tailscaleIP: String? = nil,
+                aliases: [String: String], rooms: [String], lastSeen: Double, online: Bool) {
+        self.project = project; self.session = session; self.host = host; self.tmuxPane = tmuxPane
+        self.tmuxSocket = tmuxSocket; self.state = state; self.stateTs = stateTs; self.kind = kind
+        self.tailscaleIP = tailscaleIP; self.aliases = aliases; self.rooms = rooms
+        self.lastSeen = lastSeen; self.online = online
+    }
 }
 
 /// One member of the mesh as the GUI/CLI sees it — presence plus identity, the
 /// unit `who` returns and `say` echoes back for each @-target so the sender can
 /// poke (or tell the human to). Field meanings mirror MeshPresenceEntry.
-struct MeshMemberInfo: Codable {
-    var id: String                  // immutable member/session identity
-    var nick: String
-    var project: String?
-    var session: String?
-    var host: String?
-    var tmuxPane: String?
-    var tmuxSocket: String? = nil
-    var state: String?
-    var stateTs: Double?
-    var unread: Int?                // pending mailbox messages across all rooms
-    var kind: String?               // "claude" | "codex" — which avatar set the GUI shows
-    var tailscaleIP: String?        // the member's own `tailscale ip -4`, for SSH host auto-fill
-    var rooms: [String]
-    var lastSeen: Double
+public struct MeshMemberInfo: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var nick: String
+    public var project: String?
+    public var session: String?
+    public var host: String?
+    public var tmuxPane: String?
+    public var tmuxSocket: String? = nil
+    public var state: String?
+    public var stateTs: Double?
+    public var unread: Int?
+    public var kind: String?
+    public var tailscaleIP: String?
+    public var rooms: [String]
+    public var lastSeen: Double
+
+    public init(id: String, nick: String, project: String? = nil, session: String? = nil,
+                host: String? = nil, tmuxPane: String? = nil,
+                tmuxSocket: String? = nil, state: String? = nil, stateTs: Double? = nil,
+                unread: Int? = nil, kind: String? = nil,
+                tailscaleIP: String? = nil, rooms: [String], lastSeen: Double) {
+        self.id = id; self.nick = nick; self.project = project; self.session = session; self.host = host
+        self.tmuxPane = tmuxPane; self.tmuxSocket = tmuxSocket; self.state = state; self.stateTs = stateTs
+        self.unread = unread; self.kind = kind; self.tailscaleIP = tailscaleIP
+        self.rooms = rooms; self.lastSeen = lastSeen
+    }
 }
 
-struct MeshPresence: Codable {
-    var v: Int
-    var members: [String: MeshPresenceEntry]
+public struct MeshPresence: Codable, Sendable {
+    public var v: Int
+    public var members: [String: MeshPresenceEntry]
+    public init(v: Int, members: [String: MeshPresenceEntry]) { self.v = v; self.members = members }
 }
 
-struct MeshResponse: Codable {
-    var ok: Bool
-    var error: String?
-    var rooms: [MeshRoomInfo]?
-    var messages: [MeshMsg]?
-    var members: [MeshMemberInfo]?  // who: full roster; say: the @-targets' presence
-    var note: String?
-    var memberID: String?
-    var payload: String?            // projects/issues: registry JSON the hub is the source of truth for
+public struct MeshResponse: Codable, Sendable, Equatable {
+    public var ok: Bool
+    public var error: String?
+    public var rooms: [MeshRoomInfo]?
+    public var messages: [MeshMsg]?
+    public var members: [MeshMemberInfo]?
+    public var note: String?
+    public var memberID: String?
+    public var payload: String?
+    public var capabilities: [String]?
+    public var attachment: MeshAttachment?
 
-    static func okay(_ note: String? = nil) -> MeshResponse { MeshResponse(ok: true, note: note) }
-    static func fail(_ e: String) -> MeshResponse { MeshResponse(ok: false, error: e) }
+    public init(ok: Bool, error: String? = nil, rooms: [MeshRoomInfo]? = nil, messages: [MeshMsg]? = nil,
+                members: [MeshMemberInfo]? = nil, note: String? = nil, memberID: String? = nil,
+                payload: String? = nil, capabilities: [String]? = nil, attachment: MeshAttachment? = nil) {
+        self.ok = ok; self.error = error; self.rooms = rooms; self.messages = messages; self.members = members
+        self.note = note; self.memberID = memberID; self.payload = payload
+        self.capabilities = capabilities; self.attachment = attachment
+    }
+
+    public static func okay(_ note: String? = nil) -> MeshResponse { MeshResponse(ok: true, note: note) }
+    public static func fail(_ e: String) -> MeshResponse { MeshResponse(ok: false, error: e) }
 }
 
 // MARK: - Paths (socket is always LOCAL; transcript lives in the data dir so the GUI/iCloud see it)
 
-enum MeshPaths {
+public enum MeshPaths {
     /// Always-local Pharos app-support dir (never iCloud — a socket can't live in
     /// iCloud). `PHAROS_MESH_DIR` overrides it so tests can run a hermetic broker
     /// without touching the live one (mirrors `PHAROS_REGISTRY`).
-    static var supportDir: URL {
+    public static var supportDir: URL {
         if let o = ProcessInfo.processInfo.environment["PHAROS_MESH_DIR"], !o.isEmpty {
             return URL(fileURLWithPath: o, isDirectory: true)
         }
+        #if os(Linux)
+        let home = ProcessInfo.processInfo.environment["HOME"] ?? "/tmp"
+        return URL(fileURLWithPath: home, isDirectory: true)
+            .appendingPathComponent(".local/share/pharos", isDirectory: true)
+        #else
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return base.appendingPathComponent("Pharos", isDirectory: true)
+        #endif
     }
-    static var socketPath: String { supportDir.appendingPathComponent("mesh.sock").path }
-    static var daemonLog: URL { supportDir.appendingPathComponent("mesh-daemon.log") }
+    public static var socketPath: String { supportDir.appendingPathComponent("mesh.sock").path }
+    public static var daemonLog: URL { supportDir.appendingPathComponent("mesh-daemon.log") }
 
     /// Cross-host transport (see MeshTCP.swift). `PHAROS_MESH_TCP=host:port`
     /// makes the broker also listen on TCP and clients dial it instead of the
     /// local UDS. Unauthenticated (Tailscale is the trust boundary), so the
     /// broker refuses to bind unless `PHAROS_MESH_TCP_INSECURE=1` is also set.
-    static var tcpEndpoint: String? {
+    public static var tcpEndpoint: String? {
         guard let v = ProcessInfo.processInfo.environment["PHAROS_MESH_TCP"], !v.isEmpty else { return nil }
         return v
     }
-    static var tcpInsecureOptIn: Bool {
+    public static var tcpInsecureOptIn: Bool {
         ProcessInfo.processInfo.environment["PHAROS_MESH_TCP_INSECURE"] == "1"
     }
 
@@ -157,14 +265,14 @@ enum MeshPaths {
     /// per-agent env config (Pharos#5 P3). Dial-only — the broker's *bind*
     /// decision stays env-only (`tcpEndpoint`), or a satellite would try to bind
     /// the hub's address.
-    static var endpointFile: URL { supportDir.appendingPathComponent("mesh-endpoint") }
-    static var dialEndpoint: String? {
+    public static var endpointFile: URL { supportDir.appendingPathComponent("mesh-endpoint") }
+    public static var dialEndpoint: String? {
         if let env = tcpEndpoint { return env }
         guard let raw = try? String(contentsOf: endpointFile, encoding: .utf8) else { return nil }
         let v = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return meshSplitHostPort(v) != nil ? v : nil
     }
-    static func setDialEndpointFile(_ ep: String?) {
+    public static func setDialEndpointFile(_ ep: String?) {
         if let ep, !ep.isEmpty {
             try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
             try? (ep + "\n").write(to: endpointFile, atomically: true, encoding: .utf8)
@@ -176,7 +284,7 @@ enum MeshPaths {
     /// Darwin's `sun_path` holds 104 bytes including the NUL — a longer socket
     /// path silently truncates in `meshFillSockaddr` and binds/connects somewhere
     /// unintended. Non-nil = the clear diagnostic to surface instead.
-    static var socketPathOverflow: String? {
+    public static var socketPathOverflow: String? {
         let n = socketPath.utf8.count
         guard n > 103 else { return nil }
         return "mesh socket path too long: \(socketPath) (\(n) chars > 103) — set a shorter PHAROS_MESH_DIR"
@@ -185,27 +293,58 @@ enum MeshPaths {
     /// Local-only mesh runtime state (never iCloud): per-nick unread signal
     /// files + presence. Mirrors the broker's RAM, so a fresh daemon wipes it —
     /// the hooks must never read a signal the current broker didn't write.
-    static var stateDir: URL { supportDir.appendingPathComponent("mesh-state", isDirectory: true) }
-    static var unreadDir: URL { stateDir.appendingPathComponent("unread", isDirectory: true) }
-    static var presenceFile: URL { stateDir.appendingPathComponent("presence.json") }
+    public static var stateDir: URL { supportDir.appendingPathComponent("mesh-state", isDirectory: true) }
+    public static var unreadDir: URL { stateDir.appendingPathComponent("unread", isDirectory: true) }
+    public static var presenceFile: URL { stateDir.appendingPathComponent("presence.json") }
 
     /// PostToolUse de-dup marker: the newest unread timestamp already surfaced
     /// mid-turn for a nick, so consecutive tool calls don't repeat the notice.
-    static func notifiedFile(_ memberID: String) -> URL {
+    public static func notifiedFile(_ memberID: String) -> URL {
         let safe = String(memberID.map { $0.isLetter || $0.isNumber || "._-".contains($0) ? $0 : "_" })
         return stateDir.appendingPathComponent("notified-\(safe)")
     }
-    static func unreadFile(_ memberID: String) -> URL {
+    public static func unreadFile(_ memberID: String) -> URL {
         let safe = String(memberID.map { $0.isLetter || $0.isNumber || "._-".contains($0) ? $0 : "_" })
         return unreadDir.appendingPathComponent("\(safe).json")
     }
 
     /// Room transcripts live beside the registry (may be iCloud) so the GUI can show them.
-    static var transcriptDir: URL {
-        PharosCore.registryURL.deletingLastPathComponent().appendingPathComponent("mesh", isDirectory: true)
+    public static var dataDirectory: URL {
+        if let override = ProcessInfo.processInfo.environment["PHAROS_MESH_DATA_DIR"], !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        if let registry = ProcessInfo.processInfo.environment["PHAROS_REGISTRY"], !registry.isEmpty {
+            return URL(fileURLWithPath: registry).deletingLastPathComponent()
+        }
+        #if os(macOS)
+        if let path = UserDefaults(suiteName: "me.pai.pharos")?.string(forKey: "pharos.dataDir"), !path.isEmpty {
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
+        #endif
+        return supportDir
     }
-    static func transcript(_ room: String) -> URL {
+    public static var transcriptDir: URL { dataDirectory.appendingPathComponent("mesh", isDirectory: true) }
+    public static var attachmentDir: URL { transcriptDir.appendingPathComponent("attachments", isDirectory: true) }
+    public static var registryFile: URL { dataDirectory.appendingPathComponent("projects.json") }
+
+    public static func transcript(_ room: String) -> URL {
         transcriptDir.appendingPathComponent("\(room).jsonl")
+    }
+
+    public static func attachmentDirectory(_ id: String) -> URL {
+        attachmentDir.appendingPathComponent(safePathComponent(id), isDirectory: true)
+    }
+
+    public static func attachmentData(_ id: String) -> URL {
+        attachmentDirectory(id).appendingPathComponent("data")
+    }
+
+    public static func attachmentMetadata(_ id: String) -> URL {
+        attachmentDirectory(id).appendingPathComponent("metadata.json")
+    }
+
+    private static func safePathComponent(_ value: String) -> String {
+        String(value.map { $0.isLetter || $0.isNumber || "._-".contains($0) ? $0 : "_" })
     }
 }
 
@@ -251,20 +390,51 @@ func meshWriteAll(_ fd: Int32, _ data: Data) {
     }
 }
 
+func meshWriteRaw(_ fd: Int32, _ data: Data) {
+    data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+        guard var pointer = raw.baseAddress else { return }
+        var remaining = raw.count
+        while remaining > 0 {
+            let count = write(fd, pointer, remaining)
+            if count <= 0 { break }
+            pointer = pointer.advanced(by: count)
+            remaining -= count
+        }
+    }
+}
+
+func meshReadExactly(_ fd: Int32, count: Int) -> Data? {
+    guard count >= 0 else { return nil }
+    var output = Data()
+    output.reserveCapacity(count)
+    var remaining = count
+    var buffer = [UInt8](repeating: 0, count: min(64 * 1024, max(1, count)))
+    while remaining > 0 {
+        let requested = min(remaining, buffer.count)
+        let received = read(fd, &buffer, requested)
+        if received <= 0 { return nil }
+        output.append(buffer, count: received)
+        remaining -= received
+    }
+    return output
+}
+
 // MARK: - Broker daemon
 
 /// In-memory chat broker. Holds rooms → members → per-member durable mailboxes,
 /// mirrors each nick's unread to a signal file for the hooks, and appends every
 /// message to a per-room transcript file for the GUI to read. Delivery to an agent
 /// is by @mention into its mailbox; the Stop hook surfaces it at the next turn.
-final class MeshBroker {
+public final class MeshBroker: @unchecked Sendable {
     private let lock = NSLock()
     /// alias → immutable member id; mailboxes are keyed only by member id.
     private struct Room { var members: [String: String] = [:]; var mailboxes: [String: [MeshMsg]] = [:] }
     private var rooms: [String: Room] = [:]
     private var presence: [String: MeshPresenceEntry] = [:]
 
-    static func runDaemon() -> Never {
+    public init() {}
+
+    public static func runDaemon() -> Never {
         let broker = MeshBroker() // keep strong lifetime for weak listener closures
         broker.serve()
         exit(0)   // unreachable
@@ -272,15 +442,16 @@ final class MeshBroker {
 
     /// Observer-driven corrections use compare-and-set semantics: a hook event
     /// that lands after the observer's snapshot must never be overwritten.
-    static func markMatchesSnapshot(_ entry: MeshPresenceEntry, request: MeshRequest) -> Bool {
+    public static func markMatchesSnapshot(_ entry: MeshPresenceEntry, request: MeshRequest) -> Bool {
         (request.expectedState == nil || entry.state == request.expectedState)
             && (request.expectedStateTs == nil || entry.stateTs == request.expectedStateTs)
     }
 
-    func serve() {
+    public func serve() {
         signal(SIGPIPE, SIG_IGN)        // a hung-up client must not kill the daemon
         try? FileManager.default.createDirectory(at: MeshPaths.supportDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: MeshPaths.transcriptDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: MeshPaths.attachmentDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: MeshPaths.unreadDir, withIntermediateDirectories: true)
         // Fresh broker = fresh MAILBOXES: reset the unread signal files so hooks
         // never see a signal this broker didn't write. Transcripts are durable.
@@ -317,7 +488,7 @@ final class MeshBroker {
         }
         if let fd = MeshClient.connectUDS() { close(fd); exit(0) }   // a daemon already serves here — defer
         unlink(path)
-        let sfd = socket(AF_UNIX, SOCK_STREAM, 0)
+        let sfd = socket(AF_UNIX, meshSocketStream(), 0)
         guard sfd >= 0 else { fatalError("mesh: socket() failed (\(errno))") }
         var addr = sockaddr_un()
         meshFillSockaddr(&addr, path)
@@ -380,12 +551,25 @@ final class MeshBroker {
             return
         }
         meshLog("req cmd=\(req.cmd) room=\(req.room ?? "-") nick=\(req.nick ?? "-")")
+        if req.cmd == "attachment-put" {
+            handleAttachmentUpload(cfd, request: req)
+            return
+        }
+        if req.cmd == "attachment-get" {
+            handleAttachmentDownload(cfd, request: req)
+            return
+        }
         let resp = process(req)               // for `wait`, this blocks until ready
         if let d = try? JSONEncoder().encode(resp) { meshWriteAll(cfd, d); meshLog("response written ok=\(resp.ok)") }
     }
 
-    func process(_ req: MeshRequest) -> MeshResponse {
+    public func process(_ req: MeshRequest) -> MeshResponse {
         switch req.cmd {
+        case "capabilities":
+            return MeshResponse(ok: true, capabilities: [
+                "mesh-v2", "message-id", "reply-v1", "attachment-v1", "headless-v1"
+            ])
+
         case "create":
             guard let r = req.room else { return .fail("room required") }
             lock.lock(); if rooms[r] == nil { rooms[r] = Room() }; lock.unlock()
@@ -485,8 +669,28 @@ final class MeshBroker {
             return .okay()
 
         case "say":
-            guard let r = req.room, let n = req.nick, let t = req.text else { return .fail("room, nick and text required") }
-            deliver(room: r, from: n, text: t, to: req.to)
+            guard let r = req.room, let n = req.nick else { return .fail("room and nick required") }
+            let t = req.text ?? ""
+            let attachments = req.attachments ?? []
+            guard !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else {
+                return .fail("text or attachment required")
+            }
+            for attachment in attachments {
+                guard storedAttachment(id: attachment.id) == attachment else {
+                    return .fail("attachment is missing or metadata does not match: \(attachment.id)")
+                }
+            }
+            let reply: MeshReply?
+            if let replyToID = req.replyToID {
+                guard let resolved = replyReference(room: r, messageID: replyToID) else {
+                    return .fail("quoted message not found in room")
+                }
+                reply = resolved
+            } else {
+                reply = nil
+            }
+            deliver(room: r, from: n, text: t, to: req.to, replyTo: reply,
+                    attachments: attachments.isEmpty ? nil : attachments)
             // Echo EVERY @-target's presence so the sender can act on delivery:
             // poke a stopped/idle tmux session, tell the human to nudge a
             // session we can't reach (no pane / blocked on a dialog) — and an
@@ -627,8 +831,11 @@ final class MeshBroker {
     ///    NOT poke; each recipient sees it at its next turn boundary (Stop hook).
     /// The empty-vs-non-empty `to` on the stored `MeshMsg` is exactly what the
     /// poke path keys on, so no separate flag is needed.
-    private func deliver(room r: String, from n: String, text t: String, to: [String]?) {
-        let msg = MeshMsg(from: n, room: r, text: t, ts: Date().timeIntervalSince1970, to: to ?? [])
+    private func deliver(room r: String, from n: String, text t: String, to: [String]?,
+                         replyTo: MeshReply?, attachments: [MeshAttachment]?) {
+        let msg = MeshMsg(id: UUID().uuidString, from: n, room: r, text: t,
+                          ts: Date().timeIntervalSince1970, to: to ?? [],
+                          replyTo: replyTo, attachments: attachments)
         lock.lock()
         if rooms[r] == nil { rooms[r] = Room() }
         let targetIDs: [String]
@@ -736,26 +943,40 @@ final class MeshBroker {
     /// All registered projects as JSON matching the mobile parser
     /// (`{"projects":[{name, localPath, githubRemote, tags}]}`).
     private func registryProjectsJSON() -> String {
-        let rows: [[String: Any]] = PharosCore.loadProjects().map { p in
-            ["name": p.name,
-             "localPath": p.localPath ?? NSNull(),
-             "githubRemote": p.githubRemote ?? NSNull(),
-             "tags": p.tags]
-        }
-        return Self.jsonString(["projects": rows]) ?? #"{"projects":[]}"#
+        Self.jsonString(["projects": registryProjects()]) ?? #"{"projects":[]}"#
     }
 
     /// Every open issue across all projects
     /// (`{"issues":[{project, number, title, status, priority, labels}]}`).
     private func registryIssuesJSON() -> String {
         var out: [[String: Any]] = []
-        for p in PharosCore.loadProjects() {
-            for i in p.issues where i.status.isOpen {
-                out.append(["project": p.name, "number": i.number, "title": i.title,
-                            "status": i.status.rawValue, "priority": i.priority.rawValue, "labels": i.labels])
+        for project in registryProjects() {
+            guard let name = project["name"] as? String,
+                  let issues = project["issues"] as? [[String: Any]] else { continue }
+            for issue in issues {
+                let status = issue["status"] as? String ?? "todo"
+                guard status != "done", status != "canceled" else { continue }
+                out.append(["project": name,
+                            "number": issue["number"] as? Int ?? 0,
+                            "title": issue["title"] as? String ?? "Untitled",
+                            "status": status,
+                            "priority": issue["priority"] as? String ?? "none",
+                            "labels": issue["labels"] as? [String] ?? []])
             }
         }
         return Self.jsonString(["issues": out]) ?? #"{"issues":[]}"#
+    }
+
+    /// The headless broker treats the registry as opaque JSON. This keeps the
+    /// Linux service independent from AppKit/project-launch code while still
+    /// serving the same project and issue read models to mobile clients.
+    private func registryProjects() -> [[String: Any]] {
+        guard let data = try? Data(contentsOf: MeshPaths.registryFile),
+              let object = try? JSONSerialization.jsonObject(with: data) else { return [] }
+        if let root = object as? [String: Any], let projects = root["projects"] as? [[String: Any]] {
+            return projects
+        }
+        return object as? [[String: Any]] ?? []
     }
 
     private static func jsonString(_ obj: [String: Any]) -> String? {
@@ -817,13 +1038,87 @@ final class MeshBroker {
         if let d = try? JSONEncoder().encode(snap) { try? d.write(to: MeshPaths.presenceFile, options: .atomic) }
     }
 
+    private static let maximumAttachmentBytes = 25 * 1024 * 1024
+
+    private func handleAttachmentUpload(_ fd: Int32, request: MeshRequest) {
+        guard let attachment = request.attachment,
+              UUID(uuidString: attachment.id) != nil,
+              attachment.byteSize > 0,
+              attachment.byteSize <= Self.maximumAttachmentBytes,
+              attachment.sha256.count == 64,
+              !attachment.name.isEmpty,
+              URL(fileURLWithPath: attachment.name).lastPathComponent == attachment.name else {
+            writeResponse(.fail("invalid attachment metadata"), to: fd)
+            return
+        }
+        guard let bytes = meshReadExactly(fd, count: attachment.byteSize) else {
+            writeResponse(.fail("attachment upload ended early"), to: fd)
+            return
+        }
+        let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        guard digest == attachment.sha256.lowercased() else {
+            writeResponse(.fail("attachment checksum mismatch"), to: fd)
+            return
+        }
+
+        let directory = MeshPaths.attachmentDirectory(attachment.id)
+        let temporary = directory.appendingPathComponent("data.upload-\(UUID().uuidString)")
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try bytes.write(to: temporary, options: .atomic)
+            let destination = MeshPaths.attachmentData(attachment.id)
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.moveItem(at: temporary, to: destination)
+            let metadata = try JSONEncoder().encode(attachment)
+            try metadata.write(to: MeshPaths.attachmentMetadata(attachment.id), options: .atomic)
+            writeResponse(MeshResponse(ok: true, attachment: attachment), to: fd)
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            writeResponse(.fail("cannot store attachment: \(error.localizedDescription)"), to: fd)
+        }
+    }
+
+    private func handleAttachmentDownload(_ fd: Int32, request: MeshRequest) {
+        guard let id = request.attachmentID,
+              let attachment = storedAttachment(id: id),
+              let data = try? Data(contentsOf: MeshPaths.attachmentData(id)),
+              data.count == attachment.byteSize else {
+            writeResponse(.fail("attachment not found"), to: fd)
+            return
+        }
+        writeResponse(MeshResponse(ok: true, attachment: attachment), to: fd)
+        meshWriteRaw(fd, data)
+    }
+
+    private func writeResponse(_ response: MeshResponse, to fd: Int32) {
+        if let data = try? JSONEncoder().encode(response) { meshWriteAll(fd, data) }
+    }
+
+    private func storedAttachment(id: String) -> MeshAttachment? {
+        guard let data = try? Data(contentsOf: MeshPaths.attachmentMetadata(id)),
+              let attachment = try? JSONDecoder().decode(MeshAttachment.self, from: data),
+              FileManager.default.fileExists(atPath: MeshPaths.attachmentData(id).path) else { return nil }
+        return attachment
+    }
+
+    private func replyReference(room: String, messageID: String) -> MeshReply? {
+        guard let original = transcript(room).first(where: { $0.stableID == messageID }) else { return nil }
+        let compact = original.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let preview = compact.count > 240 ? String(compact.prefix(237)) + "…" : compact
+        return MeshReply(messageID: original.stableID, from: original.from,
+                         preview: preview.isEmpty ? "Attachment" : preview, ts: original.ts)
+    }
+
+    private func transcript(_ room: String) -> [MeshMsg] {
+        guard let data = try? String(contentsOf: MeshPaths.transcript(room), encoding: .utf8) else { return [] }
+        let dec = JSONDecoder()
+        return data.split(separator: "\n").compactMap { try? dec.decode(MeshMsg.self, from: Data($0.utf8)) }
+    }
+
     /// The last `limit` messages of a room, from its transcript (the durable log
     /// of everything said, mention or not).
     private func recentTranscript(_ room: String, limit: Int) -> [MeshMsg] {
-        guard let data = try? String(contentsOf: MeshPaths.transcript(room), encoding: .utf8) else { return [] }
-        let dec = JSONDecoder()
-        let all = data.split(separator: "\n").compactMap { try? dec.decode(MeshMsg.self, from: Data($0.utf8)) }
-        return Array(all.suffix(max(0, limit)))
+        Array(transcript(room).suffix(max(0, limit)))
     }
 
     private func appendTranscript(_ m: MeshMsg) {
