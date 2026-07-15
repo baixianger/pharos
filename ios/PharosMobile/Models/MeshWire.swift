@@ -13,6 +13,7 @@ struct MeshRequest: Codable, Sendable, Equatable {
     var session: String?
     var host: String?
     var tmuxPane: String?
+    var tmuxSocket: String? = nil
     var state: String?
     var expectedState: String?
     var expectedStateTs: Double?
@@ -53,6 +54,7 @@ struct MeshMember: Codable, Sendable, Equatable, Identifiable {
     var session: String?
     var host: String?
     var tmuxPane: String?
+    var tmuxSocket: String? = nil
     var state: String?
     var stateTs: Double?
     var unread: Int?

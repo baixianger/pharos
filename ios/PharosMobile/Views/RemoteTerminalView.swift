@@ -54,7 +54,8 @@ struct RemoteTerminalView: View {
             let shell = try await session.openShell()
             feed.onInput = { data in Task { try? await shell.write(data) } }
             feed.resize = { cols, rows in await shell.resize(cols: cols, rows: rows) }
-            let command = try RemoteCommandBuilder.attach(pane: target.member.tmuxPane ?? "") + "\n"
+            let command = try RemoteCommandBuilder.attach(pane: target.member.tmuxPane ?? "",
+                                                           socket: target.member.tmuxSocket) + "\n"
             try await shell.write(Data(command.utf8))
             for await chunk in shell.output { feed.write(chunk) }
         } catch is CancellationError {

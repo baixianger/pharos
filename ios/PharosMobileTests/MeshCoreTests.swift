@@ -25,8 +25,10 @@ struct MeshCoreTests {
     }
 
     @Test func pokeCommandIncludesSafetyProbe() throws {
-        let command = try TmuxPokeCommand.build(nick: "codex", memberID: "019f-test", pane: "%12", kind: "codex")
+        let command = try TmuxPokeCommand.build(nick: "codex", memberID: "019f-test", pane: "%12",
+                                                socket: "/private/tmp/tmux-501/agent", kind: "codex")
         #expect(command.contains("capture-pane"))
+        #expect(command.contains("tmux -S '/private/tmp/tmux-501/agent'"))
         #expect(command.contains("esc to interrupt"))
         #expect(command.contains("pharos mesh recv codex --member 019f-test"))
     }
@@ -44,8 +46,9 @@ struct MeshCoreTests {
     }
 
     @Test func attachCommandTargetsExactPaneSession() throws {
-        let command = try RemoteCommandBuilder.attach(pane: "%12")
+        let command = try RemoteCommandBuilder.attach(pane: "%12", socket: "/private/tmp/tmux-501/agent")
         #expect(command.contains("display-message -p -t '%12'"))
+        #expect(command.contains("tmux -S '/private/tmp/tmux-501/agent'"))
         // `-d` detaches other clients so a single terminal drives the size (no flushing).
         #expect(command.contains("attach-session -d -t \"=$s\""))
     }

@@ -1025,9 +1025,10 @@ final class MeshPokeRouteTests: XCTestCase {
     override func setUp() { setenv("PHAROS_HOST", "test-mac", 1) }
     override func tearDown() { unsetenv("PHAROS_HOST") }
 
-    private func member(pane: String?, host: String?) -> MeshMemberInfo {
+    private func member(pane: String?, host: String?, socket: String? = "/private/tmp/tmux-501/agent") -> MeshMemberInfo {
         MeshMemberInfo(id: "s", nick: "bot", project: "/tmp/x", session: "s", host: host,
-                       tmuxPane: pane, state: "stopped", stateTs: 0, rooms: ["r"], lastSeen: 0)
+                       tmuxPane: pane, tmuxSocket: socket, state: "stopped", stateTs: 0,
+                       rooms: ["r"], lastSeen: 0)
     }
 
     func testLocalPane() {
@@ -1057,6 +1058,14 @@ final class MeshPokeRouteTests: XCTestCase {
     func testRemoteWithoutPeerIsUnpokeable() {
         if case .unpokeable = MeshPoke.route(for: member(pane: "%1", host: "other-mac"), peerHost: "") {
         } else { XCTFail("expected .unpokeable without a paired peer") }
+    }
+
+    func testLegacyRemoteWithoutSocketIsUnpokeable() {
+        if case .unpokeable(let reason) = MeshPoke.route(
+            for: member(pane: "%1", host: "other-mac", socket: nil), peerHost: "home-ts"
+        ) {
+            XCTAssertTrue(reason.contains("rejoin"))
+        } else { XCTFail("expected .unpokeable without exact tmux server") }
     }
 
     /// The nudge is typed into a live pane; if it ever hit a shell instead, it
@@ -1245,7 +1254,9 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         let broker = MeshBroker()
         XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "orbidash-dev", nick: "codex",
                                                  project: "/orbidash", session: "session-orbidash",
-                                                 host: "mac", tmuxPane: "%19", kind: "codex")).ok)
+                                                 host: "mac", tmuxPane: "%19",
+                                                 tmuxSocket: "/private/tmp/tmux-501/orbidash",
+                                                 kind: "codex")).ok)
         XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "lelantos-dev", nick: "codex",
                                                  project: "/lelantos", session: "session-lelantos",
                                                  host: "mac", tmuxPane: "%22", kind: "codex")).ok)
@@ -1254,6 +1265,7 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
                                               text: "@codex plan", to: ["codex"]))
         XCTAssertEqual(orbi.members?.first?.id, "session-orbidash")
         XCTAssertEqual(orbi.members?.first?.tmuxPane, "%19")
+        XCTAssertEqual(orbi.members?.first?.tmuxSocket, "/private/tmp/tmux-501/orbidash")
 
         let lel = broker.process(MeshRequest(cmd: "say", room: "lelantos-dev", nick: "human",
                                              text: "@codex deploy", to: ["codex"]))
@@ -1458,5 +1470,21 @@ final class MeshBroadcastTests: XCTestCase {
         XCTAssertEqual(mailbox.filter { $0.to.contains("bob") }.map(\.text), ["hi"])
         // recv drains everything — bob still RECEIVES the broadcast.
         XCTAssertEqual(mailbox.count, 2)
+    }
+}
+
+final class RemoteLaunchTmuxIdentityTests: XCTestCase {
+    func testParsesSocketFromTmuxEnvironment() {
+        XCTAssertEqual(
+            RemoteLaunch.tmuxSocket(fromEnvironmentValue: "/private/tmp/tmux-501/agent,1234,0"),
+            "/private/tmp/tmux-501/agent"
+        )
+        XCTAssertNil(RemoteLaunch.tmuxSocket(fromEnvironmentValue: "relative/socket,1234,0"))
+        XCTAssertNil(RemoteLaunch.tmuxSocket(fromEnvironmentValue: nil))
+    }
+
+    func testRemoteErrorSurfacesItsMessage() {
+        let error = RemoteLaunch.RemoteError(message: "exact failure")
+        XCTAssertEqual(error.localizedDescription, "exact failure")
     }
 }

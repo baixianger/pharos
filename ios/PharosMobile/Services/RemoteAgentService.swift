@@ -118,16 +118,20 @@ enum RemoteCommandBuilder {
 
     private static func singleQuoted(_ v: String) -> String { "'\(v)'" }
 
-    static func attach(pane: String) throws -> String {
+    static func attach(pane: String, socket: String? = nil) throws -> String {
         let digits = pane.first == "%" ? pane.dropFirst() : Substring(pane)
         guard pane.first == "%", !digits.isEmpty, digits.allSatisfy(\.isNumber) else {
             throw RemoteActionError.unsafeValue(pane)
         }
+        if let socket, !shellSafe(socket) || !socket.hasPrefix("/") {
+            throw RemoteActionError.unsafeValue(socket)
+        }
+        let tmux = socket.map { "tmux -S \(singleQuoted($0))" } ?? "tmux"
         // `-d` detaches any other client on attach so THIS terminal is the only
         // one driving the window size. Two clients of different sizes make tmux
         // fight over the smallest size and redraw continuously (the "flushing"
         // screen); a single client renders at one stable size.
-        return "export PATH=\(path):$PATH; s=$(tmux display-message -p -t '\(pane)' '#{session_name}') || exit 31; exec tmux attach-session -d -t \"=$s\""
+        return "export PATH=\(path):$PATH; s=$(\(tmux) display-message -p -t '\(pane)' '#{session_name}') || exit 31; exec \(tmux) attach-session -d -t \"=$s\""
     }
 
     private static func safe(_ value: String) -> Bool {

@@ -211,6 +211,7 @@ enum CLI {
             // what lets the GUI poke a stopped agent (nil = not poke-able).
             let env = ProcessInfo.processInfo.environment
             let pane = env["TMUX"] != nil ? env["TMUX_PANE"] : nil
+            let socket = RemoteLaunch.tmuxSocket(fromEnvironmentValue: env["TMUX"])
             // Agent kind → which avatar set the GUI shows. Explicit --kind wins;
             // else auto-detect from the runtime the CLI is running inside.
             var kind: String?
@@ -221,6 +222,7 @@ enum CLI {
                                                 session: session,
                                                 host: HostIdentity.current,
                                                 tmuxPane: pane,
+                                                tmuxSocket: socket,
                                                 kind: kind,
                                                 tailscaleIP: detectTailscaleIP()))
             guard r.ok else { return report(r) }

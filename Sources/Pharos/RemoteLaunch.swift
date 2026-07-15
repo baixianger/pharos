@@ -15,9 +15,10 @@ import Foundation
 ///  - The peer login password comes from the LOCAL keychain item
 ///    `host-<alias>`, delivered stdin → tmux buffer, never argv/ps.
 enum RemoteLaunch {
-    struct RemoteError: Error, CustomStringConvertible {
+    struct RemoteError: LocalizedError, CustomStringConvertible {
         let message: String
         var description: String { message }
+        var errorDescription: String? { message }
     }
 
     private static let sshOpts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
@@ -35,6 +36,16 @@ enum RemoteLaunch {
 
     private static func tmux(_ host: String, _ args: [String]) -> Shell.Result {
         ssh(host, "tmux " + args.map(sq).joined(separator: " "))
+    }
+
+    static func tmuxSocket(fromEnvironmentValue value: String?) -> String? {
+        guard let socket = value?.split(separator: ",", maxSplits: 1).first.map(String.init),
+              validTmuxSocket(socket) else { return nil }
+        return socket
+    }
+
+    static func validTmuxSocket(_ socket: String) -> Bool {
+        socket.hasPrefix("/") && !socket.contains("\n") && !socket.contains("\r") && !socket.contains("\0")
     }
 
     /// ssh with data written to the remote command's stdin (for secrets — the
@@ -407,12 +418,13 @@ enum RemoteLaunch {
         return nil
     }
 
-    private static func tmuxAny(_ host: String?, _ args: [String]) -> Shell.Result {
-        if let host, !host.isEmpty { return tmux(host, args) }
+    private static func tmuxAny(_ host: String?, _ args: [String], socket: String? = nil) -> Shell.Result {
+        let socketArgs = socket.map { ["-S", $0] } ?? []
+        if let host, !host.isEmpty { return tmux(host, socketArgs + args) }
         guard let bin = LaunchService.tmuxPath else {
             return Shell.Result(out: "", err: "tmux not installed", code: 127)
         }
-        return Shell.run(bin, args)
+        return Shell.run(bin, socketArgs + args)
     }
 
     private static func at(_ host: String?) -> String { host.map { " on \($0)" } ?? "" }
@@ -465,15 +477,26 @@ enum RemoteLaunch {
 
     /// Resolve a broker-reported tmux pane to its owning session and stop it.
     /// Uses the same PATH-safe local/SSH transport as every other agent action.
-    static func kill(pane: String, host: String?) throws -> String {
+    static func kill(pane: String, host: String?, socket: String? = nil) throws -> String {
         guard pane.first == "%", pane.dropFirst().allSatisfy(\.isNumber) else {
             throw RemoteError(message: "invalid tmux pane '\(pane)'")
         }
-        let probe = tmuxAny(host, ["display-message", "-p", "-t", pane, "#{session_name}"])
+        if let socket, !validTmuxSocket(socket) {
+            throw RemoteError(message: "invalid tmux server identity")
+        }
+        if host?.isEmpty == false, socket == nil {
+            throw RemoteError(message: "This agent joined before Pharos recorded its tmux server. Update Pharos on that Mac and have the agent rejoin the room before stopping it safely.")
+        }
+        let probe = tmuxAny(host, ["display-message", "-p", "-t", pane, "#{session_name}"], socket: socket)
         let session = probe.out.trimmingCharacters(in: .whitespacesAndNewlines)
         guard probe.ok, !session.isEmpty else {
-            throw RemoteError(message: "cannot resolve tmux pane '\(pane)'\(at(host))")
+            let hint = socket == nil ? " Rejoin the room so Pharos can record its exact tmux server." : ""
+            throw RemoteError(message: "Cannot resolve tmux pane '\(pane)'\(at(host)).\(hint)")
         }
-        return try kill(session: session, host: host)
+        let stopped = tmuxAny(host, ["kill-session", "-t", "=\(session)"], socket: socket)
+        guard stopped.ok else {
+            throw RemoteError(message: "Cannot stop '\(session)'\(at(host)): \(stopped.err.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        return "killed '\(session)'\(at(host))"
     }
 }

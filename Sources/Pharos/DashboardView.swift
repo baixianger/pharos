@@ -209,7 +209,7 @@ struct DashboardView: View {
         }
         Task {
             let result = await Task.detached(priority: .userInitiated) { () -> Result<String, Error> in
-                do { return .success(try RemoteLaunch.kill(pane: pane, host: host)) }
+                do { return .success(try RemoteLaunch.kill(pane: pane, host: host, socket: m.tmuxSocket)) }
                 catch { return .failure(error) }
             }.value
             if case .failure(let error) = result { agentActionError = error.localizedDescription }
@@ -235,9 +235,12 @@ struct DashboardView: View {
     /// to the session name. Local when the agent is on this Mac; otherwise SSH.
     private func meshAttachCommand(_ m: MeshMemberInfo) -> String? {
         guard let pane = m.tmuxPane, pane.first == "%", pane.dropFirst().allSatisfy(\.isNumber) else { return nil }
-        let action = "exec tmux attach -t \"=$s\""
+        guard m.tmuxSocket == nil || RemoteLaunch.validTmuxSocket(m.tmuxSocket!) else { return nil }
+        if m.host != nil, m.host != HostIdentity.current, m.tmuxSocket == nil { return nil }
+        let socket = m.tmuxSocket.map { " -S '\($0.replacingOccurrences(of: "'", with: "'\\''"))'" } ?? ""
+        let action = "exec tmux\(socket) attach -t \"=$s\""
         let inner = "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin\"; "
-                  + "s=$(tmux display-message -p -t '\(pane)' '#{session_name}') && \(action)"
+                  + "s=$(tmux\(socket) display-message -p -t '\(pane)' '#{session_name}') && \(action)"
         if m.host == nil || m.host == HostIdentity.current { return inner }
         let peer = store.peerHost
         guard !peer.isEmpty else { return nil }

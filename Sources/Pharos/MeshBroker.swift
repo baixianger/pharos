@@ -18,6 +18,7 @@ struct MeshRequest: Codable {
     var session: String?            // join only: the joiner's CC session id (exact addressing)
     var host: String?               // join only: the joiner's HostIdentity (poke routing)
     var tmuxPane: String?           // join only: the joiner's $TMUX_PANE, when tmux-wrapped
+    var tmuxSocket: String? = nil   // join only: server socket parsed from $TMUX (pane ids are server-scoped)
     var state: String?              // mark/peek: hook-reported session state (see MeshSessionState)
     var expectedState: String?      // mark only: compare-and-set guard for observer corrections
     var expectedStateTs: Double?    // mark only: reject a correction if a newer hook already won
@@ -72,6 +73,7 @@ struct MeshPresenceEntry: Codable {
     var session: String?            // CC session id (from --session at join); nil for older/cwd-only joins
     var host: String?               // HostIdentity of the joiner's machine (poke routing); nil pre-0.4 joins
     var tmuxPane: String?           // $TMUX_PANE captured at join; nil = not tmux-wrapped (can't auto-poke)
+    var tmuxSocket: String? = nil   // tmux server socket; nil for registrations made before socket capture
     var state: String?              // last hook-reported MeshSessionState; nil = unknown (never poke)
     var stateTs: Double?            // when `state` was reported
     var kind: String?               // "claude" | "codex" (avatar set); nil = unknown → claude default
@@ -92,6 +94,7 @@ struct MeshMemberInfo: Codable {
     var session: String?
     var host: String?
     var tmuxPane: String?
+    var tmuxSocket: String? = nil
     var state: String?
     var stateTs: Double?
     var unread: Int?                // pending mailbox messages across all rooms
@@ -430,7 +433,7 @@ final class MeshBroker {
             // A joining agent is mid-turn by definition (the CLI runs in its
             // Bash tool) — seed state busy until its hooks report otherwise.
             touchPresenceLocked(memberID, project: req.project, session: req.session,
-                                host: req.host, tmuxPane: req.tmuxPane,
+                                host: req.host, tmuxPane: req.tmuxPane, tmuxSocket: req.tmuxSocket,
                                 state: MeshSessionState.busy.rawValue, kind: req.kind,
                                 tailscaleIP: req.tailscaleIP)
             syncUnreadLocked(memberID)
@@ -493,7 +496,7 @@ final class MeshBroker {
             let targetInfo = (req.to ?? []).map { nick in
                 memberInfoLocked(room: r, nick: nick)
                     ?? MeshMemberInfo(id: "", nick: nick, project: nil, session: nil, host: nil,
-                                      tmuxPane: nil, state: nil, stateTs: nil, unread: nil,
+                                      tmuxPane: nil, tmuxSocket: nil, state: nil, stateTs: nil, unread: nil,
                                       kind: nil, tailscaleIP: nil, rooms: [], lastSeen: 0)
             }
             lock.unlock()
@@ -676,13 +679,15 @@ final class MeshBroker {
     /// of nothing and were never seen — e.g. the GUI's "human" sender — so
     /// presence stays a roster of agents.
     private func touchPresenceLocked(_ memberID: String, project: String? = nil, session: String? = nil,
-                                     host: String? = nil, tmuxPane: String? = nil, state: String? = nil,
+                                     host: String? = nil, tmuxPane: String? = nil, tmuxSocket: String? = nil,
+                                     state: String? = nil,
                                      kind: String? = nil, tailscaleIP: String? = nil) {
         let aliases = Dictionary(uniqueKeysWithValues: rooms.compactMap { room, value in
             value.members.first(where: { $0.value == memberID }).map { (room, $0.key) }
         })
         if presence[memberID] == nil && aliases.isEmpty { return }
         var e = presence[memberID] ?? MeshPresenceEntry(project: nil, session: nil, host: nil, tmuxPane: nil,
+                                                        tmuxSocket: nil,
                                                         state: nil, stateTs: nil, kind: nil, tailscaleIP: nil,
                                                         aliases: [:], rooms: [], lastSeen: 0, online: true)
         if let p = project, !p.isEmpty { e.project = p }
@@ -693,7 +698,10 @@ final class MeshBroker {
         // A re-join OUTSIDE tmux must clear a stale pane from an earlier
         // tmux-wrapped join, so join always overwrites (nil included) when it
         // carries identity; plain touches (say/recv) leave it alone.
-        if session != nil || project != nil { e.tmuxPane = tmuxPane }
+        if session != nil || project != nil {
+            e.tmuxPane = tmuxPane
+            e.tmuxSocket = tmuxSocket
+        }
         if let st = state {
             e.state = st
             e.stateTs = Date().timeIntervalSince1970
@@ -717,7 +725,8 @@ final class MeshBroker {
             return acc + (room.mailboxes[memberID]?.filter { alias.map($0.to.contains) ?? false }.count ?? 0)
         }
         return MeshMemberInfo(id: memberID, nick: nick, project: e.project, session: e.session, host: e.host,
-                              tmuxPane: e.tmuxPane, state: e.state, stateTs: e.stateTs,
+                              tmuxPane: e.tmuxPane, tmuxSocket: e.tmuxSocket,
+                              state: e.state, stateTs: e.stateTs,
                               unread: unread, kind: e.kind, tailscaleIP: e.tailscaleIP,
                               rooms: [room], lastSeen: e.lastSeen)
     }

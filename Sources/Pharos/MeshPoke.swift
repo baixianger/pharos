@@ -36,8 +36,14 @@ enum MeshPoke {
             // pane, and guessing sends keystrokes to the wrong machine.
             return .unpokeable("unknown host (agent joined via an old CLI)")
         }
+        if let socket = m.tmuxSocket, !RemoteLaunch.validTmuxSocket(socket) {
+            return .unpokeable("invalid tmux server identity")
+        }
         if host == HostIdentity.current { return .local(pane: pane) }
         guard !peerHost.isEmpty else { return .unpokeable("on \(host), but no peer Mac is paired") }
+        guard m.tmuxSocket != nil else {
+            return .unpokeable("agent joined via an older Pharos without tmux server identity; rejoin it")
+        }
         return .remote(pane: pane, host: peerHost)
     }
 
@@ -90,10 +96,13 @@ enum MeshPoke {
             return false
         case .local(let pane):
             guard let tmux = localTmux(),
-                  localPaneRunsAgent(tmux: tmux, pane: pane, kind: .codex) else { return false }
-            return paneLooksIdle(Shell.run(tmux, ["capture-pane", "-p", "-t", pane]).out)
+                  localPaneRunsAgent(tmux: tmux, pane: pane, socket: m.tmuxSocket,
+                                     kind: .codex) else { return false }
+            return paneLooksIdle(Shell.run(tmux, tmuxArgs(socket: m.tmuxSocket,
+                                                          ["capture-pane", "-p", "-t", pane])).out)
         case .remote(let pane, let host):
-            let script = "\(pathShim); " + remoteIdleProbe(pane: pane, kind: .codex)
+            let script = "\(pathShim); " + remoteIdleProbe(pane: pane, socket: m.tmuxSocket,
+                                                            kind: .codex)
             return Shell.run("/usr/bin/ssh", sshOpts + [host, script]).ok
         }
     }
@@ -116,34 +125,38 @@ enum MeshPoke {
             return why
         case .local(let pane):
             guard let tmux = localTmux() else { return "tmux not found on this Mac" }
-            guard localPaneRunsAgent(tmux: tmux, pane: pane,
+            guard localPaneRunsAgent(tmux: tmux, pane: pane, socket: m.tmuxSocket,
                                      kind: m.kind.flatMap(AgentKind.init(rawValue:))) else {
                 return "tmux pane \(pane) is no longer a coding-agent session"
             }
             if mustProbe {
-                guard paneLooksIdle(Shell.run(tmux, ["capture-pane", "-p", "-t", pane]).out) else {
+                guard paneLooksIdle(Shell.run(tmux, tmuxArgs(socket: m.tmuxSocket,
+                                                             ["capture-pane", "-p", "-t", pane])).out) else {
                     return "the pane doesn't look safely idle"
                 }
             }
-            guard Shell.run(tmux, ["send-keys", "-t", pane, "-l", "--", text]).ok else {
+            guard Shell.run(tmux, tmuxArgs(socket: m.tmuxSocket,
+                                           ["send-keys", "-t", pane, "-l", "--", text])).ok else {
                 return "tmux send-keys failed (pane \(pane) gone?)"
             }
             usleep(350_000)
-            _ = Shell.run(tmux, ["send-keys", "-t", pane, "Enter"])
+            _ = Shell.run(tmux, tmuxArgs(socket: m.tmuxSocket,
+                                         ["send-keys", "-t", pane, "Enter"]))
             return nil
         case .remote(let pane, let host):
             // One SSH round-trip does check + (probe) + type + pause + Enter.
             let p = sq(pane), t = sq(text)
             let probe = mustProbe ? remoteIdleProbe(
-                pane: pane, kind: m.kind.flatMap(AgentKind.init(rawValue:))
+                pane: pane, socket: m.tmuxSocket,
+                kind: m.kind.flatMap(AgentKind.init(rawValue:))
             ) : """
-            c=$(tmux display-message -p -t \(p) '#{pane_current_command}' 2>/dev/null) || exit 3
+            c=$(\(remoteTmux(socket: m.tmuxSocket)) display-message -p -t \(p) '#{pane_current_command}' 2>/dev/null) || exit 3
             case "$c" in claude|node|bun|codex*|[0-9]*.[0-9]*.[0-9]*) ;; *) exit 3 ;; esac
             """
             let script = """
             \(pathShim)
             \(probe)
-            tmux send-keys -t \(p) -l -- \(t) && sleep 0.35 && tmux send-keys -t \(p) Enter
+            \(remoteTmux(socket: m.tmuxSocket)) send-keys -t \(p) -l -- \(t) && sleep 0.35 && \(remoteTmux(socket: m.tmuxSocket)) send-keys -t \(p) Enter
             """
             let r = Shell.run("/usr/bin/ssh", sshOpts + [host, script])
             return r.ok ? nil : "couldn't poke via \(host) (pane gone/not idle, or SSH failed)"
@@ -211,8 +224,9 @@ enum MeshPoke {
     /// Remote shell fragment that exits 0 only for a live, visibly idle
     /// Claude/Codex composer. Kept shared by correction and nudge so their
     /// safety gates cannot drift apart.
-    private static func remoteIdleProbe(pane: String, kind: AgentKind?) -> String {
+    private static func remoteIdleProbe(pane: String, socket: String?, kind: AgentKind?) -> String {
         let p = sq(pane)
+        let tmux = remoteTmux(socket: socket)
         let executablePattern: String
         switch kind {
         case .codex: executablePattern = "codex.*"
@@ -220,7 +234,7 @@ enum MeshPoke {
         case nil: executablePattern = #"claude|node|bun|codex.*|[0-9]+\.[0-9]+\.[0-9]+"#
         }
         return """
-        root=$(tmux display-message -p -t \(p) '#{pane_pid}' 2>/dev/null) || exit 3
+        root=$(\(tmux) display-message -p -t \(p) '#{pane_pid}' 2>/dev/null) || exit 3
         ps -axo pid=,ppid=,comm= | awk -v root="$root" '
           { pid[NR]=$1; ppid[NR]=$2; cmd[NR]=$3 }
           END {
@@ -238,7 +252,7 @@ enum MeshPoke {
             exit 1
           }
         ' || exit 3
-        pv=$(tmux capture-pane -p -t \(p) 2>/dev/null) || exit 4
+        pv=$(\(tmux) capture-pane -p -t \(p) 2>/dev/null) || exit 4
         pl=$(printf '%s' "$pv" | tr '[:upper:]' '[:lower:]')
         case "$pl" in *'esc to interrupt'*|*'working'*|*'do you want to proceed'*|*'enter to confirm'*|*'esc to cancel'*) exit 4 ;; esac
         case "$pv" in *'❯'*|*'›'*) exit 0 ;; *) exit 4 ;; esac
@@ -260,10 +274,12 @@ enum MeshPoke {
     /// tmux often reports the wrapper shell (`zsh -lc codex …`) as the pane's
     /// current command. Fall back to the pane root's descendant process tree,
     /// then pair this evidence with `paneLooksIdle` before any correction/poke.
-    private static func localPaneRunsAgent(tmux: String, pane: String, kind: AgentKind?) -> Bool {
-        if paneRunsAgent(Shell.run(tmux, ["display-message", "-p", "-t", pane,
-                                          "#{pane_current_command}"]), kind: kind) { return true }
-        let root = Shell.run(tmux, ["display-message", "-p", "-t", pane, "#{pane_pid}"])
+    private static func localPaneRunsAgent(tmux: String, pane: String, socket: String?, kind: AgentKind?) -> Bool {
+        if paneRunsAgent(Shell.run(tmux, tmuxArgs(socket: socket,
+                                                  ["display-message", "-p", "-t", pane,
+                                                   "#{pane_current_command}"])), kind: kind) { return true }
+        let root = Shell.run(tmux, tmuxArgs(socket: socket,
+                                            ["display-message", "-p", "-t", pane, "#{pane_pid}"]))
         guard root.ok, let pid = Int(root.out.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             return false
         }
@@ -309,5 +325,15 @@ enum MeshPoke {
     private static func localTmux() -> String? {
         ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
             .first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    private static func tmuxArgs(socket: String?, _ args: [String]) -> [String] {
+        guard let socket, RemoteLaunch.validTmuxSocket(socket) else { return args }
+        return ["-S", socket] + args
+    }
+
+    private static func remoteTmux(socket: String?) -> String {
+        guard let socket, RemoteLaunch.validTmuxSocket(socket) else { return "tmux" }
+        return "tmux -S \(sq(socket))"
     }
 }
