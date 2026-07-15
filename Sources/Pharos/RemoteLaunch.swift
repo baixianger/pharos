@@ -16,7 +16,9 @@ import Foundation
 ///    `host-<alias>`, delivered stdin → tmux buffer, never argv/ps.
 enum RemoteLaunch {
     struct RemoteError: LocalizedError, CustomStringConvertible {
+        enum Reason { case generic, paneUnavailable, legacyRemoteRegistration }
         let message: String
+        var reason: Reason = .generic
         var description: String { message }
         var errorDescription: String? { message }
     }
@@ -485,13 +487,17 @@ enum RemoteLaunch {
             throw RemoteError(message: "invalid tmux server identity")
         }
         if host?.isEmpty == false, socket == nil {
-            throw RemoteError(message: "This agent joined before Pharos recorded its tmux server. Update Pharos on that Mac and have the agent rejoin the room before stopping it safely.")
+            throw RemoteError(
+                message: "This agent joined before Pharos recorded its tmux server. Update Pharos on that Mac and have the agent rejoin the room before stopping it safely.",
+                reason: .legacyRemoteRegistration
+            )
         }
         let probe = tmuxAny(host, ["display-message", "-p", "-t", pane, "#{session_name}"], socket: socket)
         let session = probe.out.trimmingCharacters(in: .whitespacesAndNewlines)
         guard probe.ok, !session.isEmpty else {
             let hint = socket == nil ? " Rejoin the room so Pharos can record its exact tmux server." : ""
-            throw RemoteError(message: "Cannot resolve tmux pane '\(pane)'\(at(host)).\(hint)")
+            throw RemoteError(message: "Cannot resolve tmux pane '\(pane)'\(at(host)).\(hint)",
+                              reason: .paneUnavailable)
         }
         let stopped = tmuxAny(host, ["kill-session", "-t", "=\(session)"], socket: socket)
         guard stopped.ok else {

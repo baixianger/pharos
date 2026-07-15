@@ -100,7 +100,7 @@ struct DashboardView: View {
             Button("Stop agent", role: .destructive) { stopMeshAgent(m) }
             Button("Cancel", role: .cancel) {}
         } message: { m in
-            Text("Kills @\(m.nick)'s tmux session \(m.host.map { "on \($0)" } ?? "on this Mac"). Unsaved work is lost.")
+            Text("Kills @\(m.nick)'s tmux session \(m.host.map { "on \($0)" } ?? "on this Mac") and removes this session from its chat rooms. Unsaved work is lost.")
         }
         .alert("Rename agent", isPresented: Binding(get: { meshAgentToRename != nil },
                                                      set: { if !$0 { meshAgentToRename = nil } }),
@@ -207,14 +207,48 @@ struct DashboardView: View {
             agentActionError = "No paired Mac SSH host is configured."
             return
         }
+        // `who` returns one row per room alias. Closing a session must remove
+        // every alias for its immutable id, not only the row the user clicked.
+        let registrations = meshAgents.filter { $0.id == m.id }.flatMap { member in
+            member.rooms.map { (room: $0, nick: member.nick) }
+        }
         Task {
             let result = await Task.detached(priority: .userInitiated) { () -> Result<String, Error> in
                 do { return .success(try RemoteLaunch.kill(pane: pane, host: host, socket: m.tmuxSocket)) }
                 catch { return .failure(error) }
             }.value
-            if case .failure(let error) = result { agentActionError = error.localizedDescription }
+            switch result {
+            case .success:
+                if let error = await removeMeshRegistrations(registrations, memberID: m.id) {
+                    agentActionError = error
+                }
+            case .failure(let error):
+                // A missing pane on this Mac means the process is already gone;
+                // finish the requested close by deleting its stale mesh rows.
+                if host == nil,
+                   let remoteError = error as? RemoteLaunch.RemoteError,
+                   remoteError.reason == .paneUnavailable {
+                    if let cleanupError = await removeMeshRegistrations(registrations, memberID: m.id) {
+                        agentActionError = cleanupError
+                    }
+                } else {
+                    agentActionError = error.localizedDescription
+                }
+            }
             loadMesh()
         }
+    }
+
+    private func removeMeshRegistrations(_ registrations: [(room: String, nick: String)],
+                                         memberID: String) async -> String? {
+        await Task.detached(priority: .userInitiated) {
+            for registration in registrations {
+                let response = MeshClient.send(MeshRequest(cmd: "leave", room: registration.room,
+                                                           nick: registration.nick, memberID: memberID))
+                if !response.ok { return response.error ?? "Couldn't remove the agent registration." }
+            }
+            return nil
+        }.value
     }
 
     private func renameMeshAgent(_ m: MeshMemberInfo) {
