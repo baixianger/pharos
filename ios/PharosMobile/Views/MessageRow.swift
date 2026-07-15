@@ -75,9 +75,6 @@ struct MessageRow: View {
                     Text(message.text)
                         .font(.body)
                         .textSelection(.enabled)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background(Color.accentColor.opacity(0.09), in: RoundedRectangle(cornerRadius: 11))
                 } else {
                     StableMarkdownView(content: message.text).equatable()
                 }

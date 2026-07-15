@@ -36,7 +36,7 @@ struct RootView: View {
                 ContentUnavailableView("No rooms", systemImage: "bubble.left.and.bubble.right")
             }
         }
-        .sheet(item: $sheet) { _ in SettingsView() }
+        .sheet(item: $sheet) { _ in SettingsView(showsDoneButton: true) }
         .alert("New room", isPresented: $showNewRoom) {
             TextField("Room name", text: $newRoomName)
             Button("Cancel", role: .cancel) { newRoomName = "" }

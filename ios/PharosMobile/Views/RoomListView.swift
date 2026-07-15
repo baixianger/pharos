@@ -2,13 +2,26 @@ import SwiftUI
 
 struct RoomListView: View {
     @Environment(RoomStore.self) private var store
+    @Environment(AppSettings.self) private var settings
     @Binding var selection: String?
+    @State private var search = ""
 
     var body: some View {
         List(selection: $selection) {
-            if !store.rooms.isEmpty {
+            Section {
+                BrokerConnectionRow(
+                    target: settings.mesh.host.isEmpty ? nil : "\(settings.mesh.host):\(settings.mesh.port)",
+                    isChecking: store.isRefreshing,
+                    error: store.error
+                )
+                .listRowInsets(.init(top: 8, leading: PharosDesign.pageInset,
+                                    bottom: 8, trailing: PharosDesign.pageInset))
+                .listRowSeparator(.hidden)
+            }
+
+            if !filteredRooms.isEmpty {
                 Section {
-                    ForEach(store.rooms) { room in
+                    ForEach(filteredRooms) { room in
                         Button {
                             Task { await store.select(room: room.name) }
                         } label: {
@@ -20,30 +33,83 @@ struct RoomListView: View {
                         }
                         .buttonStyle(.plain)
                         .tag(room.name)
-                        .listRowInsets(.init(top: 5, leading: 12, bottom: 5, trailing: 12))
+                        .listRowInsets(.init(top: 0, leading: PharosDesign.pageInset,
+                                            bottom: 0, trailing: PharosDesign.pageInset))
                         .listRowSeparator(.hidden)
                     }
                 } header: {
-                    Text("Rooms")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                    PharosSectionTitle(title: "Rooms", count: filteredRooms.count)
                 }
             }
         }
-        .listStyle(.plain)
-        .environment(\.defaultMinListRowHeight, 1)
+        .pharosPlainList()
         .overlay {
             if store.isRefreshing && store.rooms.isEmpty {
-                ProgressView()
+                PharosSkeletonRows(count: 5)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .padding(.top, 62)
+                    .background(PharosDesign.pageBackground)
             } else if store.rooms.isEmpty {
-                ContentUnavailableView(
-                    "No rooms yet",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text("Connect to the Mesh hub in Settings, or create your first room with +.")
-                )
+                ContentUnavailableView {
+                    Label(store.error == nil ? "No rooms yet" : "Chat unavailable",
+                          systemImage: store.error == nil ? "bubble.left.and.bubble.right" : "exclamationmark.triangle")
+                } description: {
+                    Text(store.error ?? "Connect to the Mesh Broker in Settings, or create your first room with +.")
+                } actions: {
+                    if store.error != nil { Button("Try again") { Task { await store.refresh() } } }
+                }
+            } else if filteredRooms.isEmpty {
+                ContentUnavailableView.search(text: search)
             }
         }
         .refreshable { await store.refresh() }
+        .searchable(text: $search, prompt: "Search rooms")
+    }
+
+    private var filteredRooms: [MeshRoom] {
+        guard !search.isEmpty else { return store.rooms }
+        return store.rooms.filter { $0.name.localizedCaseInsensitiveContains(search) }
+    }
+}
+
+private struct BrokerConnectionRow: View {
+    let target: String?
+    let isChecking: Bool
+    let error: String?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if isChecking {
+                ProgressView().controlSize(.small)
+            } else {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 9, height: 9)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(statusTitle).font(.subheadline.weight(.semibold))
+                Text(target ?? "Configure a Broker in Settings")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Image(systemName: error == nil && target != nil ? "checkmark" : "exclamationmark")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(statusColor)
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var statusTitle: String {
+        if isChecking { return "Checking Broker…" }
+        if error != nil { return "Broker not connected" }
+        return target == nil ? "Broker not configured" : "Broker connected"
+    }
+
+    private var statusColor: Color {
+        error == nil && target != nil ? .green : .orange
     }
 }
 
@@ -55,11 +121,11 @@ private struct RoomRow: View {
     var body: some View {
         HStack(spacing: 11) {
             ZStack {
-                RoundedRectangle(cornerRadius: 11)
-                    .fill(isSelected ? Color.accentColor : Color.secondary.opacity(0.1))
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(isSelected ? Color.accentColor : roomColor.opacity(0.13))
                 Image(systemName: "number")
                     .font(.body.weight(.bold))
-                    .foregroundStyle(isSelected ? .white : .secondary)
+                    .foregroundStyle(isSelected ? Color.white : roomColor)
             }
             .frame(width: 38, height: 38)
 
@@ -86,11 +152,16 @@ private struct RoomRow: View {
                 }
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 8)
+        .padding(.vertical, 10)
         .background(isSelected ? Color.accentColor.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 14))
         .contentShape(.rect)
         .accessibilityElement(children: .combine)
+    }
+
+    private var roomColor: Color {
+        let palette: [Color] = [.indigo, .teal, .orange, .blue, .purple, .pink]
+        let checksum = room.name.unicodeScalars.reduce(0) { $0 + Int($1.value) }
+        return palette[checksum % palette.count]
     }
 
     private var activeCount: Int {

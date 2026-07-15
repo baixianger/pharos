@@ -16,6 +16,7 @@
 		3892FC8A0153F79BF6892042 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = FBB848C5DA78F0E0BC6EFE38 /* MarkdownUI */; };
 		41485D117469E6B2E9D6AD25 /* PharosMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81DA9594F9E9536D3C2B9D94 /* PharosMobileApp.swift */; };
 		42E05B3FB61CF671E6AC0F71 /* RoomStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4943F19EA86159D3DD4EB0F4 /* RoomStore.swift */; };
+		4902E474ADE5F8A58510ACAD /* PharosDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5306A1D53DF86E0C36475E8 /* PharosDesign.swift */; };
 		4BE334EC910DCEE6D384603B /* SSHIdentityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4EEE4B12F0CADE232BED280 /* SSHIdentityStore.swift */; };
 		5C851F7438B59E50BCA92FD6 /* RoomListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B98C9EA551F79B1E2F610EA /* RoomListView.swift */; };
 		7237CCB3A61A6ABC7F4C450C /* MeshTCPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FF7F26A2AD53C1C21F2EC36 /* MeshTCPClient.swift */; };
@@ -68,6 +69,7 @@
 		B67BDD4799E7DC5921C9DB99 /* InteractiveSSHSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractiveSSHSession.swift; sourceTree = "<group>"; };
 		C295516F5D699D1341EA7107 /* RemoteAgentService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAgentService.swift; sourceTree = "<group>"; };
 		CE66DE546D2C518478A6D7D4 /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
+		D5306A1D53DF86E0C36475E8 /* PharosDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PharosDesign.swift; sourceTree = "<group>"; };
 		DC48202BA5281EFE1A847C38 /* ProjectsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectsView.swift; sourceTree = "<group>"; };
 		E6F859A1C7BBEF2D3E51676E /* SpawnAgentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpawnAgentView.swift; sourceTree = "<group>"; };
 		F1E1516DF727C7F92AC7FC01 /* PharosMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PharosMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -154,6 +156,7 @@
 		975035CC2E7DC23DDA260D32 /* Design */ = {
 			isa = PBXGroup;
 			children = (
+				D5306A1D53DF86E0C36475E8 /* PharosDesign.swift */,
 				27F4A3C6DE1C3611722ACCF5 /* PharosMarkdown.swift */,
 			);
 			path = Design;
@@ -287,6 +290,7 @@
 				7237CCB3A61A6ABC7F4C450C /* MeshTCPClient.swift in Sources */,
 				C9C3004119D3EFAEE3ACCE22 /* MeshWire.swift in Sources */,
 				00D3BA15365DED397A2637E8 /* MessageRow.swift in Sources */,
+				4902E474ADE5F8A58510ACAD /* PharosDesign.swift in Sources */,
 				AA12F39CAE6DF825E4BEC04C /* PharosMarkdown.swift in Sources */,
 				41485D117469E6B2E9D6AD25 /* PharosMobileApp.swift in Sources */,
 				9B6D4E0AE776436E597FEFC0 /* ProjectsView.swift in Sources */,

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SettingsView: View {
+    var showsDoneButton = false
     @Environment(AppSettings.self) private var settings
     @Environment(SSHIdentityStore.self) private var identities
     @Environment(\.dismiss) private var dismiss
@@ -12,23 +13,8 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
+            List {
                 Section {
-                    TextField("Tailscale IP or MagicDNS name", text: $meshHost)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    TextField("Port", text: $meshPort).keyboardType(.numberPad)
-                    Button("Save Mesh connection") {
-                        saveMesh()
-                        Task { await testBroker() }
-                    }
-                    Button("Refresh from iCloud") { settings.refreshFromICloud(); load() }
-                } header: {
-                    Text("Mesh over Tailscale")
-                } footer: {
-                    Text("Only non-sensitive host mappings sync through iCloud. Live messages use Tailscale TCP.")
-                }
-
-                Section("Broker connection") {
                     brokerStatusView
                     HStack {
                         Text(brokerTarget)
@@ -40,6 +26,30 @@ struct SettingsView: View {
                         Button("Test again") { Task { await testBroker() } }
                             .disabled(brokerStatus.isChecking || !hasValidBrokerTarget)
                     }
+                    LabeledContent("Host") {
+                        TextField("Tailscale IP or MagicDNS", text: $meshHost)
+                            .multilineTextAlignment(.trailing)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    LabeledContent("Port") {
+                        TextField("47800", text: $meshPort)
+                            .multilineTextAlignment(.trailing)
+                            .keyboardType(.numberPad)
+                    }
+                    HStack {
+                        Button("Save connection") {
+                            saveMesh()
+                            Task { await testBroker() }
+                        }
+                        Spacer()
+                        Button("Refresh iCloud") { settings.refreshFromICloud(); load() }
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Mesh Broker").textCase(nil)
+                } footer: {
+                    Text("Configuration may sync through iCloud. Messages travel directly over Tailscale TCP.")
                 }
 
                 Section {
@@ -80,8 +90,14 @@ struct SettingsView: View {
                     Label("Background delivery requires a future APNs relay", systemImage: "bell.slash")
                 }
             }
+            .pharosPlainList()
             .navigationTitle("Settings")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                if showsDoneButton {
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                }
+            }
             .sheet(isPresented: $showHostEditor) { NavigationStack { SSHHostEditor(profile: nil) } }
             .onAppear { load() }
             .task { await testBroker() }

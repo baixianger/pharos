@@ -153,7 +153,6 @@ struct ConversationView: View {
         VStack(spacing: 7) {
             if let replyingTo { replyComposerCard(replyingTo) }
             if !pendingAttachments.isEmpty || isUploading { pendingAttachmentStrip }
-            if !availableMembers.isEmpty { mentionStrip }
 
             if #available(iOS 26, *) {
                 GlassEffectContainer(spacing: 10) {
@@ -169,29 +168,6 @@ struct ConversationView: View {
         .padding(.top, 7)
         .padding(.bottom, 6)
         .background(.bar.opacity(0.82))
-    }
-
-    private var mentionStrip: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 7) {
-                ForEach(availableMembers, id: \.nick) { member in
-                    Button {
-                        store.insertMention(member.nick, into: &draft)
-                        focused = true
-                    } label: {
-                        HStack(spacing: 5) {
-                            Circle().fill(presenceColor(for: member)).frame(width: 7, height: 7)
-                            Text("@\(member.nick)").lineLimit(1)
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.capsule)
-                    .controlSize(.small)
-                }
-            }
-            .padding(.horizontal, 2)
-        }
-        .scrollIndicators(.hidden)
     }
 
     private var composerField: some View {
@@ -358,16 +334,6 @@ struct ConversationView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-    }
-
-    private func presenceColor(for member: MeshMember) -> Color {
-        switch member.state.flatMap(MeshSessionState.init(rawValue:)) {
-        case .busy: .orange
-        case .blocked: .red
-        case .stopped, .idle: .green
-        case .gone: .gray.opacity(0.45)
-        case nil: .gray
-        }
     }
 
     private func noticeBar(_ text: String) -> some View {

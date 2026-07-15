@@ -32,25 +32,54 @@ enum AgentStatus {
 /// ends' agents" panel. Backed by the same `who` poll that drives the chat.
 struct AgentsView: View {
     @Environment(RoomStore.self) private var store
-    @Environment(AppSettings.self) private var settings
+    @State private var filter: AgentFilter = .live
 
     var body: some View {
         NavigationStack {
             List {
-                ForEach(agents) { member in
-                    NavigationLink { AgentDetailView(member: member) } label: { AgentRow(member: member) }
+                Section {
+                    PharosFilterStrip(options: AgentFilter.allCases.map { ($0, $0.title) }, selection: $filter)
+                        .padding(.vertical, 4)
+                        .listRowInsets(.init())
+                        .listRowSeparator(.hidden)
+                }
+                ForEach(grouped, id: \.host) { group in
+                    Section {
+                        ForEach(group.members) { member in
+                            NavigationLink { AgentDetailView(member: member) } label: { AgentRow(member: member) }
+                                .listRowInsets(.init(top: 0, leading: PharosDesign.pageInset,
+                                                    bottom: 0, trailing: PharosDesign.pageInset))
+                        }
+                    } header: {
+                        PharosSectionTitle(title: group.host, count: group.members.count)
+                    }
                 }
             }
+            .pharosPlainList()
             .overlay {
                 if agents.isEmpty {
-                    ContentUnavailableView("No agents online", systemImage: "cpu",
-                        description: Text(store.error ?? "Connect to your Mesh in Settings to see agents across all your machines."))
+                    ContentUnavailableView {
+                        Label(store.error == nil ? "No agents here" : "Agents unavailable",
+                              systemImage: store.error == nil ? "terminal" : "exclamationmark.triangle")
+                    } description: {
+                        Text(store.error ?? "Agents appear when they join a Mesh room.")
+                    } actions: {
+                        if store.error != nil { Button("Try again") { Task { await store.refresh() } } }
+                    }
                 }
             }
             .navigationTitle("Agents")
+            .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Text("\(agents.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Menu {
+                        Picker("Filter", selection: $filter) {
+                            ForEach(AgentFilter.allCases) { Text($0.title).tag($0) }
+                        }
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease")
+                    }
+                    .accessibilityLabel("Agent display options")
                 }
             }
             .refreshable { await store.refresh() }
@@ -60,7 +89,36 @@ struct AgentsView: View {
     private var agents: [MeshMember] {
         store.members.values
             .filter { $0.nick != "human" }
+            .filter { member in
+                let isLive = member.state.flatMap(MeshSessionState.init(rawValue:)) != .gone
+                return switch filter {
+                case .live: isLive
+                case .all: true
+                case .ended: !isLive
+                }
+            }
             .sorted { ($0.host ?? "", $0.nick) < ($1.host ?? "", $1.nick) }
+    }
+
+    private var grouped: [(host: String, members: [MeshMember])] {
+        Dictionary(grouping: agents) { member in
+            guard let host = member.host, !host.isEmpty else { return "Unknown host" }
+            return host
+        }
+        .map { ($0.key, $0.value) }
+        .sorted { $0.host.localizedCaseInsensitiveCompare($1.host) == .orderedAscending }
+    }
+}
+
+private enum AgentFilter: String, CaseIterable, Identifiable {
+    case live, all, ended
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .live: "Live"
+        case .all: "All agents"
+        case .ended: "Ended"
+        }
     }
 }
 
@@ -69,12 +127,10 @@ private struct AgentRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: AgentStatus.icon(member.kind))
-                .foregroundStyle(.tint).font(.title3).frame(width: 24)
+            ChatAvatar(name: member.nick, member: member, size: 38)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Circle().fill(AgentStatus.color(member.state)).frame(width: 9, height: 9)
-                    Text(member.nick).font(.headline)
+                    Text(member.nick).font(.body.weight(.semibold))
                     Text(AgentStatus.label(member.state)).font(.caption).foregroundStyle(.secondary)
                 }
                 Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -90,7 +146,9 @@ private struct AgentRow: View {
                     .background(.red, in: Capsule())
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, PharosDesign.rowVerticalPadding)
+        .contentShape(.rect)
+        .accessibilityElement(children: .combine)
     }
 
     private var subtitle: String {
