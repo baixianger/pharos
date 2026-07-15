@@ -153,6 +153,7 @@ private struct ProjectsSettingsTab: View {
 
 private struct MachinesSettingsTab: View {
     @Environment(ProjectStore.self) private var store
+    @State private var brokerStatus: BrokerConnectionStatus = .unchecked
 
     var body: some View {
         @Bindable var store = store
@@ -224,10 +225,126 @@ private struct MachinesSettingsTab: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            Section("Broker connection") {
+                brokerStatusView
+                HStack {
+                    Text(brokerTarget)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    Spacer()
+                    Button("Test again") { Task { await checkBroker() } }
+                        .controlSize(.small)
+                        .disabled(brokerStatus.isChecking || brokerTargetIsInvalid)
+                }
+            }
             PairingView()
         }
         .formStyle(.grouped)
+        .task(id: store.meshServerEndpoint) {
+            // Avoid dialing on every keystroke while the endpoint is edited.
+            try? await Task.sleep(for: .milliseconds(450))
+            guard !Task.isCancelled else { return }
+            await checkBroker()
+        }
     }
+
+    private var brokerTargetIsInvalid: Bool {
+        !store.meshServerEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && store.validMeshServerEndpoint == nil
+    }
+
+    private var brokerTarget: String {
+        if let endpoint = store.validMeshServerEndpoint { return endpoint }
+        if brokerTargetIsInvalid { return "Invalid endpoint" }
+        if store.isMeshHub { return "Local socket · hosted on this Mac" }
+        if let endpoint = MeshPaths.dialEndpoint { return endpoint }
+        return "Local socket"
+    }
+
+    @ViewBuilder
+    private var brokerStatusView: some View {
+        switch brokerStatus {
+        case .unchecked:
+            Label("Not tested yet", systemImage: "circle.dashed")
+                .foregroundStyle(.secondary)
+        case .checking:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Checking Broker…")
+            }
+        case .connected(let latencyMS, let capabilities):
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Connected", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text("\(latencyMS) ms · \(capabilitySummary(capabilities))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .unavailable(let message):
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Not connected", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        case .invalidEndpoint:
+            Label("Enter a valid endpoint before testing.",
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private func capabilitySummary(_ capabilities: [String]) -> String {
+        var labels: [String] = []
+        if capabilities.contains("mesh-v2") { labels.append("Mesh v2") }
+        if capabilities.contains("reply-v1") { labels.append("Replies") }
+        if capabilities.contains("attachment-v1") { labels.append("Attachments") }
+        if capabilities.contains("headless-v1") { labels.append("Headless") }
+        return labels.isEmpty ? "Broker responded" : labels.joined(separator: " · ")
+    }
+
+    @MainActor
+    private func checkBroker() async {
+        if brokerTargetIsInvalid {
+            brokerStatus = .invalidEndpoint
+            return
+        }
+        brokerStatus = .checking
+        let endpoint = store.validMeshServerEndpoint
+        let started = ContinuousClock.now
+        let response = await Task.detached {
+            let request = MeshRequest(cmd: "capabilities")
+            if let endpoint {
+                return MeshClient.send(request, to: endpoint)
+            }
+            return MeshClient.send(request)
+        }.value
+        guard !Task.isCancelled else { return }
+        let duration = started.duration(to: .now)
+        let latencyMS = max(0, Int(duration.components.seconds * 1_000
+            + duration.components.attoseconds / 1_000_000_000_000_000))
+        if response.ok, let capabilities = response.capabilities {
+            brokerStatus = .connected(latencyMS: latencyMS, capabilities: capabilities)
+        } else {
+            brokerStatus = .unavailable(response.error ?? "The Broker did not complete the Mesh handshake.")
+        }
+    }
+}
+
+private enum BrokerConnectionStatus: Equatable {
+    case unchecked
+    case checking
+    case connected(latencyMS: Int, capabilities: [String])
+    case unavailable(String)
+    case invalidEndpoint
+
+    var isChecking: Bool { self == .checking }
 }
 
 // MARK: - Pairing

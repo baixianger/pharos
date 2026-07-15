@@ -7,6 +7,8 @@ struct SettingsView: View {
     @State private var meshHost = ""
     @State private var meshPort = "47800"
     @State private var showHostEditor = false
+    @State private var brokerStatus: MobileBrokerConnectionStatus = .unchecked
+    private let meshClient = MeshTCPClient()
 
     var body: some View {
         NavigationStack {
@@ -15,12 +17,29 @@ struct SettingsView: View {
                     TextField("Tailscale IP or MagicDNS name", text: $meshHost)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                     TextField("Port", text: $meshPort).keyboardType(.numberPad)
-                    Button("Save Mesh connection") { saveMesh() }
+                    Button("Save Mesh connection") {
+                        saveMesh()
+                        Task { await testBroker() }
+                    }
                     Button("Refresh from iCloud") { settings.refreshFromICloud(); load() }
                 } header: {
                     Text("Mesh over Tailscale")
                 } footer: {
                     Text("Only non-sensitive host mappings sync through iCloud. Live messages use Tailscale TCP.")
+                }
+
+                Section("Broker connection") {
+                    brokerStatusView
+                    HStack {
+                        Text(brokerTarget)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button("Test again") { Task { await testBroker() } }
+                            .disabled(brokerStatus.isChecking || !hasValidBrokerTarget)
+                    }
                 }
 
                 Section {
@@ -65,6 +84,84 @@ struct SettingsView: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .sheet(isPresented: $showHostEditor) { NavigationStack { SSHHostEditor(profile: nil) } }
             .onAppear { load() }
+            .task { await testBroker() }
+        }
+    }
+
+    private var hasValidBrokerTarget: Bool {
+        !meshHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && UInt16(meshPort) != nil
+    }
+
+    private var brokerTarget: String {
+        guard hasValidBrokerTarget else { return "No valid Broker endpoint" }
+        return "\(meshHost.trimmingCharacters(in: .whitespacesAndNewlines)):\(meshPort)"
+    }
+
+    @ViewBuilder
+    private var brokerStatusView: some View {
+        switch brokerStatus {
+        case .unchecked:
+            Label("Not tested yet", systemImage: "circle.dashed")
+                .foregroundStyle(.secondary)
+        case .checking:
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Checking Broker…")
+            }
+        case .connected(let latencyMS, let capabilities):
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Connected", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text("\(latencyMS) ms · \(capabilitySummary(capabilities))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .unavailable(let message):
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Not connected", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .invalidEndpoint:
+            Label("Enter a valid Broker host and port.", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private func capabilitySummary(_ capabilities: [String]) -> String {
+        var labels: [String] = []
+        if capabilities.contains("mesh-v2") { labels.append("Mesh v2") }
+        if capabilities.contains("reply-v1") { labels.append("Replies") }
+        if capabilities.contains("attachment-v1") { labels.append("Attachments") }
+        if capabilities.contains("headless-v1") { labels.append("Headless") }
+        return labels.isEmpty ? "Broker responded" : labels.joined(separator: " · ")
+    }
+
+    @MainActor
+    private func testBroker() async {
+        let host = meshHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty, let port = UInt16(meshPort) else {
+            brokerStatus = .invalidEndpoint
+            return
+        }
+        brokerStatus = .checking
+        let started = ContinuousClock.now
+        do {
+            let response = try await meshClient.send(MeshRequest(cmd: "capabilities"), host: host, port: port)
+            let duration = started.duration(to: .now)
+            let latencyMS = max(0, Int(duration.components.seconds * 1_000
+                + duration.components.attoseconds / 1_000_000_000_000_000))
+            guard let capabilities = response.capabilities,
+                  capabilities.contains("mesh-v2") else {
+                brokerStatus = .unavailable("The server responded, but it is not a compatible Pharos Mesh Broker.")
+                return
+            }
+            brokerStatus = .connected(latencyMS: latencyMS, capabilities: capabilities)
+        } catch {
+            brokerStatus = .unavailable(error.localizedDescription)
         }
     }
 
@@ -77,6 +174,16 @@ struct SettingsView: View {
         guard let port = UInt16(meshPort) else { return }
         settings.updateMesh(host: meshHost, port: port)
     }
+}
+
+private enum MobileBrokerConnectionStatus: Equatable {
+    case unchecked
+    case checking
+    case connected(latencyMS: Int, capabilities: [String])
+    case unavailable(String)
+    case invalidEndpoint
+
+    var isChecking: Bool { self == .checking }
 }
 
 private struct SSHHostEditor: View {

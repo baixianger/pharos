@@ -126,6 +126,18 @@ public enum MeshClient {
         return roundTrip(fd, req)
     }
 
+    /// Send directly to a specific TCP broker, bypassing the environment and
+    /// app-managed endpoint file. Settings uses this to test the value being
+    /// edited instead of accidentally reporting the previously saved broker.
+    public static func send(_ req: MeshRequest, to endpoint: String,
+                            timeoutSec: Double = 3) -> MeshResponse {
+        guard let fd = meshTCPConnect(endpoint, timeoutSec: timeoutSec) else {
+            return .fail("cannot reach mesh broker at \(endpoint)")
+        }
+        defer { close(fd) }
+        return roundTrip(fd, req)
+    }
+
     public static func uploadAttachment(fileAt url: URL, mimeType: String? = nil) throws -> MeshAttachment {
         let data: Data
         do { data = try Data(contentsOf: url, options: .mappedIfSafe) }
