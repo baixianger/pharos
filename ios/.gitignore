@@ -1,0 +1,19 @@
+# Build products
+build/
+build-device/
+DerivedData/
+*.ipa
+*.xcarchive
+*.dSYM.zip
+
+# fastlane run artifacts
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+fastlane/README.md.bak
+*.mobileprovision
+
+# Ruby / bundler
+vendor/bundle/
+.bundle/
