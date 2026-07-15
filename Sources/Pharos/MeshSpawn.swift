@@ -71,12 +71,13 @@ enum MeshSpawn {
     }
 
     /// The shell command tmux runs as the session's foreground process.
-    static func launchCommand(_ kind: AgentKind) -> String {
+    static func launchCommand(_ kind: AgentKind, executable: String? = nil) -> String {
         switch kind {
-        case .claude: return "claude --dangerously-skip-permissions"
+        case .claude: return kind.command(yolo: true, executable: executable)
         // Codex needs the hook-trust bypass so the mesh hooks (~/.codex/hooks.json)
         // actually run without a first-run trust prompt.
-        case .codex:  return "codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
+        case .codex:
+            return kind.command(yolo: true, executable: executable) + " --dangerously-bypass-hook-trust"
         }
     }
 
@@ -126,10 +127,16 @@ enum MeshSpawn {
         guard let tmux = LaunchService.tmuxPath else {
             onProgress(Progress(phase: .failed, detail: "tmux not found on this Mac")); return
         }
+        guard let executable = LaunchService.agentExecutable(kind) else {
+            onProgress(Progress(phase: .failed,
+                                detail: "\(kind.label) not found in common locations or login shell PATH"))
+            return
+        }
         let name = sessionName(room: room, nick: nick)
         _ = Shell.run(tmux, ["kill-session", "-t", name])   // clear a stale one
         guard Shell.run(tmux, ["new-session", "-d", "-s", name, "-c", dir,
-                               "-x", "200", "-y", "50", launchCommand(kind)]).ok else {
+                               "-x", "200", "-y", "50",
+                               launchCommand(kind, executable: executable)]).ok else {
             onProgress(Progress(phase: .failed, detail: "couldn't start the tmux session")); return
         }
         // Size the window to whichever client is currently driving it, instead of

@@ -1071,27 +1071,12 @@ struct ProjectDetailView: View {
         .frame(width: 440)
     }
 
-    /// Known binary locations for agent tools (best-effort; user may have custom installs).
-    private static let agentBinaryPaths: [AgentKind: [String]] = [
-        .claude: [
-            NSHomeDirectory() + "/.local/bin/claude",
-            "/opt/homebrew/bin/claude",
-            "/usr/local/bin/claude",
-        ],
-        .codex: [
-            "/opt/homebrew/bin/codex",
-            "/usr/local/bin/codex",
-            NSHomeDirectory() + "/.local/bin/codex",
-        ],
-    ]
-
     /// Launch an agent after verifying its binary exists; surfaces an error if not found.
     private func launchAgentWithPreflight(_ kind: AgentKind, project: Project) {
-        let paths = Self.agentBinaryPaths[kind] ?? []
-        let found = paths.contains { LaunchService.toolExists($0) }
-        guard found else {
+        guard LaunchService.agentExecutable(kind) != nil else {
             let name = kind == .claude ? "Claude CLI" : "Codex"
-            store.reportError("\(name) not found — install it and ensure it is available at one of: \(paths.joined(separator: ", "))")
+            let appHint = kind == .codex ? " or install Codex.app" : ""
+            store.reportError("\(name) not found — install the CLI\(appHint), or make it available in your login shell PATH.")
             return
         }
         let extra = kind == .claude ? store.claudeArgs : store.codexArgs

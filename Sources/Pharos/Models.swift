@@ -353,13 +353,16 @@ enum AgentKind: String, CaseIterable, Identifiable {
     var label: String { self == .claude ? "Claude Code" : "Codex" }
     var symbol: String { self == .claude ? "sparkles" : "chevron.left.forwardslash.chevron.right" }
 
-    func command(yolo: Bool, extraArgs: String = "") -> String {
+    func command(yolo: Bool, extraArgs: String = "", executable: String? = nil) -> String {
+        let tool = executable.map {
+            "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        } ?? rawValue
         let base: String
         switch self {
         case .claude:
-            base = yolo ? "claude --dangerously-skip-permissions" : "claude"
+            base = yolo ? "\(tool) --dangerously-skip-permissions" : tool
         case .codex:
-            base = yolo ? "codex --dangerously-bypass-approvals-and-sandbox" : "codex"
+            base = yolo ? "\(tool) --dangerously-bypass-approvals-and-sandbox" : tool
         }
         let trimmed = extraArgs.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? base : "\(base) \(trimmed)"

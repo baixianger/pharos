@@ -168,6 +168,31 @@ final class AgentKindCommandTests: XCTestCase {
     func testExtraArgsWhitespaceStripped() {
         XCTAssertEqual(AgentKind.claude.command(yolo: false, extraArgs: "  "), "claude")
     }
+
+    func testAbsoluteExecutableIsShellQuoted() {
+        XCTAssertEqual(
+            AgentKind.codex.command(yolo: true, executable: "/Applications/Tools Folder/Codex/codex"),
+            "'/Applications/Tools Folder/Codex/codex' --dangerously-bypass-approvals-and-sandbox"
+        )
+    }
+
+    func testCodexResolverIncludesDesktopAppAndVersionManagerShims() {
+        let paths = LaunchService.agentExecutableCandidates(.codex, home: "/Users/tester")
+        XCTAssertTrue(paths.contains("/Applications/Codex.app/Contents/Resources/codex"))
+        XCTAssertTrue(paths.contains("/Users/tester/Applications/Codex.app/Contents/Resources/codex"))
+        XCTAssertTrue(paths.contains("/Users/tester/.asdf/shims/codex"))
+        XCTAssertTrue(paths.contains("/Users/tester/.local/share/mise/shims/codex"))
+        XCTAssertTrue(paths.contains("/Users/tester/.volta/bin/codex"))
+    }
+
+    func testLoginShellResolverIgnoresStartupBanner() {
+        let output = "Welcome back\n/Users/tester/.nvm/versions/node/v22/bin/codex\n"
+        XCTAssertEqual(
+            LaunchService.loginShellExecutable(output) { $0.hasSuffix("/bin/codex") },
+            "/Users/tester/.nvm/versions/node/v22/bin/codex"
+        )
+        XCTAssertNil(LaunchService.loginShellExecutable("Welcome back\ncodex is an alias") { _ in true })
+    }
 }
 
 // MARK: - StoreData soft-delete / Trash

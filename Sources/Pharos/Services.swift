@@ -150,6 +150,55 @@ enum GitService {
 
 /// Launches Finder, a terminal (Ghostty), and coding agents.
 enum LaunchService {
+    /// Common install locations. Codex.app bundles a fully functional CLI but
+    /// does not necessarily put it on PATH, especially for GUI-launched apps.
+    static func agentExecutableCandidates(_ kind: AgentKind,
+                                          home: String = NSHomeDirectory()) -> [String] {
+        switch kind {
+        case .claude:
+            return [
+                "\(home)/.local/bin/claude",
+                "/opt/homebrew/bin/claude",
+                "/usr/local/bin/claude",
+                "\(home)/.asdf/shims/claude",
+                "\(home)/.local/share/mise/shims/claude",
+                "\(home)/.volta/bin/claude",
+            ]
+        case .codex:
+            return [
+                "/opt/homebrew/bin/codex",
+                "/usr/local/bin/codex",
+                "\(home)/.local/bin/codex",
+                "/Applications/Codex.app/Contents/Resources/codex",
+                "\(home)/Applications/Codex.app/Contents/Resources/codex",
+                "\(home)/.npm-global/bin/codex",
+                "\(home)/.asdf/shims/codex",
+                "\(home)/.local/share/mise/shims/codex",
+                "\(home)/.volta/bin/codex",
+            ]
+        }
+    }
+
+    /// Last absolute executable emitted by a login-shell lookup. Shell startup
+    /// files sometimes print banners, so do not blindly trust the first line.
+    static func loginShellExecutable(_ output: String,
+                                     isExecutable: (String) -> Bool) -> String? {
+        output.split(separator: "\n").reversed().map(String.init)
+            .first { $0.hasPrefix("/") && isExecutable($0) }
+    }
+
+    /// Resolve the exact binary that will be launched. Known locations keep
+    /// this fast; the login-shell fallback supports nvm/fnm/custom PATH setups.
+    static func agentExecutable(_ kind: AgentKind) -> String? {
+        let fm = FileManager.default
+        if let path = agentExecutableCandidates(kind).first(where: fm.isExecutableFile(atPath:)) {
+            return path
+        }
+        let result = Shell.run("/bin/zsh", ["-lc", "command -v \(kind.rawValue)"])
+        guard result.ok else { return nil }
+        return loginShellExecutable(result.out, isExecutable: fm.isExecutableFile(atPath:))
+    }
+
     static func revealInFinder(_ path: String) {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
@@ -196,7 +245,8 @@ enum LaunchService {
     static func launchAgent(_ kind: AgentKind, atPath path: String, yolo: Bool, tmux: Bool,
                             tmuxName: String, terminal: TerminalApp, extraArgs: String = "",
                             source: AuditLog.Source = .ui) {
-        let cmd = kind.command(yolo: yolo, extraArgs: extraArgs)
+        let cmd = kind.command(yolo: yolo, extraArgs: extraArgs,
+                               executable: agentExecutable(kind))
         let command: String
         if tmux {
             // `cmd` (carrying user `extraArgs`) sits inside the single-quoted
@@ -225,11 +275,13 @@ enum LaunchService {
         let base: String
         switch session.kind {
         case .claude:
-            base = "claude --resume \(session.id)"
+            let tool = session.kind.command(yolo: false, executable: agentExecutable(session.kind))
+            base = "\(tool) --resume \(session.id)"
                 + (project.yolo ? " --dangerously-skip-permissions" : "")
                 + (extra.isEmpty ? "" : " \(extra)")
         case .codex:
-            base = "codex resume \(session.id)"
+            let tool = session.kind.command(yolo: false, executable: agentExecutable(session.kind))
+            base = "\(tool) resume \(session.id)"
                 + (project.yolo ? " --dangerously-bypass-approvals-and-sandbox" : "")
                 + (extra.isEmpty ? "" : " \(extra)")
         }
@@ -320,11 +372,6 @@ enum LaunchService {
         // We don't have a meaningful cwd; use home dir as fallback.
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         openInTerminal(terminal, path: home, command: cmd)
-    }
-
-    /// Returns true if the binary at `absolutePath` exists and is executable.
-    static func toolExists(_ absolutePath: String) -> Bool {
-        FileManager.default.isExecutableFile(atPath: absolutePath)
     }
 
     private static func shellQuote(_ s: String) -> String {
