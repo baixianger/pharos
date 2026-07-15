@@ -79,7 +79,7 @@ struct DashboardView: View {
             .padding(22)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .navigationTitle("Dashboard")
+        .navigationTitle(PharosViewTitle.dashboard)
         .onAppear(perform: loadMesh)
         .onReceive(meshTick) { _ in loadMesh() }
         .confirmationDialog("Stop agent on \(agentToStop?.label ?? "")?",

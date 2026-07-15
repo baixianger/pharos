@@ -1383,24 +1383,30 @@ final class MeshPaneProbeTests: XCTestCase {
 // MARK: - Native tab titles
 
 final class WindowTabTitleTests: XCTestCase {
-    func testRoomTitleHasOneCanonicalValue() {
-        XCTAssertEqual(PharosWindowTitle.room(""), "Chat Rooms")
-        XCTAssertEqual(PharosWindowTitle.room("team"), "💬 team")
-        XCTAssertEqual(PharosWindowTitle.room("lelantos-dev"), "💬 lelantos-dev")
+    func testContentAndTabTitlesAreDeliberatelyIndependent() {
+        XCTAssertEqual(PharosViewTitle.dashboard, "Pharos")
+        XCTAssertEqual(PharosViewTitle.rooms, "Chat Rooms")
+        XCTAssertEqual(PharosViewTitle.project, "Project")
+        XCTAssertEqual(PharosTabTitle.dashboard, "Dashboard")
+        XCTAssertEqual(PharosTabTitle.room(""), "Chat Rooms")
+        XCTAssertEqual(PharosTabTitle.room("team"), "team")
+        XCTAssertEqual(PharosTabTitle.project("Lelantos"), "Lelantos")
     }
 
     @MainActor
-    func testCoordinatorAppliesLatestRoomTitle() {
+    func testCoordinatorChangesTabLabelWithoutOverwritingWindowTitle() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
                               styleMask: [.titled], backing: .buffered, defer: false)
+        window.title = PharosViewTitle.rooms
         let view = NSView(frame: .zero)
         window.contentView = view
         let coordinator = WindowTabBar.Coordinator()
 
-        coordinator.update(title: PharosWindowTitle.room(""), from: view)
-        coordinator.update(title: PharosWindowTitle.room("team"), from: view)
+        coordinator.update(title: PharosTabTitle.room(""), from: view)
+        coordinator.update(title: PharosTabTitle.room("team"), from: view)
 
-        XCTAssertEqual(window.title, "💬 team")
+        XCTAssertEqual(window.title, "Chat Rooms")
+        XCTAssertEqual(window.tab.title, "team")
         XCTAssertEqual(window.titleVisibility, .hidden)
     }
 }

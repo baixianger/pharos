@@ -71,7 +71,7 @@ struct ProjectDetailView: View {
                     .padding(22)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .navigationTitle(project.name)
+                .navigationTitle(PharosViewTitle.project)
                 .task(id: "\(projectID)|\(store.gitRefreshToken)") {
                     await loadGit(project)
                     await loadHeatmap(project)

@@ -32,9 +32,7 @@ struct MeshRoomView: View {
 
     var body: some View {
         chatPane
-        // A fixed "Chat Rooms" here used to overwrite `NSWindow.title` after
-        // the tab had already navigated to a concrete room.
-        .navigationTitle(PharosWindowTitle.room(room))
+        .navigationTitle(PharosViewTitle.rooms)
         .task(id: store.peerHost) { await resolveRemote() }   // resolve transport BEFORE first load
         .onReceive(tick) { _ in reload() }
         .task(id: room) {

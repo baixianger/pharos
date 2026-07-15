@@ -31,7 +31,6 @@ struct ProjectsSidebar: View {
             .listStyle(.sidebar)
             .overlay { if store.visibleProjects.isEmpty { emptyState } }
         }
-        .navigationTitle("Pharos")
         .alert("New group", isPresented: $newGroupShown) {
             TextField("Name", text: $newGroupName)
             Button("Cancel", role: .cancel) { }

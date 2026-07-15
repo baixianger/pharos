@@ -24,14 +24,12 @@ struct ContentView: View {
     @State private var showOnboarding = false
     @State private var searchText = ""
 
-    /// Native window-tab label — leads with the project so each tab reads the
-    /// project it shows, but keeps the "Pharos" app identity so the Dock/window
-    /// list never looks like some other app. No project selected → the dashboard,
-    /// titled just "Pharos".
+    /// Native window-tab label. The visible content title is owned independently
+    /// by each detail view (`Pharos`, `Chat Rooms`, or `Project`).
     private var tabTitle: String {
-        if let r = openRoom { return PharosWindowTitle.room(r) }
-        if let id = selectedProject, let p = store.project(id) { return "\(p.name) — Pharos" }
-        return "Pharos"
+        if let r = openRoom { return PharosTabTitle.room(r) }
+        if let id = selectedProject, let p = store.project(id) { return PharosTabTitle.project(p.name) }
+        return PharosTabTitle.dashboard
     }
 
     var body: some View {

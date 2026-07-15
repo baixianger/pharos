@@ -1,18 +1,26 @@
 import AppKit
 import SwiftUI
 
-/// One source of truth for native window/tab labels. SwiftUI's
-/// `navigationTitle` and AppKit's `NSWindow.title` can both write the title, so
-/// every room surface must use the exact same value.
-enum PharosWindowTitle {
+/// Content titles describe the kind of screen. Native tab labels identify the
+/// concrete thing open in that tab. They are deliberately different channels.
+enum PharosViewTitle {
+    static let dashboard = "Pharos"
+    static let rooms = "Chat Rooms"
+    static let project = "Project"
+}
+
+enum PharosTabTitle {
+    static let dashboard = "Dashboard"
     static func room(_ room: String) -> String {
-        room.isEmpty ? "Chat Rooms" : "💬 \(room)"
+        room.isEmpty ? "Chat Rooms" : room
     }
+    static func project(_ name: String) -> String { name }
 }
 
 /// Pins the native macOS window tab bar visible (even at a single tab) and
-/// mirrors `title` onto the window, so each open Pharos window is a native tab
-/// labeled with its project — the "one project per tab" model.
+/// writes `title` to `NSWindow.tab.title`, so SwiftUI remains free to manage the
+/// visible content title through `navigationTitle` without competing for the
+/// native tab label.
 ///
 /// AppKit auto-hides the tab bar when a window group drops to one tab, and there
 /// is no public "always show" flag — only `toggleTabBar(_:)`. So we show it on
@@ -46,7 +54,7 @@ struct WindowTabBar: NSViewRepresentable {
         /// Read when deferred window adoption runs. A newly created native tab
         /// can receive several SwiftUI updates before `view.window` exists; an
         /// older captured value must never win later.
-        private var desiredTitle = "Pharos"
+        private var desiredTitle = PharosTabTitle.dashboard
 
         func update(title: String, from view: NSView) {
             desiredTitle = title
@@ -64,7 +72,7 @@ struct WindowTabBar: NSViewRepresentable {
 
         func apply(title: String, to window: NSWindow) {
             window.titleVisibility = .hidden
-            if window.title != title { window.title = title }
+            if window.tab.title != title { window.tab.title = title }
         }
 
         func attach(to window: NSWindow) {
