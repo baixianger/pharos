@@ -9,10 +9,6 @@ struct ProjectDetailView: View {
     @State private var loadingGit = false
     @State private var cloning = false
     @State private var heatmap: [[Int]] = []
-    @State private var claudeSessions: [AgentSession] = []
-    @State private var codexSessions: [AgentSession] = []
-    @State private var sessionsLoading = false
-    @State private var sessionTab: AgentKind = .claude
     @State private var worktrees: [Worktree] = []
     @State private var newWorktreeShown = false
     @State private var newWorktreeName = ""
@@ -24,12 +20,6 @@ struct ProjectDetailView: View {
     @State private var ghStatus: GitHubStatus? = nil
     @State private var ghLoading = false
     @State private var worktreeToRemove: Worktree?
-    /// Pending "stop this agent?" confirmation (session name + host + label).
-    @State private var agentToStop: StopTarget?
-    private struct StopTarget: Identifiable {
-        let session: String; let host: String?; let label: String
-        var id: String { session }
-    }
     @State private var worktreeDirtyCount = 0
     @State private var worktreeConfirmText = ""
     @State private var worktreeRemoving = false
@@ -38,7 +28,6 @@ struct ProjectDetailView: View {
         case overview = "Overview"
         case issues   = "Issues"
         case git      = "Git"
-        case sessions = "Sessions"
         var id: String { rawValue }
     }
 
@@ -86,7 +75,6 @@ struct ProjectDetailView: View {
                 .task(id: "\(projectID)|\(store.gitRefreshToken)") {
                     await loadGit(project)
                     await loadHeatmap(project)
-                    await loadSessions(project)
                     await loadWorktrees(project)
                     await loadGitHubStatus(project)
                 }
@@ -117,18 +105,6 @@ struct ProjectDetailView: View {
                 }
                 .sheet(item: $worktreeToRemove) { wt in
                     worktreeRemoveSheet(wt)
-                }
-                .confirmationDialog("Stop agent \(agentToStop?.label ?? "")?",
-                                    isPresented: Binding(get: { agentToStop != nil },
-                                                         set: { if !$0 { agentToStop = nil } }),
-                                    titleVisibility: .visible,
-                                    presenting: agentToStop) { t in
-                    Button("Stop agent", role: .destructive) {
-                        store.stopAgent(session: t.session, host: t.host)
-                    }
-                    Button("Cancel", role: .cancel) {}
-                } message: { t in
-                    Text("Kills its tmux session \(t.host.map { "on \($0)" } ?? "on this Mac"). Unsaved work in the session is lost.")
                 }
                 .onChange(of: store.requestedIssue) { _, req in openRequestedIssue(req) }
                 .onAppear { openRequestedIssue(store.requestedIssue) }
@@ -169,8 +145,6 @@ struct ProjectDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .glassEffect(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
-        case .sessions:
-            sessionsCard
         }
     }
 
@@ -198,14 +172,6 @@ struct ProjectDetailView: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 8) {
-                let claudeRunning = store.isRunning(project, .claude)
-                let codexRunning  = store.isRunning(project, .codex)
-                if claudeRunning || codexRunning {
-                    HStack(spacing: 8) {
-                        if claudeRunning { runningBadge(project: project, kind: .claude) }
-                        if codexRunning { runningBadge(project: project, kind: .codex) }
-                    }
-                }
                 if git.isRepo, git.activity.contains(where: { $0 > 0 }) {
                     Sparkline(values: git.activity)
                         .frame(width: 130, height: 36)
@@ -615,10 +581,6 @@ struct ProjectDetailView: View {
                     Label("\(subCount)", systemImage: "list.bullet.indent")
                         .font(.system(size: 9)).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
                 }
-                if let session = issue.activeSession, store.allRunningSessions.contains(session) {
-                    Label("agent", systemImage: "circle.fill")
-                        .font(.system(size: 9)).foregroundStyle(.green).labelStyle(.titleAndIcon)
-                }
             }
         }
         .padding(8)
@@ -679,18 +641,6 @@ struct ProjectDetailView: View {
                                     .font(.caption2).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
                             }
                             ForEach(issue.labels.prefix(4), id: \.self) { labelChip($0) }
-                            if let session = issue.activeSession, store.allRunningSessions.contains(session) {
-                                Label("agent running", systemImage: "circle.fill")
-                                    .font(.caption2).foregroundStyle(.green).labelStyle(.titleAndIcon)
-                                Button {
-                                    agentToStop = StopTarget(session: session, host: issue.activeSessionHost,
-                                                             label: "#\(issue.number)")
-                                } label: {
-                                    Image(systemName: "stop.circle").font(.caption2)
-                                }
-                                .buttonStyle(.plain).foregroundStyle(.red)
-                                .help("Stop this agent")
-                            }
                         }
                     }
                 }
@@ -984,102 +934,7 @@ struct ProjectDetailView: View {
         .glassEffect(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    // MARK: Sessions card (Phase 2 placeholder)
-
-    private var sessionsCard: some View {
-        let list = sessionTab == .claude ? claudeSessions : codexSessions
-        let items = Array(list.prefix(25))
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Agent Sessions").font(.headline)
-                Spacer()
-                if sessionsLoading { ProgressView().controlSize(.small) }
-            }
-            Picker("", selection: $sessionTab) {
-                Text("Claude (\(claudeSessions.count))").tag(AgentKind.claude)
-                Text("Codex (\(codexSessions.count))").tag(AgentKind.codex)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-
-            if items.isEmpty {
-                Text(sessionsLoading ? "Loading…" : "No \(sessionTab.label) sessions for this project.")
-                    .font(.callout).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 6)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { idx, session in
-                        sessionRow(session)
-                        if idx < items.count - 1 { Divider() }
-                    }
-                }
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .glassEffect(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-
-    private func sessionRow(_ session: AgentSession) -> some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(session.title).font(.callout).lineLimit(1)
-                Text(relativeAge(session.modified)).font(.caption2).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button {
-                if let p = store.project(projectID) {
-                    let extra = session.kind == .claude ? store.claudeArgs : store.codexArgs
-                    LaunchService.resumeSession(session, project: p, terminal: store.terminal,
-                                               extraArgs: extra)
-                }
-            } label: {
-                Label("Resume", systemImage: "play.fill")
-            }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-        }
-        .padding(.vertical, 6)
-    }
-
-    private func relativeAge(_ date: Date) -> String {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        return f.localizedString(for: date, relativeTo: Date())
-    }
-
     // MARK: Helpers
-
-    @ViewBuilder
-    private func runningBadge(project: Project, kind: AgentKind) -> some View {
-        let sessionName = LaunchService.tmuxSessionName(project, kind)
-        HStack(spacing: 6) {
-            Circle()
-                .fill(Color.green)
-                .frame(width: 7, height: 7)
-                .accessibilityHidden(true)
-            Text(kind.label)
-                .font(.system(size: 12, weight: .medium))
-            Button {
-                LaunchService.attach(sessionName: sessionName, terminal: store.terminal)
-            } label: {
-                Label("Attach", systemImage: "arrow.right.circle")
-            }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-            .tint(.accentColor)
-            Button {
-                agentToStop = StopTarget(session: sessionName, host: nil, label: kind.label)
-            } label: {
-                Label("Stop", systemImage: "stop.circle")
-            }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-            .tint(.red)
-            .help("Kill this agent's tmux session")
-        }
-    }
 
     private func yoloBinding(_ project: Project) -> Binding<Bool> {
         Binding(
@@ -1109,18 +964,6 @@ struct ProjectDetailView: View {
     private func loadHeatmap(_ project: Project) async {
         guard let path = project.localPath, !path.isEmpty else { heatmap = []; return }
         heatmap = await GitService.heatmapGrid(for: path, weeks: 26)
-    }
-
-    private func loadSessions(_ project: Project) async {
-        guard let path = project.localPath, !path.isEmpty else {
-            claudeSessions = []; codexSessions = []; return
-        }
-        sessionsLoading = true
-        async let c = SessionsService.claudeSessions(for: path)
-        async let x = SessionsService.codexSessions(for: path)
-        claudeSessions = await c
-        codexSessions = await x
-        sessionsLoading = false
     }
 
     private func loadWorktrees(_ project: Project) async {

@@ -1322,6 +1322,45 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         XCTAssertEqual(roster.first { $0.rooms == ["room-b"] }?.id, "stable-b")
     }
 
+    func testRenameMemberKeepsIdentityAndMailboxThenExactRemoveLeavesRoom() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "dev", nick: "office",
+                                                 session: "stable-session", host: "air",
+                                                 tmuxPane: "%7", kind: "claude")).ok)
+        _ = broker.process(MeshRequest(cmd: "say", room: "dev", nick: "human",
+                                       text: "before rename", to: ["office"]))
+
+        let renamed = broker.process(MeshRequest(cmd: "rename-member", room: "dev", nick: "office",
+                                                 memberID: "stable-session", text: "air"))
+        XCTAssertTrue(renamed.ok)
+        let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
+        XCTAssertNil(roster.first { $0.nick == "office" })
+        XCTAssertEqual(roster.first { $0.nick == "air" }?.id, "stable-session")
+
+        _ = broker.process(MeshRequest(cmd: "say", room: "dev", nick: "human",
+                                       text: "after rename", to: ["air"]))
+        let inbox = broker.process(MeshRequest(cmd: "recv", nick: "air", memberID: "stable-session"))
+        XCTAssertEqual(inbox.messages?.map(\.text), ["before rename", "after rename"])
+
+        let staleRemove = broker.process(MeshRequest(cmd: "leave", room: "dev", nick: "air",
+                                                     memberID: "another-session"))
+        XCTAssertFalse(staleRemove.ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "leave", room: "dev", nick: "air",
+                                                 memberID: "stable-session")).ok)
+        XCTAssertTrue((broker.process(MeshRequest(cmd: "who")).members ?? []).isEmpty)
+    }
+
+    func testRenameMemberRejectsAnOccupiedNick() {
+        let broker = MeshBroker()
+        _ = broker.process(MeshRequest(cmd: "join", room: "dev", nick: "one", session: "session-1"))
+        _ = broker.process(MeshRequest(cmd: "join", room: "dev", nick: "two", session: "session-2"))
+        let response = broker.process(MeshRequest(cmd: "rename-member", room: "dev", nick: "one",
+                                                  memberID: "session-1", text: "two"))
+        XCTAssertFalse(response.ok)
+        XCTAssertEqual(Set((broker.process(MeshRequest(cmd: "who")).members ?? []).map(\.nick)),
+                       ["one", "two"])
+    }
+
     func testSpawnedTmuxNameIsRoomScoped() {
         XCTAssertNotEqual(MeshSpawn.sessionName(room: "room-a", nick: "codex"),
                           MeshSpawn.sessionName(room: "room-b", nick: "codex"))

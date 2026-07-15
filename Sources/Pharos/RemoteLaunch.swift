@@ -462,4 +462,18 @@ enum RemoteLaunch {
         }
         return "killed '\(session)'\(at(host))"
     }
+
+    /// Resolve a broker-reported tmux pane to its owning session and stop it.
+    /// Uses the same PATH-safe local/SSH transport as every other agent action.
+    static func kill(pane: String, host: String?) throws -> String {
+        guard pane.first == "%", pane.dropFirst().allSatisfy(\.isNumber) else {
+            throw RemoteError(message: "invalid tmux pane '\(pane)'")
+        }
+        let probe = tmuxAny(host, ["display-message", "-p", "-t", pane, "#{session_name}"])
+        let session = probe.out.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard probe.ok, !session.isEmpty else {
+            throw RemoteError(message: "cannot resolve tmux pane '\(pane)'\(at(host))")
+        }
+        return try kill(session: session, host: host)
+    }
 }

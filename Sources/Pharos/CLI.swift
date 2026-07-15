@@ -244,6 +244,9 @@ enum CLI {
         case "leave":
             guard a.count >= 2 else { print("usage: pharos mesh leave <room> <nick>"); return 2 }
             return report(MeshClient.send(MeshRequest(cmd: "leave", room: a[0], nick: a[1])))
+        case "rename-member":
+            guard a.count >= 3 else { print("usage: pharos mesh rename-member <room> <nick> <new-nick>"); return 2 }
+            return report(MeshClient.send(MeshRequest(cmd: "rename-member", room: a[0], nick: a[1], text: a[2])))
         case "delete", "rm":
             guard let room = a.first else { print("usage: pharos mesh delete <room>"); return 2 }
             return report(MeshClient.send(MeshRequest(cmd: "delete", room: room)))
@@ -429,6 +432,7 @@ enum CLI {
       install-hooks [--project <dir> | --user]   wire all mesh hooks into .claude/settings.json
       install-hooks --codex                      wire mesh hooks into ~/.codex/hooks.json (Codex agents)
       leave  <room> <nick>                leave a room
+      rename-member <room> <nick> <new>   rename a member without changing its session identity
       rename <room> <new-name>            rename a room
       delete <room>                       delete a room (drops its transcript)
     """

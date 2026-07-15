@@ -6,7 +6,7 @@ import Darwin
 // MARK: - Wire protocol (newline-delimited JSON over a local unix socket)
 
 struct MeshRequest: Codable {
-    var cmd: String                 // create | list | join | leave | say | recv | mark | who | daemon
+    var cmd: String                 // create | list | join | leave | rename-member | say | recv | mark | who | daemon
     var room: String?
     var nick: String?
     var memberID: String?            // immutable delivery identity (normally session id)
@@ -445,10 +445,37 @@ final class MeshBroker {
         case "leave":
             guard let r = req.room, let n = req.nick else { return .fail("room and nick required") }
             lock.lock()
+            if let expected = req.memberID, rooms[r]?.members[n] != expected {
+                lock.unlock(); return .fail("member identity changed; refresh and try again")
+            }
             if let memberID = rooms[r]?.members.removeValue(forKey: n) {
                 rooms[r]?.mailboxes[memberID] = nil    // leaving abandons that room's unread
                 syncUnreadLocked(memberID)
                 refreshPresenceRoomsLocked(memberID)
+                writePresenceLocked()
+            }
+            lock.unlock()
+            return .okay()
+
+        case "rename-member":
+            guard let r = req.room, let old = req.nick,
+                  let new = req.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !new.isEmpty else { return .fail("room, current nick, and new nick required") }
+            lock.lock()
+            guard let memberID = rooms[r]?.members[old] else {
+                lock.unlock(); return .fail("member not found")
+            }
+            if let expected = req.memberID, expected != memberID {
+                lock.unlock(); return .fail("member identity changed; refresh and try again")
+            }
+            if let occupied = rooms[r]?.members[new], occupied != memberID {
+                lock.unlock(); return .fail("nick already exists in room")
+            }
+            if old != new {
+                rooms[r]?.members.removeValue(forKey: old)
+                rooms[r]?.members[new] = memberID
+                refreshPresenceRoomsLocked(memberID)
+                syncUnreadLocked(memberID)
                 writePresenceLocked()
             }
             lock.unlock()

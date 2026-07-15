@@ -36,6 +36,9 @@ struct DashboardView: View {
     @State private var agentToStop: StopTarget?
     @State private var meshAgents: [MeshMemberInfo] = []  // live roster across all machines (who)
     @State private var meshAgentToStop: MeshMemberInfo?
+    @State private var meshAgentToRename: MeshMemberInfo?
+    @State private var meshAgentRenameText = ""
+    @State private var agentActionError: String?
     private struct StopTarget: Identifiable {
         let session: String; let host: String?; let label: String
         var id: String { session }
@@ -99,6 +102,21 @@ struct DashboardView: View {
         } message: { m in
             Text("Kills @\(m.nick)'s tmux session \(m.host.map { "on \($0)" } ?? "on this Mac"). Unsaved work is lost.")
         }
+        .alert("Rename agent", isPresented: Binding(get: { meshAgentToRename != nil },
+                                                     set: { if !$0 { meshAgentToRename = nil } }),
+               presenting: meshAgentToRename) { m in
+            TextField("Name", text: $meshAgentRenameText)
+            Button("Cancel", role: .cancel) { meshAgentToRename = nil }
+            Button("Rename") { renameMeshAgent(m) }
+        } message: { m in
+            Text("The session ID stays \(m.id.prefix(8))…; only its name in \(m.rooms.first ?? "this room") changes.")
+        }
+        .alert("Agent action failed", isPresented: Binding(get: { agentActionError != nil },
+                                                           set: { if !$0 { agentActionError = nil } })) {
+            Button("OK", role: .cancel) { agentActionError = nil }
+        } message: {
+            Text(agentActionError ?? "Unknown error")
+        }
     }
 
     // MARK: Chat rooms (agents talking)
@@ -148,6 +166,13 @@ struct DashboardView: View {
                                 .font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
                         }
                         Spacer()
+                        Button {
+                            meshAgentRenameText = m.nick
+                            meshAgentToRename = m
+                        } label: {
+                            Image(systemName: "pencil")
+                        }
+                        .font(.caption).buttonStyle(.borderless).help("Rename agent")
                         if m.tmuxPane != nil {
                             Button("Attach") { attachMeshAgent(m) }.font(.caption).buttonStyle(.borderless)
                             Button("Stop") { meshAgentToStop = m }.font(.caption).buttonStyle(.borderless).foregroundStyle(.red)
@@ -171,30 +196,55 @@ struct DashboardView: View {
     }
 
     private func attachMeshAgent(_ m: MeshMemberInfo) {
-        guard let cmd = meshTmuxCommand(m, attach: true) else { return }
+        guard let cmd = meshAttachCommand(m) else { return }
         LaunchService.openTerminal(command: cmd, terminal: store.terminal)
     }
 
     private func stopMeshAgent(_ m: MeshMemberInfo) {
-        guard let cmd = meshTmuxCommand(m, attach: false) else { return }
-        Task.detached { _ = Shell.run("/bin/sh", ["-c", cmd]); await MainActor.run { loadMesh() } }
+        guard let pane = m.tmuxPane else { return }
+        let host = (m.host == nil || m.host == HostIdentity.current) ? nil : store.peerHost
+        guard m.host == nil || m.host == HostIdentity.current || !(host?.isEmpty ?? true) else {
+            agentActionError = "No paired Mac SSH host is configured."
+            return
+        }
+        Task {
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<String, Error> in
+                do { return .success(try RemoteLaunch.kill(pane: pane, host: host)) }
+                catch { return .failure(error) }
+            }.value
+            if case .failure(let error) = result { agentActionError = error.localizedDescription }
+            loadMesh()
+        }
     }
 
-    /// Shell command to attach or kill `m`'s tmux session, resolving its reported
-    /// pane to the session name. Local when the agent is on this Mac; otherwise
-    /// wrapped in `ssh <peer>` (escaped so the local shell hands the script to the
-    /// remote shell verbatim).
-    private func meshTmuxCommand(_ m: MeshMemberInfo, attach: Bool) -> String? {
+    private func renameMeshAgent(_ m: MeshMemberInfo) {
+        let name = meshAgentRenameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let room = m.rooms.first else { return }
+        meshAgentToRename = nil
+        Task {
+            let response = await Task.detached {
+                MeshClient.send(MeshRequest(cmd: "rename-member", room: room, nick: m.nick,
+                                            memberID: m.id, text: name))
+            }.value
+            if !response.ok { agentActionError = response.error ?? "Rename failed" }
+            loadMesh()
+        }
+    }
+
+    /// Shell command to attach `m`'s tmux session, resolving its reported pane
+    /// to the session name. Local when the agent is on this Mac; otherwise SSH.
+    private func meshAttachCommand(_ m: MeshMemberInfo) -> String? {
         guard let pane = m.tmuxPane, pane.first == "%", pane.dropFirst().allSatisfy(\.isNumber) else { return nil }
-        let action = attach ? "exec tmux attach -t \"=$s\"" : "tmux kill-session -t \"=$s\""
-        let inner = "s=$(tmux display-message -p -t '\(pane)' '#{session_name}') && \(action)"
+        let action = "exec tmux attach -t \"=$s\""
+        let inner = "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin\"; "
+                  + "s=$(tmux display-message -p -t '\(pane)' '#{session_name}') && \(action)"
         if m.host == nil || m.host == HostIdentity.current { return inner }
         let peer = store.peerHost
         guard !peer.isEmpty else { return nil }
         let escaped = inner.replacingOccurrences(of: "\\", with: "\\\\")
                            .replacingOccurrences(of: "$", with: "\\$")
                            .replacingOccurrences(of: "\"", with: "\\\"")
-        return "ssh \(attach ? "-t " : "")\(peer) \"\(escaped)\""
+        return "ssh -t \(peer) \"\(escaped)\""
     }
 
     private func loadMesh() {

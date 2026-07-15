@@ -14,6 +14,7 @@ struct RoomsToolbarButton: View {
     @State private var renaming: String?
     @State private var renameText = ""
     @State private var addMemberTo: String?
+    @State private var manageMembersIn: String?
     private let tick = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -38,6 +39,10 @@ struct RoomsToolbarButton: View {
         .sheet(item: Binding(get: { addMemberTo.map { RoomBox(name: $0) } },
                              set: { addMemberTo = $0?.name })) { box in
             AddMemberSheet(room: box.name)
+        }
+        .sheet(item: Binding(get: { manageMembersIn.map { RoomBox(name: $0) } },
+                             set: { manageMembersIn = $0?.name })) { box in
+            ManageRoomMembersSheet(room: box.name)
         }
     }
 
@@ -88,6 +93,8 @@ struct RoomsToolbarButton: View {
             Spacer(minLength: 8)
             Button { addMemberTo = r; show = false } label: { Image(systemName: "person.badge.plus") }
                 .buttonStyle(.plain).foregroundStyle(.secondary).help("Add an agent to this room")
+            Button { manageMembersIn = r; show = false } label: { Image(systemName: "person.2") }
+                .buttonStyle(.plain).foregroundStyle(.secondary).help("Rename or remove members")
             Button { renameText = r; renaming = r } label: { Image(systemName: "pencil") }
                 .buttonStyle(.plain).foregroundStyle(.secondary).help("Rename")
             Button(role: .destructive) { deleteRoom(r) } label: { Image(systemName: "trash") }
@@ -150,6 +157,127 @@ struct RoomsToolbarButton: View {
         rooms.removeAll { $0 == r }
         if openRoom == r { openRoom = rooms.first ?? "" }
         Task.detached { _ = MeshClient.send(MeshRequest(cmd: "delete", room: r)) }
+    }
+}
+
+/// Per-room member administration. Display names are aliases; rename keeps the
+/// immutable session ID and mailbox, while remove only leaves this room.
+struct ManageRoomMembersSheet: View {
+    let room: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var members: [MeshMemberInfo] = []
+    @State private var loading = true
+    @State private var memberToRename: MeshMemberInfo?
+    @State private var renameText = ""
+    @State private var memberToRemove: MeshMemberInfo?
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Members · \(room)").font(.headline)
+                Spacer()
+                Button("Done") { dismiss() }
+            }
+
+            if loading {
+                ProgressView().frame(maxWidth: .infinity, minHeight: 100)
+            } else if members.isEmpty {
+                ContentUnavailableView("No members", systemImage: "person.2.slash",
+                                       description: Text("Agents that join this room appear here."))
+                    .frame(minHeight: 140)
+            } else {
+                List(members, id: \.id) { member in
+                    HStack(spacing: 10) {
+                        Circle().fill(stateColor(member.state)).frame(width: 8, height: 8)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(member.nick).font(.callout.weight(.medium))
+                            Text("session \(member.id.prefix(8))…")
+                                .font(.caption2.monospaced()).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            renameText = member.nick
+                            memberToRename = member
+                        } label: { Image(systemName: "pencil") }
+                        .buttonStyle(.borderless).help("Rename member")
+                        Button(role: .destructive) { memberToRemove = member } label: {
+                            Image(systemName: "person.badge.minus")
+                        }
+                        .buttonStyle(.borderless).foregroundStyle(.red).help("Remove from room")
+                    }
+                }
+                .listStyle(.inset)
+            }
+        }
+        .padding(18)
+        .frame(width: 430, height: 330)
+        .task { await reload() }
+        .alert("Rename member", isPresented: Binding(get: { memberToRename != nil },
+                                                      set: { if !$0 { memberToRename = nil } }),
+               presenting: memberToRename) { member in
+            TextField("Name", text: $renameText)
+            Button("Cancel", role: .cancel) { memberToRename = nil }
+            Button("Rename") { rename(member) }
+        } message: { member in
+            Text("Only the room name changes. Session \(member.id.prefix(8))… remains the same.")
+        }
+        .confirmationDialog("Remove @\(memberToRemove?.nick ?? "") from \(room)?",
+                            isPresented: Binding(get: { memberToRemove != nil },
+                                                 set: { if !$0 { memberToRemove = nil } }),
+                            titleVisibility: .visible,
+                            presenting: memberToRemove) { member in
+            Button("Remove member", role: .destructive) { remove(member) }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("This removes the member from this room and discards its unread messages here. It does not stop the agent session.")
+        }
+        .alert("Member action failed", isPresented: Binding(get: { error != nil },
+                                                            set: { if !$0 { error = nil } })) {
+            Button("OK", role: .cancel) { error = nil }
+        } message: { Text(error ?? "Unknown error") }
+    }
+
+    private func reload() async {
+        let roster = await Task.detached {
+            MeshClient.send(MeshRequest(cmd: "who")).members ?? []
+        }.value
+        members = roster.filter { $0.rooms.contains(room) }.sorted { $0.nick < $1.nick }
+        loading = false
+    }
+
+    private func rename(_ member: MeshMemberInfo) {
+        let newName = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty else { return }
+        memberToRename = nil
+        Task {
+            let response = await Task.detached {
+                MeshClient.send(MeshRequest(cmd: "rename-member", room: room, nick: member.nick,
+                                            memberID: member.id, text: newName))
+            }.value
+            if response.ok { await reload() } else { error = response.error ?? "Rename failed" }
+        }
+    }
+
+    private func remove(_ member: MeshMemberInfo) {
+        memberToRemove = nil
+        Task {
+            let response = await Task.detached {
+                MeshClient.send(MeshRequest(cmd: "leave", room: room, nick: member.nick,
+                                            memberID: member.id))
+            }.value
+            if response.ok { await reload() } else { error = response.error ?? "Remove failed" }
+        }
+    }
+
+    private func stateColor(_ raw: String?) -> Color {
+        switch raw.flatMap(MeshSessionState.init(rawValue:)) {
+        case .busy: .orange
+        case .blocked: .red
+        case .stopped, .idle: .green
+        case .gone: .gray.opacity(0.4)
+        case nil: .gray
+        }
     }
 }
 
