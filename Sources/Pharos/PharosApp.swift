@@ -112,9 +112,6 @@ struct PharosApp: App {
                 Button("Command Palette…") { store.requestPalette() }
                     .keyboardShortcut("k", modifiers: [.command])
             }
-            CommandGroup(before: .windowList) {
-                Button("Set Up Mesh Broker…") { openWindow(id: "broker-setup") }
-            }
         }
 
         // Custom About window
