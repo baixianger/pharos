@@ -986,9 +986,13 @@ struct ProjectDetailView: View {
             (c.isLetter || c.isNumber) ? c : "-"
         })
         let extra = kind == .claude ? store.claudeArgs : store.codexArgs
-        LaunchService.launchAgent(kind, atPath: wt.path, yolo: p.yolo, tmux: p.tmux,
-                                  tmuxName: "pharos-\(safe)-\(kind.rawValue)", terminal: store.terminal,
-                                  extraArgs: extra)
+        Task {
+            let resolution = await LaunchService.agentResolution(kind)
+            LaunchService.launchAgent(kind, atPath: wt.path, yolo: p.yolo, tmux: p.tmux,
+                                      tmuxName: "pharos-\(safe)-\(kind.rawValue)",
+                                      terminal: store.terminal, extraArgs: extra,
+                                      resolution: resolution)
+        }
     }
 
     /// Open the worktree-removal confirm sheet and asynchronously load how many
@@ -1073,15 +1077,18 @@ struct ProjectDetailView: View {
 
     /// Launch an agent after verifying its binary exists; surfaces an error if not found.
     private func launchAgentWithPreflight(_ kind: AgentKind, project: Project) {
-        guard LaunchService.agentExecutable(kind) != nil else {
-            let name = kind == .claude ? "Claude CLI" : "Codex"
-            let appHint = kind == .codex ? " or install Codex.app" : ""
-            store.reportError("\(name) not found — install the CLI\(appHint), or make it available in your login shell PATH.")
-            return
+        Task {
+            guard let resolution = await LaunchService.agentResolution(kind) else {
+                let name = kind == .claude ? "Claude CLI" : "Codex"
+                let appHint = kind == .codex ? " or install Codex.app" : ""
+                store.reportError("\(name) not found — install the CLI\(appHint), or make it available in your login shell PATH.")
+                return
+            }
+            let extra = kind == .claude ? store.claudeArgs : store.codexArgs
+            LaunchService.launchAgent(kind, project: project, terminal: store.terminal,
+                                      desktop: agentDesktop, extraArgs: extra,
+                                      resolution: resolution)
         }
-        let extra = kind == .claude ? store.claudeArgs : store.codexArgs
-        LaunchService.launchAgent(kind, project: project, terminal: store.terminal,
-                                  desktop: agentDesktop, extraArgs: extra)
     }
 
     private func clone(_ project: Project) {

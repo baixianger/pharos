@@ -9,15 +9,15 @@ import AppKit
 /// open the app normally.
 @main
 enum PharosMain {
-    static func main() {
+    static func main() async {
         let args = Array(CommandLine.arguments.dropFirst())
         // Invoked as `chat` (a symlink to this binary) → it's the mesh chat room.
         let invokedAs = (CommandLine.arguments.first as NSString?)?.lastPathComponent ?? ""
         if invokedAs == "chat" {
-            exit(CLI.run(["mesh"] + args))
+            exit(await CLI.run(["mesh"] + args))
         }
         if let first = args.first, CLI.isCommand(first) {
-            exit(CLI.run(args))
+            exit(await CLI.run(args))
         }
         // Snapshot mode: become an ACCESSORY app BEFORE any window exists, so it
         // never activates, never steals focus, and never switches Spaces — the

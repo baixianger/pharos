@@ -353,10 +353,21 @@ enum AgentKind: String, CaseIterable, Identifiable {
     var label: String { self == .claude ? "Claude Code" : "Codex" }
     var symbol: String { self == .claude ? "sparkles" : "chevron.left.forwardslash.chevron.right" }
 
-    func command(yolo: Bool, extraArgs: String = "", executable: String? = nil) -> String {
-        let tool = executable.map {
-            "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        } ?? rawValue
+    func command(yolo: Bool, extraArgs: String = "", executable: String? = nil,
+                 environment: [String: String] = [:]) -> String {
+        func quote(_ value: String) -> String {
+            "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        }
+        let executable = executable.map(quote) ?? rawValue
+        let tool: String
+        if environment.isEmpty {
+            tool = executable
+        } else {
+            let assignments = environment.sorted { $0.key < $1.key }
+                .map { quote("\($0.key)=\($0.value)") }
+                .joined(separator: " ")
+            tool = "/usr/bin/env \(assignments) \(executable)"
+        }
         let base: String
         switch self {
         case .claude:

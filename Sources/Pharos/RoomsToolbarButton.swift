@@ -394,7 +394,7 @@ struct AddMemberSheet: View {
         let k = kind
         let host = spawnHost == .peer ? store.peerHost : nil
         Task.detached {
-            MeshSpawn.spawn(room: room, nick: n, kind: k, host: host, workDir: workDir) { p in
+            await MeshSpawn.spawn(room: room, nick: n, kind: k, host: host, workDir: workDir) { p in
                 Task { @MainActor in
                     phase = p.phase; detail = p.detail
                     if p.phase == .joined || p.phase == .failed { spawning = false }

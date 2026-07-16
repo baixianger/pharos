@@ -22,14 +22,14 @@ struct MenuBarView: View {
                 let disabled = !project.hasLocal
 
                 Button {
-                    LaunchService.launchAgent(.claude, project: project, terminal: store.terminal)
+                    Task { await LaunchService.launchAgent(.claude, project: project, terminal: store.terminal) }
                 } label: {
                     Label(AgentKind.claude.label, systemImage: AgentKind.claude.symbol)
                 }
                 .disabled(disabled)
 
                 Button {
-                    LaunchService.launchAgent(.codex, project: project, terminal: store.terminal)
+                    Task { await LaunchService.launchAgent(.codex, project: project, terminal: store.terminal) }
                 } label: {
                     Label(AgentKind.codex.label, systemImage: AgentKind.codex.symbol)
                 }

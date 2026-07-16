@@ -728,7 +728,7 @@ enum PharosCore {
     /// session ends (see `ProjectStore.postAgentFinished`).
     static func issueStart(project name: String?, number: Int?, agent agentRaw: String?,
                            yolo: Bool?, tmux: Bool?, host: String? = nil,
-                           source: AuditLog.Source) throws -> String {
+                           source: AuditLog.Source) async throws -> String {
         guard let number else { throw CoreError(message: "Missing required argument: number") }
         guard let agentRaw, let kind = AgentKind(rawValue: agentRaw) else {
             throw CoreError(message: "Argument 'agent' must be \"claude\" or \"codex\".")
@@ -777,9 +777,11 @@ enum PharosCore {
         if useTmux { store.linkIssueSession(projectID: project.id, number: number, session: tmuxName) }
         else { _ = store.setIssueStatus(projectID: project.id, number: number, status: .inProgress) }
         saveStore(store)
-        runOnMain {
+        let resolution = await LaunchService.agentResolution(kind)
+        await MainActor.run {
             LaunchService.launchAgent(kind, atPath: path, yolo: useYolo, tmux: useTmux,
-                                      tmuxName: tmuxName, terminal: terminal, extraArgs: "", source: source)
+                                      tmuxName: tmuxName, terminal: terminal, extraArgs: "",
+                                      source: source, resolution: resolution)
         }
         return "Started \(kind.label) on \(project.name)#\(number) (\(issue.title)) — issue moved to In Progress."
     }
@@ -920,7 +922,7 @@ enum PharosCore {
 
     static func launchAgent(project name: String?, agent agentRaw: String?,
                             yolo: Bool?, tmux: Bool?, host: String? = nil,
-                            source: AuditLog.Source) throws -> String {
+                            source: AuditLog.Source) async throws -> String {
         guard let name, !name.isEmpty else { throw CoreError(message: "Missing required argument: project") }
         guard let agentRaw, let kind = AgentKind(rawValue: agentRaw) else {
             throw CoreError(message: "Argument 'agent' must be \"claude\" or \"codex\".")
@@ -943,9 +945,11 @@ enum PharosCore {
         let useTmux = tmux ?? false
         let terminal = persistedTerminal()
         let tmuxName = LaunchService.tmuxSessionName(project, kind)
-        runOnMain {
+        let resolution = await LaunchService.agentResolution(kind)
+        await MainActor.run {
             LaunchService.launchAgent(kind, atPath: path, yolo: useYolo, tmux: useTmux,
-                                      tmuxName: tmuxName, terminal: terminal, extraArgs: "", source: source)
+                                      tmuxName: tmuxName, terminal: terminal, extraArgs: "",
+                                      source: source, resolution: resolution)
         }
         let mode = [useYolo ? "yolo" : nil, useTmux ? "tmux" : nil].compactMap { $0 }.joined(separator: ", ")
         let suffix = mode.isEmpty ? "" : " (\(mode))"
@@ -953,7 +957,7 @@ enum PharosCore {
     }
 
     static func resumeSession(project name: String?, agent agentRaw: String?,
-                              sessionID: String?) throws -> String {
+                              sessionID: String?) async throws -> String {
         guard let agentRaw, let kind = AgentKind(rawValue: agentRaw) else {
             throw CoreError(message: "Argument 'agent' must be \"claude\" or \"codex\".")
         }
@@ -964,7 +968,11 @@ enum PharosCore {
         let terminal = persistedTerminal()
         let session = AgentSession(id: sessionID, kind: kind, title: "",
                                    modified: Date(), resumeCwd: path)
-        runOnMain { LaunchService.resumeSession(session, project: project, terminal: terminal) }
+        let resolution = await LaunchService.agentResolution(kind)
+        await MainActor.run {
+            LaunchService.resumeSession(session, project: project, terminal: terminal,
+                                        resolution: resolution)
+        }
         return "Resumed \(kind.label) session \(sessionID) in '\(project.name)' using \(terminal.label)."
     }
 
