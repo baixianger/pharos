@@ -1774,7 +1774,7 @@ final class WindowTabTitleTests: XCTestCase {
 }
 
 final class LegacyPeerMigrationTests: XCTestCase {
-    func testTailnetDiscoveryIncludesOnlineMacAndLinuxButNotOfflineNodes() throws {
+    func testTailnetDiscoveryIncludesAllNodesAndMarksOfflineOnes() throws {
         let json = #"""
         {
           "Self": {"HostName":"Mac mini","DNSName":"mac-mini.example.ts.net.","TailscaleIPs":["100.0.0.1"],"Online":true,"OS":"macOS"},
@@ -1786,10 +1786,12 @@ final class LegacyPeerMigrationTests: XCTestCase {
         }
         """#
         let devices = PairingService.parseTailnetDevices(try XCTUnwrap(json.data(using: .utf8)))
-        XCTAssertEqual(devices.map(\.name), ["mac-mini", "iphone", "personal-dev"])
-        XCTAssertEqual(devices.map(\.os), ["macOS", "iOS", "linux"])
+        XCTAssertEqual(devices.map(\.name), ["mac-mini", "iphone", "personal-dev", "old"])
+        XCTAssertEqual(devices.map(\.os), ["macOS", "iOS", "linux", "linux"])
         XCTAssertTrue(devices[0].isThisMac)
         XCTAssertFalse(devices[1].isThisMac)
+        XCTAssertTrue(devices[2].isOnline)
+        XCTAssertFalse(devices[3].isOnline)
     }
 
     func testPeerDiscoveryKeepsOnlyOnlineMacs() {

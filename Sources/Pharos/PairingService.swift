@@ -18,6 +18,7 @@ enum PairingService {
         let ip: String
         let os: String
         let isThisMac: Bool
+        let isOnline: Bool
         var id: String { ip }
     }
 
@@ -94,16 +95,17 @@ enum PairingService {
 
         guard let status = try? JSONDecoder().decode(Status.self, from: data) else { return [] }
         func device(_ node: Node, isThisMac: Bool) -> TailnetDevice? {
-            guard node.online != false,
-                  let ip = node.tailscaleIPs.first(where: isIPv4) else { return nil }
+            guard let ip = node.tailscaleIPs.first(where: isIPv4) else { return nil }
             let dnsLabel = node.dnsName.split(separator: ".").first.map(String.init) ?? ""
             let name = dnsLabel.isEmpty ? node.hostName : dnsLabel
-            return TailnetDevice(name: name, ip: ip, os: node.os, isThisMac: isThisMac)
+            return TailnetDevice(name: name, ip: ip, os: node.os, isThisMac: isThisMac,
+                                 isOnline: node.online != false)
         }
         var devices = [device(status.thisNode, isThisMac: true)].compactMap { $0 }
         devices.append(contentsOf: status.peers.values.compactMap { device($0, isThisMac: false) })
         return devices.sorted {
             if $0.isThisMac != $1.isThisMac { return $0.isThisMac }
+            if $0.isOnline != $1.isOnline { return $0.isOnline }
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
     }

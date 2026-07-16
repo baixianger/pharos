@@ -256,6 +256,10 @@ struct BrokerSetupOnboardingView: View {
     private func connectSelectedBroker() async {
         guard let selectedBrokerIP,
               let device = tailnetDevices.first(where: { $0.ip == selectedBrokerIP }) else { return }
+        guard device.isOnline else {
+            errorMessage = "\(device.name) is currently offline in Tailscale."
+            return
+        }
         isWorking = true
         errorMessage = nil
         defer { isWorking = false }
@@ -360,7 +364,7 @@ private struct TailnetBrokerPicker: View {
                     Picker("Broker", selection: $selection) {
                         Text("Select a machine…").tag(nil as String?)
                         ForEach(devices) { device in
-                            Text("\(device.name) · \(device.os) · \(device.ip)\(device.isThisMac ? " · This Mac" : "")")
+                            Text("\(device.name) · \(device.os) · \(device.ip)\(device.isThisMac ? " · This Mac" : "")\(device.isOnline ? "" : " · Offline")")
                                 .tag(device.ip as String?)
                         }
                     }
