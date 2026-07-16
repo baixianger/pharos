@@ -9,6 +9,11 @@ struct Playbook: Identifiable, Codable, Hashable {
 
 /// A project Pharos manages. It may live on disk, on GitHub, or both.
 struct Project: Identifiable, Codable, Hashable {
+    private enum CodingKeys: String, CodingKey {
+        case id, name, localPath, githubRemote, tags, yolo, tmux, addedAt
+        case playbooks, notes, issues, updates, milestones, localPaths
+    }
+
     var id: UUID = UUID()
     var name: String
     var localPath: String?      // absolute path; nil for a GitHub-only project
@@ -56,6 +61,27 @@ struct Project: Identifiable, Codable, Hashable {
         updates = try c.decodeIfPresent([ProjectUpdate].self, forKey: .updates) ?? []
         localPaths = try c.decodeIfPresent([String: String].self, forKey: .localPaths) ?? [:]
         milestones = try c.decodeIfPresent([Milestone].self, forKey: .milestones) ?? []
+    }
+
+    /// New portable snapshots omit Host-local path fields entirely. Non-empty
+    /// values are encoded only for explicit legacy/test round trips; production
+    /// persistence calls `HostLocalProjectPaths.captureAndStrip` first.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encodeIfPresent(localPath, forKey: .localPath)
+        try c.encodeIfPresent(githubRemote, forKey: .githubRemote)
+        try c.encode(tags, forKey: .tags)
+        try c.encode(yolo, forKey: .yolo)
+        try c.encode(tmux, forKey: .tmux)
+        try c.encode(addedAt, forKey: .addedAt)
+        try c.encode(playbooks, forKey: .playbooks)
+        try c.encode(notes, forKey: .notes)
+        try c.encode(issues, forKey: .issues)
+        try c.encode(updates, forKey: .updates)
+        try c.encode(milestones, forKey: .milestones)
+        if !localPaths.isEmpty { try c.encode(localPaths, forKey: .localPaths) }
     }
 
     /// Next per-project issue number (#1, #2, …). Based on current issues only;

@@ -363,6 +363,11 @@ final class HostLocalProjectPathTests: XCTestCase {
         XCTAssertNil(store.projects[0].localPath)
         XCTAssertTrue(store.projects[0].localPaths.isEmpty)
         XCTAssertEqual(paths[id.uuidString], "/private/repo")
+        let encoded = try! JSONEncoder().encode(store)
+        let root = try! JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+        let project = (root["projects"] as! [[String: Any]])[0]
+        XCTAssertNil(project["localPath"])
+        XCTAssertNil(project["localPaths"])
     }
 }
 
