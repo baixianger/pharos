@@ -78,6 +78,7 @@ struct ProjectsView: View {
         }
         .listRowInsets(.init(top: 0, leading: PharosDesign.pageInset,
                             bottom: 0, trailing: PharosDesign.pageInset))
+        .listRowSeparator(.hidden)
     }
 
     @ViewBuilder

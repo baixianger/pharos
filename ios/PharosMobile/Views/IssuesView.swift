@@ -26,6 +26,7 @@ struct IssuesView: View {
                             NavigationLink { IssueSummaryView(issue: issue) } label: { IssueIndexRow(issue: issue) }
                                 .listRowInsets(.init(top: 0, leading: PharosDesign.pageInset,
                                                     bottom: 0, trailing: PharosDesign.pageInset))
+                                .listRowSeparator(.hidden)
                         }
                     } header: {
                         PharosSectionTitle(title: group.status.displayName, count: group.issues.count)

@@ -56,7 +56,11 @@ final class AppSettings {
 
     func sshHost(for meshHost: String?) -> SSHHostProfile? {
         guard let meshHost else { return nil }
-        return sshHosts.first { $0.meshHost == meshHost }
+        return SSHHostResolver.profile(forHost: meshHost, tailscaleIP: nil, in: sshHosts)
+    }
+
+    func sshHost(for member: MeshMember) -> SSHHostProfile? {
+        SSHHostResolver.profile(forHost: member.host, tailscaleIP: member.tailscaleIP, in: sshHosts)
     }
 
     private func load() {
@@ -70,5 +74,43 @@ final class AppSettings {
         let value = SyncedConfiguration(mesh: mesh, sshHosts: sshHosts)
         guard let data = try? JSONEncoder().encode(value) else { return }
         UserDefaults.standard.set(data, forKey: Self.storageKey)
+    }
+}
+
+enum SSHHostResolver {
+    static func profile(forHost host: String?, tailscaleIP: String?,
+                        in profiles: [SSHHostProfile]) -> SSHHostProfile? {
+        let host = canonical(host)
+        let tailscaleIP = canonical(tailscaleIP)
+
+        // The Broker's stable agent host identity is authoritative. This is
+        // what the Host picker stores and avoids routing to the wrong machine
+        // when two endpoints happen to share a short DNS label.
+        if let host, let exact = uniqueMatch(in: profiles, where: { canonical($0.meshHost) == host }) {
+            return exact
+        }
+
+        // Older/manual iOS configurations often put the Tailscale IP or
+        // MagicDNS endpoint into Host identity. Accept those aliases too: the
+        // connection still uses the profile's sshHost, never member input.
+        let aliases = Set([host, tailscaleIP].compactMap { $0 })
+        guard !aliases.isEmpty else { return nil }
+        return uniqueMatch(in: profiles) { profile in
+            let configured = [canonical(profile.meshHost), canonical(profile.sshHost)].compactMap { $0 }
+            return configured.contains { aliases.contains($0) }
+        }
+    }
+
+    private static func canonical(_ value: String?) -> String? {
+        guard var value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !value.isEmpty else { return nil }
+        while value.last == "." { value.removeLast() }
+        return value.isEmpty ? nil : value
+    }
+
+    private static func uniqueMatch(in profiles: [SSHHostProfile],
+                                    where predicate: (SSHHostProfile) -> Bool) -> SSHHostProfile? {
+        let matches = profiles.filter(predicate)
+        return matches.count == 1 ? matches[0] : nil
     }
 }

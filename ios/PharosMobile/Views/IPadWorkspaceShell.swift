@@ -318,6 +318,7 @@ private struct IPadProjectsIndex: View {
         .listRowInsets(.init(top: 0, leading: PharosDesign.pageInset,
                             bottom: 0, trailing: PharosDesign.pageInset))
         .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
     }
 
     private var filteredProjects: [RemoteProject] {
@@ -373,6 +374,7 @@ private struct IPadIssuesIndex: View {
                             .listRowInsets(.init(top: 0, leading: PharosDesign.pageInset,
                                                 bottom: 0, trailing: PharosDesign.pageInset))
                             .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
                     }
                 } header: {
                     PharosSectionTitle(title: group.status.displayName, count: group.issues.count)
@@ -454,6 +456,7 @@ private struct IPadAgentsIndex: View {
                             .listRowInsets(.init(top: 0, leading: PharosDesign.pageInset,
                                                 bottom: 0, trailing: PharosDesign.pageInset))
                             .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
                     }
                 } header: {
                     PharosSectionTitle(title: group.host, count: group.members.count)

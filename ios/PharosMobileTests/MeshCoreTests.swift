@@ -47,6 +47,34 @@ struct MeshCoreTests {
         #expect(command.contains("tmux -S '/private/tmp/tmux-501/agent'"))
         #expect(command.contains("esc to interrupt"))
         #expect(command.contains("pharos mesh recv codex --member 019f-test"))
+        #expect(command.contains("Enter || exit 36"))
+    }
+
+    @Test func pokeCommandFailureExplainsLostPane() {
+        let message = TmuxPokeError.remoteCommandFailed(36).errorDescription
+        #expect(message?.contains("recorded tmux pane") == true)
+        #expect(!message!.contains("Citadel"))
+    }
+
+    @Test func hostResolverUsesStableAgentIdentity() {
+        let expected = SSHHostProfile(meshHost: "home-ts", sshHost: "100.64.0.8", username: "pai")
+        let other = SSHHostProfile(meshHost: "mac-mini", sshHost: "100.64.0.9", username: "pai")
+        #expect(SSHHostResolver.profile(forHost: "HOME-TS", tailscaleIP: "100.64.0.8",
+                                        in: [other, expected])?.id == expected.id)
+    }
+
+    @Test func hostResolverAcceptsTailscaleEndpointAlias() {
+        let expected = SSHHostProfile(meshHost: "100.64.0.8", sshHost: "home-ts.tailnet.ts.net",
+                                      username: "pai")
+        #expect(SSHHostResolver.profile(forHost: "home-ts", tailscaleIP: "100.64.0.8",
+                                        in: [expected])?.id == expected.id)
+    }
+
+    @Test func hostResolverRejectsAmbiguousEndpointAliases() {
+        let one = SSHHostProfile(meshHost: "one", sshHost: "100.64.0.8", username: "pai")
+        let two = SSHHostProfile(meshHost: "two", sshHost: "100.64.0.8", username: "pai")
+        #expect(SSHHostResolver.profile(forHost: "unknown", tailscaleIP: "100.64.0.8",
+                                        in: [one, two]) == nil)
     }
 
     @Test func rosterAcceptsSameNickInMultipleRooms() {

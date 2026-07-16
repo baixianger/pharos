@@ -49,6 +49,7 @@ struct AgentsView: View {
                             NavigationLink { AgentDetailView(member: member) } label: { AgentRow(member: member) }
                                 .listRowInsets(.init(top: 0, leading: PharosDesign.pageInset,
                                                     bottom: 0, trailing: PharosDesign.pageInset))
+                                .listRowSeparator(.hidden)
                         }
                     } header: {
                         PharosSectionTitle(title: group.host, count: group.members.count)

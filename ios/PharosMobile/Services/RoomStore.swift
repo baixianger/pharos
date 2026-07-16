@@ -325,8 +325,9 @@ final class RoomStore {
         var results: [String] = []
         for member in targets {
             guard MeshSessionState(rawValue: member.state ?? "")?.isPokeCandidate == true else { continue }
-            guard let profile = settings.sshHost(for: member.host) else {
-                results.append("@\(member.nick): delivered; no SSH mapping for \(member.host ?? "unknown host")")
+            guard let profile = settings.sshHost(for: member) else {
+                let identity = member.host ?? member.tailscaleIP ?? "unknown host"
+                results.append("@\(member.nick): delivered; no SSH mapping for \(identity)")
                 continue
             }
             guard let identityID = profile.identityID,

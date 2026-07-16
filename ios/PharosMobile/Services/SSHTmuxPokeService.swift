@@ -8,6 +8,7 @@ enum TmuxPokeError: LocalizedError {
     case missingHost
     case unverifiedHostKey
     case missingIdentity
+    case remoteCommandFailed(Int)
 
     var errorDescription: String? {
         switch self {
@@ -15,6 +16,19 @@ enum TmuxPokeError: LocalizedError {
         case .missingHost: "No SSH host mapping exists for this agent's machine."
         case .unverifiedHostKey: "Confirm the SSH host-key risk in Settings before poking."
         case .missingIdentity: "Choose a device-local SSH identity for this host."
+        case .remoteCommandFailed(let code): Self.remoteFailureDescription(code)
+        }
+    }
+
+    private static func remoteFailureDescription(_ code: Int) -> String {
+        switch code {
+        case 31: "The agent's tmux server or pane is unavailable. Update Pharos on that Host and rejoin the room."
+        case 32: "That tmux pane no longer runs the expected coding agent. Rejoin the agent from its current pane."
+        case 33: "Pharos could not read the agent's tmux pane. Check the Host's SSH user and tmux ownership."
+        case 34: "The agent is working or waiting for approval, so Pharos did not interrupt it."
+        case 35: "The agent's composer is not idle yet, so Pharos did not send the poke."
+        case 36: "The recorded tmux pane can no longer receive input. Rejoin the room from the agent's current pane."
+        default: "The Host rejected the poke command (exit \(code)). Check the SSH user and rejoin the agent."
         }
     }
 }
@@ -39,9 +53,9 @@ enum TmuxPokeCommand {
         view=$(\(tmux) capture-pane -p -t '\(paneID)' 2>/dev/null) || exit 33
         printf '%s' "$view" | grep -Eqi 'esc to interrupt|working|do you want to proceed|enter to confirm|esc to cancel' && exit 34
         printf '%s' "$view" | grep -Eq '❯|›' || exit 35
-        \(tmux) send-keys -t '\(paneID)' -l -- '\(message)'
+        \(tmux) send-keys -t '\(paneID)' -l -- '\(message)' || exit 36
         sleep 0.35
-        \(tmux) send-keys -t '\(paneID)' Enter
+        \(tmux) send-keys -t '\(paneID)' Enter || exit 36
         printf 'POKED'
         """
     }
@@ -71,6 +85,9 @@ actor SSHTmuxPokeService {
         do {
             _ = try await client.executeCommand(command, maxResponseSize: 64 * 1024, mergeStreams: true)
             try? await client.close()
+        } catch let error as SSHClient.CommandFailed {
+            try? await client.close()
+            throw TmuxPokeError.remoteCommandFailed(error.exitCode)
         } catch {
             try? await client.close()
             throw error
