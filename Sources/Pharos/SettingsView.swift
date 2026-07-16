@@ -156,7 +156,6 @@ private struct MachinesSettingsTab: View {
     @State private var brokerStatus: BrokerConnectionStatus = .unchecked
     @State private var advertisedEndpoint: String?
     @State private var showsPairingAssistant = false
-    @State private var showsBrokerSetup = false
 
     var body: some View {
         @Bindable var store = store
@@ -198,9 +197,6 @@ private struct MachinesSettingsTab: View {
                     showsPairingAssistant = true
                 }
                 .disabled(advertisedEndpoint == nil || brokerStatus.isChecking)
-                Button("Change Broker…", systemImage: "arrow.triangle.2.circlepath") {
-                    showsBrokerSetup = true
-                }
                 Text("The Broker coordinates rooms, messages, presence, replies, and attachments. It does not execute agent commands; execution machines are configured under Hosts.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -221,12 +217,6 @@ private struct MachinesSettingsTab: View {
             if let advertisedEndpoint {
                 PairDeviceSheet(endpoint: advertisedEndpoint)
             }
-        }
-        .sheet(isPresented: $showsBrokerSetup) {
-            BrokerSetupOnboardingView {
-                showsBrokerSetup = false
-            }
-            .environment(store)
         }
     }
 
