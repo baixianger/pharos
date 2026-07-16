@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Open work across the registry, grouped by workflow state instead of by card.
 struct IssuesView: View {
@@ -8,6 +9,7 @@ struct IssuesView: View {
     @State private var loading = false
     @State private var loadError: String?
     @State private var filter: IssueFilter = .all
+    @State private var showingNewIssue = false
 
     var body: some View {
         NavigationStack {
@@ -33,17 +35,30 @@ struct IssuesView: View {
             .pharosPlainList()
             .overlay { stateOverlay }
             .navigationTitle("Issues")
-            .navigationBarTitleDisplayMode(.large)
+            .toolbarTitleDisplayMode(.inlineLarge)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { showingNewIssue = true } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("Add issue")
                     Menu {
                         Picker("Filter", selection: $filter) {
                             ForEach(IssueFilter.allCases) { Text($0.title).tag($0) }
                         }
+                        Divider()
+                        Button { Task { await load() } } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
                     } label: {
-                        Image(systemName: "line.3.horizontal.decrease")
+                        Image(systemName: "ellipsis")
                     }
                     .accessibilityLabel("Issue display options")
+                }
+            }
+            .sheet(isPresented: $showingNewIssue) {
+                NewIssueView {
+                    Task { await load() }
                 }
             }
             .task { await load() }
@@ -123,6 +138,87 @@ struct IssuesView: View {
     }
 }
 
+private struct NewIssueView: View {
+    @Environment(RoomStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @State private var projects: [RemoteProject] = []
+    @State private var selectedProject = ""
+    @State private var title = ""
+    @State private var loadingProjects = true
+    @State private var saving = false
+    let onCreated: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Issue") {
+                    Picker("Project", selection: $selectedProject) {
+                        if projects.isEmpty {
+                            Text(loadingProjects ? "Loading projects…" : "No projects available")
+                                .tag("")
+                        } else {
+                            ForEach(projects) { project in
+                                Text(project.name).tag(project.name)
+                            }
+                        }
+                    }
+                    TextField("Issue title", text: $title, axis: .vertical)
+                        .lineLimit(2...5)
+                }
+
+                Section {
+                    LabeledContent("Status", value: "Todo")
+                    LabeledContent("Priority", value: "No priority")
+                } footer: {
+                    Text("Open the issue after creating it to add context, labels, and priority.")
+                }
+
+                if let error = store.error {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .pharosPlainList()
+            .navigationTitle("New issue")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(saving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(saving ? "Adding…" : "Add") { Task { await save() } }
+                        .disabled(selectedProject.isEmpty
+                                  || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                  || saving)
+                }
+            }
+            .interactiveDismissDisabled(saving)
+            .task { await loadProjects() }
+        }
+    }
+
+    private func loadProjects() async {
+        loadingProjects = true
+        defer { loadingProjects = false }
+        projects = (await store.fetchProjectsOverMesh() ?? [])
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        if selectedProject.isEmpty { selectedProject = projects.first?.name ?? "" }
+    }
+
+    private func save() async {
+        saving = true
+        let succeeded = await store.addIssue(to: selectedProject, title: title)
+        saving = false
+        if succeeded {
+            onCreated()
+            dismiss()
+        }
+    }
+}
+
 private enum IssueFilter: String, CaseIterable, Identifiable {
     case all, active, backlog
     var id: String { rawValue }
@@ -135,7 +231,7 @@ private enum IssueFilter: String, CaseIterable, Identifiable {
     }
 }
 
-private enum IssueWorkflowState: Hashable {
+enum IssueWorkflowState: Hashable {
     case blocked, inProgress, review, todo, backlog, other(String)
 
     init(_ raw: String) {
@@ -222,22 +318,222 @@ private struct IssueIndexRow: View {
 }
 
 private struct IssueSummaryView: View {
-    let issue: RemoteIssue
+    @Environment(RoomStore.self) private var store
+    @State private var issue: RemoteIssue
+    @State private var showingEditor = false
+
+    init(issue: RemoteIssue) {
+        _issue = State(initialValue: issue)
+    }
 
     var body: some View {
         List {
             Section {
-                Text(issue.title).font(.title3.weight(.semibold))
-                LabeledContent("Project", value: issue.project)
-                LabeledContent("Issue", value: "#\(issue.number)")
-                LabeledContent("Status", value: IssueWorkflowState(issue.status).displayName)
-                if !issue.priority.isEmpty, issue.priority != "none" {
-                    LabeledContent("Priority", value: issue.priority.capitalized)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("\(issue.project.uppercased())-\(issue.number)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text(issue.title)
+                        .font(.title.bold())
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if !issue.labels.isEmpty { LabeledContent("Labels", value: issue.labels.joined(separator: ", ")) }
+                .listRowSeparator(.hidden)
+            }
+
+            Section("Properties") {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        IssuePropertyChip(title: IssueWorkflowState(issue.status).displayName,
+                                          symbol: IssueWorkflowState(issue.status).symbol,
+                                          tint: .accentColor)
+                        if !issue.priority.isEmpty, issue.priority != "none" {
+                            IssuePropertyChip(title: issue.priority.capitalized,
+                                              symbol: issue.priority.lowercased() == "urgent" ? "exclamationmark" : "chart.bar")
+                        }
+                        IssuePropertyChip(title: issue.project, symbol: "cube")
+                        ForEach(issue.labels, id: \.self) { label in
+                            IssuePropertyChip(title: label, symbol: "tag")
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+                .listRowInsets(.init(top: 8, leading: PharosDesign.pageInset, bottom: 8, trailing: 0))
+            }
+
+            Section("Context") {
+                if issue.body.isEmpty {
+                    Text("No description yet. Tap Edit to add context.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    StableMarkdownView(content: issue.body)
+                }
+            }
+
+            if let session = issue.activeSession {
+                Section("Active agent") {
+                    Label(session, systemImage: "bolt.horizontal.circle")
+                }
             }
         }
-        .navigationTitle("\(issue.project)-\(issue.number)")
+        .pharosPlainList()
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button { showingEditor = true } label: {
+                    Image(systemName: "square.and.pencil")
+                }
+                .accessibilityLabel("Edit issue")
+                Menu {
+                    Button { Task { await reload() } } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    Button {
+                        UIPasteboard.general.string = "\(issue.project)-\(issue.number)"
+                    } label: {
+                        Label("Copy issue ID", systemImage: "doc.on.doc")
+                    }
+                    Button {
+                        UIPasteboard.general.string = issue.title
+                    } label: {
+                        Label("Copy title", systemImage: "text.quote")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .accessibilityLabel("More issue actions")
+            }
+        }
+        .sheet(isPresented: $showingEditor) {
+            IssueEditorView(issue: issue) { updated in
+                issue = updated
+            }
+        }
+    }
+
+    private func reload() async {
+        guard let issues = await store.fetchIssuesOverMesh(),
+              let updated = issues.first(where: { $0.id == issue.id }) else { return }
+        issue = updated
+    }
+}
+
+private extension IssueWorkflowState {
+    var symbol: String {
+        switch self {
+        case .blocked: "exclamationmark.octagon"
+        case .inProgress: "circle.lefthalf.filled"
+        case .review: "eye.circle"
+        case .todo: "circle"
+        case .backlog: "circle.dashed"
+        case .other: "circle"
+        }
+    }
+}
+
+private struct IssuePropertyChip: View {
+    let title: String
+    let symbol: String
+    var tint: Color = .secondary
+
+    var body: some View {
+        Label(title, systemImage: symbol)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(PharosDesign.secondaryBackground, in: .capsule)
+    }
+}
+
+private struct IssueEditorView: View {
+    @Environment(RoomStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let issue: RemoteIssue
+    let onSaved: (RemoteIssue) -> Void
+    @State private var title: String
+    @State private var bodyText: String
+    @State private var status: String
+    @State private var priority: String
+    @State private var labels: String
+    @State private var saving = false
+
+    init(issue: RemoteIssue, onSaved: @escaping (RemoteIssue) -> Void) {
+        self.issue = issue
+        self.onSaved = onSaved
+        _title = State(initialValue: issue.title)
+        _bodyText = State(initialValue: issue.body)
+        _status = State(initialValue: issue.status.isEmpty ? "todo" : issue.status)
+        _priority = State(initialValue: issue.priority.isEmpty ? "none" : issue.priority)
+        _labels = State(initialValue: issue.labels.joined(separator: ", "))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Issue") {
+                    TextField("Title", text: $title, axis: .vertical)
+                        .lineLimit(2...5)
+                    TextField("Context", text: $bodyText, axis: .vertical)
+                        .lineLimit(5...14)
+                }
+                Section("Properties") {
+                    Picker("Status", selection: $status) {
+                        Text("Backlog").tag("backlog")
+                        Text("Todo").tag("todo")
+                        Text("In progress").tag("in_progress")
+                        Text("Done").tag("done")
+                        Text("Canceled").tag("canceled")
+                    }
+                    Picker("Priority", selection: $priority) {
+                        Text("No priority").tag("none")
+                        Text("Low").tag("low")
+                        Text("Medium").tag("medium")
+                        Text("High").tag("high")
+                        Text("Urgent").tag("urgent")
+                    }
+                    TextField("Labels, separated by commas", text: $labels)
+                }
+                if let error = store.error {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .pharosPlainList()
+            .navigationTitle("Edit issue")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.disabled(saving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(saving ? "Saving…" : "Save") { Task { await save() } }
+                        .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
+                }
+            }
+            .interactiveDismissDisabled(saving)
+        }
+    }
+
+    private func save() async {
+        saving = true
+        let parsedLabels = labels.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let succeeded = await store.updateIssue(issue, title: title, body: bodyText,
+                                                status: status, priority: priority,
+                                                labels: parsedLabels)
+        saving = false
+        if succeeded {
+            onSaved(RemoteIssue(project: issue.project, number: issue.number,
+                                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                                status: status, priority: priority, labels: parsedLabels,
+                                body: bodyText.trimmingCharacters(in: .whitespacesAndNewlines),
+                                activeSession: issue.activeSession))
+            dismiss()
+        }
     }
 }

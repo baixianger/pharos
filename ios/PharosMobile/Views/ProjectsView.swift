@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Registry projects presented as a quiet, status-first Linear-style index.
 /// Project data comes only from the Broker, with a device-local offline cache.
@@ -9,6 +10,7 @@ struct ProjectsView: View {
     @State private var loading = false
     @State private var loadError: String?
     @State private var filter: ProjectFilter = .all
+    @State private var showingNewProject = false
 
     var body: some View {
         NavigationStack {
@@ -39,17 +41,30 @@ struct ProjectsView: View {
             .pharosPlainList()
             .overlay { stateOverlay }
             .navigationTitle("Projects")
-            .navigationBarTitleDisplayMode(.large)
+            .toolbarTitleDisplayMode(.inlineLarge)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { showingNewProject = true } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("Add project")
                     Menu {
                         Picker("Filter", selection: $filter) {
                             ForEach(ProjectFilter.allCases) { Text($0.title).tag($0) }
                         }
+                        Divider()
+                        Button { Task { await load() } } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
                     } label: {
-                        Image(systemName: "line.3.horizontal.decrease")
+                        Image(systemName: "ellipsis")
                     }
                     .accessibilityLabel("Project display options")
+                }
+            }
+            .sheet(isPresented: $showingNewProject) {
+                NewProjectView {
+                    Task { await load() }
                 }
             }
             .task { await load() }
@@ -79,6 +94,7 @@ struct ProjectsView: View {
                 Text(emptyDescription)
             } actions: {
                 if loadError != nil { Button("Try again") { Task { await load() } } }
+                else if filter != .active { Button("Add project") { showingNewProject = true } }
             }
         }
     }
@@ -128,6 +144,76 @@ struct ProjectsView: View {
             return
         }
         loadError = "The Broker is unavailable and no project cache exists yet."
+    }
+}
+
+private struct NewProjectView: View {
+    @Environment(RoomStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var githubRemote = ""
+    @State private var notes = ""
+    @State private var tags = ""
+    @State private var saving = false
+    let onCreated: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Project") {
+                    TextField("Name", text: $name)
+                    TextField("Git remote (optional)", text: $githubRemote)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                Section("Description") {
+                    TextField("What is this project for?", text: $notes, axis: .vertical)
+                        .lineLimit(3...8)
+                }
+                Section {
+                    TextField("personal, ios, tools", text: $tags)
+                        .textInputAutocapitalization(.never)
+                } header: {
+                    Text("Tags")
+                } footer: {
+                    Text("Separate tags with commas. Checkout paths are configured separately on each Host.")
+                }
+                if let error = store.error {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .pharosPlainList()
+            .navigationTitle("New project")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(saving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(saving ? "Adding…" : "Add") { Task { await save() } }
+                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
+                }
+            }
+            .interactiveDismissDisabled(saving)
+        }
+    }
+
+    private func save() async {
+        saving = true
+        let parsedTags = tags.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let succeeded = await store.addProject(name: name, githubRemote: githubRemote,
+                                               notes: notes, tags: parsedTags)
+        saving = false
+        if succeeded {
+            onCreated()
+            dismiss()
+        }
     }
 }
 
@@ -183,30 +269,306 @@ private struct ProjectRow: View {
 }
 
 private struct ProjectSummaryView: View {
+    @Environment(RoomStore.self) private var store
+    @State private var project: RemoteProject
+    let agents: [MeshMember]
+    @State private var tab: ProjectDetailTab = .overview
+    @State private var showingNewIssue = false
+
+    init(project: RemoteProject, agents: [MeshMember]) {
+        _project = State(initialValue: project)
+        self.agents = agents
+    }
+
+    var body: some View {
+        List {
+            Section {
+                ProjectDetailHeader(project: project, activeAgentCount: agents.count)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(.init(top: 8, leading: PharosDesign.pageInset,
+                                        bottom: 8, trailing: PharosDesign.pageInset))
+                PharosFilterStrip(options: ProjectDetailTab.allCases.map { ($0, $0.title) }, selection: $tab)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(.init())
+            }
+
+            switch tab {
+            case .overview:
+                ProjectOverviewSections(project: project, agents: agents)
+            case .activity:
+                ProjectActivitySections(project: project, agents: agents)
+            case .issues:
+                ProjectIssuesSection(issues: project.issues)
+            }
+        }
+        .pharosPlainList()
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button { showingNewIssue = true } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("Add issue")
+                Menu {
+                    Button { Task { await reload() } } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    Button {
+                        UIPasteboard.general.string = project.name
+                    } label: {
+                        Label("Copy project name", systemImage: "doc.on.doc")
+                    }
+                    if let remote = project.githubRemote {
+                        Button {
+                            UIPasteboard.general.string = remote
+                        } label: {
+                            Label("Copy Git remote", systemImage: "link")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .accessibilityLabel("More project actions")
+            }
+        }
+        .sheet(isPresented: $showingNewIssue) {
+            NewProjectIssueView(projectName: project.name) {
+                Task { await reload() }
+            }
+        }
+    }
+
+    private func reload() async {
+        guard let projects = await store.fetchProjectsOverMesh(),
+              let updated = projects.first(where: { $0.name == project.name }) else { return }
+        project = updated
+    }
+}
+
+private enum ProjectDetailTab: String, CaseIterable, Identifiable {
+    case overview, activity, issues
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+}
+
+private struct ProjectDetailHeader: View {
+    let project: RemoteProject
+    let activeAgentCount: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text(project.name)
+                    .font(.title.bold())
+                    .lineLimit(2)
+            }
+            Text(summary)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var summary: String {
+        if !project.notes.isEmpty { return project.notes }
+        if activeAgentCount > 0 {
+            return activeAgentCount == 1 ? "One agent is working on this project." : "\(activeAgentCount) agents are working on this project."
+        }
+        return "Project details, activity, and issues from your Broker registry."
+    }
+}
+
+private struct ProjectOverviewSections: View {
     let project: RemoteProject
     let agents: [MeshMember]
 
     var body: some View {
-        List {
-            Section("Project") {
-                LabeledContent("Name", value: project.name)
-                if let path = project.localPath {
-                    LabeledContent("Path", value: (path as NSString).abbreviatingWithTildeInPath)
+        Section("Properties") {
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    ProjectPropertyChip(title: agents.isEmpty ? "Available" : "In progress",
+                                        symbol: agents.isEmpty ? "circle" : "circle.lefthalf.filled",
+                                        tint: agents.isEmpty ? .secondary : .accentColor)
+                    ProjectPropertyChip(title: "\(project.issues.filter { IssueWorkflowState($0.status).isOpen }.count) open",
+                                        symbol: "checklist")
+                    ForEach(project.tags, id: \.self) { tag in
+                        ProjectPropertyChip(title: tag, symbol: "tag")
+                    }
                 }
-                if let remote = project.githubRemote { LabeledContent("Git remote", value: remote) }
-                if !project.tags.isEmpty { LabeledContent("Tags", value: project.tags.joined(separator: ", ")) }
             }
-            Section("Live agents") {
-                if agents.isEmpty {
-                    Text("No agent currently reports this project.").foregroundStyle(.secondary)
-                } else {
-                    ForEach(agents) { member in
+            .scrollIndicators(.hidden)
+            .listRowInsets(.init(top: 8, leading: PharosDesign.pageInset,
+                                bottom: 8, trailing: 0))
+        }
+
+        Section("Description") {
+            Text(project.notes.isEmpty ? "Add a description from Pharos on Mac or when creating the project." : project.notes)
+                .foregroundStyle(project.notes.isEmpty ? .secondary : .primary)
+        }
+
+        Section("Project information") {
+            if let path = project.localPath {
+                LabeledContent("Path", value: (path as NSString).abbreviatingWithTildeInPath)
+            } else {
+                LabeledContent("Checkout", value: "Not on this Host")
+            }
+            if let remote = project.githubRemote {
+                LabeledContent("Git remote", value: remote)
+            }
+            LabeledContent("Issues", value: "\(project.issues.count)")
+            LabeledContent("Updates", value: "\(project.updates.count)")
+        }
+
+        Section("Live agents") {
+            if agents.isEmpty {
+                Text("No agent currently reports this project.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(agents) { member in
+                    LabeledContent {
+                        Text((member.state ?? "online").capitalized)
+                            .foregroundStyle(.secondary)
+                    } label: {
                         Label("@\(member.nick)", systemImage: AgentStatus.icon(member.kind))
                     }
                 }
             }
         }
-        .navigationTitle(project.name)
-        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct ProjectPropertyChip: View {
+    let title: String
+    let symbol: String
+    var tint: Color = .secondary
+
+    var body: some View {
+        Label(title, systemImage: symbol)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(PharosDesign.secondaryBackground, in: .capsule)
+    }
+}
+
+private struct ProjectActivitySections: View {
+    let project: RemoteProject
+    let agents: [MeshMember]
+
+    var body: some View {
+        Section("Recent activity") {
+            ForEach(agents) { member in
+                Label("@\(member.nick) is \((member.state ?? "online").lowercased())", systemImage: "bolt.horizontal.circle")
+            }
+            ForEach(project.updates) { update in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(update.body)
+                    Text(update.issueNumber.map { "Issue #\($0) · \(update.kind.capitalized)" } ?? update.kind.capitalized)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if agents.isEmpty && project.updates.isEmpty {
+                ContentUnavailableView("No activity yet", systemImage: "clock.arrow.circlepath",
+                                       description: Text("Agent presence and project updates will appear here."))
+            }
+        }
+    }
+}
+
+private struct ProjectIssuesSection: View {
+    let issues: [RemoteIssue]
+
+    var body: some View {
+        Section("Issues") {
+            if issues.isEmpty {
+                ContentUnavailableView("No issues", systemImage: "checklist",
+                                       description: Text("Use + to create the first issue."))
+            } else {
+                ForEach(issues.sorted { $0.number > $1.number }) { issue in
+                    HStack(spacing: 10) {
+                        PharosStatusGlyph(kind: IssueWorkflowState(issue.status).glyph, size: 22)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(issue.title)
+                                .font(.body.weight(.medium))
+                            Text("#\(issue.number) · \(IssueWorkflowState(issue.status).displayName)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 3)
+                }
+            }
+        }
+    }
+}
+
+private struct NewProjectIssueView: View {
+    @Environment(RoomStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let projectName: String
+    let onCreated: () -> Void
+    @State private var title = ""
+    @State private var saving = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Issue") {
+                    TextField("Issue title", text: $title, axis: .vertical)
+                        .lineLimit(2...5)
+                }
+                Section {
+                    LabeledContent("Project", value: projectName)
+                    LabeledContent("Status", value: "Todo")
+                }
+                if let error = store.error {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .pharosPlainList()
+            .navigationTitle("New issue")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.disabled(saving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(saving ? "Adding…" : "Add") { Task { await save() } }
+                        .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
+                }
+            }
+            .interactiveDismissDisabled(saving)
+        }
+    }
+
+    private func save() async {
+        saving = true
+        let succeeded = await store.addIssue(to: projectName, title: title)
+        saving = false
+        if succeeded {
+            onCreated()
+            dismiss()
+        }
+    }
+}
+
+private extension IssueWorkflowState {
+    var isOpen: Bool {
+        switch self {
+        case .other(let raw): !["done", "canceled", "cancelled"].contains(raw.lowercased())
+        default: true
+        }
     }
 }

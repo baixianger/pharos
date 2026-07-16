@@ -2,23 +2,11 @@ import SwiftUI
 
 struct RoomListView: View {
     @Environment(RoomStore.self) private var store
-    @Environment(AppSettings.self) private var settings
     @Binding var selection: String?
     @State private var search = ""
 
     var body: some View {
         List(selection: $selection) {
-            Section {
-                BrokerConnectionRow(
-                    target: settings.mesh.host.isEmpty ? nil : "\(settings.mesh.host):\(settings.mesh.port)",
-                    isChecking: store.isRefreshing,
-                    error: store.error
-                )
-                .listRowInsets(.init(top: 8, leading: PharosDesign.pageInset,
-                                    bottom: 8, trailing: PharosDesign.pageInset))
-                .listRowSeparator(.hidden)
-            }
-
             if !filteredRooms.isEmpty {
                 Section {
                     ForEach(filteredRooms) { room in
@@ -47,7 +35,7 @@ struct RoomListView: View {
             if store.isRefreshing && store.rooms.isEmpty {
                 PharosSkeletonRows(count: 5)
                     .frame(maxHeight: .infinity, alignment: .top)
-                    .padding(.top, 62)
+                    .padding(.top, 8)
                     .background(PharosDesign.pageBackground)
             } else if store.rooms.isEmpty {
                 ContentUnavailableView {
@@ -69,47 +57,6 @@ struct RoomListView: View {
     private var filteredRooms: [MeshRoom] {
         guard !search.isEmpty else { return store.rooms }
         return store.rooms.filter { $0.name.localizedCaseInsensitiveContains(search) }
-    }
-}
-
-private struct BrokerConnectionRow: View {
-    let target: String?
-    let isChecking: Bool
-    let error: String?
-
-    var body: some View {
-        HStack(spacing: 10) {
-            if isChecking {
-                ProgressView().controlSize(.small)
-            } else {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 9, height: 9)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(statusTitle).font(.subheadline.weight(.semibold))
-                Text(target ?? "Configure a Broker in Settings")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer()
-            Image(systemName: error == nil && target != nil ? "checkmark" : "exclamationmark")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(statusColor)
-        }
-        .padding(.vertical, 8)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var statusTitle: String {
-        if isChecking { return "Checking Broker…" }
-        if error != nil { return "Broker not connected" }
-        return target == nil ? "Broker not configured" : "Broker connected"
-    }
-
-    private var statusColor: Color {
-        error == nil && target != nil ? .green : .orange
     }
 }
 

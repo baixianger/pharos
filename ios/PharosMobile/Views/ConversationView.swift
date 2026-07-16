@@ -25,8 +25,16 @@ struct ConversationView: View {
             if let error = store.error { errorBar(error) }
         }
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
         .toolbar { channelToolbar }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+        .onAppear { draft = MobileRoomDraftCache.draft(for: store.selectedRoom) }
+        .onChange(of: store.selectedRoom) { _, room in
+            draft = MobileRoomDraftCache.draft(for: room)
+        }
+        .onChange(of: draft) { _, nextDraft in
+            MobileRoomDraftCache.save(nextDraft, for: store.selectedRoom)
+        }
         .sheet(item: $destination) { destination in
             if let room = store.selectedRoom {
                 switch destination {
@@ -352,6 +360,25 @@ struct ConversationView: View {
             Button("Retry") { Task { await store.refresh() } }.font(.caption.weight(.semibold))
         }
         .padding(10).background(.red.opacity(0.08))
+    }
+}
+
+/// Device-local room drafts survive tab switches and app relaunches without
+/// turning unfinished text into synchronized Broker data.
+private enum MobileRoomDraftCache {
+    private static let defaultsKey = "pharos.mobile.roomDrafts.v1"
+
+    static func draft(for room: String?) -> String {
+        guard let room, !room.isEmpty else { return "" }
+        return (UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String])?[room] ?? ""
+    }
+
+    static func save(_ draft: String, for room: String?) {
+        guard let room, !room.isEmpty else { return }
+        var drafts = UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String] ?? [:]
+        if draft.isEmpty { drafts.removeValue(forKey: room) }
+        else { drafts[room] = draft }
+        UserDefaults.standard.set(drafts, forKey: defaultsKey)
     }
 }
 

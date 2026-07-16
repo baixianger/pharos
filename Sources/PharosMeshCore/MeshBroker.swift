@@ -996,7 +996,9 @@ public final class MeshBroker: @unchecked Sendable {
                             "title": issue["title"] as? String ?? "Untitled",
                             "status": status,
                             "priority": issue["priority"] as? String ?? "none",
-                            "labels": issue["labels"] as? [String] ?? []])
+                            "labels": issue["labels"] as? [String] ?? [],
+                            "body": issue["body"] as? String ?? "",
+                            "activeSession": issue["activeSession"] as? String ?? ""])
             }
         }
         return Self.jsonString(["issues": out]) ?? #"{"issues":[]}"#

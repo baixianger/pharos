@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The full-app shell: a bottom tab bar over Projects, Agents, Chat and Settings.
 /// Owns the single `who`/`list` poll so every tab (not just Chat) shows live
@@ -16,8 +17,14 @@ struct MainTabView: View {
     var body: some View {
         TabView(selection: $selection) {
             ForEach(AppTab.allCases) { tab in
-                Tab(tab.title, systemImage: tab.symbol, value: tab) {
+                Tab(value: tab) {
                     tab.content
+                } label: {
+                    Label {
+                        Text(tab.title)
+                    } icon: {
+                        FixedOutlineTabIcon(systemName: tab.symbol)
+                    }
                 }
             }
         }
@@ -43,6 +50,20 @@ struct MainTabView: View {
     }
 }
 
+/// `TabView` automatically substitutes filled SF Symbol variants for selected
+/// tabs, even when the label asks for `.none`. Resolve the base glyph to a
+/// template image first so selection can tint it without changing its shape.
+private struct FixedOutlineTabIcon: View {
+    let systemName: String
+
+    var body: some View {
+        if let image = UIImage(systemName: systemName) {
+            Image(uiImage: image)
+                .renderingMode(.template)
+        }
+    }
+}
+
 private enum AppTab: String, CaseIterable, Identifiable {
     case projects, issues, agents, chat, settings
 
@@ -60,9 +81,9 @@ private enum AppTab: String, CaseIterable, Identifiable {
 
     var symbol: String {
         switch self {
-        case .projects: "cube"
-        case .issues: "circle.lefthalf.filled"
-        case .agents: "terminal"
+        case .projects: "folder"
+        case .issues: "checklist"
+        case .agents: "chevron.left.forwardslash.chevron.right"
         case .chat: "bubble.left.and.bubble.right"
         case .settings: "gearshape"
         }

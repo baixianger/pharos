@@ -177,6 +177,130 @@ final class RoomStore {
         return RemoteAgentService.parseIssues(payload)
     }
 
+    /// Add a portable project directly to the Broker-owned registry. Host paths
+    /// remain host-local and are intentionally not accepted from iOS.
+    func addProject(name: String, githubRemote: String?, notes: String, tags: [String]) async -> Bool {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return false }
+        return await mutateRegistry { root in
+            var projects = root["projects"] as? [[String: Any]] ?? []
+            guard !projects.contains(where: {
+                ($0["name"] as? String)?.localizedCaseInsensitiveCompare(trimmedName) == .orderedSame
+            }) else {
+                throw RegistryMutationError.message("A project named \(trimmedName) already exists.")
+            }
+            var project: [String: Any] = [
+                "id": UUID().uuidString,
+                "name": trimmedName,
+                "tags": tags,
+                "notes": notes.trimmingCharacters(in: .whitespacesAndNewlines),
+                "yolo": true,
+                "tmux": false,
+                "playbooks": [],
+                "issues": [],
+                "updates": [],
+                "milestones": []
+            ]
+            if let remote = githubRemote?.trimmingCharacters(in: .whitespacesAndNewlines), !remote.isEmpty {
+                project["githubRemote"] = remote
+            }
+            projects.append(project)
+            root["projects"] = projects
+        }
+    }
+
+    func addIssue(to projectName: String, title: String) async -> Bool {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return await mutateRegistry { root in
+            var projects = root["projects"] as? [[String: Any]] ?? []
+            guard let index = projects.firstIndex(where: {
+                ($0["name"] as? String)?.localizedCaseInsensitiveCompare(projectName) == .orderedSame
+            }) else {
+                throw RegistryMutationError.message("Project not found. Reload and try again.")
+            }
+            var issues = projects[index]["issues"] as? [[String: Any]] ?? []
+            let nextNumber = (issues.compactMap { $0["number"] as? Int }.max() ?? 0) + 1
+            issues.append([
+                "id": UUID().uuidString,
+                "number": nextNumber,
+                "title": trimmed,
+                "status": "todo",
+                "priority": "none",
+                "body": "",
+                "labels": [],
+                "attachments": [],
+                "relations": [],
+                "sortOrder": Double(issues.count)
+            ])
+            projects[index]["issues"] = issues
+            root["projects"] = projects
+        }
+    }
+
+    func updateIssue(_ issue: RemoteIssue, title: String, body: String,
+                     status: String, priority: String, labels: [String]) async -> Bool {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return false }
+        return await mutateRegistry { root in
+            var projects = root["projects"] as? [[String: Any]] ?? []
+            guard let projectIndex = projects.firstIndex(where: {
+                ($0["name"] as? String)?.localizedCaseInsensitiveCompare(issue.project) == .orderedSame
+            }) else {
+                throw RegistryMutationError.message("Project not found. Reload and try again.")
+            }
+            var issues = projects[projectIndex]["issues"] as? [[String: Any]] ?? []
+            guard let issueIndex = issues.firstIndex(where: { $0["number"] as? Int == issue.number }) else {
+                throw RegistryMutationError.message("Issue not found. Reload and try again.")
+            }
+            issues[issueIndex]["title"] = trimmedTitle
+            issues[issueIndex]["body"] = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            issues[issueIndex]["status"] = status
+            issues[issueIndex]["priority"] = priority
+            issues[issueIndex]["labels"] = labels
+            projects[projectIndex]["issues"] = issues
+            root["projects"] = projects
+        }
+    }
+
+    private func mutateRegistry(_ mutation: (inout [String: Any]) throws -> Void) async -> Bool {
+        guard !settings.mesh.host.isEmpty else {
+            error = "Connect to your Broker before changing project data."
+            return false
+        }
+        do {
+            for attempt in 0..<2 {
+                let snapshot = try await request(MeshRequest(cmd: "registry-get"))
+                guard let payload = snapshot.payload, let revision = snapshot.revision,
+                      let data = payload.data(using: .utf8),
+                      var root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    throw RegistryMutationError.message("The Broker returned an invalid project registry.")
+                }
+                try mutation(&root)
+                let encoded = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+                guard let nextPayload = String(data: encoded, encoding: .utf8) else {
+                    throw RegistryMutationError.message("Could not encode the project registry.")
+                }
+                var write = MeshRequest(cmd: "registry-put")
+                write.payload = nextPayload
+                write.expectedRevision = revision
+                let response = try await request(write)
+                if response.ok {
+                    UserDefaults.standard.removeObject(forKey: Self.projectsCacheKey)
+                    UserDefaults.standard.removeObject(forKey: Self.issuesCacheKey)
+                    error = nil
+                    return true
+                }
+                if response.error == "registry conflict", attempt == 0 { continue }
+                throw RegistryMutationError.message(response.error ?? "The Broker rejected the change.")
+            }
+            throw RegistryMutationError.message("The project registry changed repeatedly. Try again.")
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
     private func cachedProjects() -> [RemoteProject]? {
         UserDefaults.standard.string(forKey: Self.projectsCacheKey).map(RemoteAgentService.parseProjects)
     }
@@ -218,5 +342,13 @@ final class RoomStore {
             }
         }
         if !results.isEmpty { notice = results.joined(separator: "\n") }
+    }
+}
+
+private enum RegistryMutationError: LocalizedError {
+    case message(String)
+    var errorDescription: String? {
+        guard case .message(let message) = self else { return nil }
+        return message
     }
 }

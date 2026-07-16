@@ -44,7 +44,17 @@ struct RemoteProject: Identifiable, Sendable, Hashable {
     let localPath: String?
     let githubRemote: String?
     let tags: [String]
+    var notes: String = ""
+    var issues: [RemoteIssue] = []
+    var updates: [RemoteProjectUpdate] = []
     var hasLocalPath: Bool { localPath != nil }
+}
+
+struct RemoteProjectUpdate: Identifiable, Sendable, Hashable {
+    let id: String
+    let body: String
+    let kind: String
+    let issueNumber: Int?
 }
 
 /// One issue aggregated from `pharos issue list <project> --json` across projects.
@@ -56,6 +66,8 @@ struct RemoteIssue: Identifiable, Sendable, Hashable {
     let status: String
     let priority: String
     let labels: [String]
+    var body: String = ""
+    var activeSession: String? = nil
 }
 
 enum RemoteCommandBuilder {
@@ -215,10 +227,30 @@ actor RemoteAgentService {
         guard let obj = firstJSONObject(raw), let arr = obj["projects"] as? [[String: Any]] else { return [] }
         return arr.compactMap { dict in
             guard let name = (dict["name"] as? String), !name.isEmpty else { return nil }
+            let issues = ((dict["issues"] as? [[String: Any]]) ?? []).compactMap { issue -> RemoteIssue? in
+                guard let number = issue["number"] as? Int,
+                      let title = issue["title"] as? String else { return nil }
+                return RemoteIssue(project: name, number: number, title: title,
+                                   status: issue["status"] as? String ?? "todo",
+                                   priority: issue["priority"] as? String ?? "none",
+                                   labels: issue["labels"] as? [String] ?? [],
+                                   body: issue["body"] as? String ?? "",
+                                   activeSession: issue["activeSession"] as? String)
+            }
+            let updates = ((dict["updates"] as? [[String: Any]]) ?? []).compactMap { update -> RemoteProjectUpdate? in
+                guard let body = update["body"] as? String, !body.isEmpty else { return nil }
+                return RemoteProjectUpdate(id: update["id"] as? String ?? UUID().uuidString,
+                                           body: body,
+                                           kind: update["kind"] as? String ?? "note",
+                                           issueNumber: update["issueNumber"] as? Int)
+            }
             return RemoteProject(name: name,
                                  localPath: dict["localPath"] as? String,
                                  githubRemote: dict["githubRemote"] as? String,
-                                 tags: (dict["tags"] as? [String]) ?? [])
+                                 tags: (dict["tags"] as? [String]) ?? [],
+                                 notes: dict["notes"] as? String ?? "",
+                                 issues: issues,
+                                 updates: updates)
         }
     }
 
@@ -231,7 +263,9 @@ actor RemoteAgentService {
             return RemoteIssue(project: project, number: number, title: title,
                                status: dict["status"] as? String ?? "",
                                priority: dict["priority"] as? String ?? "",
-                               labels: (dict["labels"] as? [String]) ?? [])
+                               labels: (dict["labels"] as? [String]) ?? [],
+                               body: dict["body"] as? String ?? "",
+                               activeSession: (dict["activeSession"] as? String).flatMap { $0.isEmpty ? nil : $0 })
         }
     }
 

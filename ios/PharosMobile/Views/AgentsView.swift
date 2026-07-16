@@ -69,7 +69,7 @@ struct AgentsView: View {
                 }
             }
             .navigationTitle("Agents")
-            .navigationBarTitleDisplayMode(.large)
+            .toolbarTitleDisplayMode(.inlineLarge)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -206,8 +206,10 @@ private struct AgentDetailView: View {
                 }
             }
         }
+        .pharosPlainList()
         .navigationTitle("@\(member.nick)")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
         .fullScreenCover(item: $terminal) { RemoteTerminalView(target: $0) }
     }
 

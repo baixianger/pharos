@@ -143,19 +143,22 @@ struct MeshCoreTests {
 
     @Test func parseProjectsExtractsRichFields() {
         let json = """
-        {"projects":[{"name":"Pharos","localPath":"/p","githubRemote":"https://github.com/x/pharos.git","tags":["personal","tools"]}]}
+        {"projects":[{"name":"Pharos","localPath":"/p","githubRemote":"https://github.com/x/pharos.git","tags":["personal","tools"],"notes":"Developer cockpit","issues":[{"number":3,"title":"Refine iOS","status":"in_progress","priority":"high","labels":["ios"],"body":"More context"}],"updates":[{"id":"u1","body":"Shipped broker sync","kind":"agent","issueNumber":3}]}]}
         """
         let p = RemoteAgentService.parseProjects(json).first
         #expect(p?.localPath == "/p")
         #expect(p?.githubRemote == "https://github.com/x/pharos.git")
         #expect(p?.tags == ["personal", "tools"])
+        #expect(p?.notes == "Developer cockpit")
+        #expect(p?.issues.first?.body == "More context")
+        #expect(p?.updates.first?.issueNumber == 3)
         #expect(p?.hasLocalPath == true)
     }
 
     @Test func parseIssuesExtractsFields() {
         let json = """
         {"issues":[
-          {"project":"Pharos","number":2,"title":"do X","status":"todo","priority":"low","labels":["feature"]},
+          {"project":"Pharos","number":2,"title":"do X","status":"todo","priority":"low","labels":["feature"],"body":"Context","activeSession":"pharos-2"},
           {"project":"brainstorm","number":5,"title":"fix Y","status":"doing","priority":"high","labels":[]}
         ]}
         """
@@ -163,6 +166,8 @@ struct MeshCoreTests {
         #expect(issues.count == 2)
         #expect(issues.first?.id == "Pharos#2")
         #expect(issues.first?.status == "todo")
+        #expect(issues.first?.body == "Context")
+        #expect(issues.first?.activeSession == "pharos-2")
         #expect(issues.last?.project == "brainstorm")
         #expect(issues.last?.priority == "high")
     }

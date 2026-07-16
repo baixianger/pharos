@@ -81,6 +81,7 @@ struct SpawnAgentView: View {
                     Section { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red) }
                 }
             }
+            .pharosPlainList()
             .navigationTitle("Spawn member")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

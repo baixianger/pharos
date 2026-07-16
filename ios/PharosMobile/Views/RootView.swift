@@ -12,7 +12,7 @@ struct RootView: View {
         NavigationSplitView {
             RoomListView(selection: $store.selectedRoom)
                 .navigationTitle("Chat")
-                .navigationBarTitleDisplayMode(.large)
+                .toolbarTitleDisplayMode(.inlineLarge)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         Button("Settings", systemImage: "slider.horizontal.3") { sheet = .settings }

@@ -89,7 +89,7 @@ struct SettingsView: View {
             }
             .pharosPlainList()
             .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.large)
+            .toolbarTitleDisplayMode(.inlineLarge)
             .toolbar {
                 if showsDoneButton {
                     ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
@@ -314,6 +314,7 @@ private struct SSHHostEditor: View {
                 }
             }
         }
+        .pharosPlainList()
         .navigationTitle("Host")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: hostChoice) {

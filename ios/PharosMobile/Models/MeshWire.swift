@@ -22,6 +22,8 @@ struct MeshRequest: Codable, Sendable, Equatable {
     var attachments: [MeshAttachment]?
     var attachment: MeshAttachment?
     var attachmentID: String?
+    var payload: String?
+    var expectedRevision: String?
 
     init(cmd: String, room: String? = nil, nick: String? = nil, text: String? = nil,
          to: [String]? = nil, limit: Int? = nil) {
@@ -124,6 +126,7 @@ struct MeshResponse: Codable, Sendable, Equatable {
     var payload: String?
     var capabilities: [String]?
     var attachment: MeshAttachment?
+    var revision: String?
 }
 
 enum MentionParser {

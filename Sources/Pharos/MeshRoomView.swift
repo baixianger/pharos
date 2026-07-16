@@ -47,6 +47,13 @@ struct MeshRoomView: View {
             guard !Task.isCancelled, room == requested else { return }
             messages = loaded
         }
+        .onAppear { draft = MeshRoomDraftCache.draft(for: room) }
+        .onChange(of: room) { _, nextRoom in
+            draft = MeshRoomDraftCache.draft(for: nextRoom)
+        }
+        .onChange(of: draft) { _, nextDraft in
+            MeshRoomDraftCache.save(nextDraft, for: room)
+        }
         // Issue references (project#number) in messages are tappable links.
         .environment(\.openURL, OpenURLAction { url in
             guard url.scheme == "pharosissue" else { return .systemAction }
@@ -758,5 +765,24 @@ struct MeshRoomView: View {
         return await Task.detached {
             MeshClient.send(MeshRequest(cmd: "history", room: room, limit: 200)).messages ?? []
         }.value
+    }
+}
+
+/// Device-local, per-room composer drafts. Drafts are intentionally not Broker
+/// data: half-written text stays private to the Mac where it was typed.
+private enum MeshRoomDraftCache {
+    private static let defaultsKey = "pharos.mesh.roomDrafts.v1"
+
+    static func draft(for room: String) -> String {
+        guard !room.isEmpty else { return "" }
+        return (UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String])?[room] ?? ""
+    }
+
+    static func save(_ draft: String, for room: String) {
+        guard !room.isEmpty else { return }
+        var drafts = UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String] ?? [:]
+        if draft.isEmpty { drafts.removeValue(forKey: room) }
+        else { drafts[room] = draft }
+        UserDefaults.standard.set(drafts, forKey: defaultsKey)
     }
 }
