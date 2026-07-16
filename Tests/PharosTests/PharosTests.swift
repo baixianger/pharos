@@ -1545,6 +1545,15 @@ final class MeshBroadcastTests: XCTestCase {
 }
 
 final class RemoteLaunchTmuxIdentityTests: XCTestCase {
+    func testRemoteInteractiveShellFallsBackWhenForwardedTerminfoIsMissing() {
+        let command = RemoteLaunch.terminalSafeRemoteShell("exec tmux attach -t '=agent'")
+
+        XCTAssertTrue(command.contains(#"TERM="${TERM:-xterm-256color}""#))
+        XCTAssertTrue(command.contains(#"infocmp "$TERM""#))
+        XCTAssertTrue(command.contains("export TERM=xterm-256color"))
+        XCTAssertTrue(command.hasSuffix("exec tmux attach -t '=agent'"))
+    }
+
     func testParsesSocketFromTmuxEnvironment() {
         XCTAssertEqual(
             RemoteLaunch.tmuxSocket(fromEnvironmentValue: "/private/tmp/tmux-501/agent,1234,0"),

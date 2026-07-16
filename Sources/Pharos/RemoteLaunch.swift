@@ -50,6 +50,16 @@ enum RemoteLaunch {
         socket.hasPrefix("/") && !socket.contains("\n") && !socket.contains("\r") && !socket.contains("\0")
     }
 
+    /// Wrap an interactive remote command with a terminal fallback understood by
+    /// stock macOS and Linux terminfo databases. SSH forwards the local `TERM`
+    /// for PTY sessions; Ghostty uses `xterm-ghostty`, which is often absent on
+    /// the peer even when Ghostty.app itself is installed there. tmux otherwise
+    /// exits before it can attach with "missing or unsuitable terminal".
+    static func terminalSafeRemoteShell(_ command: String) -> String {
+        #"export TERM="${TERM:-xterm-256color}"; infocmp "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color; "#
+            + command
+    }
+
     /// Parse socket paths returned by the remote legacy discovery script.
     /// Kept pure/internal so filtering and de-duplication have regression tests.
     static func legacySocketMatches(_ output: String) -> [String] {

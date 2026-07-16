@@ -272,8 +272,10 @@ struct DashboardView: View {
         if m.host != nil, m.host != HostIdentity.current, m.tmuxSocket == nil { return nil }
         let socket = m.tmuxSocket.map { " -S '\($0.replacingOccurrences(of: "'", with: "'\\''"))'" } ?? ""
         let action = "exec tmux\(socket) attach -t \"=$s\""
-        let inner = "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin\"; "
-                  + "s=$(tmux\(socket) display-message -p -t '\(pane)' '#{session_name}') && \(action)"
+        let inner = RemoteLaunch.terminalSafeRemoteShell(
+            "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin\"; "
+                + "s=$(tmux\(socket) display-message -p -t '\(pane)' '#{session_name}') && \(action)"
+        )
         if m.host == nil || m.host == HostIdentity.current { return inner }
         let peer = store.peerHost
         guard !peer.isEmpty else { return nil }
