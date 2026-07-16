@@ -412,15 +412,11 @@ private struct RoomMentionStrip: View {
             HStack(spacing: 7) {
                 ForEach(members) { member in
                     Button { onMention(member) } label: {
-                        HStack(spacing: 6) {
-                            ChatAvatar(name: member.nick, member: member, size: 25)
-                            Text("@\(member.nick)")
-                                .font(.caption.weight(.medium))
-                                .lineLimit(1)
-                        }
-                        .padding(.leading, 4)
-                        .padding(.trailing, 10)
-                        .padding(.vertical, 4)
+                        Text("@\(member.nick)")
+                            .font(.caption.weight(.medium))
+                            .lineLimit(1)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
                         .background(.secondary.opacity(0.1), in: Capsule())
                     }
                     .buttonStyle(.plain)
