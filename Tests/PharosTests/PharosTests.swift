@@ -1593,6 +1593,44 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         XCTAssertTrue(capabilities.contains("reply-v1"))
         XCTAssertTrue(capabilities.contains("attachment-v1"))
         XCTAssertTrue(capabilities.contains("registry-cas-v1"))
+        XCTAssertTrue(capabilities.contains("pairing-v1"))
+    }
+
+    func testPairingLinkRejectsDuplicateQueryKeys() throws {
+        let raw = "pharos://pair?v=1&v=1&host=100.64.0.1&port=47800&broker=broker-id&token=12345678901234567890&expires=9999999999"
+        XCTAssertNil(MeshPairingLink(url: try XCTUnwrap(URL(string: raw))))
+    }
+
+    func testPairingLinkRoundTripAndOneTimeRedemption() throws {
+        let broker = MeshBroker()
+        let created = broker.process(MeshRequest(cmd: "pairing-create",
+                                                  timeoutMs: 300_000,
+                                                  host: "personal-dev:47800"))
+        XCTAssertTrue(created.ok)
+        let raw = try XCTUnwrap(created.payload)
+        let url = try XCTUnwrap(URL(string: raw))
+        let link = try XCTUnwrap(MeshPairingLink(url: url))
+        XCTAssertEqual(link.host, "personal-dev")
+        XCTAssertEqual(link.port, 47_800)
+        XCTAssertFalse(link.isExpired)
+
+        let wrongIdentity = broker.process(MeshRequest(cmd: "pairing-redeem",
+                                                        memberID: "another-broker",
+                                                        payload: link.token))
+        XCTAssertFalse(wrongIdentity.ok)
+        XCTAssertEqual(wrongIdentity.error, "Broker identity mismatch")
+
+        let accepted = broker.process(MeshRequest(cmd: "pairing-redeem",
+                                                   memberID: link.brokerID,
+                                                   payload: link.token))
+        XCTAssertTrue(accepted.ok)
+        XCTAssertEqual(accepted.payload, link.brokerID)
+
+        let replay = broker.process(MeshRequest(cmd: "pairing-redeem",
+                                                 memberID: link.brokerID,
+                                                 payload: link.token))
+        XCTAssertFalse(replay.ok)
+        XCTAssertEqual(replay.error, "pairing code expired or already used")
     }
 
     func testReplyResolvesStableMessageAndPersistsSnapshot() {

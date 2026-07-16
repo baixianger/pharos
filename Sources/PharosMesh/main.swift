@@ -29,6 +29,20 @@ private enum MeshHeadlessCLI {
         case "capabilities":
             return printResponse(MeshClient.send(MeshRequest(cmd: "capabilities")))
 
+        case "pair":
+            guard let endpoint = option("--endpoint", in: args),
+                  meshSplitHostPort(endpoint) != nil else {
+                return usageError("pair --endpoint HOST:PORT")
+            }
+            let response = MeshClient.send(MeshRequest(cmd: "pairing-create",
+                                                       timeoutMs: 300_000, host: endpoint),
+                                           to: endpoint)
+            guard response.ok, let link = response.payload else { return printResponse(response) }
+            printTerminalQRCode(link)
+            print(link)
+            print("expires in 5 minutes · single use")
+            return 0
+
         case "create":
             guard args.count >= 2 else { return usageError("create <room>") }
             return printResponse(MeshClient.send(MeshRequest(cmd: "create", room: args[1])))
@@ -234,6 +248,20 @@ private enum MeshHeadlessCLI {
         return 1
     }
 
+    private static func printTerminalQRCode(_ value: String) {
+        let candidates = ["/opt/homebrew/bin/qrencode", "/usr/local/bin/qrencode", "/usr/bin/qrencode"]
+        guard let executable = candidates.first(where: {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }) else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = ["-t", "ANSIUTF8", value]
+        process.standardOutput = FileHandle.standardOutput
+        process.standardError = FileHandle.standardError
+        try? process.run()
+        process.waitUntilExit()
+    }
+
     private static func usageError(_ detail: String) -> Int32 {
         FileHandle.standardError.write(Data("usage: pharos-mesh \(detail)\n".utf8))
         return 2
@@ -244,6 +272,7 @@ private enum MeshHeadlessCLI {
 
       serve [--bind HOST:PORT] [--data-dir PATH]
       capabilities [--endpoint HOST:PORT]
+      pair --endpoint HOST:PORT
       create <room>
       list
       history <room> [--limit N]

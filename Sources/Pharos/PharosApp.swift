@@ -34,12 +34,29 @@ enum PharosMain {
 struct PharosApp: App {
     @Environment(\.openWindow) private var openWindow
     @State private var store = ProjectStore()
+    @State private var showsBrokerSetup: Bool
     // Owns the Sparkle update lifecycle for the app's lifetime.
     private let updaterController = UpdaterController()
 
+    init() {
+        let prefs = PharosPrefs.shared
+        let alreadyConfigured = prefs.bool(forKey: "pharos.hostBroker")
+            || !(prefs.string(forKey: "pharos.meshServerEndpoint") ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        _showsBrokerSetup = State(initialValue: !alreadyConfigured)
+    }
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            Group {
+                if showsBrokerSetup {
+                    BrokerSetupOnboardingView {
+                        showsBrokerSetup = false
+                    }
+                } else {
+                    ContentView()
+                }
+            }
                 .environment(store)
                 .preferredColorScheme(store.appearance.colorScheme)
                 .task {

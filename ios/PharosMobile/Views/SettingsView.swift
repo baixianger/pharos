@@ -4,10 +4,12 @@ struct SettingsView: View {
     var showsDoneButton = false
     @Environment(AppSettings.self) private var settings
     @Environment(SSHIdentityStore.self) private var identities
+    @Environment(PairingCoordinator.self) private var pairing
     @Environment(\.dismiss) private var dismiss
     @State private var meshHost = ""
     @State private var meshPort = "47800"
     @State private var showHostEditor = false
+    @State private var showsPairingScanner = false
     @State private var brokerStatus: MobileBrokerConnectionStatus = .unchecked
     private let meshClient = MeshTCPClient()
 
@@ -15,6 +17,9 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 Section {
+                    Button("Pair with another Broker", systemImage: "qrcode.viewfinder") {
+                        showsPairingScanner = true
+                    }
                     brokerStatusView
                     HStack {
                         Text(brokerTarget)
@@ -96,7 +101,17 @@ struct SettingsView: View {
                 }
             }
             .sheet(isPresented: $showHostEditor) { NavigationStack { SSHHostEditor(profile: nil) } }
+            .sheet(isPresented: $showsPairingScanner) {
+                PairingScannerSheet { value in
+                    showsPairingScanner = false
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(250))
+                        pairing.receive(value)
+                    }
+                }
+            }
             .onAppear { load() }
+            .onChange(of: settings.mesh) { load() }
             .task { await testBroker() }
         }
     }

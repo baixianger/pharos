@@ -25,6 +25,7 @@
 		8A4176112EC9BE6DD5675C1E /* InteractiveSSHSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B67BDD4799E7DC5921C9DB99 /* InteractiveSSHSession.swift */; };
 		960DDC2D1993594446CAEDD6 /* SSHTmuxPokeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A5F3F48B710E5856DF83A3B /* SSHTmuxPokeService.swift */; };
 		9B6D4E0AE776436E597FEFC0 /* ProjectsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC48202BA5281EFE1A847C38 /* ProjectsView.swift */; };
+		9D785850F4EF8B8D7347834C /* PairingLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56D8039FCBC9DCEF0AFD7C6E /* PairingLink.swift */; };
 		A3405FB84FF614549626759D /* SpawnAgentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6F859A1C7BBEF2D3E51676E /* SpawnAgentView.swift */; };
 		AA12F39CAE6DF825E4BEC04C /* PharosMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27F4A3C6DE1C3611722ACCF5 /* PharosMarkdown.swift */; };
 		BB37FC0CD279985FDD3C308E /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 537B4E9606BB15A32FAAD5D8 /* MainTabView.swift */; };
@@ -33,6 +34,7 @@
 		C9C3004119D3EFAEE3ACCE22 /* MeshWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = B453916340D05CCF7CC4D244 /* MeshWire.swift */; };
 		CB38873AB506856E74CBAA34 /* AgentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C964FEBE89EF146AD7C6AF4 /* AgentsView.swift */; };
 		D2B1822CAB067921E37324FA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CEF8FD397F7D9F1C61EA3BAF /* Assets.xcassets */; };
+		DCD21D275D0668C3890A6C7C /* PairBrokerViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9330688B2F8752D883096C6D /* PairBrokerViews.swift */; };
 		DD62AC67C8371A27078C66E4 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B59AA89BEDF3EEEE53EA9CD /* RootView.swift */; };
 		F734C7FF9F1D8085C013CDD0 /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE66DE546D2C518478A6D7D4 /* ConversationView.swift */; };
 /* End PBXBuildFile section */
@@ -59,10 +61,12 @@
 		4F69EBEAE42D0113CD39B2BC /* PharosMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PharosMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4F8616B8D4E2B61B13853142 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
 		537B4E9606BB15A32FAAD5D8 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
+		56D8039FCBC9DCEF0AFD7C6E /* PairingLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingLink.swift; sourceTree = "<group>"; };
 		6B59AA89BEDF3EEEE53EA9CD /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		81DA9594F9E9536D3C2B9D94 /* PharosMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PharosMobileApp.swift; sourceTree = "<group>"; };
 		8A5F3F48B710E5856DF83A3B /* SSHTmuxPokeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTmuxPokeService.swift; sourceTree = "<group>"; };
 		8FF7F26A2AD53C1C21F2EC36 /* MeshTCPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshTCPClient.swift; sourceTree = "<group>"; };
+		9330688B2F8752D883096C6D /* PairBrokerViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairBrokerViews.swift; sourceTree = "<group>"; };
 		9DA45AD4654541D589FEEB66 /* RemoteTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTerminalView.swift; sourceTree = "<group>"; };
 		9E99751DFE4EE6777F3FDC46 /* MessageRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageRow.swift; sourceTree = "<group>"; };
 		B1F305FE3168CE78B5488D59 /* MeshCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshCoreTests.swift; sourceTree = "<group>"; };
@@ -120,6 +124,7 @@
 			isa = PBXGroup;
 			children = (
 				B453916340D05CCF7CC4D244 /* MeshWire.swift */,
+				56D8039FCBC9DCEF0AFD7C6E /* PairingLink.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -173,6 +178,7 @@
 				108EB4DA1F813A618204D5D7 /* IssuesView.swift */,
 				537B4E9606BB15A32FAAD5D8 /* MainTabView.swift */,
 				9E99751DFE4EE6777F3FDC46 /* MessageRow.swift */,
+				9330688B2F8752D883096C6D /* PairBrokerViews.swift */,
 				DC48202BA5281EFE1A847C38 /* ProjectsView.swift */,
 				9DA45AD4654541D589FEEB66 /* RemoteTerminalView.swift */,
 				1B98C9EA551F79B1E2F610EA /* RoomListView.swift */,
@@ -305,6 +311,8 @@
 				7237CCB3A61A6ABC7F4C450C /* MeshTCPClient.swift in Sources */,
 				C9C3004119D3EFAEE3ACCE22 /* MeshWire.swift in Sources */,
 				00D3BA15365DED397A2637E8 /* MessageRow.swift in Sources */,
+				DCD21D275D0668C3890A6C7C /* PairBrokerViews.swift in Sources */,
+				9D785850F4EF8B8D7347834C /* PairingLink.swift in Sources */,
 				4902E474ADE5F8A58510ACAD /* PharosDesign.swift in Sources */,
 				AA12F39CAE6DF825E4BEC04C /* PharosMarkdown.swift in Sources */,
 				41485D117469E6B2E9D6AD25 /* PharosMobileApp.swift in Sources */,

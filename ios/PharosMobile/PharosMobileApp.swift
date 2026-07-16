@@ -11,6 +11,7 @@ private struct AppContainer: View {
     @State private var settings: AppSettings
     @State private var identities: SSHIdentityStore
     @State private var rooms: RoomStore
+    @State private var pairing = PairingCoordinator()
 
     init() {
         let settings = AppSettings()
@@ -21,10 +22,27 @@ private struct AppContainer: View {
     }
 
     var body: some View {
-        MainTabView()
+        @Bindable var pairing = pairing
+        Group {
+            if settings.mesh.host.isEmpty {
+                BrokerSetupGuide()
+            } else {
+                MainTabView()
+            }
+        }
             .environment(settings)
             .environment(identities)
             .environment(rooms)
+            .environment(pairing)
+            .onOpenURL { pairing.receive($0) }
+            .sheet(item: $pairing.pending) { invitation in
+                PairBrokerConfirmation(invitation: invitation)
+                    .environment(settings)
+            }
+            .alert("Pairing link unavailable", isPresented: $pairing.showsError) {
+                Button("OK") {}
+            } message: {
+                Text(pairing.errorMessage ?? "Use a new pairing code from Pharos on your desktop.")
+            }
     }
 }
-

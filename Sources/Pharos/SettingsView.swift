@@ -154,7 +154,9 @@ private struct ProjectsSettingsTab: View {
 private struct MachinesSettingsTab: View {
     @Environment(ProjectStore.self) private var store
     @State private var brokerStatus: BrokerConnectionStatus = .unchecked
-    @State private var brokerMode: BrokerMode = .remote
+    @State private var advertisedEndpoint: String?
+    @State private var showsPairingAssistant = false
+    @State private var showsBrokerSetup = false
 
     var body: some View {
         @Bindable var store = store
@@ -179,27 +181,6 @@ private struct MachinesSettingsTab: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Section("Mesh Broker") {
-                Picker("Broker mode", selection: $brokerMode) {
-                    Text("This Mac").tag(BrokerMode.thisMac)
-                    Text("Remote endpoint").tag(BrokerMode.remote)
-                }
-                .pickerStyle(.radioGroup)
-                if brokerMode == .remote {
-                    LabeledContent("Tailscale endpoint") {
-                        TextField("100.x.y.z:47800", text: $store.meshServerEndpoint)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(maxWidth: 200)
-                    }
-                    if !store.meshServerEndpoint.isEmpty, store.validMeshServerEndpoint == nil {
-                        Label("Enter a host name or IP address followed by a port.",
-                              systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                } else {
-                    Text("Pharos runs the Broker on this Mac and exposes it on its Tailscale address. Local clients use the Unix socket.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
                 brokerStatusView
                 HStack {
                     Text(brokerTarget)
@@ -213,6 +194,13 @@ private struct MachinesSettingsTab: View {
                         .controlSize(.small)
                         .disabled(brokerStatus.isChecking || brokerTargetIsInvalid)
                 }
+                Button("Pair iPhone…", systemImage: "qrcode") {
+                    showsPairingAssistant = true
+                }
+                .disabled(advertisedEndpoint == nil || brokerStatus.isChecking)
+                Button("Change Broker…", systemImage: "arrow.triangle.2.circlepath") {
+                    showsBrokerSetup = true
+                }
                 Text("The Broker coordinates rooms, messages, presence, replies, and attachments. It does not execute agent commands; execution machines are configured under Hosts.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -220,16 +208,25 @@ private struct MachinesSettingsTab: View {
             HostsSettingsSection()
         }
         .formStyle(.grouped)
-        .onChange(of: brokerMode) { _, mode in applyBrokerMode(mode) }
         .task(id: store.meshServerEndpoint) {
-            // Avoid dialing on every keystroke while the endpoint is edited.
-            try? await Task.sleep(for: .milliseconds(450))
-            guard !Task.isCancelled else { return }
-            let desired: BrokerMode = store.validMeshServerEndpoint == nil ? .thisMac : .remote
-            if brokerMode != desired { brokerMode = desired }
-            if desired == .remote, store.isMeshHub { store.setMeshHub(false) }
+            let configuredEndpoint = store.validMeshServerEndpoint
+            advertisedEndpoint = await Task.detached {
+                if let configuredEndpoint { return configuredEndpoint }
+                return PairingService.selfTailscaleIP().map { "\($0):47800" }
+            }.value
             await checkBroker()
             if !brokerTargetIsInvalid { store.syncRegistryNow() }
+        }
+        .sheet(isPresented: $showsPairingAssistant) {
+            if let advertisedEndpoint {
+                PairDeviceSheet(endpoint: advertisedEndpoint)
+            }
+        }
+        .sheet(isPresented: $showsBrokerSetup) {
+            BrokerSetupOnboardingView {
+                showsBrokerSetup = false
+            }
+            .environment(store)
         }
     }
 
@@ -239,23 +236,8 @@ private struct MachinesSettingsTab: View {
     }
 
     private var brokerTarget: String {
-        if let endpoint = store.validMeshServerEndpoint { return endpoint }
         if brokerTargetIsInvalid { return "Invalid endpoint" }
-        if store.isMeshHub { return "Local socket · hosted on this Mac" }
-        if let endpoint = MeshPaths.dialEndpoint { return endpoint }
-        return "Local socket"
-    }
-
-    private func applyBrokerMode(_ mode: BrokerMode) {
-        switch mode {
-        case .thisMac:
-            store.meshServerEndpoint = ""
-            store.setMeshHub(true)
-            Task.detached { MeshHosting.apply(hosting: true) }
-        case .remote:
-            if store.isMeshHub { store.setMeshHub(false) }
-            Task.detached { MeshHosting.apply(hosting: false) }
-        }
+        return advertisedEndpoint ?? "Connect Tailscale to pair another device"
     }
 
     @ViewBuilder
@@ -359,8 +341,6 @@ private struct MachinesSettingsTab: View {
         }
     }
 }
-
-private enum BrokerMode: Hashable { case thisMac, remote }
 
 private enum BrokerConnectionStatus: Equatable {
     case unchecked

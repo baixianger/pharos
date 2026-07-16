@@ -338,6 +338,23 @@ enum CLI {
                 print("\(m.nick)  [\(bits.joined(separator: " · "))]  rooms: \(m.rooms.joined(separator: ", "))")
             }
             return 0
+        case "pair":
+            let explicit = a.firstIndex(of: "--endpoint")
+                .flatMap { $0 + 1 < a.count ? a[$0 + 1] : nil }
+            let endpoint = explicit ?? MeshPaths.dialEndpoint
+                ?? PairingService.selfTailscaleIP().map { "\($0):47800" }
+            guard let endpoint, meshSplitHostPort(endpoint) != nil else {
+                print("error: no Tailscale Broker endpoint is available")
+                return 1
+            }
+            let response = MeshClient.send(MeshRequest(cmd: "pairing-create",
+                                                       timeoutMs: 300_000, host: endpoint),
+                                           to: endpoint)
+            guard response.ok, let link = response.payload else { return report(response) }
+            printTerminalQRCode(link)
+            print(link)
+            print("expires in 5 minutes · single use")
+            return 0
         case "mark":
             return MeshHooks.mark(a)                // Claude Code state hooks (see MeshHooks)
         case "spawn":
@@ -483,6 +500,7 @@ enum CLI {
       attachment put|get …                upload or download a Mesh attachment
       recv   <nick> [--member <id>]       drain unread for this session across ALL its rooms
       who                                 roster: every joined agent + live state/host/tmux pane
+      pair [--endpoint HOST:PORT]         show an iPhone pairing link (and QR when qrencode is installed)
       spawn  <room> <nick> [claude|codex] [--host <ssh>]  spawn local/remote + confirm join (GUI "add member")
       poke   [<room>] <nick>              manually run the safe auto-poke path
       unread [<nick>] [--json]            peek the local unread signal (no daemon, never consumes)
@@ -497,6 +515,15 @@ enum CLI {
       rename <room> <new-name>            rename a room
       delete <room>                       delete a room (drops its transcript)
     """
+
+    private static func printTerminalQRCode(_ value: String) {
+        let candidates = ["/opt/homebrew/bin/qrencode", "/usr/local/bin/qrencode", "/usr/bin/qrencode"]
+        guard let executable = candidates.first(where: {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }) else { return }
+        let result = Shell.run(executable, ["-t", "ANSIUTF8", value])
+        if result.ok, !result.out.isEmpty { print(result.out) }
+    }
 
     private static func runGroup(_ p: Parsed) throws -> Int32 {
         switch p.arg(0) {

@@ -45,7 +45,7 @@ Section: devel
 Priority: optional
 Architecture: $ARCH
 Maintainer: Pai <baixianger@gmail.com>
-Depends: libc6, libstdc++6
+Depends: libc6, libstdc++6, qrencode
 Installed-Size: $INSTALLED_SIZE
 Homepage: https://github.com/baixianger/pharos
 Description: Headless data broker and CLI for Pharos

@@ -330,6 +330,7 @@ public enum MeshPaths {
     public static var transcriptDir: URL { dataDirectory.appendingPathComponent("mesh", isDirectory: true) }
     public static var attachmentDir: URL { transcriptDir.appendingPathComponent("attachments", isDirectory: true) }
     public static var registryFile: URL { dataDirectory.appendingPathComponent("projects.json") }
+    public static var brokerIDFile: URL { dataDirectory.appendingPathComponent("broker-id") }
     public static var registryBackupDir: URL {
         dataDirectory.appendingPathComponent("registry-backups", isDirectory: true)
     }
@@ -438,6 +439,8 @@ public final class MeshBroker: @unchecked Sendable {
     private struct Room { var members: [String: String] = [:]; var mailboxes: [String: [MeshMsg]] = [:] }
     private var rooms: [String: Room] = [:]
     private var presence: [String: MeshPresenceEntry] = [:]
+    private var pairingTokens: [String: Double] = [:]
+    private var cachedBrokerID: String?
 
     public init() {}
 
@@ -593,7 +596,48 @@ public final class MeshBroker: @unchecked Sendable {
         case "capabilities":
             return MeshResponse(ok: true, capabilities: [
                 "mesh-v2", "message-id", "reply-v1", "attachment-v1", "headless-v1",
-                "registry-cas-v1"
+                "registry-cas-v1", "pairing-v1"
+            ])
+
+        case "pairing-create":
+            guard let endpoint = req.host,
+                  let split = meshSplitHostPort(endpoint),
+                  let port = UInt16(split.port) else {
+                return .fail("valid Broker endpoint required")
+            }
+            let now = Date().timeIntervalSince1970
+            let lifetime = min(600, max(60, Double(req.timeoutMs ?? 300_000) / 1_000))
+            let token = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+                + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            lock.lock()
+            pairingTokens = pairingTokens.filter { $0.value > now }
+            pairingTokens[token] = now + lifetime
+            let brokerID = brokerIDLocked()
+            lock.unlock()
+            let pairing = MeshPairingLink(host: split.host, port: port, brokerID: brokerID,
+                                          token: token, expiresAt: now + lifetime)
+            guard let link = pairing.url?.absoluteString else {
+                return .fail("couldn't encode pairing link")
+            }
+            return MeshResponse(ok: true, payload: link, capabilities: ["pairing-v1"])
+
+        case "pairing-redeem":
+            guard let token = req.payload, !token.isEmpty,
+                  let expectedBrokerID = req.memberID, !expectedBrokerID.isEmpty else {
+                return .fail("pairing token and Broker identity required")
+            }
+            let now = Date().timeIntervalSince1970
+            lock.lock()
+            let brokerID = brokerIDLocked()
+            guard expectedBrokerID == brokerID else {
+                lock.unlock()
+                return .fail("Broker identity mismatch")
+            }
+            let expiry = pairingTokens.removeValue(forKey: token)
+            lock.unlock()
+            guard let expiry, expiry > now else { return .fail("pairing code expired or already used") }
+            return MeshResponse(ok: true, payload: brokerID, capabilities: [
+                "mesh-v2", "pairing-v1"
             ])
 
         case "registry-get":
@@ -856,6 +900,23 @@ public final class MeshBroker: @unchecked Sendable {
         default:
             return .fail("unknown cmd: \(req.cmd)")
         }
+    }
+
+    /// Stable identity shown during pairing. It identifies the Broker data
+    /// store, not the Mac or Linux machine currently serving it.
+    private func brokerIDLocked() -> String {
+        if let cachedBrokerID { return cachedBrokerID }
+        if let stored = try? String(contentsOf: MeshPaths.brokerIDFile, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines), !stored.isEmpty {
+            cachedBrokerID = stored
+            return stored
+        }
+        let created = UUID().uuidString.lowercased()
+        try? FileManager.default.createDirectory(at: MeshPaths.dataDirectory,
+                                                  withIntermediateDirectories: true)
+        try? Data((created + "\n").utf8).write(to: MeshPaths.brokerIDFile, options: .atomic)
+        cachedBrokerID = created
+        return created
     }
 
     /// Post a message (delivery model B, 2026-07-13):

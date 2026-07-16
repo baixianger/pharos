@@ -93,6 +93,7 @@ private final class MeshExchange: @unchecked Sendable {
     private let lock = NSLock()
     private var buffer = Data()
     private var continuation: CheckedContinuation<MeshResponse, any Error>?
+    private var timeoutWorkItem: DispatchWorkItem?
     private var finished = false
 
     init(connection: NWConnection, payload: Data) {
@@ -113,7 +114,13 @@ private final class MeshExchange: @unchecked Sendable {
                     default: break
                     }
                 }
-                connection.start(queue: DispatchQueue(label: "me.pai.pharos.mobile.mesh"))
+                let queue = DispatchQueue(label: "me.pai.pharos.mobile.mesh")
+                let timeout = DispatchWorkItem { [weak self] in
+                    self?.finish(.failure(MeshTransportError.connection("The Broker did not respond within 5 seconds.")))
+                }
+                lock.withLock { timeoutWorkItem = timeout }
+                queue.asyncAfter(deadline: .now() + 5, execute: timeout)
+                connection.start(queue: queue)
             }
         } onCancel: {
             connection.cancel()
@@ -156,6 +163,8 @@ private final class MeshExchange: @unchecked Sendable {
         let callback = lock.withLock { () -> CheckedContinuation<MeshResponse, any Error>? in
             guard !finished else { return nil }
             finished = true
+            timeoutWorkItem?.cancel()
+            timeoutWorkItem = nil
             let callback = continuation
             continuation = nil
             return callback

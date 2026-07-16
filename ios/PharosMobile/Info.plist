@@ -6,6 +6,17 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
 	<string>Pharos</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>me.pai.pharos.mobile.pairing</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>pharos</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -32,7 +43,7 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Pai</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Pharos uses the camera when you choose to attach a photo to a Mesh message.</string>
+	<string>Pharos uses the camera to scan Broker pairing codes and attach photos to Mesh messages.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Pharos connects to your private Mesh broker and SSH hosts over Tailscale.</string>
 	<key>UILaunchScreen</key>

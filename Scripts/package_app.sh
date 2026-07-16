@@ -67,6 +67,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>GitCommit</key><string>${GIT_COMMIT}</string>
     <key>NSHumanReadableCopyright</key><string>© 2026 Pai</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+      <dict>
+        <key>CFBundleURLName</key><string>Pharos Broker Pairing</string>
+        <key>CFBundleURLSchemes</key><array><string>pharos</string></array>
+      </dict>
+    </array>
     <key>NSHighResolutionCapable</key><true/>
     <!-- Sparkle auto-update keys -->
     <key>SUFeedURL</key><string>https://me.pai/pharos/appcast.xml</string>
