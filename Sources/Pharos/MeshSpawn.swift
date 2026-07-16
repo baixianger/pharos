@@ -71,14 +71,23 @@ enum MeshSpawn {
     }
 
     /// The shell command tmux runs as the session's foreground process.
-    static func launchCommand(_ kind: AgentKind, executable: String? = nil) -> String {
+    static func launchCommand(_ kind: AgentKind, executable: String? = nil,
+                              environment: [String: String] = [:]) -> String {
         switch kind {
-        case .claude: return kind.command(yolo: true, executable: executable)
+        case .claude:
+            return kind.command(yolo: true, executable: executable, environment: environment)
         // Codex needs the hook-trust bypass so the mesh hooks (~/.codex/hooks.json)
         // actually run without a first-run trust prompt.
         case .codex:
-            return kind.command(yolo: true, executable: executable) + " --dangerously-bypass-hook-trust"
+            return kind.command(yolo: true, executable: executable, environment: environment)
+                + " --dangerously-bypass-hook-trust"
         }
+    }
+
+    static func launchCommand(_ kind: AgentKind,
+                              resolution: LaunchService.AgentResolution) -> String {
+        launchCommand(kind, executable: resolution.executable,
+                      environment: resolution.environment)
     }
 
     /// Brief typed into either agent after its composer is ready. Keeping this
@@ -96,13 +105,14 @@ enum MeshSpawn {
     /// it is an SSH alias/IP for the paired Mac.
     static func spawn(room: String, nick: String, kind: AgentKind, host: String? = nil,
                       workDir: WorkDir = .scratch,
-                      onProgress: @escaping (Progress) -> Void) {
+                      onProgress: @escaping (Progress) -> Void) async {
         if let host, !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             RemoteLaunch.spawnMeshAgent(room: room, nick: nick, kind: kind,
                                         host: host.trimmingCharacters(in: .whitespacesAndNewlines),
                                         workDir: workDir, onProgress: onProgress)
         } else {
-            spawnLocal(room: room, nick: nick, kind: kind, workDir: workDir, onProgress: onProgress)
+            await spawnLocal(room: room, nick: nick, kind: kind,
+                             workDir: workDir, onProgress: onProgress)
         }
     }
 
@@ -110,7 +120,7 @@ enum MeshSpawn {
     /// Reports progress; returns once joined or failed.
     static func spawnLocal(room: String, nick: String, kind: AgentKind,
                            workDir: WorkDir = .scratch,
-                           onProgress: @escaping (Progress) -> Void) {
+                           onProgress: @escaping (Progress) -> Void) async {
         let dir: String
         switch resolveLocal(workDir, room: room, nick: nick) {
         case .ok(let d): dir = d
@@ -127,7 +137,7 @@ enum MeshSpawn {
         guard let tmux = LaunchService.tmuxPath else {
             onProgress(Progress(phase: .failed, detail: "tmux not found on this Mac")); return
         }
-        guard let executable = LaunchService.agentExecutable(kind) else {
+        guard let resolution = await LaunchService.agentResolution(kind) else {
             onProgress(Progress(phase: .failed,
                                 detail: "\(kind.label) not found in common locations or login shell PATH"))
             return
@@ -136,7 +146,7 @@ enum MeshSpawn {
         _ = Shell.run(tmux, ["kill-session", "-t", name])   // clear a stale one
         guard Shell.run(tmux, ["new-session", "-d", "-s", name, "-c", dir,
                                "-x", "200", "-y", "50",
-                               launchCommand(kind, executable: executable)]).ok else {
+                               launchCommand(kind, resolution: resolution)]).ok else {
             onProgress(Progress(phase: .failed, detail: "couldn't start the tmux session")); return
         }
         // Size the window to whichever client is currently driving it, instead of

@@ -150,6 +150,11 @@ enum GitService {
 
 /// Launches Finder, a terminal (Ghostty), and coding agents.
 enum LaunchService {
+    struct AgentResolution: Equatable {
+        let executable: String
+        let environment: [String: String]
+    }
+
     /// Common install locations. Codex.app bundles a fully functional CLI but
     /// does not necessarily put it on PATH, especially for GUI-launched apps.
     static func agentExecutableCandidates(_ kind: AgentKind,
@@ -179,24 +184,70 @@ enum LaunchService {
         }
     }
 
-    /// Last absolute executable emitted by a login-shell lookup. Shell startup
-    /// files sometimes print banners, so do not blindly trust the first line.
-    static func loginShellExecutable(_ output: String,
-                                     isExecutable: (String) -> Bool) -> String? {
-        output.split(separator: "\n").reversed().map(String.init)
-            .first { $0.hasPrefix("/") && isExecutable($0) }
+    private static let executableMarker = "__PHAROS_EXECUTABLE__="
+    private static let pathMarker = "__PHAROS_PATH__="
+
+    /// Parse the marked values emitted by the login-shell probe. Startup files
+    /// may print banners, so only marked lines are considered.
+    static func loginShellResolution(_ output: String,
+                                     isExecutable: (String) -> Bool) -> AgentResolution? {
+        let lines = output.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard let executableLine = lines.last(where: { $0.hasPrefix(executableMarker) }),
+              let pathLine = lines.last(where: { $0.hasPrefix(pathMarker) }) else { return nil }
+        let executable = String(executableLine.dropFirst(executableMarker.count))
+        let path = String(pathLine.dropFirst(pathMarker.count))
+        guard executable.hasPrefix("/"), isExecutable(executable) else { return nil }
+        return AgentResolution(executable: executable, environment: ["PATH": path])
     }
 
-    /// Resolve the exact binary that will be launched. Known locations keep
-    /// this fast; the login-shell fallback supports nvm/fnm/custom PATH setups.
-    static func agentExecutable(_ kind: AgentKind) -> String? {
-        let fm = FileManager.default
-        if let path = agentExecutableCandidates(kind).first(where: fm.isExecutableFile(atPath:)) {
-            return path
+    /// Resolve the exact binary and the PATH it needs at launch. The injected
+    /// dependencies keep the three resolution branches independently testable.
+    static func resolveAgent(
+        _ kind: AgentKind,
+        environment: [String: String],
+        candidates: [String],
+        isExecutable: @escaping @Sendable (String) -> Bool,
+        runShell: @escaping @Sendable (String, [String]) -> Shell.Result
+    ) async -> AgentResolution? {
+        let inheritedPath = environment["PATH"] ?? ""
+        if let path = inheritedPath.split(separator: ":", omittingEmptySubsequences: false)
+            .map({ $0.isEmpty ? kind.rawValue : "\($0)/\(kind.rawValue)" })
+            .first(where: isExecutable) {
+            return AgentResolution(executable: path, environment: ["PATH": inheritedPath])
         }
-        let result = Shell.run("/bin/zsh", ["-lc", "command -v \(kind.rawValue)"])
+        if let path = candidates.first(where: isExecutable) {
+            return AgentResolution(executable: path, environment: ["PATH": inheritedPath])
+        }
+        let requestedShell = environment["SHELL"] ?? ""
+        let shell = requestedShell.hasPrefix("/") && isExecutable(requestedShell)
+            ? requestedShell : "/bin/zsh"
+        let probe = "printf '\\n\(executableMarker)%s\\n\(pathMarker)%s\\n' "
+            + "\"$(command -v \(kind.rawValue) 2>/dev/null)\" \"$PATH\""
+        let result = await Task.detached(priority: .userInitiated) {
+            runShell(shell, ["-lic", probe])
+        }.value
         guard result.ok else { return nil }
-        return loginShellExecutable(result.out, isExecutable: fm.isExecutableFile(atPath:))
+        return loginShellResolution(result.out, isExecutable: isExecutable)
+    }
+
+    /// Resolve against the GUI environment first, then common locations, and
+    /// finally the user's interactive login shell (needed for nvm/fnm setup).
+    static func agentResolution(_ kind: AgentKind) async -> AgentResolution? {
+        let environment = ProcessInfo.processInfo.environment
+        return await resolveAgent(
+            kind,
+            environment: environment,
+            candidates: agentExecutableCandidates(kind),
+            isExecutable: { FileManager.default.isExecutableFile(atPath: $0) },
+            runShell: { Shell.run($0, $1) }
+        )
+    }
+
+    static func agentCommand(_ kind: AgentKind, yolo: Bool, extraArgs: String = "",
+                             resolution: AgentResolution?) -> String {
+        return kind.command(yolo: yolo, extraArgs: extraArgs,
+                            executable: resolution?.executable,
+                            environment: resolution?.environment ?? [:])
     }
 
     static func revealInFinder(_ path: String) {
@@ -222,13 +273,26 @@ enum LaunchService {
     /// If `desktop` is non-nil, switches to that Space (1-based) before launching
     /// so the new window appears there. Failure to switch is silently ignored.
     static func launchAgent(_ kind: AgentKind, project: Project, terminal: TerminalApp,
-                            desktop: Int? = nil, extraArgs: String = "") {
+                            desktop: Int? = nil, extraArgs: String = "") async {
+        let resolution = await agentResolution(kind)
+        await MainActor.run {
+            launchAgent(kind, project: project, terminal: terminal, desktop: desktop,
+                        extraArgs: extraArgs, resolution: resolution)
+        }
+    }
+
+    /// Main-actor half of a launch attempt. Resolution happens before entering
+    /// this function and the same value is used through command construction.
+    static func launchAgent(_ kind: AgentKind, project: Project, terminal: TerminalApp,
+                            desktop: Int? = nil, extraArgs: String = "",
+                            resolution: AgentResolution?) {
         guard let path = project.localPath, !path.isEmpty else { return }
         let yolo = project.yolo, tmux = project.tmux
         let tmuxName = tmuxSessionName(project, kind)
         let launch = {
             launchAgent(kind, atPath: path, yolo: yolo, tmux: tmux,
-                        tmuxName: tmuxName, terminal: terminal, extraArgs: extraArgs)
+                        tmuxName: tmuxName, terminal: terminal, extraArgs: extraArgs,
+                        resolution: resolution)
         }
         guard let d = desktop else { launch(); return }
         // Switch Spaces, let it settle, then open the terminal — all off the
@@ -244,9 +308,8 @@ enum LaunchService {
     /// who initiated a yolo launch in the audit log (defaults to the GUI).
     static func launchAgent(_ kind: AgentKind, atPath path: String, yolo: Bool, tmux: Bool,
                             tmuxName: String, terminal: TerminalApp, extraArgs: String = "",
-                            source: AuditLog.Source = .ui) {
-        let cmd = kind.command(yolo: yolo, extraArgs: extraArgs,
-                               executable: agentExecutable(kind))
+                            source: AuditLog.Source = .ui, resolution: AgentResolution?) {
+        let cmd = agentCommand(kind, yolo: yolo, extraArgs: extraArgs, resolution: resolution)
         let command: String
         if tmux {
             // `cmd` (carrying user `extraArgs`) sits inside the single-quoted
@@ -269,22 +332,39 @@ enum LaunchService {
 
     /// Resume a past agent session in the chosen terminal (honoring tmux + yolo).
     static func resumeSession(_ session: AgentSession, project: Project, terminal: TerminalApp,
-                              extraArgs: String = "") {
-        let path = session.resumeCwd
+                              extraArgs: String = "") async {
+        let resolution = await agentResolution(session.kind)
+        await MainActor.run {
+            resumeSession(session, project: project, terminal: terminal,
+                          extraArgs: extraArgs, resolution: resolution)
+        }
+    }
+
+    static func resumeAgentCommand(_ session: AgentSession, project: Project,
+                                   extraArgs: String = "",
+                                   resolution: AgentResolution?) -> String {
         let extra = extraArgs.trimmingCharacters(in: .whitespaces)
         let base: String
         switch session.kind {
         case .claude:
-            let tool = session.kind.command(yolo: false, executable: agentExecutable(session.kind))
+            let tool = agentCommand(session.kind, yolo: false, resolution: resolution)
             base = "\(tool) --resume \(session.id)"
                 + (project.yolo ? " --dangerously-skip-permissions" : "")
                 + (extra.isEmpty ? "" : " \(extra)")
         case .codex:
-            let tool = session.kind.command(yolo: false, executable: agentExecutable(session.kind))
+            let tool = agentCommand(session.kind, yolo: false, resolution: resolution)
             base = "\(tool) resume \(session.id)"
                 + (project.yolo ? " --dangerously-bypass-approvals-and-sandbox" : "")
                 + (extra.isEmpty ? "" : " \(extra)")
         }
+        return base
+    }
+
+    static func resumeSession(_ session: AgentSession, project: Project, terminal: TerminalApp,
+                              extraArgs: String = "", resolution: AgentResolution?) {
+        let path = session.resumeCwd
+        let base = resumeAgentCommand(session, project: project, extraArgs: extraArgs,
+                                      resolution: resolution)
         let command: String
         if project.tmux {
             let s = tmuxSessionName(project, session.kind) + "-resume"

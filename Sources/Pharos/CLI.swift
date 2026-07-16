@@ -26,7 +26,7 @@ enum CLI {
     // MARK: Entry
 
     /// Run the CLI. `args` excludes the program name. Returns the process exit code.
-    static func run(_ args: [String]) -> Int32 {
+    static func run(_ args: [String]) async -> Int32 {
         guard let command = args.first else { printUsage(); return 0 }
         let rest = Array(args.dropFirst())
 
@@ -61,13 +61,13 @@ enum CLI {
             case "launch":
                 let yolo: Bool? = p.has("no-yolo") ? false : (p.has("yolo") ? true : nil)
                 let tmux: Bool? = p.has("tmux") ? true : nil
-                return ok(try PharosCore.launchAgent(project: p.arg(0), agent: p.arg(1), yolo: yolo, tmux: tmux, host: p.opt("host"), source: .cli))
+                return ok(try await PharosCore.launchAgent(project: p.arg(0), agent: p.arg(1), yolo: yolo, tmux: tmux, host: p.opt("host"), source: .cli))
             case "agents":
                 return ok(RemoteLaunch.listAgents(host: p.opt("host"), filter: p.arg(0)))
             case "agent":
                 return try runAgent(p)
             case "resume":
-                return ok(try PharosCore.resumeSession(project: p.arg(0), agent: p.arg(1), sessionID: p.arg(2)))
+                return ok(try await PharosCore.resumeSession(project: p.arg(0), agent: p.arg(1), sessionID: p.arg(2)))
             case "playbook":
                 return ok(try PharosCore.runPlaybook(project: p.arg(0), playbook: p.arg(1)))
             case "open":
@@ -95,7 +95,7 @@ enum CLI {
             case "group":
                 return try runGroup(p)
             case "issue":
-                return try runIssue(p)
+                return try await runIssue(p)
             case "milestone":
                 return try runMilestone(p)
             case "update":
@@ -115,7 +115,7 @@ enum CLI {
             case "tmux":
                 return ok(try PharosCore.setFlag(name: p.arg(0), flag: "tmux", value: try boolArg(p.arg(1), label: "on|off")))
             case "mesh":
-                return runMesh(rest)
+                return await runMesh(rest)
             case "skill", "skills":
                 return runSkill(rest)
 
@@ -178,7 +178,7 @@ enum CLI {
     /// `pharos mesh …` — the agent chat room. Uses raw tokens (positional
     /// room/nick/text), not the flag parser. Non-blocking: `say` delivers into the
     /// target's mailbox, the Stop hook surfaces it; `recv` drains without blocking.
-    private static func runMesh(_ args: [String]) -> Int32 {
+    private static func runMesh(_ args: [String]) async -> Int32 {
         guard let sub = args.first else { print(meshUsage); return 2 }
         let a = Array(args.dropFirst())
         func report(_ r: MeshResponse) -> Int32 { print(r.ok ? "ok" : "error: \(r.error ?? "?")"); return r.ok ? 0 : 1 }
@@ -330,7 +330,8 @@ enum CLI {
             }
             let workDir: MeshSpawn.WorkDir = cwd.map { .path($0) } ?? projectName.map { .project($0) } ?? .scratch
             var final = MeshSpawn.Phase.failed
-            MeshSpawn.spawn(room: a[0], nick: a[1], kind: kind, host: host, workDir: workDir) { p in
+            await MeshSpawn.spawn(room: a[0], nick: a[1], kind: kind,
+                                 host: host, workDir: workDir) { p in
                 print("[\(p.phase.rawValue)] \(p.detail)")
                 final = p.phase
             }
@@ -456,7 +457,7 @@ enum CLI {
         }
     }
 
-    private static func runIssue(_ p: Parsed) throws -> Int32 {
+    private static func runIssue(_ p: Parsed) async throws -> Int32 {
         let number = p.arg(2).flatMap { Int($0) }
         switch p.arg(0) {
         case "list", nil:
@@ -499,8 +500,8 @@ enum CLI {
         case "start":
             let yolo: Bool? = p.has("no-yolo") ? false : (p.has("yolo") ? true : nil)
             let tmux: Bool? = p.has("tmux") ? true : nil
-            return ok(try PharosCore.issueStart(project: p.arg(1), number: number, agent: p.arg(3),
-                                                yolo: yolo, tmux: tmux, host: p.opt("host"), source: .cli))
+            return ok(try await PharosCore.issueStart(project: p.arg(1), number: number, agent: p.arg(3),
+                                                      yolo: yolo, tmux: tmux, host: p.opt("host"), source: .cli))
         case "rm", "remove":
             let message = try PharosCore.issueRemove(project: p.arg(1), number: number)
             AuditLog.record(actor: .cli, action: "issue_remove", detail: "\(p.arg(1) ?? "")#\(number ?? 0)")

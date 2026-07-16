@@ -260,7 +260,7 @@ private struct PaletteRow: View {
                         label: "Claude",
                         disabled: !project.hasLocal
                     ) {
-                        LaunchService.launchAgent(.claude, project: project, terminal: store.terminal)
+                        Task { await LaunchService.launchAgent(.claude, project: project, terminal: store.terminal) }
                         onSelect()
                         onAction()
                     }
@@ -270,7 +270,7 @@ private struct PaletteRow: View {
                         label: "Codex",
                         disabled: !project.hasLocal
                     ) {
-                        LaunchService.launchAgent(.codex, project: project, terminal: store.terminal)
+                        Task { await LaunchService.launchAgent(.codex, project: project, terminal: store.terminal) }
                         onSelect()
                         onAction()
                     }

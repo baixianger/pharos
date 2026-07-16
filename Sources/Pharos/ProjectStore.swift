@@ -1063,9 +1063,13 @@ final class ProjectStore {
             else { _ = s.setIssueStatus(projectID: project.id, number: number, status: .inProgress) }
         }
         let extra = kind == .claude ? claudeArgs : codexArgs
-        LaunchService.launchAgent(kind, atPath: path, yolo: project.yolo, tmux: useTmux,
-                                  tmuxName: tmuxName, terminal: terminal, extraArgs: extra, source: .ui)
-        refreshRunningAgents()
+        Task {
+            let resolution = await LaunchService.agentResolution(kind)
+            LaunchService.launchAgent(kind, atPath: path, yolo: project.yolo, tmux: useTmux,
+                                      tmuxName: tmuxName, terminal: terminal, extraArgs: extra,
+                                      source: .ui, resolution: resolution)
+            refreshRunningAgents()
+        }
     }
 
     // MARK: Trash / undo

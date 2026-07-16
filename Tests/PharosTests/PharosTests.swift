@@ -142,6 +142,13 @@ final class ParseWorktreesTests: XCTestCase {
 
 final class AgentKindCommandTests: XCTestCase {
 
+    private final class Counter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+        func increment() { lock.lock(); value += 1; lock.unlock() }
+        func read() -> Int { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
     func testClaudeNoYoloNoArgs() {
         XCTAssertEqual(AgentKind.claude.command(yolo: false), "claude")
     }
@@ -176,6 +183,57 @@ final class AgentKindCommandTests: XCTestCase {
         )
     }
 
+    func testChildProcessPathEnvironmentIsPropagated() {
+        XCTAssertEqual(
+            AgentKind.codex.command(
+                yolo: false,
+                executable: "/Users/tester/Node Versions/bin/codex",
+                environment: ["PATH": "/Users/tester/Node Versions/bin:/usr/bin:/bin"]
+            ),
+            "/usr/bin/env 'PATH=/Users/tester/Node Versions/bin:/usr/bin:/bin' "
+                + "'/Users/tester/Node Versions/bin/codex'"
+        )
+    }
+
+    func testNormalLaunchCommandReceivesSuppliedResolution() {
+        let resolution = LaunchService.AgentResolution(
+            executable: "/resolved/bin/codex",
+            environment: ["PATH": "/resolved/bin:/usr/bin:/bin"]
+        )
+        XCTAssertEqual(
+            LaunchService.agentCommand(.codex, yolo: true, resolution: resolution),
+            "/usr/bin/env 'PATH=/resolved/bin:/usr/bin:/bin' '/resolved/bin/codex' "
+                + "--dangerously-bypass-approvals-and-sandbox"
+        )
+    }
+
+    func testResumeCommandReceivesSuppliedResolution() {
+        let resolution = LaunchService.AgentResolution(
+            executable: "/resolved/bin/codex",
+            environment: ["PATH": "/resolved/bin:/usr/bin:/bin"]
+        )
+        let session = AgentSession(id: "session-id", kind: .codex, title: "",
+                                   modified: .distantPast, resumeCwd: "/tmp/project")
+        let project = Project(name: "Test", yolo: false)
+        XCTAssertEqual(
+            LaunchService.resumeAgentCommand(session, project: project, resolution: resolution),
+            "/usr/bin/env 'PATH=/resolved/bin:/usr/bin:/bin' "
+                + "'/resolved/bin/codex' resume session-id"
+        )
+    }
+
+    func testLocalMeshLaunchReceivesSuppliedEnvironment() {
+        let resolution = LaunchService.AgentResolution(
+            executable: "/resolved/bin/codex",
+            environment: ["PATH": "/resolved/bin:/usr/bin:/bin"]
+        )
+        XCTAssertEqual(
+            MeshSpawn.launchCommand(.codex, resolution: resolution),
+            "/usr/bin/env 'PATH=/resolved/bin:/usr/bin:/bin' '/resolved/bin/codex' "
+                + "--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
+        )
+    }
+
     func testCodexResolverIncludesDesktopAppAndVersionManagerShims() {
         let paths = LaunchService.agentExecutableCandidates(.codex, home: "/Users/tester")
         XCTAssertTrue(paths.contains("/Applications/Codex.app/Contents/Resources/codex"))
@@ -185,13 +243,79 @@ final class AgentKindCommandTests: XCTestCase {
         XCTAssertTrue(paths.contains("/Users/tester/.volta/bin/codex"))
     }
 
-    func testLoginShellResolverIgnoresStartupBanner() {
-        let output = "Welcome back\n/Users/tester/.nvm/versions/node/v22/bin/codex\n"
-        XCTAssertEqual(
-            LaunchService.loginShellExecutable(output) { $0.hasSuffix("/bin/codex") },
-            "/Users/tester/.nvm/versions/node/v22/bin/codex"
+    func testCodexAvailableDirectlyInPath() async {
+        let resolution = await LaunchService.resolveAgent(
+            .codex,
+            environment: ["PATH": "/custom/bin:/usr/bin", "SHELL": "/bin/zsh"],
+            candidates: [],
+            isExecutable: { $0 == "/custom/bin/codex" },
+            runShell: { _, _ in
+                XCTFail("direct PATH resolution must not start a login shell")
+                return Shell.Result(out: "", err: "", code: 1)
+            }
         )
-        XCTAssertNil(LaunchService.loginShellExecutable("Welcome back\ncodex is an alias") { _ in true })
+        XCTAssertEqual(resolution, .init(executable: "/custom/bin/codex",
+                                         environment: ["PATH": "/custom/bin:/usr/bin"]))
+    }
+
+    @MainActor
+    func testCodexAvailableOnlyThroughLoginShellRunsOffMainActor() async {
+        let shellPath = "/Users/tester/.nvm/versions/node/v22/bin"
+        let resolution = await LaunchService.resolveAgent(
+            .codex,
+            environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"],
+            candidates: [],
+            isExecutable: { ["/bin/zsh", "\(shellPath)/codex"].contains($0) },
+            runShell: { executable, arguments in
+                XCTAssertFalse(Thread.isMainThread)
+                XCTAssertEqual(executable, "/bin/zsh")
+                XCTAssertEqual(arguments.first, "-lic")
+                return Shell.Result(
+                    out: "Welcome back\n__PHAROS_EXECUTABLE__=\(shellPath)/codex\n"
+                        + "__PHAROS_PATH__=\(shellPath):/usr/bin:/bin",
+                    err: "",
+                    code: 0
+                )
+            }
+        )
+        XCTAssertEqual(
+            resolution,
+            .init(executable: "\(shellPath)/codex",
+                  environment: ["PATH": "\(shellPath):/usr/bin:/bin"])
+        )
+    }
+
+    func testResolutionHappensOncePerLaunchAttempt() async {
+        let count = Counter()
+        _ = await LaunchService.resolveAgent(
+            .codex,
+            environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"],
+            candidates: [],
+            isExecutable: { ["/bin/zsh", "/resolved/bin/codex"].contains($0) },
+            runShell: { _, _ in
+                count.increment()
+                return Shell.Result(
+                    out: "__PHAROS_EXECUTABLE__=/resolved/bin/codex\n"
+                        + "__PHAROS_PATH__=/resolved/bin:/usr/bin:/bin",
+                    err: "", code: 0
+                )
+            }
+        )
+        XCTAssertEqual(count.read(), 1)
+    }
+
+    func testCodexUnavailable() async {
+        let resolution = await LaunchService.resolveAgent(
+            .codex,
+            environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"],
+            candidates: [],
+            isExecutable: { $0 == "/bin/zsh" },
+            runShell: { _, _ in
+                Shell.Result(out: "__PHAROS_EXECUTABLE__=\n__PHAROS_PATH__=/usr/bin:/bin",
+                             err: "", code: 0)
+            }
+        )
+        XCTAssertNil(resolution)
     }
 }
 
