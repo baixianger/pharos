@@ -13,6 +13,14 @@ enum PairingService {
         var id: String { ip }
     }
 
+    struct TailnetDevice: Identifiable, Hashable, Sendable {
+        let name: String
+        let ip: String
+        let os: String
+        let isThisMac: Bool
+        var id: String { ip }
+    }
+
     /// One validated pairing step, for the UI checklist.
     struct Step: Identifiable { let label: String; let ok: Bool; var id: String { label } }
 
@@ -46,6 +54,58 @@ enum PairingService {
         let status = Shell.run(bin, ["status"])
         guard status.ok else { return [] }
         return parsePeers(status.out, excluding: selfIP)
+    }
+
+    /// Every online device visible to this Mac's Tailscale client. The setup
+    /// guide shows the full tailnet rather than assuming that Brokers only run
+    /// on Macs; selecting a device still performs a real Mesh capability probe.
+    static func discoverTailnetDevices() -> [TailnetDevice] {
+        guard let bin = tailscaleBin() else { return [] }
+        let status = Shell.run(bin, ["status", "--json"])
+        guard status.ok, let data = status.out.data(using: .utf8) else { return [] }
+        return parseTailnetDevices(data)
+    }
+
+    static func parseTailnetDevices(_ data: Data) -> [TailnetDevice] {
+        struct Node: Decodable {
+            var hostName: String
+            var dnsName: String
+            var tailscaleIPs: [String]
+            var online: Bool?
+            var os: String
+
+            enum CodingKeys: String, CodingKey {
+                case hostName = "HostName"
+                case dnsName = "DNSName"
+                case tailscaleIPs = "TailscaleIPs"
+                case online = "Online"
+                case os = "OS"
+            }
+        }
+        struct Status: Decodable {
+            var thisNode: Node
+            var peers: [String: Node]
+
+            enum CodingKeys: String, CodingKey {
+                case thisNode = "Self"
+                case peers = "Peer"
+            }
+        }
+
+        guard let status = try? JSONDecoder().decode(Status.self, from: data) else { return [] }
+        func device(_ node: Node, isThisMac: Bool) -> TailnetDevice? {
+            guard node.online != false,
+                  let ip = node.tailscaleIPs.first(where: isIPv4) else { return nil }
+            let dnsLabel = node.dnsName.split(separator: ".").first.map(String.init) ?? ""
+            let name = dnsLabel.isEmpty ? node.hostName : dnsLabel
+            return TailnetDevice(name: name, ip: ip, os: node.os, isThisMac: isThisMac)
+        }
+        var devices = [device(status.thisNode, isThisMac: true)].compactMap { $0 }
+        devices.append(contentsOf: status.peers.values.compactMap { device($0, isThisMac: false) })
+        return devices.sorted {
+            if $0.isThisMac != $1.isThisMac { return $0.isThisMac }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
     }
 
     /// Tailscale status also contains phones, Linux nodes, and long-offline

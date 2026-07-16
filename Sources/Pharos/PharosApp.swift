@@ -112,6 +112,9 @@ struct PharosApp: App {
                 Button("Command Palette…") { store.requestPalette() }
                     .keyboardShortcut("k", modifiers: [.command])
             }
+            CommandGroup(before: .windowList) {
+                Button("Set Up Mesh Broker…") { openWindow(id: "broker-setup") }
+            }
         }
 
         // Custom About window
@@ -119,6 +122,12 @@ struct PharosApp: App {
             AboutView()
         }
         .windowResizability(.contentSize)
+
+        Window("Set Up Mesh Broker", id: "broker-setup") {
+            BrokerSetupWindow()
+                .environment(store)
+        }
+        .defaultSize(width: 900, height: 720)
 
         Settings {
             SettingsView()

@@ -1,6 +1,16 @@
 import PharosMeshCore
 import SwiftUI
 
+struct BrokerSetupWindow: View {
+    @Environment(\.dismissWindow) private var dismissWindow
+
+    var body: some View {
+        BrokerSetupOnboardingView {
+            dismissWindow(id: "broker-setup")
+        }
+    }
+}
+
 struct BrokerSetupOnboardingView: View {
     @Environment(ProjectStore.self) private var store
     let onComplete: () -> Void
@@ -10,6 +20,9 @@ struct BrokerSetupOnboardingView: View {
     @State private var pairingLink = ""
     @State private var isWorking = false
     @State private var errorMessage: String?
+    @State private var tailnetDevices: [PairingService.TailnetDevice] = []
+    @State private var selectedBrokerIP: String?
+    @State private var isDiscovering = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,6 +39,7 @@ struct BrokerSetupOnboardingView: View {
         }
         .frame(minWidth: 760, minHeight: 620)
         .background(.background)
+        .task { await discoverTailnetDevices() }
         .onOpenURL { url in
             guard MeshPairingLink(url: url) != nil else { return }
             pairingLink = url.absoluteString
@@ -66,6 +80,23 @@ struct BrokerSetupOnboardingView: View {
                         .font(.largeTitle.weight(.semibold))
                     Text("The Broker privately coordinates your projects, issues, rooms, messages, and attachments. You only need one.")
                         .font(.title3).foregroundStyle(.secondary)
+                }
+
+                TailnetBrokerPicker(
+                    devices: tailnetDevices,
+                    selection: $selectedBrokerIP,
+                    isDiscovering: isDiscovering,
+                    isWorking: isWorking,
+                    refresh: { Task { await discoverTailnetDevices() } },
+                    connect: { Task { await connectSelectedBroker() } }
+                )
+
+                HStack(spacing: 12) {
+                    Divider()
+                    Text("OR SET UP A NEW BROKER")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Divider()
                 }
 
                 HStack(alignment: .top, spacing: 12) {
@@ -209,6 +240,45 @@ struct BrokerSetupOnboardingView: View {
     }
 
     @MainActor
+    private func discoverTailnetDevices() async {
+        isDiscovering = true
+        let devices = await Task.detached(priority: .utility) {
+            PairingService.discoverTailnetDevices()
+        }.value
+        tailnetDevices = devices
+        if let selectedBrokerIP, !devices.contains(where: { $0.ip == selectedBrokerIP }) {
+            self.selectedBrokerIP = nil
+        }
+        isDiscovering = false
+    }
+
+    @MainActor
+    private func connectSelectedBroker() async {
+        guard let selectedBrokerIP,
+              let device = tailnetDevices.first(where: { $0.ip == selectedBrokerIP }) else { return }
+        isWorking = true
+        errorMessage = nil
+        defer { isWorking = false }
+        let endpoint = "\(device.ip):\(MeshRemote.port)"
+        let response = await Task.detached(priority: .userInitiated) {
+            MeshClient.send(MeshRequest(cmd: "capabilities"), to: endpoint, timeoutSec: 3)
+        }.value
+        guard response.ok else {
+            errorMessage = "\(device.name) is on your tailnet but is not running a reachable Pharos Mesh Broker."
+            return
+        }
+        guard response.capabilities?.contains("pairing-v1") == true else {
+            errorMessage = "Update pharos-mesh on \(device.name) before using it as the Broker."
+            return
+        }
+        store.setMeshHub(false)
+        store.meshServerEndpoint = endpoint
+        MeshClient.remoteEndpoint = endpoint
+        MeshPaths.setDialEndpointFile(endpoint)
+        step = 2
+    }
+
+    @MainActor
     private func configureBroker() async {
         isWorking = true
         errorMessage = nil
@@ -256,6 +326,57 @@ struct BrokerSetupOnboardingView: View {
             MeshPaths.setDialEndpointFile(invitation.endpoint)
         }
         step = 2
+    }
+}
+
+private struct TailnetBrokerPicker: View {
+    let devices: [PairingService.TailnetDevice]
+    @Binding var selection: String?
+    let isDiscovering: Bool
+    let isWorking: Bool
+    let refresh: () -> Void
+    let connect: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Choose an existing Broker", systemImage: "point.3.connected.trianglepath.dotted")
+                    .font(.headline)
+                Spacer()
+                Button("Refresh", systemImage: "arrow.clockwise", action: refresh)
+                    .controlSize(.small)
+                    .disabled(isDiscovering)
+            }
+            if isDiscovering {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Reading machines from Tailscale…").foregroundStyle(.secondary)
+                }
+            } else if devices.isEmpty {
+                Text("No online Tailscale machines found. Make sure Tailscale is installed and connected.")
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack {
+                    Picker("Broker", selection: $selection) {
+                        Text("Select a machine…").tag(nil as String?)
+                        ForEach(devices) { device in
+                            Text("\(device.name) · \(device.os) · \(device.ip)\(device.isThisMac ? " · This Mac" : "")")
+                                .tag(device.ip as String?)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+                    Button("Use Selected Broker", action: connect)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(selection == nil || isWorking)
+                }
+                Text("Pharos verifies that the selected machine is running a current Mesh Broker before connecting.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(18)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 }
 
