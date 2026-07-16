@@ -43,6 +43,56 @@ enum Shell {
         )
     }
 
+    /// Bounded variant for user-controlled shell startup files. Output is read
+    /// incrementally so termination cannot deadlock on a full pipe.
+    static func run(_ launchPath: String, _ args: [String], cwd: String? = nil,
+                    timeout: TimeInterval) -> Result {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: launchPath)
+        process.arguments = args
+        if let cwd { process.currentDirectoryURL = URL(fileURLWithPath: cwd) }
+        let outPipe = Pipe(), errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+
+        let lock = NSLock()
+        var outData = Data(), errData = Data()
+        outPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            lock.lock(); outData.append(data); lock.unlock()
+        }
+        errPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            lock.lock(); errData.append(data); lock.unlock()
+        }
+
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+        do { try process.run() } catch {
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+            return Result(out: "", err: "\(error)", code: -1)
+        }
+        let timedOut = finished.wait(timeout: .now() + timeout) == .timedOut
+        if timedOut, process.isRunning {
+            process.terminate()
+            _ = finished.wait(timeout: .now() + 0.5)
+        }
+        outPipe.fileHandleForReading.readabilityHandler = nil
+        errPipe.fileHandleForReading.readabilityHandler = nil
+        lock.lock()
+        let output = outData, errors = errData
+        lock.unlock()
+        return Result(
+            out: String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),
+            err: timedOut ? "Command timed out after \(Int(timeout)) seconds"
+                : String(decoding: errors, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),
+            code: timedOut ? 124 : process.terminationStatus
+        )
+    }
+
     static func git(_ args: [String], at path: String) -> Result {
         run("/usr/bin/git", ["-C", path] + args)
     }
@@ -239,7 +289,7 @@ enum LaunchService {
             environment: environment,
             candidates: agentExecutableCandidates(kind),
             isExecutable: { FileManager.default.isExecutableFile(atPath: $0) },
-            runShell: { Shell.run($0, $1) }
+            runShell: { Shell.run($0, $1, timeout: 8) }
         )
     }
 

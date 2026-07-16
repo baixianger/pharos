@@ -290,8 +290,10 @@ enum CLI {
             let r = MeshClient.send(request)
             let code = report(r)
             if r.ok, let targets = r.members, !targets.isEmpty {
-                let peer = PharosPrefs.shared.string(forKey: "pharos.peerHost") ?? ""
-                for note in MeshPoke.followUp(targets: targets, peerHost: peer) { print(note) }
+                for target in targets {
+                    let host = configuredSSHHost(for: target)
+                    for note in MeshPoke.followUp(targets: [target], peerHost: host) { print(note) }
+                }
             }
             return code
         case "attachment":
@@ -388,7 +390,7 @@ enum CLI {
                 print("error: no such member '\(nick)' (see: pharos mesh who)")
                 return 1
             }
-            let peer = PharosPrefs.shared.string(forKey: "pharos.peerHost") ?? ""
+            let peer = configuredSSHHost(for: m)
             if let why = MeshPoke.nudge(m, peerHost: peer) {
                 print("not poked: \(why)")
                 return 1
@@ -415,6 +417,19 @@ enum CLI {
         if env.keys.contains(where: { $0.hasPrefix("CODEX_") })
             || (env["PATH"]?.contains("codex.system") ?? false) { return "codex" }
         return nil
+    }
+
+    /// Resolve a Broker-reported machine to the device-local Host list. The old
+    /// single-peer preference remains a rolling-upgrade fallback only.
+    private static func configuredSSHHost(for member: MeshMemberInfo) -> String {
+        let prefs = PharosPrefs.shared
+        if let raw = prefs.string(forKey: "pharos.executionHosts"),
+           let data = raw.data(using: .utf8),
+           let profiles = try? JSONDecoder().decode([ExecutionHostProfile].self, from: data),
+           let profile = ExecutionHostProfile.resolve(meshHostID: member.host, in: profiles) {
+            return profile.sshHost
+        }
+        return prefs.string(forKey: "pharos.peerHost") ?? ""
     }
 
     /// This machine's own Tailscale IPv4, captured at join so the mobile app can

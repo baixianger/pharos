@@ -37,7 +37,7 @@ struct MeshRoomView: View {
     var body: some View {
         chatPane
         .navigationTitle(PharosViewTitle.rooms)
-        .task(id: store.peerHost) { await resolveRemote() }   // resolve transport BEFORE first load
+        .task(id: brokerRouteID) { await resolveRemote() }   // resolve transport BEFORE first load
         .onReceive(tick) { _ in reload() }
         .task(id: room) {
             // Rapid switches can leave several detached history reads in
@@ -629,7 +629,7 @@ struct MeshRoomView: View {
         // poke). Shared parser with the CLI `say` so both surfaces match.
         let mentions = MeshHooks.parseTextMentions(text)
         let to = mentions.isEmpty ? nil : mentions
-        let peer = store.peerHost
+        let hostProfiles = store.executionHosts
         Task {
             // say echoes each target's presence; act on it: nudge the
             // stopped/idle, and report what needs the human's hands.
@@ -646,7 +646,12 @@ struct MeshRoomView: View {
                 let resp = MeshClient.send(request)
                 if !resp.ok { return (false, [resp.error ?? "Message could not be sent."]) }
                 guard let targets = resp.members, !targets.isEmpty else { return (true, []) }
-                return (true, MeshPoke.followUp(targets: targets, peerHost: peer))
+                let notes = targets.flatMap { target in
+                    let ssh = ExecutionHostProfile.resolve(meshHostID: target.host,
+                                                           in: hostProfiles)?.sshHost ?? ""
+                    return MeshPoke.followUp(targets: [target], peerHost: ssh)
+                }
+                return (true, notes)
             }.value
             if !result.sent {
                 draft = text
@@ -682,13 +687,27 @@ struct MeshRoomView: View {
         }
     }
 
-    /// Point MeshClient at the peer's broker when this Mac has no local one —
+    private var brokerRouteID: String {
+        let hosts = store.executionHosts.map { "\($0.id.uuidString):\($0.sshHost)" }.joined(separator: ",")
+        return "\(store.meshServerEndpoint)|\(hosts)|\(store.isMeshHub)"
+    }
+
+    /// Point MeshClient at the explicitly configured Broker. The SSH Host
+    /// lookup below is only a migration bridge for pre-Broker configurations.
     /// SSHing (off-main) to discover the peer's Tailscale IP and ensure its
     /// broker is up. nil result ⇒ use the local broker. Runs before the first
     /// load, whenever the peer host changes, and to self-heal a dead remote.
     private func resolveRemote() async {
         guard !resolving else { return }
         resolving = true
+        if let endpoint = store.validMeshServerEndpoint {
+            MeshClient.remoteEndpoint = endpoint
+            MeshPaths.setDialEndpointFile(endpoint)
+            resolving = false
+            resolved = true
+            reload()
+            return
+        }
         let peer = store.peerHost
         let hub = store.isMeshHub
         let ep = await Task.detached { MeshRemote.resolve(peerHost: peer, isHub: hub) }.value

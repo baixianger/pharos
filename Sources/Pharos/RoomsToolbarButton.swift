@@ -287,7 +287,7 @@ struct AddMemberSheet: View {
     let room: String
     @Environment(\.dismiss) private var dismiss
     @Environment(ProjectStore.self) private var store
-    private enum SpawnHost: Hashable { case local, peer }
+    private enum SpawnHost: Hashable { case local, remote(UUID) }
     private enum DirChoice: Hashable { case scratch, project(String), custom }
     @State private var kind: AgentKind = .claude
     @State private var spawnHost: SpawnHost = .local
@@ -316,8 +316,8 @@ struct AddMemberSheet: View {
 
             Picker("Host", selection: $spawnHost) {
                 Text("This Mac · \(HostIdentity.current)").tag(SpawnHost.local)
-                if !store.peerHost.isEmpty {
-                    Text("Paired Mac · \(store.peerHost)").tag(SpawnHost.peer)
+                ForEach(store.executionHosts) { host in
+                    Text("\(host.displayName) · \(host.sshHost)").tag(SpawnHost.remote(host.id))
                 }
             }
             .pickerStyle(.radioGroup)
@@ -360,7 +360,7 @@ struct AddMemberSheet: View {
                 }
             } else {
                 Text("Spawns \(kind == .claude ? "Claude" : "Codex") in a tmux session "
-                     + (spawnHost == .local ? "on this Mac" : "on \(store.peerHost) over SSH")
+                     + (selectedHost.map { "on \($0.displayName) over SSH" } ?? "on this Mac")
                      + ", then has it join the room. Confirms once it's in.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -392,7 +392,7 @@ struct AddMemberSheet: View {
         spawning = true
         phase = .booting; detail = "starting…"
         let k = kind
-        let host = spawnHost == .peer ? store.peerHost : nil
+        let host = selectedHost?.sshHost
         Task.detached {
             await MeshSpawn.spawn(room: room, nick: n, kind: k, host: host, workDir: workDir) { p in
                 Task { @MainActor in
@@ -401,5 +401,10 @@ struct AddMemberSheet: View {
                 }
             }
         }
+    }
+
+    private var selectedHost: ExecutionHostProfile? {
+        guard case .remote(let id) = spawnHost else { return nil }
+        return store.executionHosts.first { $0.id == id }
     }
 }

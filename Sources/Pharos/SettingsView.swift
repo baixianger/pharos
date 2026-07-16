@@ -154,6 +154,7 @@ private struct ProjectsSettingsTab: View {
 private struct MachinesSettingsTab: View {
     @Environment(ProjectStore.self) private var store
     @State private var brokerStatus: BrokerConnectionStatus = .unchecked
+    @State private var brokerMode: BrokerMode = .remote
 
     var body: some View {
         @Bindable var store = store
@@ -193,39 +194,28 @@ private struct MachinesSettingsTab: View {
                     Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Section("Host mesh") {
-                HStack {
-                    Toggle("Host the chat mesh on this Mac", isOn: Binding(
-                        get: { store.isMeshHub },
-                        set: { on in store.setMeshHub(on); Task.detached { MeshHosting.apply(hosting: on) } }
-                    ))
-                    .disabled(store.validMeshServerEndpoint != nil)
-                    HelpBadge(text: "Exactly ONE Mac in the pairing hosts the mesh (the hub) — the role is stored in your synced project data, so all your Macs agree on it. Turning this ON claims the hub for this Mac (and takes it from whichever Mac had it); OFF releases it. The hub binds its chat broker to your Tailscale address; the other Macs pair to it below.")
+            Section("Mesh Broker") {
+                Picker("Broker mode", selection: $brokerMode) {
+                    Text("This Mac").tag(BrokerMode.thisMac)
+                    Text("Remote endpoint").tag(BrokerMode.remote)
                 }
-                if let hub = store.meshHubHostID, hub != HostIdentity.current {
-                    Text("Current hub: \(hub). Turning this on moves the hub here — \(hub) demotes itself the next time Pharos launches there.")
+                .pickerStyle(.radioGroup)
+                if brokerMode == .remote {
+                    LabeledContent("Tailscale endpoint") {
+                        TextField("100.x.y.z:47800", text: $store.meshServerEndpoint)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 200)
+                    }
+                    if !store.meshServerEndpoint.isEmpty, store.validMeshServerEndpoint == nil {
+                        Label("Enter a host name or IP address followed by a port.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                } else {
+                    Text("Pharos runs the Broker on this Mac and exposes it on its Tailscale address. Local clients use the Unix socket.")
                         .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
-            }
-            Section("Headless mesh server") {
-                LabeledContent("Tailscale endpoint") {
-                    TextField("100.x.y.z:47800", text: $store.meshServerEndpoint)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 200)
-                }
-                if !store.meshServerEndpoint.isEmpty, store.validMeshServerEndpoint == nil {
-                    Label("Enter an IPv4 address or host name followed by a port.",
-                          systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                Text("Use an always-on `pharos-mesh` Broker on Linux or another server. A valid endpoint takes precedence over Mac hub hosting after Pharos is relaunched; CLI and agent hooks use the same endpoint.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Section("Broker connection") {
                 brokerStatusView
                 HStack {
                     Text(brokerTarget)
@@ -239,14 +229,21 @@ private struct MachinesSettingsTab: View {
                         .controlSize(.small)
                         .disabled(brokerStatus.isChecking || brokerTargetIsInvalid)
                 }
+                Text("The Broker coordinates rooms, messages, presence, replies, and attachments. It does not execute agent commands; execution machines are configured under Hosts.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            PairingView()
+            HostsSettingsSection()
         }
         .formStyle(.grouped)
+        .onChange(of: brokerMode) { _, mode in applyBrokerMode(mode) }
         .task(id: store.meshServerEndpoint) {
             // Avoid dialing on every keystroke while the endpoint is edited.
             try? await Task.sleep(for: .milliseconds(450))
             guard !Task.isCancelled else { return }
+            let desired: BrokerMode = store.validMeshServerEndpoint == nil ? .thisMac : .remote
+            if brokerMode != desired { brokerMode = desired }
+            if desired == .remote, store.isMeshHub { store.setMeshHub(false) }
             await checkBroker()
         }
     }
@@ -262,6 +259,18 @@ private struct MachinesSettingsTab: View {
         if store.isMeshHub { return "Local socket · hosted on this Mac" }
         if let endpoint = MeshPaths.dialEndpoint { return endpoint }
         return "Local socket"
+    }
+
+    private func applyBrokerMode(_ mode: BrokerMode) {
+        switch mode {
+        case .thisMac:
+            store.meshServerEndpoint = ""
+            store.setMeshHub(true)
+            Task.detached { MeshHosting.apply(hosting: true) }
+        case .remote:
+            if store.isMeshHub { store.setMeshHub(false) }
+            Task.detached { MeshHosting.apply(hosting: false) }
+        }
     }
 
     @ViewBuilder
@@ -337,6 +346,8 @@ private struct MachinesSettingsTab: View {
     }
 }
 
+private enum BrokerMode: Hashable { case thisMac, remote }
+
 private enum BrokerConnectionStatus: Equatable {
     case unchecked
     case checking
@@ -347,29 +358,53 @@ private enum BrokerConnectionStatus: Equatable {
     var isChecking: Bool { self == .checking }
 }
 
-// MARK: - Pairing
+// MARK: - Execution hosts
 
-/// Pair this Mac with another over Tailscale for cross-host chat rooms.
-/// Discovers the tailnet's Macs, then validates SSH + Tailscale + mesh broker
-/// (starting the peer's broker if needed). Stores the peer in `peerHost`.
-private struct PairingView: View {
+/// SSH is the current control plane for execution Hosts. It installs/drives
+/// Pharos, tmux, and coding agents; it is not the Mesh message transport.
+private struct HostsSettingsSection: View {
     @Environment(ProjectStore.self) private var store
     @State private var peers: [PairingService.Peer] = []
     @State private var testing = false
     @State private var result: PairingService.Result?
+    @State private var draftName = ""
+    @State private var draftSSHHost = ""
 
     var body: some View {
-        @Bindable var store = store
-        Section("Pair a Mac") {
+        Section("Hosts") {
+            LabeledContent {
+                Text("Local").font(.caption).foregroundStyle(.secondary)
+            } label: {
+                Label(HostIdentity.current, systemImage: "desktopcomputer")
+            }
+            ForEach(store.executionHosts) { host in
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label(host.displayName, systemImage: "server.rack")
+                        Text(host.sshHost).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(role: .destructive) { store.removeExecutionHost(id: host.id) } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Remove Host")
+                }
+            }
+            Divider()
             HStack {
-                Text("Pair with")
+                Text("Discover")
                 Spacer()
-                Menu(store.peerHost.isEmpty ? "Choose a Mac…" : store.peerHost) {
+                Menu("Choose a tailnet Mac…") {
                     if peers.isEmpty {
                         Text("No other Macs found on your tailnet").disabled(true)
                     } else {
                         ForEach(peers) { p in
-                            Button("\(p.name)  ·  \(p.ip)") { store.peerHost = p.ip; result = nil }
+                            Button("\(p.name)  ·  \(p.ip)") {
+                                draftName = p.name
+                                draftSSHHost = p.ip
+                                result = nil
+                            }
                         }
                     }
                     Divider()
@@ -377,18 +412,22 @@ private struct PairingView: View {
                 }
                 .frame(maxWidth: 240)
             }
-            LabeledContent("SSH host / IP") {
-                TextField("home-ts or 100.x.y.z", text: $store.peerHost)
+            LabeledContent("Name") {
+                TextField("home-ts or build server", text: $draftName)
                     .textFieldStyle(.roundedBorder).frame(maxWidth: 200)
-                    .onChange(of: store.peerHost) { _, _ in result = nil }
+            }
+            LabeledContent("SSH host / IP") {
+                TextField("alias, user@host, or 100.x.y.z", text: $draftSSHHost)
+                    .textFieldStyle(.roundedBorder).frame(maxWidth: 200)
+                    .onChange(of: draftSSHHost) { _, _ in result = nil }
             }
             HStack {
-                Button(testing ? "Testing…" : "Test & pair") { Task { await test() } }
-                    .disabled(testing || store.peerHost.isEmpty)
+                Button(testing ? "Validating…" : "Validate & add Host") { Task { await testAndAdd() } }
+                    .disabled(testing || draftSSHHost.trimmingCharacters(in: .whitespaces).isEmpty)
                 if testing { ProgressView().controlSize(.small).padding(.leading, 4) }
                 Spacer()
                 if let r = result {
-                    Label(r.ok ? "Paired" : "Not connected",
+                    Label(r.ok ? "Host added" : "Host unavailable",
                           systemImage: r.ok ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                         .foregroundStyle(r.ok ? Color.green : Color.orange)
                         .font(.caption)
@@ -403,7 +442,7 @@ private struct PairingView: View {
                     }
                 }
             }
-            Text("Pairs over Tailscale for cross-host chat rooms. The peer needs Pharos in /Applications; its broker is started automatically.")
+            Text("Hosts execute agents through SSH and tmux. They may be macOS or Linux and do not need to run the Mesh Broker. Pharos validates the exact Host identity so Dashboard attach and stop actions route safely.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -414,12 +453,22 @@ private struct PairingView: View {
         peers = await Task.detached { PairingService.discoverPeers() }.value
     }
 
-    private func test() async {
+    private func testAndAdd() async {
         testing = true
-        let host = store.peerHost
+        let host = draftSSHHost.trimmingCharacters(in: .whitespacesAndNewlines)
         let r = await Task.detached { PairingService.pair(host: host) }.value
         result = r
         testing = false
+        guard r.ok else { return }
+        let identity = r.hostIdentity
+        let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        store.upsertExecutionHost(ExecutionHostProfile(
+            name: name.isEmpty ? (identity ?? host) : name,
+            sshHost: host,
+            meshHostID: identity
+        ))
+        draftName = ""
+        draftSSHHost = ""
     }
 }
 

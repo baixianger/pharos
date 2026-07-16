@@ -14,6 +14,11 @@ struct SSHHostProfile: Codable, Equatable, Identifiable, Sendable {
     var username: String
     var identityID: UUID?
     var acceptsUnverifiedHostKey = false
+
+    var displayName: String {
+        let value = meshHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? sshHost : value
+    }
 }
 
 private struct SyncedConfiguration: Codable, Equatable, Sendable {

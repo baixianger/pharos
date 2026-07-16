@@ -71,6 +71,7 @@ struct DashboardView: View {
                 statusCard
                 if !blocked.isEmpty || !urgent.isEmpty { attentionCard }
                 if !activeAgents.isEmpty { agentsCard }
+                if !store.allRunningSessions.isEmpty { trackedSessionsCard }
                 if !liveMeshAgents.isEmpty { meshAgentsCard }
                 if !meshMessages.isEmpty { meshCard }
                 if projects.contains(where: { !$0.milestones.isEmpty }) { milestonesCard }
@@ -147,6 +148,33 @@ struct DashboardView: View {
 
     // MARK: Mesh agents (all machines · attach / stop)
 
+    private var trackedSessionsCard: some View {
+        card("Running sessions · \(store.allRunningSessions.count)") {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(store.allRunningSessions.sorted(), id: \.self) { session in
+                    let remoteHost = store.remoteSessionHosts[session]
+                    HStack(spacing: 9) {
+                        Circle().fill(.green).frame(width: 8, height: 8)
+                        Text(session).font(.callout.weight(.medium)).lineLimit(1)
+                        Text(remoteHost ?? HostIdentity.current)
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Spacer()
+                        Button("Attach") {
+                            let command = RemoteLaunch.interactiveAttachCommand(
+                                session: session, host: remoteHost)
+                            LaunchService.openTerminal(command: command, terminal: store.terminal)
+                        }
+                        .font(.caption).buttonStyle(.borderless)
+                        Button("Stop") {
+                            agentToStop = StopTarget(session: session, host: remoteHost, label: session)
+                        }
+                        .font(.caption).buttonStyle(.borderless).foregroundStyle(.red)
+                    }
+                }
+            }
+        }
+    }
+
     private var liveMeshAgents: [MeshMemberInfo] {
         meshAgents.filter { $0.nick != "human" }
             .sorted { ($0.host ?? "", $0.nick) < ($1.host ?? "", $1.nick) }
@@ -202,7 +230,8 @@ struct DashboardView: View {
 
     private func stopMeshAgent(_ m: MeshMemberInfo) {
         guard let pane = m.tmuxPane else { return }
-        let host = (m.host == nil || m.host == HostIdentity.current) ? nil : store.peerHost
+        let host = (m.host == nil || m.host == HostIdentity.current)
+            ? nil : store.executionHost(forMeshHost: m.host)?.sshHost
         guard m.host == nil || m.host == HostIdentity.current || !(host?.isEmpty ?? true) else {
             agentActionError = "No paired Mac SSH host is configured."
             return
@@ -277,8 +306,7 @@ struct DashboardView: View {
                 + "s=$(tmux\(socket) display-message -p -t '\(pane)' '#{session_name}') && \(action)"
         )
         if m.host == nil || m.host == HostIdentity.current { return inner }
-        let peer = store.peerHost
-        guard !peer.isEmpty else { return nil }
+        guard let peer = store.executionHost(forMeshHost: m.host)?.sshHost, !peer.isEmpty else { return nil }
         let escaped = inner.replacingOccurrences(of: "\\", with: "\\\\")
                            .replacingOccurrences(of: "$", with: "\\$")
                            .replacingOccurrences(of: "\"", with: "\\\"")

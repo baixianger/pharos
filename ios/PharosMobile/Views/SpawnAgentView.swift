@@ -33,7 +33,8 @@ struct SpawnAgentView: View {
                     Picker("Run on", selection: $hostID) {
                         Text("Choose a host").tag(UUID?.none)
                         ForEach(eligibleHosts) { profile in
-                            Text("\(profile.username)@\(profile.sshHost)").tag(Optional(profile.id))
+                            Text("\(profile.displayName) · \(profile.username)@\(profile.sshHost)")
+                                .tag(Optional(profile.id))
                         }
                     }
                 }

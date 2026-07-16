@@ -158,10 +158,12 @@ Pharos handles it with a **per-host path map** — each Mac stores and reads onl
 its own path (keyed by computer name), so syncing never clobbers it. A project
 synced from another Mac shows "not checked out on *this* host" until you point it
 at a local folder (GUI **Set local folder…**, or `pharos path <project> <path>`).
-`pharos host` prints this machine's key. Settings → **Machines** pairs this Mac
-with the other one (SSH over Tailscale) and picks which machine hosts the agent
-mesh; remote launches (`--host`) resolve each project's path from the same
-synced per-host map.
+`pharos host` prints this machine's key. Settings → **Machines** separates the
+shared **Mesh Broker** from the **Hosts** that execute agents. The Broker may run
+on this Mac or at one explicit Tailscale endpoint. The Host list may contain
+several macOS or Linux machines controlled over SSH; remote launches (`--host`)
+resolve each project's path from the same synced per-host map. A Host does not
+need to run the Broker.
 
 ---
 

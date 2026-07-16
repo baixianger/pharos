@@ -398,6 +398,34 @@ struct Worktree: Identifiable, Hashable {
     var name: String { URL(fileURLWithPath: path).lastPathComponent }
 }
 
+/// A machine that may execute coding agents. Broker configuration deliberately
+/// lives elsewhere: a Broker coordinates rooms and presence, while a Host is an
+/// SSH-reachable execution node. Profiles are device-local because SSH aliases
+/// and routes may differ between Macs.
+struct ExecutionHostProfile: Codable, Equatable, Identifiable, Hashable, Sendable {
+    var id = UUID()
+    var name: String
+    var sshHost: String
+    /// Exact `HostIdentity` reported by agents on this machine. This lets the
+    /// Dashboard route attach/stop actions without guessing from display names.
+    var meshHostID: String?
+
+    var displayName: String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? sshHost : trimmed
+    }
+
+    static func resolve(meshHostID: String?, in profiles: [Self]) -> Self? {
+        guard let meshHostID, !meshHostID.isEmpty else {
+            return profiles.count == 1 ? profiles[0] : nil
+        }
+        if let exact = profiles.first(where: {
+            $0.meshHostID == meshHostID || $0.name.caseInsensitiveCompare(meshHostID) == .orderedSame
+        }) { return exact }
+        return profiles.count == 1 ? profiles[0] : nil
+    }
+}
+
 /// Terminal app used to open shells and launch agents.
 enum TerminalApp: String, CaseIterable, Identifiable, Codable {
     case ghostty, terminal, iterm, warp, wezterm

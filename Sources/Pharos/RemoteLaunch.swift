@@ -60,6 +60,18 @@ enum RemoteLaunch {
             + command
     }
 
+    /// Terminal command used by the unified Dashboard session list.
+    static func interactiveAttachCommand(session: String, host: String?) -> String {
+        let attach = "exec tmux attach -t \(sq("=\(session)"))"
+        guard let host, !host.isEmpty else {
+            return "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin\"; \(attach)"
+        }
+        let inner = terminalSafeRemoteShell(
+            "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin\"; \(attach)"
+        )
+        return "ssh -t \(sq(host)) \(sq(inner))"
+    }
+
     /// Parse socket paths returned by the remote legacy discovery script.
     /// Kept pure/internal so filtering and de-duplication have regression tests.
     static func legacySocketMatches(_ output: String) -> [String] {

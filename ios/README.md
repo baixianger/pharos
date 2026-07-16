@@ -7,12 +7,12 @@ existing Pharos agent mesh from iPhone and iPad.
 
 | Concern | Owner | Transport | Security boundary |
 |---|---|---|---|
-| Rooms, roster, history, `say` | Pharos Mesh broker on the hub Mac | newline-delimited JSON over TCP `47800` | the broker must bind only to its Tailscale address; Tailscale ACLs are the current authentication boundary |
+| Rooms, roster, history, `say` | Configured Pharos Mesh Broker | newline-delimited JSON over TCP `47800` | the Broker must bind only to its Tailscale address; Tailscale ACLs are the current authentication boundary |
 | Live refresh | iOS app while foregrounded | one request per TCP connection, polled every 2 seconds | no arbitrary-LAN endpoint should be configured |
 | Agent wake-up | iOS app to the agent's Mac | SSH over Tailscale, then guarded `tmux capture-pane` + `send-keys` | device-local Ed25519 key; explicit opt-in while host keys remain unpinned |
 | Interactive control | iOS app to the member's Mac | Citadel PTY + SwiftTerm, resolving the reported pane to its exact tmux session | explicit target confirmation; same device-local key and host-key opt-in |
 | Spawn member | selected member host | SSH command invoking that host's `pharos mesh spawn` | shared CLI owns hooks, tmux, launch flags, and join confirmation |
-| Non-secret configuration | iPhone/iPad devices | `NSUbiquitousKeyValueStore` | iCloud syncs Mesh and SSH host mappings only |
+| Non-secret configuration | iPhone/iPad devices | `NSUbiquitousKeyValueStore` | iCloud syncs the Broker endpoint and Host profiles only |
 | SSH private key | one iOS device | Keychain, `AfterFirstUnlockThisDeviceOnly` | never iCloud-synced |
 
 The wire structs intentionally mirror `Sources/Pharos/MeshBroker.swift`. They
@@ -22,6 +22,8 @@ shared package once both apps can migrate together.
 ## Deliberate boundaries
 
 - iCloud is configuration sync, not a chat relay.
+- Broker and Host configuration are independent: the Broker coordinates; Hosts
+  execute agents over SSH. A Host does not need to run the Broker.
 - iOS suspends arbitrary sockets in the background. This version refreshes in
   the foreground; reliable background notifications require an APNs relay.
 - The current desktop broker has no application token. Do not expose port

@@ -20,6 +20,7 @@ enum PairingService {
         let ok: Bool
         let steps: [Step]
         let ip: String?
+        let hostIdentity: String?
     }
 
     /// Absolute path to the Tailscale CLI (not on a GUI process's PATH).
@@ -93,20 +94,35 @@ enum PairingService {
         }
     }
 
-    /// Validate (and bring up) a peer: SSH reachable → Tailscale IP → mesh broker
-    /// running. `host` may be an SSH alias or a Tailscale IP. BLOCKING + SSH —
-    /// call off the main thread.
+    /// Validate an execution Host. Broker reachability is intentionally absent:
+    /// Hosts run agents; the separately configured Broker coordinates them.
+    /// `host` may be an SSH alias or a Tailscale IP. BLOCKING + SSH — call off
+    /// the main thread.
     static func pair(host: String) -> Result {
         let h = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !h.isEmpty else {
-            return Result(ok: false, steps: [Step(label: "Enter or pick a Mac", ok: false)], ip: nil)
+            return Result(ok: false, steps: [Step(label: "Enter or pick a Host", ok: false)],
+                          ip: nil, hostIdentity: nil)
         }
-        let p = MeshRemote.probe(h)
-        var steps = [Step(label: "SSH reachable", ok: p.sshOK)]
-        if p.sshOK { steps.append(Step(label: "Tailscale address", ok: p.ip != nil)) }
-        if p.ip != nil { steps.append(Step(label: "Mesh broker running", ok: p.brokerUp)) }
-        let ok = p.sshOK && p.ip != nil && p.brokerUp
-        return Result(ok: ok, steps: steps, ip: p.ip)
+        let options = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
+        let ssh = Shell.run("/usr/bin/ssh", options + [h, "true"])
+        guard ssh.ok else {
+            return Result(ok: false, steps: [Step(label: "SSH reachable", ok: false)],
+                          ip: isIPv4(h) ? h : nil, hostIdentity: nil)
+        }
+        let identityProbe = Shell.run("/usr/bin/ssh", options + [h,
+            "scutil --get ComputerName 2>/dev/null || hostname"])
+        let identity = identityProbe.out.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tools = Shell.run("/usr/bin/ssh", options + [h,
+            #"PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin"; command -v tmux >/dev/null && command -v pharos >/dev/null"#])
+        let hasIdentity = identityProbe.ok && !identity.isEmpty
+        let steps = [
+            Step(label: "SSH reachable", ok: true),
+            Step(label: "Host identity", ok: hasIdentity),
+            Step(label: "Pharos CLI and tmux", ok: tools.ok)
+        ]
+        return Result(ok: hasIdentity && tools.ok, steps: steps,
+                      ip: isIPv4(h) ? h : nil, hostIdentity: hasIdentity ? identity : nil)
     }
 
     private static func isIPv4(_ s: String) -> Bool {

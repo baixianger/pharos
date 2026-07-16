@@ -317,6 +317,43 @@ final class AgentKindCommandTests: XCTestCase {
         )
         XCTAssertNil(resolution)
     }
+
+    func testBoundedShellStopsPathologicalStartup() {
+        let started = Date()
+        let result = Shell.run("/bin/zsh", ["-c", "while true; do :; done"], timeout: 0.05)
+        XCTAssertEqual(result.code, 124)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.0)
+    }
+}
+
+final class ExecutionHostProfileTests: XCTestCase {
+    func testExactMeshIdentitySelectsTheCorrectSSHHost() {
+        let mini = ExecutionHostProfile(name: "Mini", sshHost: "mini-ts", meshHostID: "Xiang’s Mac mini")
+        let air = ExecutionHostProfile(name: "Air", sshHost: "home-ts", meshHostID: "白富贵")
+        XCTAssertEqual(ExecutionHostProfile.resolve(meshHostID: "白富贵", in: [mini, air]), air)
+    }
+
+    func testUnknownIdentityNeverGuessesWhenSeveralHostsExist() {
+        let a = ExecutionHostProfile(name: "A", sshHost: "a")
+        let b = ExecutionHostProfile(name: "B", sshHost: "b")
+        XCTAssertNil(ExecutionHostProfile.resolve(meshHostID: "unknown", in: [a, b]))
+        XCTAssertEqual(ExecutionHostProfile.resolve(meshHostID: "unknown", in: [a]), a)
+    }
+}
+
+final class RemoteAttachCommandTests: XCTestCase {
+    func testRemoteAttachUsesExactHostAndTerminalFallback() {
+        let command = RemoteLaunch.interactiveAttachCommand(session: "work session", host: "home-ts")
+        XCTAssertTrue(command.contains("ssh -t 'home-ts'"))
+        XCTAssertTrue(command.contains("xterm-256color"))
+        XCTAssertTrue(command.contains("work session"))
+    }
+
+    func testLocalAttachDoesNotUseSSH() {
+        let command = RemoteLaunch.interactiveAttachCommand(session: "local", host: nil)
+        XCTAssertFalse(command.contains("ssh -t"))
+        XCTAssertTrue(command.contains("tmux attach"))
+    }
 }
 
 // MARK: - StoreData soft-delete / Trash

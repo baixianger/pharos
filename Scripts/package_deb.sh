@@ -48,10 +48,11 @@ Maintainer: Pai <baixianger@gmail.com>
 Depends: libc6, libstdc++6
 Installed-Size: $INSTALLED_SIZE
 Homepage: https://github.com/baixianger/pharos
-Description: Headless broker and CLI for Pharos Mesh
+Description: Headless coordination broker and CLI for Pharos Mesh
  Pharos Mesh stores chat transcripts and attachments for Pharos clients over
  a private Tailscale network. This package installs the portable broker, CLI,
- and a hardened systemd service.
+ and a hardened systemd service. It does not execute agent shell commands;
+ execution Hosts are configured separately in Pharos clients.
 EOF
 printf '%s\n' '/etc/pharos-mesh.env' > "$PKG/DEBIAN/conffiles"
 

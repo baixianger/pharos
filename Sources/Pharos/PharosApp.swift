@@ -57,6 +57,7 @@ struct PharosApp: App {
                         // A persistent headless broker supersedes the old
                         // Mac-to-Mac hub election. Stop any stale local TCP hub
                         // and persist the endpoint so CLI/hooks follow it too.
+                        if store.isMeshHub { store.setMeshHub(false) }
                         await Task.detached { MeshHosting.demoteStrayHub() }.value
                         MeshClient.hostTCPEndpoint = nil
                         MeshClient.remoteEndpoint = endpoint

@@ -488,11 +488,51 @@ final class ProjectStore {
     var codexArgs = "" {
         didSet { PharosPrefs.shared.set(codexArgs, forKey: "pharos.codexArgs") }
     }
-    /// SSH host alias or `user@host` for the peer machine. Empty = disabled.
-    /// The paired peer Mac (SSH host / Tailscale IP) — used to reach its mesh
-    /// broker for cross-host chat rooms (see MeshRemote).
-    var peerHost = "" {
-        didSet { PharosPrefs.shared.set(peerHost, forKey: "pharos.peerHost") }
+    /// SSH-reachable machines that can execute agents. This replaces the old
+    /// single `peerHost` setting while keeping a compatibility projection for
+    /// CLI/hooks that have not yet learned host identities.
+    var executionHosts: [ExecutionHostProfile] = [] {
+        didSet { persistExecutionHosts() }
+    }
+    var peerHost: String {
+        get { executionHosts.first?.sshHost ?? "" }
+        set {
+            let value = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.isEmpty {
+                executionHosts = []
+            } else if executionHosts.isEmpty {
+                executionHosts = [ExecutionHostProfile(name: value, sshHost: value)]
+            } else {
+                executionHosts[0].sshHost = value
+                if executionHosts[0].name.isEmpty { executionHosts[0].name = value }
+            }
+        }
+    }
+
+    func upsertExecutionHost(_ host: ExecutionHostProfile) {
+        if let index = executionHosts.firstIndex(where: { $0.id == host.id }) {
+            executionHosts[index] = host
+        } else if let index = executionHosts.firstIndex(where: { $0.sshHost == host.sshHost }) {
+            executionHosts[index] = host
+        } else {
+            executionHosts.append(host)
+        }
+    }
+
+    func removeExecutionHost(id: UUID) {
+        executionHosts.removeAll { $0.id == id }
+    }
+
+    func executionHost(forMeshHost hostID: String?) -> ExecutionHostProfile? {
+        ExecutionHostProfile.resolve(meshHostID: hostID, in: executionHosts)
+    }
+
+    private func persistExecutionHosts() {
+        if let data = try? JSONEncoder().encode(executionHosts) {
+            PharosPrefs.shared.set(String(decoding: data, as: UTF8.self), forKey: "pharos.executionHosts")
+        }
+        // Compatibility for the CLI and older app builds during rolling update.
+        PharosPrefs.shared.set(executionHosts.first?.sshHost ?? "", forKey: "pharos.peerHost")
     }
     /// Optional always-on Mesh broker, normally a Linux `pharos-mesh` service
     /// reachable over Tailscale. This is intentionally per-machine: project
@@ -567,7 +607,13 @@ final class ProjectStore {
         }
         claudeArgs = d.string(forKey: "pharos.claudeArgs") ?? ""
         codexArgs  = d.string(forKey: "pharos.codexArgs")  ?? ""
-        peerHost   = d.string(forKey: "pharos.peerHost")   ?? ""
+        if let raw = d.string(forKey: "pharos.executionHosts"),
+           let data = raw.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([ExecutionHostProfile].self, from: data) {
+            executionHosts = decoded
+        } else if let legacy = d.string(forKey: "pharos.peerHost"), !legacy.isEmpty {
+            executionHosts = [ExecutionHostProfile(name: legacy, sshHost: legacy)]
+        }
         meshServerEndpoint = d.string(forKey: "pharos.meshServerEndpoint") ?? ""
         load()
         // Migrate the pre-P2 per-machine hub flag into the synced store (one
@@ -648,7 +694,7 @@ final class ProjectStore {
             }
         }
         // Reconcile issue↔agent links against each host's live set (restart-safe).
-        if projects.contains(where: { $0.issues.contains { $0.activeSession != nil } }) {
+        if !executionHosts.isEmpty || projects.contains(where: { $0.issues.contains { $0.activeSession != nil } }) {
             let map = await liveSessionMap(localLive: live)
             mutateStore { _ = $0.reconcileAgentLinks(live: map) }
         }
@@ -1305,7 +1351,7 @@ final class ProjectStore {
             runningSessions = live
             updateDockBadge()
             // Self-heal stale links on launch / manual refresh / after a launch.
-            if projects.contains(where: { $0.issues.contains { $0.activeSession != nil } }) {
+            if !executionHosts.isEmpty || projects.contains(where: { $0.issues.contains { $0.activeSession != nil } }) {
                 let map = await liveSessionMap(localLive: live)
                 mutateStore { _ = $0.reconcileAgentLinks(live: map) }
             }
@@ -1319,6 +1365,7 @@ final class ProjectStore {
     /// by the same probes that feed reconcile). Lets the GUI badge a
     /// remotely-launched issue as running even though local tmux knows nothing.
     private(set) var remoteRunningSessions: Set<String> = []
+    private(set) var remoteSessionHosts: [String: String] = [:]
 
     /// Live sessions across every probed host — what issue "running" badges use.
     var allRunningSessions: Set<String> { runningSessions.union(remoteRunningSessions) }
@@ -1330,11 +1377,12 @@ final class ProjectStore {
     private func liveSessionMap(localLive: Set<String>?) async -> [String: Set<String>] {
         var map: [String: Set<String>] = [:]
         if let localLive { map[""] = localLive }
-        let hosts = Set(projects.flatMap { p in
+        let linkedHosts = Set(projects.flatMap { p in
             p.issues.compactMap { i in
                 i.activeSession != nil ? StoreData.linkHostBucket(i.activeSessionHost) : nil
             }
         }).subtracting([""])
+        let hosts = linkedHosts.union(executionHosts.map(\.sshHost).filter { !$0.isEmpty })
         for host in hosts {
             if let cached = remoteLiveCache[host], Date().timeIntervalSince(cached.stamp) < 30 {
                 if let liveSet = cached.live { map[host] = liveSet }
@@ -1345,6 +1393,10 @@ final class ProjectStore {
             if let probed { map[host] = probed }
         }
         remoteRunningSessions = map.filter { $0.key != "" }.values.reduce(into: []) { $0.formUnion($1) }
+        remoteSessionHosts = map.reduce(into: [:]) { result, entry in
+            guard !entry.key.isEmpty else { return }
+            for session in entry.value { result[session] = entry.key }
+        }
         return map
     }
 

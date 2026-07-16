@@ -49,7 +49,23 @@ struct SettingsView: View {
                 } header: {
                     Text("Mesh Broker").textCase(nil)
                 } footer: {
-                    Text("Configuration may sync through iCloud. Messages travel directly over Tailscale TCP.")
+                    Text("The Broker coordinates rooms, messages, and presence. It does not execute commands on Hosts.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section("Hosts") {
+                    ForEach(settings.sshHosts) { profile in
+                        NavigationLink {
+                            SSHHostEditor(profile: profile)
+                        } label: {
+                            VStack(alignment: .leading) {
+                                Text(profile.displayName)
+                                Text("\(profile.username)@\(profile.sshHost):\(profile.port)")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    Button("Add Host", systemImage: "plus") { showHostEditor = true }
                 }
 
                 Section {
@@ -67,22 +83,8 @@ struct SettingsView: View {
                 } header: {
                     Text("Device SSH identity")
                 } footer: {
-                    Text("Private keys are device-local in Keychain and never uploaded to iCloud.")
-                }
-
-                Section("SSH host mappings") {
-                    ForEach(settings.sshHosts) { profile in
-                        NavigationLink {
-                            SSHHostEditor(profile: profile)
-                        } label: {
-                            VStack(alignment: .leading) {
-                                Text(profile.meshHost)
-                                Text("\(profile.username)@\(profile.sshHost):\(profile.port)")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    Button("Add SSH host mapping", systemImage: "plus") { showHostEditor = true }
+                    Text("Private keys are device-local in Keychain and never uploaded to iCloud. Hosts use SSH to launch, attach, and stop agents; Mesh traffic goes directly to the Broker.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("Runtime limits") {
@@ -252,15 +254,15 @@ private struct SSHHostEditor: View {
         Form {
             Section {
                 if hostOptions.isEmpty {
-                    TextField("Mesh host identity", text: $value.meshHost)
+                    TextField("Host identity", text: $value.meshHost)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                 } else {
-                    Picker("Mesh host", selection: $hostChoice) {
+                    Picker("Host identity", selection: $hostChoice) {
                         ForEach(hostOptions, id: \.self) { Text($0).tag(HostChoice.pick($0)) }
                         Text("Custom…").tag(HostChoice.custom)
                     }
                     if hostChoice == .custom {
-                        TextField("Mesh host identity", text: $value.meshHost)
+                        TextField("Host identity", text: $value.meshHost)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                     }
                 }
@@ -274,7 +276,7 @@ private struct SSHHostEditor: View {
             } header: {
                 Text("Host")
             } footer: {
-                Text("Mesh host is picked from members currently in your rooms, so it matches exactly. Choose Custom… to type one that isn't online.")
+                Text("Host identity is picked from members currently registered with the Broker, so attach and stop actions route to the correct SSH machine. Choose Custom… for an offline Host.")
             }
 
             Section {
@@ -317,7 +319,7 @@ private struct SSHHostEditor: View {
                 }
             }
         }
-        .navigationTitle("SSH host")
+        .navigationTitle("Host")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: hostChoice) {
             guard case .pick(let h) = hostChoice else { return }

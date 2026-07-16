@@ -21,6 +21,12 @@ tmux control are not server responsibilities.
 The headless host may serve `projects.json` as opaque data for mobile project
 and issue reads, but it does not launch agents or resolve a server-side checkout.
 
+Broker machines and execution Hosts are separate concepts. A Linux server may
+run only `pharos-mesh`, while macOS or Linux execution Hosts are configured in a
+client's Host list and controlled over SSH. Installing the Broker package does
+not grant it shell access to those Hosts. See
+[`ADR-001-BROKER-AND-HOSTS.md`](ADR-001-BROKER-AND-HOSTS.md).
+
 ## Protocol v2
 
 - `capabilities` prevents a new client from silently sending advanced fields to
