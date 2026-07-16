@@ -33,11 +33,15 @@ APP="$ROOT/${APP_NAME}.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 
-# Convert Icon.icon to Icon.icns if present (requires iconutil).
+# Build the app icon from the canonical tracked source. A developer machine may
+# already have an ignored Icon.icns, but clean peers and release runners must
+# not depend on that leftover file being present.
 ICON_SOURCE="$ROOT/Icon.icon"
 ICON_TARGET="$ROOT/Icon.icns"
 if [[ -f "$ICON_SOURCE" ]]; then
   iconutil --convert icns --output "$ICON_TARGET" "$ICON_SOURCE"
+elif [[ -f "$ROOT/assets/icon-source.png" ]]; then
+  "$ROOT/Scripts/make_icns.sh" "$ROOT/assets/icon-source.png" >/dev/null
 fi
 
 LSUI_VALUE="false"
