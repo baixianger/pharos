@@ -243,6 +243,17 @@ final class AgentKindCommandTests: XCTestCase {
         XCTAssertTrue(paths.contains("/Users/tester/.volta/bin/codex"))
     }
 
+    func testRemoteCodexLaunchCanUseDesktopAppExecutable() {
+        XCTAssertEqual(
+            MeshSpawn.launchCommand(
+                .codex,
+                executable: "/Applications/Codex.app/Contents/Resources/codex"
+            ),
+            "'/Applications/Codex.app/Contents/Resources/codex' "
+                + "--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
+        )
+    }
+
     func testCodexAvailableDirectlyInPath() async {
         let resolution = await LaunchService.resolveAgent(
             .codex,

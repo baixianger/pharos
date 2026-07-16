@@ -36,6 +36,37 @@ enum RemoteLaunch {
         Shell.run("/usr/bin/ssh", sshOpts + [host, "\(pathShim); \(script)"])
     }
 
+    private static func ssh(_ host: String, _ script: String,
+                            timeout: TimeInterval) -> Shell.Result {
+        Shell.run("/usr/bin/ssh", sshOpts + [host, "\(pathShim); \(script)"],
+                  timeout: timeout)
+    }
+
+    /// Select a remote CLI that can actually start. Checking only `test -x`
+    /// is insufficient: package managers can leave a signed executable in
+    /// place that hangs during dyld startup. A bounded `--version` probe lets
+    /// us fall through to another healthy installation, such as Codex.app.
+    static func remoteAgentExecutable(kind: AgentKind, host: String,
+                                      home: String) -> String? {
+        var candidates = LaunchService.agentExecutableCandidates(kind, home: home)
+        let loginProbe = ssh(host,
+            "/bin/zsh -lic \(sq("command -v \(kind.rawValue) 2>/dev/null"))",
+            timeout: 8)
+        let loginPath = loginProbe.out.trimmingCharacters(in: .whitespacesAndNewlines)
+        if loginProbe.ok, loginPath.hasPrefix("/") {
+            candidates.insert(loginPath, at: 0)
+        }
+
+        var seen = Set<String>()
+        for candidate in candidates where seen.insert(candidate).inserted {
+            let probe = ssh(host,
+                "test -x \(sq(candidate)) && \(sq(candidate)) --version >/dev/null 2>&1",
+                timeout: 5)
+            if probe.ok { return candidate }
+        }
+        return nil
+    }
+
     private static func tmux(_ host: String, _ args: [String]) -> Shell.Result {
         ssh(host, "tmux " + args.map(sq).joined(separator: " "))
     }
@@ -244,6 +275,10 @@ enum RemoteLaunch {
             fail("couldn't resolve the home folder on \(host)")
             return
         }
+        guard let executable = remoteAgentExecutable(kind: kind, host: host, home: home) else {
+            fail("\(kind.label) is missing or couldn't start on \(host)")
+            return
+        }
         // Resolve the working directory on the remote host. `.project` maps to
         // the remote's OWN registered checkout path, so a name means the same
         // project regardless of which Mac each machine keeps it on.
@@ -303,7 +338,7 @@ enum RemoteLaunch {
         onProgress(.init(phase: .booting,
                          detail: "starting \(kind.rawValue) on \(host)…"
                              + (keychainNote.isEmpty ? "" : "  \(keychainNote)")))
-        sendLine(host, name, MeshSpawn.launchCommand(kind))
+        sendLine(host, name, MeshSpawn.launchCommand(kind, executable: executable))
 
         let ready: Bool
         if kind == .claude {
