@@ -3,10 +3,11 @@ import SwiftUI
 struct RoomListView: View {
     @Environment(RoomStore.self) private var store
     @Binding var selection: String?
+    var suppressesSystemSelection = false
     @State private var search = ""
 
     var body: some View {
-        List(selection: $selection) {
+        List(selection: suppressesSystemSelection ? nil : $selection) {
             if !filteredRooms.isEmpty {
                 Section {
                     ForEach(filteredRooms) { room in

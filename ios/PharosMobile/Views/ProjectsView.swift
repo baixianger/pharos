@@ -217,7 +217,7 @@ private struct NewProjectView: View {
     }
 }
 
-private enum ProjectFilter: String, CaseIterable, Identifiable {
+enum ProjectFilter: String, CaseIterable, Identifiable {
     case all, active, local
     var id: String { rawValue }
     var title: String {
@@ -229,7 +229,7 @@ private enum ProjectFilter: String, CaseIterable, Identifiable {
     }
 }
 
-private struct ProjectRow: View {
+struct ProjectRow: View {
     let project: RemoteProject
     let agents: [MeshMember]
 
@@ -268,7 +268,7 @@ private struct ProjectRow: View {
     }
 }
 
-private struct ProjectSummaryView: View {
+struct ProjectSummaryView: View {
     @Environment(RoomStore.self) private var store
     @State private var project: RemoteProject
     let agents: [MeshMember]

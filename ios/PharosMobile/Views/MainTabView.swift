@@ -1,9 +1,9 @@
 import SwiftUI
 import UIKit
 
-/// The full-app shell: a bottom tab bar over Projects, Agents, Chat and Settings.
-/// Owns the single `who`/`list` poll so every tab (not just Chat) shows live
-/// agent status across all machines.
+/// The full-app shell. Compact widths retain the existing iPhone tab bar;
+/// regular widths use the iPad sidebar navigator and split detail presentation.
+/// Owns the single `who`/`list` poll so every surface shows live agent status.
 struct MainTabView: View {
     @Environment(RoomStore.self) private var store
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -15,19 +15,7 @@ struct MainTabView: View {
     }
 
     var body: some View {
-        TabView(selection: $selection) {
-            ForEach(AppTab.allCases) { tab in
-                Tab(value: tab) {
-                    tab.content
-                } label: {
-                    Label {
-                        Text(tab.title)
-                    } icon: {
-                        FixedOutlineTabIcon(systemName: tab.symbol)
-                    }
-                }
-            }
-        }
+        AppShellRouter(horizontalSizeClass: horizontalSizeClass, selection: $selection)
         // Owned here (not RootView) so it's set before the app-wide poll runs,
         // even if the Chat tab is never opened. Compact iPhone: land on the room
         // list. Regular iPad: keep a default room selected in the detail column.
@@ -50,6 +38,40 @@ struct MainTabView: View {
     }
 }
 
+private struct AppShellRouter: View {
+    let horizontalSizeClass: UserInterfaceSizeClass?
+    @Binding var selection: AppTab
+
+    var body: some View {
+        if horizontalSizeClass == .regular {
+            IPadWorkspaceShell(workspace: $selection)
+        } else {
+            PhoneTabShell(selection: $selection)
+        }
+    }
+}
+
+/// Kept separate so the iPhone hierarchy remains exactly the existing TabView.
+private struct PhoneTabShell: View {
+    @Binding var selection: AppTab
+
+    var body: some View {
+        TabView(selection: $selection) {
+            ForEach(AppTab.allCases) { tab in
+                Tab(value: tab) {
+                    tab.content
+                } label: {
+                    Label {
+                        Text(tab.title)
+                    } icon: {
+                        FixedOutlineTabIcon(systemName: tab.symbol)
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// `TabView` automatically substitutes filled SF Symbol variants for selected
 /// tabs, even when the label asks for `.none`. Resolve the base glyph to a
 /// template image first so selection can tint it without changing its shape.
@@ -64,7 +86,7 @@ private struct FixedOutlineTabIcon: View {
     }
 }
 
-private enum AppTab: String, CaseIterable, Identifiable {
+enum AppTab: String, CaseIterable, Identifiable {
     case projects, issues, agents, chat, settings
 
     var id: String { rawValue }
@@ -88,6 +110,8 @@ private enum AppTab: String, CaseIterable, Identifiable {
         case .settings: "gearshape"
         }
     }
+
+    static let workspaces: [AppTab] = [.projects, .issues, .agents, .chat]
 
     @MainActor @ViewBuilder
     var content: some View {

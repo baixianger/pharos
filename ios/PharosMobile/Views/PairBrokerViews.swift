@@ -3,6 +3,7 @@ import VisionKit
 
 struct BrokerSetupGuide: View {
     @Environment(PairingCoordinator.self) private var pairing
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showsScanner = false
     @State private var showsManualEntry = false
     @State private var manualLink = ""
@@ -11,6 +12,11 @@ struct BrokerSetupGuide: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
+                    if horizontalSizeClass == .regular {
+                        Text("Set up Pharos")
+                            .font(.largeTitle.bold())
+                            .padding(.bottom, 4)
+                    }
                     SetupIntroSection()
                     BrokerDeploymentSection()
                     PairPhoneSection {
@@ -34,11 +40,15 @@ struct BrokerSetupGuide: View {
                         .padding(.top, 12)
                     }
                 }
-                .padding(20)
-                .frame(maxWidth: 680, alignment: .leading)
+                .padding(.horizontal, horizontalSizeClass == .regular ? 44 : 20)
+                .padding(.top, horizontalSizeClass == .regular ? 28 : 20)
+                .padding(.bottom, horizontalSizeClass == .regular ? 40 : 20)
+                .frame(maxWidth: horizontalSizeClass == .regular ? 760 : 680, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
-            .navigationTitle("Set up Pharos")
+            .navigationTitle(horizontalSizeClass == .regular ? "" : "Set up Pharos")
             .toolbarTitleDisplayMode(.inlineLarge)
+            .toolbar(horizontalSizeClass == .regular ? .hidden : .visible, for: .navigationBar)
             .sheet(isPresented: $showsScanner) {
                 PairingScannerSheet { value in
                     showsScanner = false

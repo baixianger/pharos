@@ -110,7 +110,7 @@ struct AgentsView: View {
     }
 }
 
-private enum AgentFilter: String, CaseIterable, Identifiable {
+enum AgentFilter: String, CaseIterable, Identifiable {
     case live, all, ended
     var id: String { rawValue }
     var title: String {
@@ -122,7 +122,7 @@ private enum AgentFilter: String, CaseIterable, Identifiable {
     }
 }
 
-private struct AgentRow: View {
+struct AgentRow: View {
     let member: MeshMember
 
     var body: some View {
@@ -162,7 +162,7 @@ private struct AgentRow: View {
     }
 }
 
-private struct AgentDetailView: View {
+struct AgentDetailView: View {
     @Environment(RoomStore.self) private var store
     @Environment(AppSettings.self) private var settings
     let member: MeshMember

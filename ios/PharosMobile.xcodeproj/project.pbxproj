@@ -26,6 +26,7 @@
 		960DDC2D1993594446CAEDD6 /* SSHTmuxPokeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A5F3F48B710E5856DF83A3B /* SSHTmuxPokeService.swift */; };
 		9B6D4E0AE776436E597FEFC0 /* ProjectsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC48202BA5281EFE1A847C38 /* ProjectsView.swift */; };
 		9D785850F4EF8B8D7347834C /* PairingLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56D8039FCBC9DCEF0AFD7C6E /* PairingLink.swift */; };
+		A011AB606225E6F999109A5D /* IPadWorkspaceShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F2817C51018E7CAF0BF7175 /* IPadWorkspaceShell.swift */; };
 		A3405FB84FF614549626759D /* SpawnAgentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6F859A1C7BBEF2D3E51676E /* SpawnAgentView.swift */; };
 		AA12F39CAE6DF825E4BEC04C /* PharosMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27F4A3C6DE1C3611722ACCF5 /* PharosMarkdown.swift */; };
 		BB37FC0CD279985FDD3C308E /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 537B4E9606BB15A32FAAD5D8 /* MainTabView.swift */; };
@@ -62,6 +63,7 @@
 		4F8616B8D4E2B61B13853142 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
 		537B4E9606BB15A32FAAD5D8 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
 		56D8039FCBC9DCEF0AFD7C6E /* PairingLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingLink.swift; sourceTree = "<group>"; };
+		5F2817C51018E7CAF0BF7175 /* IPadWorkspaceShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPadWorkspaceShell.swift; sourceTree = "<group>"; };
 		6B59AA89BEDF3EEEE53EA9CD /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		81DA9594F9E9536D3C2B9D94 /* PharosMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PharosMobileApp.swift; sourceTree = "<group>"; };
 		8A5F3F48B710E5856DF83A3B /* SSHTmuxPokeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTmuxPokeService.swift; sourceTree = "<group>"; };
@@ -175,6 +177,7 @@
 			children = (
 				4C964FEBE89EF146AD7C6AF4 /* AgentsView.swift */,
 				CE66DE546D2C518478A6D7D4 /* ConversationView.swift */,
+				5F2817C51018E7CAF0BF7175 /* IPadWorkspaceShell.swift */,
 				108EB4DA1F813A618204D5D7 /* IssuesView.swift */,
 				537B4E9606BB15A32FAAD5D8 /* MainTabView.swift */,
 				9E99751DFE4EE6777F3FDC46 /* MessageRow.swift */,
@@ -305,6 +308,7 @@
 				CB38873AB506856E74CBAA34 /* AgentsView.swift in Sources */,
 				0316280B840B9C132048F298 /* AppSettings.swift in Sources */,
 				F734C7FF9F1D8085C013CDD0 /* ConversationView.swift in Sources */,
+				A011AB606225E6F999109A5D /* IPadWorkspaceShell.swift in Sources */,
 				8A4176112EC9BE6DD5675C1E /* InteractiveSSHSession.swift in Sources */,
 				2537BAA7933A64F0C5567C83 /* IssuesView.swift in Sources */,
 				BB37FC0CD279985FDD3C308E /* MainTabView.swift in Sources */,

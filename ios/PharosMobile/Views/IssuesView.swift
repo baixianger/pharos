@@ -219,7 +219,7 @@ private struct NewIssueView: View {
     }
 }
 
-private enum IssueFilter: String, CaseIterable, Identifiable {
+enum IssueFilter: String, CaseIterable, Identifiable {
     case all, active, backlog
     var id: String { rawValue }
     var title: String {
@@ -278,7 +278,7 @@ enum IssueWorkflowState: Hashable {
     }
 }
 
-private struct IssueIndexRow: View {
+struct IssueIndexRow: View {
     let issue: RemoteIssue
 
     var body: some View {
@@ -317,7 +317,7 @@ private struct IssueIndexRow: View {
     }
 }
 
-private struct IssueSummaryView: View {
+struct IssueSummaryView: View {
     @Environment(RoomStore.self) private var store
     @State private var issue: RemoteIssue
     @State private var showingEditor = false
