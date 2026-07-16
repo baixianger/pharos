@@ -1,12 +1,13 @@
 # Pharos Mesh Headless Architecture
 
-Pharos Mesh can run as an independent Linux service. The server owns durable
-chat data; macOS, iOS, and coding-agent CLIs are clients.
+Pharos Mesh can run as an independent Linux service. The Broker owns durable
+portable project and chat data; macOS, iOS, and coding-agent CLIs are clients.
 
 ```text
 Mac app ────────┐
 iPhone app ─────┼── Tailscale TCP ── pharos-mesh ── JSONL transcripts
-Agent CLI ──────┘                         │          attachment blobs
+Agent CLI ──────┘                         ├───────── attachment blobs
+                                         ├───────── projects.json + backups
                                          └───────── presence/unread state
 ```
 
@@ -18,8 +19,9 @@ broker, transcript persistence, reply resolution, and attachment storage.
 macOS product because project launching, AppKit, Finder, Keychain, and local
 tmux control are not server responsibilities.
 
-The headless host may serve `projects.json` as opaque data for mobile project
-and issue reads, but it does not launch agents or resolve a server-side checkout.
+The headless Broker owns `projects.json` as opaque portable data. Reads carry a
+SHA-256 revision; writes require that revision and fail on conflicts. It does
+not launch agents or store/resolve Host checkout paths.
 
 Broker machines and execution Hosts are separate concepts. A Linux server may
 run only `pharos-mesh`, while macOS or Linux execution Hosts are configured in a
@@ -37,6 +39,8 @@ not grant it shell access to those Hosts. See
   it remains useful when the original is outside the client's history window.
 - Attachments are uploaded before `say`; the message references verified
   metadata only.
+- `registry-get` and `registry-put` implement compare-and-swap project storage
+  (`registry-cas-v1`). Every accepted change backs up the prior snapshot.
 
 ## Attachment transport
 
@@ -120,6 +124,8 @@ upgrades.
 ## Reliability and operations
 
 - Back up the whole data directory, not only `projects.json`.
+- The Broker keeps the newest 200 automatic registry versions under
+  `<data-dir>/registry-backups/`.
 - Transcripts and attachments are durable; unread mailboxes are runtime state.
 - Uploads are checksum-verified and atomically committed.
 - A room delete removes its transcript. Attachment garbage collection is a

@@ -24,6 +24,8 @@ final class RoomStore {
     private(set) var notice: String?
     private(set) var error: String?
     private var capabilities: Set<String>?
+    private static let projectsCacheKey = "pharos.mobile.registry.projects.v1"
+    private static let issuesCacheKey = "pharos.mobile.registry.issues.v1"
 
     init(settings: AppSettings, identities: SSHIdentityStore) {
         self.settings = settings
@@ -155,19 +157,32 @@ final class RoomStore {
 
     func refreshAfterRemoteAction() async { await refresh() }
 
-    /// Fetch the project registry from the hub broker (single source of truth).
-    /// Returns nil if the broker is old/unsupported (no payload) so callers can
-    /// fall back to the SSH path.
+    /// Fetch Broker-owned project data. When temporarily offline, return the
+    /// last successful payload; SSH Hosts are never used as registry replicas.
     func fetchProjectsOverMesh() async -> [RemoteProject]? {
-        guard !settings.mesh.host.isEmpty,
-              let payload = try? await request(MeshRequest(cmd: "projects")).payload else { return nil }
+        guard !settings.mesh.host.isEmpty else { return cachedProjects() }
+        guard let payload = try? await request(MeshRequest(cmd: "projects")).payload else {
+            return cachedProjects()
+        }
+        UserDefaults.standard.set(payload, forKey: Self.projectsCacheKey)
         return RemoteAgentService.parseProjects(payload)
     }
 
     func fetchIssuesOverMesh() async -> [RemoteIssue]? {
-        guard !settings.mesh.host.isEmpty,
-              let payload = try? await request(MeshRequest(cmd: "issues")).payload else { return nil }
+        guard !settings.mesh.host.isEmpty else { return cachedIssues() }
+        guard let payload = try? await request(MeshRequest(cmd: "issues")).payload else {
+            return cachedIssues()
+        }
+        UserDefaults.standard.set(payload, forKey: Self.issuesCacheKey)
         return RemoteAgentService.parseIssues(payload)
+    }
+
+    private func cachedProjects() -> [RemoteProject]? {
+        UserDefaults.standard.string(forKey: Self.projectsCacheKey).map(RemoteAgentService.parseProjects)
+    }
+
+    private func cachedIssues() -> [RemoteIssue]? {
+        UserDefaults.standard.string(forKey: Self.issuesCacheKey).map(RemoteAgentService.parseIssues)
     }
 
     private func request(_ request: MeshRequest) async throws -> MeshResponse {

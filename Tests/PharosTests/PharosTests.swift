@@ -341,6 +341,31 @@ final class ExecutionHostProfileTests: XCTestCase {
     }
 }
 
+final class HostLocalProjectPathTests: XCTestCase {
+    func testLegacyHostPathMigratesOutOfPortableRegistry() {
+        let id = UUID()
+        var store = StoreData(projects: [
+            Project(id: id, name: "Pharos", localPath: "/wrong",
+                    localPaths: ["office": "/Users/pai/pharos", "home": "/srv/pharos"])
+        ])
+        var paths: [String: String] = [:]
+        HostLocalProjectPaths.apply(to: &store, paths: &paths, host: "office")
+        XCTAssertEqual(store.projects[0].localPath, "/Users/pai/pharos")
+        XCTAssertEqual(paths[id.uuidString], "/Users/pai/pharos")
+        XCTAssertTrue(store.projects[0].localPaths.isEmpty)
+    }
+
+    func testBrokerSnapshotStripsCheckoutPaths() {
+        let id = UUID()
+        var store = StoreData(projects: [Project(id: id, name: "Pharos", localPath: "/private/repo")])
+        var paths: [String: String] = [:]
+        HostLocalProjectPaths.captureAndStrip(&store, paths: &paths)
+        XCTAssertNil(store.projects[0].localPath)
+        XCTAssertTrue(store.projects[0].localPaths.isEmpty)
+        XCTAssertEqual(paths[id.uuidString], "/private/repo")
+    }
+}
+
 final class RemoteAttachCommandTests: XCTestCase {
     func testRemoteAttachUsesExactHostAndTerminalFallback() {
         let command = RemoteLaunch.interactiveAttachCommand(session: "work session", host: "home-ts")
@@ -1508,11 +1533,50 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         XCTAssertTrue(issues.payload?.contains("\"issues\"") == true)
     }
 
+    func testRegistryWritesAreCompareAndSwapAndBackedUp() throws {
+        let initial = #"{"projects":[{"name":"before"}],"groups":[],"trash":[]}"#
+        try Data(initial.utf8).write(to: dir.appendingPathComponent("projects.json"))
+        let broker = MeshBroker()
+        let first = broker.process(MeshRequest(cmd: "registry-get"))
+        XCTAssertTrue(first.ok)
+        XCTAssertEqual(first.payload, initial)
+        XCTAssertEqual(first.revision?.count, 64)
+
+        let updated = #"{"projects":[{"name":"after"}],"groups":[],"trash":[]}"#
+        let accepted = broker.process(MeshRequest(cmd: "registry-put", payload: updated,
+                                                  expectedRevision: first.revision))
+        XCTAssertTrue(accepted.ok)
+        XCTAssertNotEqual(accepted.revision, first.revision)
+        XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent("projects.json"), encoding: .utf8), updated)
+
+        let stale = broker.process(MeshRequest(cmd: "registry-put", payload: initial,
+                                               expectedRevision: first.revision))
+        XCTAssertFalse(stale.ok)
+        XCTAssertEqual(stale.error, "registry conflict")
+        XCTAssertEqual(stale.revision, accepted.revision)
+        XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent("projects.json"), encoding: .utf8), updated)
+
+        let backups = try FileManager.default.contentsOfDirectory(
+            at: dir.appendingPathComponent("registry-backups"), includingPropertiesForKeys: nil)
+        XCTAssertEqual(backups.count, 1)
+        XCTAssertEqual(try String(contentsOf: backups[0], encoding: .utf8), initial)
+    }
+
+    func testRegistryRejectsMalformedOrUnversionedWrites() {
+        let broker = MeshBroker()
+        let snapshot = broker.process(MeshRequest(cmd: "registry-get"))
+        XCTAssertFalse(broker.process(MeshRequest(cmd: "registry-put", payload: "[]",
+                                                  expectedRevision: snapshot.revision)).ok)
+        XCTAssertFalse(broker.process(MeshRequest(cmd: "registry-put",
+                                                  payload: #"{"projects":[]}"#)).ok)
+    }
+
     func testCapabilitiesAdvertiseHeadlessRepliesAndAttachments() {
         let capabilities = MeshBroker().process(MeshRequest(cmd: "capabilities")).capabilities ?? []
         XCTAssertTrue(capabilities.contains("headless-v1"))
         XCTAssertTrue(capabilities.contains("reply-v1"))
         XCTAssertTrue(capabilities.contains("attachment-v1"))
+        XCTAssertTrue(capabilities.contains("registry-cas-v1"))
     }
 
     func testReplyResolvesStableMessageAndPersistsSnapshot() {

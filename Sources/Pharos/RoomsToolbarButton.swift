@@ -300,7 +300,7 @@ struct AddMemberSheet: View {
     @State private var showFolderPicker = false
 
     private var projectNames: [String] {
-        store.projects.filter { $0.localPath != nil || !$0.localPaths.isEmpty }.map(\.name).sorted()
+        store.projects.map(\.name).sorted()
     }
 
     var body: some View {

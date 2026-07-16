@@ -53,6 +53,8 @@ security boundary and supports any mix of macOS, iOS, and Linux clients.
 - iOS uses the same vocabulary and keeps SSH private keys only in device Keychain.
 - `pharos-mesh` on Linux remains a portable Broker/client CLI and systemd service;
   it does not need AppKit or the macOS launcher.
+- The Broker also owns portable project data under ADR-002; execution checkout
+  paths and credentials remain local to each Host.
 - Existing `peerHost` preferences migrate into the first Host profile and remain
   mirrored temporarily for rolling compatibility with older CLI/hooks.
 - Multi-Host routing must match a Broker-reported Host identity; it may fall back

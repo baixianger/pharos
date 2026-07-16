@@ -30,16 +30,6 @@ private struct SyncedConfiguration: Codable, Equatable, Sendable {
 @MainActor
 final class AppSettings {
     private static let storageKey = "pharos.mobile.configuration.v1"
-    /// Unsigned simulator builds do not receive the iCloud entitlement. Avoid
-    /// initializing KVS there: Foundation treats a missing store identifier as
-    /// a client bug and the app otherwise presents a blank launch screen.
-    private let cloud: NSUbiquitousKeyValueStore? = {
-        #if targetEnvironment(simulator)
-        return nil
-        #else
-        return .default
-        #endif
-    }()
     private(set) var mesh = MeshProfile()
     private(set) var sshHosts: [SSHHostProfile] = []
 
@@ -69,18 +59,8 @@ final class AppSettings {
         return sshHosts.first { $0.meshHost == meshHost }
     }
 
-    /// First SSH host usable for fetching registry/issue data over SSH — needs a
-    /// device key and the host-key opt-in. nil = Projects/Issues can't fetch.
-    var registryHost: SSHHostProfile? {
-        sshHosts.first { $0.identityID != nil && $0.acceptsUnverifiedHostKey }
-    }
-
-    func refreshFromICloud() { load(preferCloud: true) }
-
-    private func load(preferCloud: Bool = true) {
-        let cloudData = cloud?.data(forKey: Self.storageKey)
-        let localData = UserDefaults.standard.data(forKey: Self.storageKey)
-        let source = preferCloud ? (cloudData ?? localData) : (localData ?? cloudData)
+    private func load() {
+        let source = UserDefaults.standard.data(forKey: Self.storageKey)
         guard let source, let decoded = try? JSONDecoder().decode(SyncedConfiguration.self, from: source) else { return }
         mesh = decoded.mesh
         sshHosts = decoded.sshHosts
@@ -90,7 +70,5 @@ final class AppSettings {
         let value = SyncedConfiguration(mesh: mesh, sshHosts: sshHosts)
         guard let data = try? JSONEncoder().encode(value) else { return }
         UserDefaults.standard.set(data, forKey: Self.storageKey)
-        cloud?.set(data, forKey: Self.storageKey)
-        cloud?.synchronize()
     }
 }

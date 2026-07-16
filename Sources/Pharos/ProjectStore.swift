@@ -438,8 +438,16 @@ extension StoreData {
     }
 }
 
-/// Owns projects + groups, persists to Application Support, and exposes the
-/// currently-selected group (watchlist-style).
+enum RegistrySyncStatus: Equatable {
+    case connecting
+    case synced
+    case pending
+    case offline(String)
+    case conflict(String)
+}
+
+/// Owns the in-memory project view. The Broker is authoritative; Application
+/// Support is a device-local cache used for startup and temporary offline use.
 @MainActor
 @Observable
 final class ProjectStore {
@@ -457,6 +465,8 @@ final class ProjectStore {
     var paletteRequested = false
     var trashRequested = false
     var lastError: String?
+    private(set) var registrySyncStatus: RegistrySyncStatus = .connecting
+    private var registrySync: BrokerRegistrySync!
     var terminal: TerminalApp = .ghostty {
         didSet { PharosPrefs.shared.set(terminal.rawValue, forKey: "pharos.terminal") }
     }
@@ -534,20 +544,27 @@ final class ProjectStore {
         // Compatibility for the CLI and older app builds during rolling update.
         PharosPrefs.shared.set(executionHosts.first?.sshHost ?? "", forKey: "pharos.peerHost")
     }
-    /// Optional always-on Mesh broker, normally a Linux `pharos-mesh` service
-    /// reachable over Tailscale. This is intentionally per-machine: project
-    /// data may sync through iCloud, while each client can choose how it reaches
-    /// the broker. A valid value takes precedence over the legacy Mac hub pair.
+    /// Optional always-on Mesh Broker endpoint. Broker routing is device-local;
+    /// it is not portable project data.
     var meshServerEndpoint = "" {
-        didSet { PharosPrefs.shared.set(meshServerEndpoint, forKey: "pharos.meshServerEndpoint") }
+        didSet {
+            PharosPrefs.shared.set(meshServerEndpoint, forKey: "pharos.meshServerEndpoint")
+            let trimmed = meshServerEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+            if meshSplitHostPort(trimmed) != nil {
+                MeshClient.remoteEndpoint = trimmed
+                MeshPaths.setDialEndpointFile(trimmed)
+            } else if trimmed.isEmpty {
+                MeshClient.remoteEndpoint = nil
+                MeshPaths.setDialEndpointFile(nil)
+            }
+        }
     }
     var validMeshServerEndpoint: String? {
         let endpoint = meshServerEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         return meshSplitHostPort(endpoint) == nil ? nil : endpoint
     }
-    /// Which Mac hosts the chat mesh — the synced store is the single source of
-    /// truth, so both machines always read the same answer (Pharos#5 P2).
-    /// Mutate via `setMeshHub(_:)`; refreshed by `load()` when iCloud syncs.
+    /// Legacy-compatible display value for a Broker hosted on this Mac. The
+    /// choice itself is local and never written into the Broker registry.
     private(set) var meshHubHostID: String?
     /// Whether THIS Mac is the mesh hub (drives the broker's TCP bind — see
     /// MeshHosting). Derived, never stored per-machine.
@@ -571,18 +588,15 @@ final class ProjectStore {
         PharosPrefs.shared.removeObject(forKey: "pharos.peerHostKey")
     }
 
-    /// Claim or release the hub role for THIS Mac. Claiming overwrites whichever
-    /// machine held it — there is exactly one hub per pairing; a deposed hub
-    /// demotes itself on its next launch (PharosApp `.task`).
     func setMeshHub(_ on: Bool) {
         meshHubHostID = on ? HostIdentity.current : nil
-        save()
+        PharosPrefs.shared.set(on, forKey: "pharos.hostBroker")
     }
 
 
     /// The registry file. Resolved from the shared `DataLocation` (honoring the
-    /// `pharos.dataDir` pref + `PHAROS_REGISTRY`) so the GUI and CLI always agree,
-    /// and so switching to iCloud Drive re-points it live.
+    /// Broker-backed cache (plus the `PHAROS_REGISTRY` test override) so the GUI
+    /// and CLI agree without treating iCloud or a Host checkout as shared state.
     private var fileURL: URL { PharosCore.registryURL }
     private var pollTask: Task<Void, Never>?
     /// Last modification date of projects.json we've observed/written, used by the
@@ -615,13 +629,27 @@ final class ProjectStore {
             executionHosts = [ExecutionHostProfile(name: legacy, sshHost: legacy)]
         }
         meshServerEndpoint = d.string(forKey: "pharos.meshServerEndpoint") ?? ""
+        meshHubHostID = d.bool(forKey: "pharos.hostBroker") ? HostIdentity.current : nil
+        if let endpoint = validMeshServerEndpoint { MeshClient.remoteEndpoint = endpoint }
+        registrySync = BrokerRegistrySync(revision: d.string(forKey: "pharos.registryRevision")) { [weak self] event in
+            Task { @MainActor in self?.handleRegistryEvent(event) }
+        }
         load()
-        // Migrate the pre-P2 per-machine hub flag into the synced store (one
-        // shot): a Mac that had "Host mesh" ON claims the hub slot unless the
-        // synced store already names one.
+        if d.bool(forKey: "pharos.registryPending"),
+           let payload = try? String(contentsOf: fileURL, encoding: .utf8) {
+            registrySyncStatus = .pending
+            registrySync.submit(payload)
+        } else if let snapshot = registrySync.bootstrap(), applyRegistryPayload(snapshot.payload) {
+            d.set(snapshot.revision, forKey: "pharos.registryRevision")
+            registrySyncStatus = .synced
+            persistCurrentCache()
+        } else {
+            registrySyncStatus = .offline("Using the last local cache until the Broker reconnects.")
+        }
+        // Migrate the old local preference without carrying it in project data.
         if d.bool(forKey: "pharos.hostMesh") {
             d.removeObject(forKey: "pharos.hostMesh")
-            if meshHubHostID == nil { setMeshHub(true) }
+            setMeshHub(true)
         }
         lastFileMtime = fileModificationDate()
         refreshRunningAgents()
@@ -641,6 +669,7 @@ final class ProjectStore {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard let self, !Task.isCancelled else { return }
+                self.registrySync.retryAndRefresh()
                 self.reloadIfChangedExternally()
             }
         }
@@ -657,6 +686,7 @@ final class ProjectStore {
         if let last = lastFileMtime, mtime == last { return }
         load()
         lastFileMtime = mtime
+        save()
     }
 
     private func fileModificationDate() -> Date? {
@@ -813,34 +843,59 @@ final class ProjectStore {
 
     func load() {
         guard let data = try? Data(contentsOf: fileURL) else { return }
+        _ = applyRegistryData(data)
+    }
+
+    @discardableResult
+    private func applyRegistryPayload(_ payload: String) -> Bool {
+        applyRegistryData(Data(payload.utf8))
+    }
+
+    @discardableResult
+    private func applyRegistryData(_ data: Data) -> Bool {
         let decoder = JSONDecoder()
         var store = StoreData()
         if let decoded = try? decoder.decode(StoreData.self, from: data) {
             store = decoded
         } else if let legacy = try? decoder.decode([Project].self, from: data) {
             store = StoreData(projects: legacy, groups: [])   // migrate older flat-array format
-        }
-        // Resolve each project's localPath to THIS machine's checkout (per-host map).
-        store.resolveHostPaths(host: HostIdentity.current)
+        } else { return false }
+        HostLocalProjectPaths.apply(to: &store)
         projects = store.projects
         groups = store.groups
         trash = store.trash
-        meshHubHostID = store.meshHubHostID
         // Drop expired trash from the in-memory view; persistence catches up on
         // the next save (we don't write here to avoid churning the file watcher).
         trash.removeAll { Date().timeIntervalSince($0.deletedAt) > StoreData.trashRetention }
         backfillGroups()
-        sweepAttachments()
+        return true
     }
 
     func save() {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        var store = StoreData(projects: projects, groups: groups, trash: trash,
-                              meshHubHostID: meshHubHostID)
-        store.captureHostPaths(host: HostIdentity.current)   // record this host's paths
+        var store = StoreData(projects: projects, groups: groups, trash: trash)
+        HostLocalProjectPaths.captureAndStrip(&store)
         if let data = try? encoder.encode(store) {
-            try? data.write(to: fileURL, options: .atomic)
+            writeCache(data)
+            PharosPrefs.shared.set(true, forKey: "pharos.registryPending")
+            registrySyncStatus = .pending
+            registrySync.submit(String(decoding: data, as: UTF8.self))
+        }
+    }
+
+    private func persistCurrentCache() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        var store = StoreData(projects: projects, groups: groups, trash: trash)
+        HostLocalProjectPaths.captureAndStrip(&store)
+        if let data = try? encoder.encode(store) { writeCache(data) }
+    }
+
+    private func writeCache(_ data: Data) {
+        try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        if (try? data.write(to: fileURL, options: .atomic)) != nil {
             // Stamp the file with an mtime WE choose and record that exact value,
             // rather than re-stat'ing (which could capture a concurrent CLI
             // write's mtime and then be mistaken for our own save). Any later CLI
@@ -849,6 +904,36 @@ final class ProjectStore {
             try? FileManager.default.setAttributes([.modificationDate: stamp],
                                                    ofItemAtPath: fileURL.path)
             lastFileMtime = fileModificationDate() ?? stamp
+        }
+    }
+
+    private func handleRegistryEvent(_ event: BrokerRegistryEvent) {
+        switch event {
+        case .synced(let revision):
+            PharosPrefs.shared.set(revision, forKey: "pharos.registryRevision")
+            PharosPrefs.shared.set(false, forKey: "pharos.registryPending")
+            registrySyncStatus = .synced
+        case .remote(let snapshot):
+            guard applyRegistryPayload(snapshot.payload) else { return }
+            PharosPrefs.shared.set(snapshot.revision, forKey: "pharos.registryRevision")
+            PharosPrefs.shared.set(false, forKey: "pharos.registryPending")
+            persistCurrentCache()
+            registrySyncStatus = .synced
+        case .offline(let message):
+            registrySyncStatus = .offline(message)
+        case .conflict(let remote, let localPayload):
+            let directory = DataLocation.current.appendingPathComponent("registry-conflicts", isDirectory: true)
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let file = directory.appendingPathComponent("conflict-\(UUID().uuidString).json")
+            try? Data(localPayload.utf8).write(to: file, options: .atomic)
+            if applyRegistryPayload(remote.payload) {
+                PharosPrefs.shared.set(remote.revision, forKey: "pharos.registryRevision")
+                persistCurrentCache()
+            }
+            registrySync.acceptRemoteAfterConflict()
+            PharosPrefs.shared.set(false, forKey: "pharos.registryPending")
+            registrySyncStatus = .conflict(file.path)
+            reportError("Another client changed project data first. The Broker version was loaded and your local edit was preserved at \(file.path).")
         }
     }
 
@@ -895,8 +980,7 @@ final class ProjectStore {
         }
     }
 
-    /// Set (or clear) THIS machine's local checkout path for a project. Persists
-    /// into the per-host map so it never clobbers another machine's path.
+    /// Set (or clear) THIS Host's checkout path in device-local preferences.
     func setLocalPath(_ projectID: Project.ID, path: String?) {
         mutateStore { s in
             guard let i = s.projects.firstIndex(where: { $0.id == projectID }) else { return }
@@ -905,43 +989,13 @@ final class ProjectStore {
         }
     }
 
-    // MARK: Data location (local ↔ iCloud Drive)
+    // MARK: Broker-owned data / local cache
 
-    // Stored (not computed) so @Observable tracks them: the values derive from
-    // `DataLocation` (UserDefaults-backed statics) which Observation can't see,
-    // so relocateData refreshes these to drive the Settings radio's update.
-    private(set) var dataLocationIsICloud: Bool = DataLocation.usingICloud
-    private(set) var dataDirectoryPath: String = DataLocation.current.path
-    var iCloudAvailable: Bool { DataLocation.iCloudAvailable }
+    var dataDirectoryPath: String { DataLocation.current.path }
 
-    /// Move Pharos's data between Application Support and iCloud Drive. Seeds the
-    /// target with the current registry only if it has none yet (so a second Mac
-    /// *adopts* the already-synced data instead of overwriting it), then repoints
-    /// and reloads. The source is left as a backup.
-    func relocateData(toICloud: Bool) {
-        guard let target = toICloud ? DataLocation.iCloudDirectory : DataLocation.appSupportDirectory else {
-            reportError("iCloud Drive isn't enabled on this Mac (turn it on in System Settings).")
-            return
-        }
-        let source = DataLocation.current
-        guard target.standardizedFileURL != source.standardizedFileURL else { return }
-        let fm = FileManager.default
-        try? fm.createDirectory(at: target, withIntermediateDirectories: true)
-        let sourceRegistry = source.appendingPathComponent("projects.json")
-        let targetRegistry = target.appendingPathComponent("projects.json")
-        if !fm.fileExists(atPath: targetRegistry.path), fm.fileExists(atPath: sourceRegistry.path) {
-            try? fm.copyItem(at: sourceRegistry, to: targetRegistry)
-        }
-        DataLocation.setDirectory(toICloud ? target : nil)
-        // Mirror the new location into the observed properties so the Settings
-        // radio reflects the switch (the statics above aren't Observation-tracked).
-        dataLocationIsICloud = DataLocation.usingICloud
-        dataDirectoryPath = DataLocation.current.path
-        // Re-point and reload from the new location.
-        lastFileMtime = nil
-        load()
-        lastFileMtime = fileModificationDate()
-        refreshAllGit()
+    func syncRegistryNow() {
+        registrySyncStatus = .connecting
+        registrySync.retryAndRefresh()
     }
     func contains(name: String) -> Bool { projects.contains { $0.name == name } }
     func contains(remote: String) -> Bool { projects.contains { $0.githubRemote == remote } }
@@ -1136,13 +1190,11 @@ final class ProjectStore {
     /// back to the published arrays, and persist. All delete/restore paths funnel
     /// through here so the GUI and the CLI share one mutation implementation.
     private func mutateStore(_ body: (inout StoreData) -> Void) {
-        var s = StoreData(projects: projects, groups: groups, trash: trash,
-                          meshHubHostID: meshHubHostID)
+        var s = StoreData(projects: projects, groups: groups, trash: trash)
         body(&s)
         projects = s.projects
         groups = s.groups
         trash = s.trash
-        meshHubHostID = s.meshHubHostID
         save()
     }
 

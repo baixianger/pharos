@@ -12,7 +12,7 @@ existing Pharos agent mesh from iPhone and iPad.
 | Agent wake-up | iOS app to the agent's Mac | SSH over Tailscale, then guarded `tmux capture-pane` + `send-keys` | device-local Ed25519 key; explicit opt-in while host keys remain unpinned |
 | Interactive control | iOS app to the member's Mac | Citadel PTY + SwiftTerm, resolving the reported pane to its exact tmux session | explicit target confirmation; same device-local key and host-key opt-in |
 | Spawn member | selected member host | SSH command invoking that host's `pharos mesh spawn` | shared CLI owns hooks, tmux, launch flags, and join confirmation |
-| Non-secret configuration | iPhone/iPad devices | `NSUbiquitousKeyValueStore` | iCloud syncs the Broker endpoint and Host profiles only |
+| Non-secret configuration | one iOS device | `UserDefaults` | Broker endpoint and Host profiles stay device-local |
 | SSH private key | one iOS device | Keychain, `AfterFirstUnlockThisDeviceOnly` | never iCloud-synced |
 
 The wire structs intentionally mirror `Sources/Pharos/MeshBroker.swift`. They
@@ -21,7 +21,7 @@ shared package once both apps can migrate together.
 
 ## Deliberate boundaries
 
-- iCloud is configuration sync, not a chat relay.
+- iCloud is not used for live project or configuration synchronization.
 - Broker and Host configuration are independent: the Broker coordinates; Hosts
   execute agents over SSH. A Host does not need to run the Broker.
 - iOS suspends arbitrary sockets in the background. This version refreshes in

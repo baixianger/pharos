@@ -1,4 +1,5 @@
 import Foundation
+import PharosMeshCore
 
 /// A recoverable error from a core operation. The CLI maps it to stderr + a
 /// non-zero exit code.
@@ -18,6 +19,9 @@ struct CoreOutcome {
 /// shape and the same `StoreData` soft-delete logic.
 enum PharosCore {
 
+    nonisolated(unsafe) private static var loadedRegistryRevision: String?
+    nonisolated(unsafe) private static var registrySaveError: String?
+
     // MARK: Registry location
 
     /// Location of the registry file. Honors `PHAROS_REGISTRY` (absolute path)
@@ -27,6 +31,7 @@ enum PharosCore {
         if let override = ProcessInfo.processInfo.environment["PHAROS_REGISTRY"], !override.isEmpty {
             return URL(fileURLWithPath: override)
         }
+        DataLocation.migrateLegacyCacheIfNeeded()
         return DataLocation.current.appendingPathComponent("projects.json")
     }
 
@@ -35,7 +40,21 @@ enum PharosCore {
     /// Read the full `StoreData`. Tolerates a missing file (empty store) and
     /// migrates the older flat-array format — mirrors `ProjectStore.load()`.
     static func loadStore() -> StoreData {
-        guard let data = try? Data(contentsOf: registryURL) else { return StoreData() }
+        let usesTestOverride = ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] != nil
+        let data: Data?
+        if !usesTestOverride, let snapshot = try? MeshClient.fetchRegistry() {
+            loadedRegistryRevision = snapshot.revision
+            PharosPrefs.shared.set(snapshot.revision, forKey: "pharos.registryRevision")
+            let remote = Data(snapshot.payload.utf8)
+            try? FileManager.default.createDirectory(at: registryURL.deletingLastPathComponent(),
+                                                     withIntermediateDirectories: true)
+            try? remote.write(to: registryURL, options: .atomic)
+            data = remote
+        } else {
+            loadedRegistryRevision = PharosPrefs.shared.string(forKey: "pharos.registryRevision")
+            data = try? Data(contentsOf: registryURL)
+        }
+        guard let data else { return StoreData() }
         let decoder = JSONDecoder()
         var store = StoreData()
         if let decoded = try? decoder.decode(StoreData.self, from: data) {
@@ -45,8 +64,7 @@ enum PharosCore {
         } else {
             return StoreData()
         }
-        // Resolve each project's localPath to THIS machine's checkout (per-host map).
-        store.resolveHostPaths(host: HostIdentity.current)
+        HostLocalProjectPaths.apply(to: &store)
         return store
     }
 
@@ -58,12 +76,42 @@ enum PharosCore {
         let dir = registryURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var out = store
-        out.captureHostPaths(host: HostIdentity.current)   // record this host's paths
+        HostLocalProjectPaths.captureAndStrip(&out)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(out) {
             try? data.write(to: registryURL, options: .atomic)
+            guard ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] == nil else { return }
+            do {
+                if loadedRegistryRevision == nil {
+                    loadedRegistryRevision = try MeshClient.fetchRegistry().revision
+                }
+                let revision = try MeshClient.replaceRegistry(
+                    payload: String(decoding: data, as: UTF8.self),
+                    expectedRevision: loadedRegistryRevision!)
+                loadedRegistryRevision = revision
+                PharosPrefs.shared.set(revision, forKey: "pharos.registryRevision")
+            } catch {
+                let conflictDir = DataLocation.current.appendingPathComponent("registry-conflicts",
+                                                                              isDirectory: true)
+                try? FileManager.default.createDirectory(at: conflictDir, withIntermediateDirectories: true)
+                let conflict = conflictDir.appendingPathComponent(
+                    "cli-conflict-\(UUID().uuidString).json")
+                try? data.write(to: conflict, options: .atomic)
+                registrySaveError = "Broker rejected the registry write: \(error.localizedDescription). "
+                    + "The local edit is preserved at \(conflict.path)."
+                if let remote = try? MeshClient.fetchRegistry() {
+                    loadedRegistryRevision = remote.revision
+                    PharosPrefs.shared.set(remote.revision, forKey: "pharos.registryRevision")
+                    try? Data(remote.payload.utf8).write(to: registryURL, options: .atomic)
+                }
+            }
         }
+    }
+
+    static func consumeRegistrySaveError() -> String? {
+        defer { registrySaveError = nil }
+        return registrySaveError
     }
 
     /// Ensure every tag used by a project exists as a group, then sort groups.
@@ -928,7 +976,7 @@ enum PharosCore {
             throw CoreError(message: "Argument 'agent' must be \"claude\" or \"codex\".")
         }
         guard let project = findProject(name) else { throw CoreError(message: "Project not found: \(name)") }
-        // Remote launch: path resolves per-host from the synced registry; tmux is
+        // Remote launch: the execution Host resolves its own local path; tmux is
         // implied (a detached remote session IS tmux). See RemoteLaunch.
         if let host, !host.isEmpty {
             do {
@@ -1013,9 +1061,19 @@ enum PharosCore {
 
     // MARK: Per-host local path (multi-machine)
 
+    static func localPath(project name: String?) throws -> CoreOutcome {
+        let store = loadStore()
+        let index = try projectIndexOrThrow(name, in: store)
+        guard let path = store.projects[index].localPath, !path.isEmpty else {
+            throw CoreError(message: "Project '\(store.projects[index].name)' has no path on \(HostIdentity.current).")
+        }
+        return CoreOutcome(text: path, json: ["project": store.projects[index].name,
+                                              "host": HostIdentity.current, "path": path])
+    }
+
     /// Set (or clear) the current host's local checkout path for a project. The
-    /// project's *data* is shared across machines; only this machine's path
-    /// changes, stored under its host key.
+    /// project's portable data is shared through the Broker; only this Host's
+    /// local preferences change.
     static func setLocalPath(project name: String?, path: String?, clear: Bool) throws -> String {
         var store = loadStore()
         let idx = try projectIndexOrThrow(name, in: store)

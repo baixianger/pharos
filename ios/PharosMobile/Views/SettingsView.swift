@@ -37,19 +37,14 @@ struct SettingsView: View {
                             .multilineTextAlignment(.trailing)
                             .keyboardType(.numberPad)
                     }
-                    HStack {
-                        Button("Save connection") {
-                            saveMesh()
-                            Task { await testBroker() }
-                        }
-                        Spacer()
-                        Button("Refresh iCloud") { settings.refreshFromICloud(); load() }
-                            .foregroundStyle(.secondary)
+                    Button("Save connection") {
+                        saveMesh()
+                        Task { await testBroker() }
                     }
                 } header: {
                     Text("Mesh Broker").textCase(nil)
                 } footer: {
-                    Text("The Broker coordinates rooms, messages, and presence. It does not execute commands on Hosts.")
+                    Text("The Broker is the single source of truth for projects, issues, logs, rooms, messages, and attachments. This iPhone keeps only a local cache; Hosts execute agents separately.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 

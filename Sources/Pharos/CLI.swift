@@ -103,6 +103,9 @@ enum CLI {
             case "attach":
                 return try runAttach(p)
             case "path":
+                if p.arg(1) == nil, !p.has("clear") {
+                    return emit(try PharosCore.localPath(project: p.arg(0)), json: p.has("json"))
+                }
                 return ok(try PharosCore.setLocalPath(project: p.arg(0), path: p.arg(1), clear: p.has("clear")))
             case "host":
                 return emit(PharosCore.hostInfo(), json: p.has("json"))
@@ -611,7 +614,14 @@ enum CLI {
 
     // MARK: Output
 
-    private static func ok(_ message: String) -> Int32 { print(message); return 0 }
+    private static func ok(_ message: String) -> Int32 {
+        if let error = PharosCore.consumeRegistrySaveError() {
+            FileHandle.standardError.write(Data("error: \(error)\n".utf8))
+            return 1
+        }
+        print(message)
+        return 0
+    }
 
     private static func emit(_ outcome: CoreOutcome, json: Bool) -> Int32 {
         if json, let payload = outcome.json {
@@ -700,7 +710,7 @@ enum CLI {
 
     // MARK: Misc
 
-    private static var version: String { "0.7.0" }
+    private static var version: String { "0.8.0" }
 
     private static func prettyJSON(_ obj: Any) -> String {
         guard
@@ -773,8 +783,9 @@ enum CLI {
           trash restore <id>           Restore a soft-deleted item
           trash empty                  Permanently purge the Trash
 
-        MULTI-MACHINE (project data syncs; local paths are per-host)
+        MULTI-MACHINE (Broker-owned project data; paths stay on each Host)
           host                         Show this machine's host key
+          path <project>               Show THIS Host's local folder
           path <project> <path>        Set THIS machine's local folder for a project
           path <project> --clear       Forget this machine's local folder
 

@@ -31,6 +31,8 @@ public struct MeshRequest: Codable, Sendable {
     public var attachments: [MeshAttachment]?
     public var attachment: MeshAttachment?
     public var attachmentID: String?
+    public var payload: String?
+    public var expectedRevision: String?
 
     public init(cmd: String, room: String? = nil, nick: String? = nil, memberID: String? = nil,
                 text: String? = nil, to: [String]? = nil, timeoutMs: Int? = nil, limit: Int? = nil,
@@ -39,7 +41,8 @@ public struct MeshRequest: Codable, Sendable {
                 expectedState: String? = nil, expectedStateTs: Double? = nil, kind: String? = nil,
                 tailscaleIP: String? = nil, replyToID: String? = nil,
                 attachments: [MeshAttachment]? = nil, attachment: MeshAttachment? = nil,
-                attachmentID: String? = nil) {
+                attachmentID: String? = nil, payload: String? = nil,
+                expectedRevision: String? = nil) {
         self.cmd = cmd; self.room = room; self.nick = nick; self.memberID = memberID
         self.text = text; self.to = to; self.timeoutMs = timeoutMs; self.limit = limit
         self.project = project; self.session = session; self.host = host; self.tmuxPane = tmuxPane
@@ -47,6 +50,8 @@ public struct MeshRequest: Codable, Sendable {
         self.expectedStateTs = expectedStateTs; self.kind = kind; self.tailscaleIP = tailscaleIP
         self.replyToID = replyToID; self.attachments = attachments; self.attachment = attachment
         self.attachmentID = attachmentID
+        self.payload = payload
+        self.expectedRevision = expectedRevision
     }
 }
 
@@ -212,20 +217,23 @@ public struct MeshResponse: Codable, Sendable, Equatable {
     public var payload: String?
     public var capabilities: [String]?
     public var attachment: MeshAttachment?
+    public var revision: String?
 
     public init(ok: Bool, error: String? = nil, rooms: [MeshRoomInfo]? = nil, messages: [MeshMsg]? = nil,
                 members: [MeshMemberInfo]? = nil, note: String? = nil, memberID: String? = nil,
-                payload: String? = nil, capabilities: [String]? = nil, attachment: MeshAttachment? = nil) {
+                payload: String? = nil, capabilities: [String]? = nil, attachment: MeshAttachment? = nil,
+                revision: String? = nil) {
         self.ok = ok; self.error = error; self.rooms = rooms; self.messages = messages; self.members = members
         self.note = note; self.memberID = memberID; self.payload = payload
         self.capabilities = capabilities; self.attachment = attachment
+        self.revision = revision
     }
 
     public static func okay(_ note: String? = nil) -> MeshResponse { MeshResponse(ok: true, note: note) }
     public static func fail(_ e: String) -> MeshResponse { MeshResponse(ok: false, error: e) }
 }
 
-// MARK: - Paths (socket is always LOCAL; transcript lives in the data dir so the GUI/iCloud see it)
+// MARK: - Paths (socket is always local; durable Broker data lives in the configured data directory)
 
 public enum MeshPaths {
     /// Always-local Pharos app-support dir (never iCloud — a socket can't live in
@@ -308,7 +316,8 @@ public enum MeshPaths {
         return unreadDir.appendingPathComponent("\(safe).json")
     }
 
-    /// Room transcripts live beside the registry (may be iCloud) so the GUI can show them.
+    /// Durable Broker data is separate from the client's local cache even when
+    /// both run on one Mac; otherwise a cache write would bypass registry CAS.
     public static var dataDirectory: URL {
         if let override = ProcessInfo.processInfo.environment["PHAROS_MESH_DATA_DIR"], !override.isEmpty {
             return URL(fileURLWithPath: override, isDirectory: true)
@@ -316,16 +325,14 @@ public enum MeshPaths {
         if let registry = ProcessInfo.processInfo.environment["PHAROS_REGISTRY"], !registry.isEmpty {
             return URL(fileURLWithPath: registry).deletingLastPathComponent()
         }
-        #if os(macOS)
-        if let path = UserDefaults(suiteName: "me.pai.pharos")?.string(forKey: "pharos.dataDir"), !path.isEmpty {
-            return URL(fileURLWithPath: path, isDirectory: true)
-        }
-        #endif
-        return supportDir
+        return supportDir.appendingPathComponent("broker-data", isDirectory: true)
     }
     public static var transcriptDir: URL { dataDirectory.appendingPathComponent("mesh", isDirectory: true) }
     public static var attachmentDir: URL { transcriptDir.appendingPathComponent("attachments", isDirectory: true) }
     public static var registryFile: URL { dataDirectory.appendingPathComponent("projects.json") }
+    public static var registryBackupDir: URL {
+        dataDirectory.appendingPathComponent("registry-backups", isDirectory: true)
+    }
 
     public static func transcript(_ room: String) -> URL {
         transcriptDir.appendingPathComponent("\(room).jsonl")
@@ -449,9 +456,11 @@ public final class MeshBroker: @unchecked Sendable {
 
     public func serve() {
         signal(SIGPIPE, SIG_IGN)        // a hung-up client must not kill the daemon
+        migrateLegacyLocalBrokerDataIfNeeded()
         try? FileManager.default.createDirectory(at: MeshPaths.supportDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: MeshPaths.transcriptDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: MeshPaths.attachmentDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: MeshPaths.registryBackupDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: MeshPaths.unreadDir, withIntermediateDirectories: true)
         // Fresh broker = fresh MAILBOXES: reset the unread signal files so hooks
         // never see a signal this broker didn't write. Transcripts are durable.
@@ -512,6 +521,22 @@ public final class MeshBroker: @unchecked Sendable {
         }
     }
 
+    private func migrateLegacyLocalBrokerDataIfNeeded() {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["PHAROS_MESH_DATA_DIR"] == nil,
+              environment["PHAROS_REGISTRY"] == nil,
+              !FileManager.default.fileExists(atPath: MeshPaths.dataDirectory.path) else { return }
+        let fm = FileManager.default
+        try? fm.createDirectory(at: MeshPaths.dataDirectory, withIntermediateDirectories: true)
+        for name in ["projects.json", "mesh"] {
+            let source = MeshPaths.supportDir.appendingPathComponent(name)
+            let destination = MeshPaths.dataDirectory.appendingPathComponent(name)
+            if fm.fileExists(atPath: source.path), !fm.fileExists(atPath: destination.path) {
+                try? fm.copyItem(at: source, to: destination)
+            }
+        }
+    }
+
     /// Bring up the cross-host TCP listener when `PHAROS_MESH_TCP` is set. Runs
     /// its accept loop on a detached thread; each connection is driven by the
     /// same `handle` as UDS. Refuses to bind without the insecure opt-in, and
@@ -567,8 +592,18 @@ public final class MeshBroker: @unchecked Sendable {
         switch req.cmd {
         case "capabilities":
             return MeshResponse(ok: true, capabilities: [
-                "mesh-v2", "message-id", "reply-v1", "attachment-v1", "headless-v1"
+                "mesh-v2", "message-id", "reply-v1", "attachment-v1", "headless-v1",
+                "registry-cas-v1"
             ])
+
+        case "registry-get":
+            return registrySnapshot()
+
+        case "registry-put":
+            guard let payload = req.payload, let expected = req.expectedRevision else {
+                return .fail("payload and expected revision required")
+            }
+            return replaceRegistry(payload: payload, expectedRevision: expected)
 
         case "create":
             guard let r = req.room else { return .fail("room required") }
@@ -965,6 +1000,83 @@ public final class MeshBroker: @unchecked Sendable {
             }
         }
         return Self.jsonString(["issues": out]) ?? #"{"issues":[]}"#
+    }
+
+    private static let maximumRegistryBytes = 10 * 1024 * 1024
+
+    /// The Broker is the sole authority for portable project state. Reads carry
+    /// a content revision and writes are compare-and-swap, so two clients can
+    /// never silently overwrite one another.
+    private func registrySnapshot() -> MeshResponse {
+        lock.lock(); defer { lock.unlock() }
+        let data = registryDataLocked()
+        guard let payload = String(data: data, encoding: .utf8) else {
+            return .fail("registry is not UTF-8 JSON")
+        }
+        return MeshResponse(ok: true, payload: payload, revision: Self.registryRevision(data))
+    }
+
+    private func replaceRegistry(payload: String, expectedRevision: String) -> MeshResponse {
+        guard let proposed = payload.data(using: .utf8),
+              !proposed.isEmpty, proposed.count <= Self.maximumRegistryBytes,
+              Self.validRegistry(proposed) else {
+            return .fail("registry must be a JSON object containing a projects array (maximum 10 MiB)")
+        }
+        lock.lock(); defer { lock.unlock() }
+        let current = registryDataLocked()
+        let currentRevision = Self.registryRevision(current)
+        guard expectedRevision == currentRevision else {
+            return MeshResponse(ok: false, error: "registry conflict", revision: currentRevision)
+        }
+        let proposedRevision = Self.registryRevision(proposed)
+        if proposedRevision == currentRevision {
+            return MeshResponse(ok: true, revision: currentRevision)
+        }
+        do {
+            try FileManager.default.createDirectory(at: MeshPaths.dataDirectory,
+                                                    withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: MeshPaths.registryBackupDir,
+                                                    withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: MeshPaths.registryFile.path) {
+                let stamp = ISO8601DateFormatter().string(from: Date())
+                    .replacingOccurrences(of: ":", with: "-")
+                let backup = MeshPaths.registryBackupDir
+                    .appendingPathComponent("\(stamp)-\(currentRevision.prefix(12)).json")
+                try current.write(to: backup, options: .atomic)
+                pruneRegistryBackupsLocked(keeping: 200)
+            }
+            try proposed.write(to: MeshPaths.registryFile, options: .atomic)
+            return MeshResponse(ok: true, revision: proposedRevision)
+        } catch {
+            return .fail("cannot persist registry: \(error.localizedDescription)")
+        }
+    }
+
+    private func registryDataLocked() -> Data {
+        if let data = try? Data(contentsOf: MeshPaths.registryFile) { return data }
+        return Data(#"{"groups":[],"projects":[],"trash":[]}"#.utf8)
+    }
+
+    private func pruneRegistryBackupsLocked(keeping limit: Int) {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: MeshPaths.registryBackupDir,
+            includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        let ordered = files.sorted {
+            let left = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let right = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return left > right
+        }
+        for file in ordered.dropFirst(limit) { try? FileManager.default.removeItem(at: file) }
+    }
+
+    private static func registryRevision(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func validRegistry(_ data: Data) -> Bool {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              root["projects"] is [Any] else { return false }
+        return true
     }
 
     /// The headless broker treats the registry as opaque JSON. This keeps the

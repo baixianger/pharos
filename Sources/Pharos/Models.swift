@@ -22,10 +22,8 @@ struct Project: Identifiable, Codable, Hashable {
     var issues: [Issue] = []    // native, single-user issues (no human assignees)
     var updates: [ProjectUpdate] = []   // project-update feed / personal changelog
     var milestones: [Milestone] = []    // cycles / milestones issues can belong to
-    /// Per-host local checkout paths (computer name → absolute path). The shared
-    /// project data syncs across machines; this map keeps each machine's own
-    /// path so iCloud sync never clobbers it. `localPath` above is the resolved
-    /// path for the *current* host (set on load).
+    /// Legacy pre-Broker path map. Decoded once so each Host can migrate its own
+    /// path into local preferences; Broker snapshots strip this field.
     var localPaths: [String: String] = [:]
 
     init(id: UUID = UUID(), name: String, localPath: String? = nil, githubRemote: String? = nil,
@@ -193,8 +191,8 @@ struct Milestone: Identifiable, Codable, Hashable {
     var createdAt: Date = Date()
 }
 
-/// Metadata for an image or file attached to an issue. The bytes live on disk
-/// (synced with the rest of the data dir); this is what travels in the registry.
+/// Metadata for an image or file attached to an issue. The UUID addresses the
+/// Broker blob; clients may cache the bytes locally.
 struct IssueAttachment: Identifiable, Codable, Hashable {
     var id: UUID = UUID()
     var storedName: String     // filename on disk within the issue's attachment dir

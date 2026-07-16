@@ -20,6 +20,27 @@ public enum MeshClientError: LocalizedError {
     }
 }
 
+public struct MeshRegistrySnapshot: Sendable, Equatable {
+    public let payload: String
+    public let revision: String
+
+    public init(payload: String, revision: String) {
+        self.payload = payload
+        self.revision = revision
+    }
+}
+
+public enum MeshRegistryError: LocalizedError, Equatable {
+    case conflict(currentRevision: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .conflict:
+            "The project registry changed on another client. Reload before saving again."
+        }
+    }
+}
+
 /// Thin client to the local mesh broker. Auto-spawns the daemon on first use
 /// (like tmux), sends one request, and returns the response. `wait` blocks here
 /// because the daemon holds the response open until a message arrives.
@@ -138,7 +159,8 @@ public enum MeshClient {
         return roundTrip(fd, req)
     }
 
-    public static func uploadAttachment(fileAt url: URL, mimeType: String? = nil) throws -> MeshAttachment {
+    public static func uploadAttachment(fileAt url: URL, mimeType: String? = nil,
+                                        id: String? = nil, name: String? = nil) throws -> MeshAttachment {
         let data: Data
         do { data = try Data(contentsOf: url, options: .mappedIfSafe) }
         catch { throw MeshClientError.file("Cannot read attachment: \(error.localizedDescription)") }
@@ -146,7 +168,8 @@ public enum MeshClient {
             throw MeshClientError.file("Attachments must be between 1 byte and 25 MiB.")
         }
         let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        let metadata = MeshAttachment(name: url.lastPathComponent,
+        let metadata = MeshAttachment(id: id ?? UUID().uuidString,
+                                      name: name ?? url.lastPathComponent,
                                       mimeType: mimeType ?? inferredMIMEType(for: url),
                                       byteSize: data.count, sha256: sha)
         guard let fd = connectionForRequest() else { throw MeshClientError.cannotConnect }
@@ -162,6 +185,32 @@ public enum MeshClient {
             throw MeshClientError.invalidResponse(response.error ?? "Attachment upload failed.")
         }
         return stored
+    }
+
+    /// Fetch the Broker-owned project registry and its content revision. The
+    /// revision is required for the next conditional write, preventing a stale
+    /// Mac or CLI process from silently overwriting another client's changes.
+    public static func fetchRegistry() throws -> MeshRegistrySnapshot {
+        let response = send(MeshRequest(cmd: "registry-get"))
+        guard response.ok, let payload = response.payload, let revision = response.revision else {
+            throw MeshClientError.invalidResponse(response.error ?? "Registry fetch failed.")
+        }
+        return MeshRegistrySnapshot(payload: payload, revision: revision)
+    }
+
+    /// Replace the Broker registry only if `expectedRevision` still matches.
+    /// A conflict is returned to the caller and is never converted into a
+    /// last-writer-wins overwrite.
+    public static func replaceRegistry(payload: String, expectedRevision: String) throws -> String {
+        let response = send(MeshRequest(cmd: "registry-put", payload: payload,
+                                        expectedRevision: expectedRevision))
+        guard response.ok, let revision = response.revision else {
+            if let current = response.revision {
+                throw MeshRegistryError.conflict(currentRevision: current)
+            }
+            throw MeshClientError.invalidResponse(response.error ?? "Registry write failed.")
+        }
+        return revision
     }
 
     @discardableResult

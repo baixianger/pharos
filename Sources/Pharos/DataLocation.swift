@@ -1,4 +1,5 @@
 import Foundation
+import PharosMeshCore
 
 /// The app's preferences domain (`me.pai.pharos`) no matter which front door
 /// the process came through.
@@ -18,17 +19,8 @@ enum PharosPrefs {
     }
 }
 
-/// Resolves where Pharos keeps its data (the registry + attachments).
-///
-/// Default is `~/Library/Application Support/Pharos`. The user can move it into
-/// **iCloud Drive** (Settings → Data location) so project data — issues, logs,
-/// notes — syncs across their Macs; per-host local checkout paths
-/// (`Project.localPaths`) keep each machine's own path intact. This is plain
-/// iCloud Drive (a folder under `com~apple~CloudDocs`), so it needs no iCloud
-/// entitlement and works with any signing/distribution.
-///
-/// Both front doors read the same `pharos.dataDir` default, so the GUI and the
-/// `pharos` CLI always agree on the location.
+/// Local cache location for Broker-owned project data. iCloud was the old
+/// multi-Mac transport; it is now imported once and retained only as a backup.
 enum DataLocation {
     private static let defaultsKey = "pharos.dataDir"
     private static let folderName = "Pharos"
@@ -40,49 +32,63 @@ enum DataLocation {
             .appendingPathComponent(folderName, isDirectory: true)
     }
 
-    /// `~/Library/Mobile Documents/com~apple~CloudDocs/Pharos`, or nil if the
-    /// user doesn't have iCloud Drive enabled (the CloudDocs container is absent).
-    static var iCloudDirectory: URL? {
-        let cloudDocs = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
-        guard FileManager.default.fileExists(atPath: cloudDocs.path) else { return nil }
-        return cloudDocs.appendingPathComponent(folderName, isDirectory: true)
-    }
+    /// Caches and downloaded attachment bytes are always local to this device.
+    static var current: URL { appSupportDirectory }
 
-    /// True iff iCloud Drive is available on this Mac.
-    static var iCloudAvailable: Bool { iCloudDirectory != nil }
-
-    /// The active data directory: the user's `pharos.dataDir` override, else the
-    /// Application Support default.
-    static var current: URL {
-        if let custom = PharosPrefs.shared.string(forKey: defaultsKey), !custom.isEmpty {
-            return URL(fileURLWithPath: custom, isDirectory: true)
+    /// One-time upgrade bridge: seed the local cache from the previously chosen
+    /// local/iCloud directory, then stop treating that directory as live state.
+    /// The source is deliberately left untouched as an additional rollback copy.
+    static func migrateLegacyCacheIfNeeded() {
+        let prefs = PharosPrefs.shared
+        guard !prefs.bool(forKey: "pharos.brokerCacheMigrated") else { return }
+        defer {
+            prefs.set(true, forKey: "pharos.brokerCacheMigrated")
+            prefs.removeObject(forKey: defaultsKey)
         }
-        return appSupportDirectory
+        guard let oldPath = prefs.string(forKey: defaultsKey), !oldPath.isEmpty else { return }
+        let source = URL(fileURLWithPath: oldPath, isDirectory: true).standardizedFileURL
+        let target = appSupportDirectory.standardizedFileURL
+        guard source != target else { return }
+        let fm = FileManager.default
+        try? fm.createDirectory(at: target, withIntermediateDirectories: true)
+        let sourceRegistry = source.appendingPathComponent("projects.json")
+        let targetRegistry = target.appendingPathComponent("projects.json")
+        if fm.fileExists(atPath: sourceRegistry.path) {
+            if fm.fileExists(atPath: targetRegistry.path) {
+                let rollback = target.appendingPathComponent("projects.pre-broker-cache.json")
+                try? fm.removeItem(at: rollback)
+                try? fm.copyItem(at: targetRegistry, to: rollback)
+                try? fm.removeItem(at: targetRegistry)
+            }
+            try? fm.copyItem(at: sourceRegistry, to: targetRegistry)
+        }
+        mergeMissingFiles(from: source.appendingPathComponent("attachments"),
+                          into: target.appendingPathComponent("attachments"), fileManager: fm)
     }
 
-    /// True iff the active directory is the iCloud Drive folder.
-    static var usingICloud: Bool {
-        guard let custom = PharosPrefs.shared.string(forKey: defaultsKey), !custom.isEmpty,
-              let icloud = iCloudDirectory else { return false }
-        return URL(fileURLWithPath: custom).standardizedFileURL == icloud.standardizedFileURL
-    }
-
-    static func setDirectory(_ url: URL?) {
-        if let url {
-            PharosPrefs.shared.set(url.path, forKey: defaultsKey)
-        } else {
-            PharosPrefs.shared.removeObject(forKey: defaultsKey)
+    private static func mergeMissingFiles(from source: URL, into target: URL,
+                                          fileManager fm: FileManager) {
+        guard let enumerator = fm.enumerator(at: source, includingPropertiesForKeys: [.isDirectoryKey]) else {
+            return
+        }
+        for case let item as URL in enumerator {
+            guard item.path.hasPrefix(source.path + "/") else { continue }
+            let relative = String(item.path.dropFirst(source.path.count + 1))
+            let destination = target.appendingPathComponent(relative)
+            let isDirectory = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            if isDirectory {
+                try? fm.createDirectory(at: destination, withIntermediateDirectories: true)
+            } else if !fm.fileExists(atPath: destination.path) {
+                try? fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? fm.copyItem(at: item, to: destination)
+            }
         }
     }
 
 }
 
-/// Stores issue attachment bytes on disk under `<registry dir>/attachments/<issueID>/`.
-/// The registry holds only metadata (`IssueAttachment`); this is the only place
-/// that touches the files. Derived from `PharosCore.registryURL` so it always
-/// sits beside the active registry — following `PHAROS_REGISTRY`, the
-/// `pharos.dataDir` pref, and iCloud relocation alike.
+/// Device cache for issue attachment bytes. The Broker is authoritative; this
+/// directory keeps already-opened files available offline.
 enum AttachmentStore {
     static var baseDirectory: URL {
         PharosCore.registryURL.deletingLastPathComponent()
@@ -94,7 +100,12 @@ enum AttachmentStore {
     }
 
     static func fileURL(_ attachment: IssueAttachment, issueID: UUID) -> URL {
-        directory(forIssue: issueID).appendingPathComponent(attachment.storedName)
+        let url = directory(forIssue: issueID).appendingPathComponent(attachment.storedName)
+        if !FileManager.default.fileExists(atPath: url.path),
+           ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] == nil {
+            _ = try? MeshClient.downloadAttachment(id: attachment.id.uuidString, to: url)
+        }
+        return url
     }
 
     private static let imageExtensions: Set<String> =
@@ -111,9 +122,20 @@ enum AttachmentStore {
         let stored = ext.isEmpty ? UUID().uuidString : "\(UUID().uuidString).\(ext)"
         let dest = dir.appendingPathComponent(stored)
         try fm.copyItem(at: source, to: dest)
+        let id = UUID()
+        if ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] == nil {
+            do {
+                _ = try MeshClient.uploadAttachment(fileAt: dest, id: id.uuidString,
+                                                    name: source.lastPathComponent)
+            } catch {
+                try? fm.removeItem(at: dest)
+                throw error
+            }
+        }
         let attrs = try? fm.attributesOfItem(atPath: dest.path)
         let size = (attrs?[.size] as? Int) ?? 0
         return IssueAttachment(
+            id: id,
             storedName: stored,
             originalName: source.lastPathComponent,
             isImage: imageExtensions.contains(ext.lowercased()),

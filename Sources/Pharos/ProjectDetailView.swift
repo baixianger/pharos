@@ -758,7 +758,7 @@ struct ProjectDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Not checked out on \(HostIdentity.current)", systemImage: "externaldrive.badge.questionmark")
                 .font(.headline)
-            Text("This project's data syncs across your Macs, but it has no local folder on this machine. Set one — it's saved per-host, so it won't affect your other Macs.")
+            Text("This project lives on the Broker, but it has no checkout on this Host. Set one here; the path remains private to this machine.")
                 .font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Button { chooseLocalFolder(project) } label: {

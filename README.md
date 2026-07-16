@@ -144,35 +144,34 @@ start` moves an issue to *In Progress* and links the agent session; when that
 agent finishes (tmux), Pharos auto-posts an update to the project log. Agents can
 also post their own progress with `pharos update add`.
 
-## Multi-machine sync (iCloud)
+## Broker-owned data and execution Hosts
 
 <div align="center">
-  <img src="site/shots/settings-machines.png" width="520" alt="Settings → Machines — iCloud data location, mesh host, and Mac pairing">
+  <img src="site/shots/settings-machines.png" width="520" alt="Settings → Machines — Broker and execution Hosts">
 </div>
 
-Settings → **Data location** can move Pharos's data into **iCloud Drive**, so
-your projects, issues, and logs sync across your Macs (plain iCloud Drive — no
-entitlement, works with any signing). The catch iCloud alone can't solve: a
-project's local checkout path differs per machine (`~/dev/x` vs `~/personal/x`).
-Pharos handles it with a **per-host path map** — each Mac stores and reads only
-its own path (keyed by computer name), so syncing never clobbers it. A project
-synced from another Mac shows "not checked out on *this* host" until you point it
-at a local folder (GUI **Set local folder…**, or `pharos path <project> <path>`).
-`pharos host` prints this machine's key. Settings → **Machines** separates the
-shared **Mesh Broker** from the **Hosts** that execute agents. The Broker may run
-on this Mac or at one explicit Tailscale endpoint. The Host list may contain
-several macOS or Linux machines controlled over SSH; remote launches (`--host`)
-resolve each project's path from the same synced per-host map. A Host does not
-need to run the Broker.
+The **Mesh Broker is the single source of truth** for projects, issues, updates,
+Trash, chat, and attachments. macOS and iOS keep local caches for startup and
+temporary offline reading. Registry writes use SHA-256 revisions and
+compare-and-swap; stale clients preserve their edit as a conflict file instead
+of silently overwriting newer Broker data. The Broker creates a versioned backup
+before every accepted registry change.
+
+Settings → **Machines** separates that Broker from the **Hosts** that execute
+agents. Checkout paths, SSH keys/routes, tool paths, and tmux state stay local to
+each Host. A controller asks the selected Host to resolve its own project path;
+paths are never published in the portable registry. iCloud is no longer a live
+sync transport. Existing iCloud data is imported once and left untouched as a
+rollback copy. See [ADR-002](docs/ADR-002-BROKER-OWNED-DATA.md).
 
 ---
 
 ## Privacy
 
 Pharos reads `~/.claude/projects/` and `~/.codex/sessions/` **locally only**.
-Project state lives in `~/Library/Application Support/Pharos/` or your own
-iCloud Drive. When you configure cross-host Mesh or remote launch, messages,
-attachments, session routing metadata, and commands travel only between devices
+Portable project state lives on your configured Broker; clients cache it under
+`~/Library/Application Support/Pharos/`. Messages, attachments, session routing
+metadata, and commands travel only between devices
 on your own SSH/Tailscale network; the public Pharos project operates no hosted
 service for this data.
 

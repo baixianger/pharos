@@ -1,16 +1,14 @@
 import SwiftUI
 
 /// Registry projects presented as a quiet, status-first Linear-style index.
-/// Project data still comes from the Mesh broker with the existing SSH fallback.
+/// Project data comes only from the Broker, with a device-local offline cache.
 struct ProjectsView: View {
     @Environment(RoomStore.self) private var store
     @Environment(AppSettings.self) private var settings
-    @Environment(SSHIdentityStore.self) private var identities
     @State private var projects: [RemoteProject] = []
     @State private var loading = false
     @State private var loadError: String?
     @State private var filter: ProjectFilter = .all
-    private let service = RemoteAgentService()
 
     var body: some View {
         NavigationStack {
@@ -129,11 +127,7 @@ struct ProjectsView: View {
             projects = viaMesh
             return
         }
-        guard let host = settings.registryHost, let identityID = host.identityID else { return }
-        do {
-            let key = try identities.privateKey(for: identityID)
-            projects = try await service.listProjects(profile: host, privateKey: key)
-        } catch { loadError = error.localizedDescription }
+        loadError = "The Broker is unavailable and no project cache exists yet."
     }
 }
 

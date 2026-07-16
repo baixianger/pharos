@@ -4,12 +4,10 @@ import SwiftUI
 struct IssuesView: View {
     @Environment(RoomStore.self) private var store
     @Environment(AppSettings.self) private var settings
-    @Environment(SSHIdentityStore.self) private var identities
     @State private var issues: [RemoteIssue] = []
     @State private var loading = false
     @State private var loadError: String?
     @State private var filter: IssueFilter = .all
-    private let service = RemoteAgentService()
 
     var body: some View {
         NavigationStack {
@@ -121,11 +119,7 @@ struct IssuesView: View {
             issues = viaMesh
             return
         }
-        guard let host = settings.registryHost, let identityID = host.identityID else { return }
-        do {
-            let key = try identities.privateKey(for: identityID)
-            issues = try await service.listIssues(profile: host, privateKey: key)
-        } catch { loadError = error.localizedDescription }
+        loadError = "The Broker is unavailable and no issue cache exists yet."
     }
 }
 

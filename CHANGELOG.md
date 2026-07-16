@@ -5,6 +5,22 @@ Maps Pharos versions to git history. Newest at top.
 
 ---
 
+## v0.8.0 — 2026-07-16
+
+**One durable data authority.** The Mesh Broker now owns projects, issues,
+updates, Trash, chat, and attachments. macOS and iPhone retain offline caches;
+iCloud is imported once and is no longer a competing live synchronization path.
+
+**Conflict-safe multi-client writes.** Project registry snapshots carry SHA-256
+revisions and use compare-and-swap writes. Every accepted replacement backs up
+the prior Broker snapshot, while an offline or conflicting Mac edit is preserved
+locally instead of silently overwriting another client.
+
+**Clean Broker/Host separation.** Checkout paths, SSH keys, terminal and agent
+runtime state stay on each execution Host. Remote launches ask that Host to
+resolve its own path, while Linux can run the same headless data Broker and CLI
+from the signed Debian package.
+
 ## v0.7.0 — 2026-07-15
 
 **Persistent cross-platform Mesh.** The broker and wire protocol now live in a

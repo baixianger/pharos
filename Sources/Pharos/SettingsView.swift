@@ -159,30 +159,9 @@ private struct MachinesSettingsTab: View {
     var body: some View {
         @Bindable var store = store
         Form {
-            Section("Data location") {
-                Picker("Store project data in", selection: Binding(
-                    get: { store.dataLocationIsICloud },
-                    set: { store.relocateData(toICloud: $0) }
-                )) {
-                    Text("This Mac (Application Support)").tag(false)
-                    Text("iCloud Drive").tag(true)
-                }
-                .pickerStyle(.radioGroup)
-                .disabled(!store.iCloudAvailable && !store.dataLocationIsICloud)
-                Text(store.iCloudAvailable
-                     ? "iCloud Drive syncs your projects, issues, and logs across your Macs. Each Mac keeps its own local checkout path, so paths never clobber each other."
-                     : "iCloud Drive isn't active on this Mac yet (no iCloud Drive folder found). Turn on iCloud Drive → “Sync this Mac” in System Settings; the option un-greys once its folder appears.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if !store.iCloudAvailable {
-                    Button("Open iCloud Settings…") {
-                        if let url = URL(string: "x-apple.systempreferences:com.apple.systempreferences.AppleIDSettings") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                    .controlSize(.small)
-                }
-                LabeledContent("Current") {
+            Section("Project data") {
+                registrySyncStatusView
+                LabeledContent("Offline cache") {
                     Text(store.dataDirectoryPath.replacingOccurrences(
                         of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
                         .font(.system(.caption, design: .monospaced))
@@ -193,6 +172,11 @@ private struct MachinesSettingsTab: View {
                 LabeledContent("This host") {
                     Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
                 }
+                Button("Sync now") { store.syncRegistryNow() }
+                    .controlSize(.small)
+                Text("The Mesh Broker is the single source of truth for projects, issues, logs, chat, and attachments. This Mac keeps only an offline cache and Host-specific settings; iCloud is no longer used for live synchronization.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Section("Mesh Broker") {
                 Picker("Broker mode", selection: $brokerMode) {
@@ -245,6 +229,7 @@ private struct MachinesSettingsTab: View {
             if brokerMode != desired { brokerMode = desired }
             if desired == .remote, store.isMeshHub { store.setMeshHub(false) }
             await checkBroker()
+            if !brokerTargetIsInvalid { store.syncRegistryNow() }
         }
     }
 
@@ -270,6 +255,34 @@ private struct MachinesSettingsTab: View {
         case .remote:
             if store.isMeshHub { store.setMeshHub(false) }
             Task.detached { MeshHosting.apply(hosting: false) }
+        }
+    }
+
+    @ViewBuilder
+    private var registrySyncStatusView: some View {
+        switch store.registrySyncStatus {
+        case .connecting:
+            Label("Connecting to project registry…", systemImage: "arrow.triangle.2.circlepath")
+                .foregroundStyle(.secondary)
+        case .synced:
+            Label("Broker registry synced", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .pending:
+            Label("Saving to Broker…", systemImage: "arrow.up.circle")
+                .foregroundStyle(.secondary)
+        case .offline(let message):
+            VStack(alignment: .leading, spacing: 3) {
+                Label("Offline cache", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(message).font(.caption).foregroundStyle(.secondary)
+            }
+        case .conflict(let path):
+            VStack(alignment: .leading, spacing: 3) {
+                Label("Conflict preserved", systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
+                    .foregroundStyle(.orange)
+                Text(path).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
         }
     }
 
@@ -315,6 +328,7 @@ private struct MachinesSettingsTab: View {
         if capabilities.contains("reply-v1") { labels.append("Replies") }
         if capabilities.contains("attachment-v1") { labels.append("Attachments") }
         if capabilities.contains("headless-v1") { labels.append("Headless") }
+        if capabilities.contains("registry-cas-v1") { labels.append("Project data") }
         return labels.isEmpty ? "Broker responded" : labels.joined(separator: " · ")
     }
 

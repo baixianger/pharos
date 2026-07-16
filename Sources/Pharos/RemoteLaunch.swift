@@ -138,7 +138,8 @@ enum RemoteLaunch {
             throw RemoteError(message: "Cannot SSH to '\(host)' (BatchMode). Check ~/.ssh/config + key auth; new machine → spawn-claude-tmux references/ssh-host-setup.md")
         }
 
-        // 2. Remote identity → per-host project path (from the synced registry).
+        // 2. Ask the Host itself for its local checkout path. Paths are Host
+        // settings and never travel through the portable Broker registry.
         let idProbe = ssh(host, #"echo "$(id -u)|$(uname)|$(scutil --get ComputerName 2>/dev/null || hostname)""#)
         let parts = idProbe.out.trimmingCharacters(in: .whitespacesAndNewlines)
             .split(separator: "|", maxSplits: 2).map(String.init)
@@ -146,7 +147,9 @@ enum RemoteLaunch {
             throw RemoteError(message: "Cannot identify remote host '\(host)': \(idProbe.err)")
         }
         let (uid, os, hostKey) = (parts[0], parts[1], parts[2])
-        guard let path = project.resolvedLocalPath(forHost: hostKey) else {
+        let pathProbe = ssh(host, "pharos path \(sq(project.name))")
+        let path = pathProbe.out.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard pathProbe.ok, !path.isEmpty else {
             throw RemoteError(message: "Project '\(project.name)' has no path registered for host '\(hostKey)'. On that machine run: pharos path \(project.name) <dir>")
         }
         guard ssh(host, "test -d \(sq(path))").ok else {
@@ -260,19 +263,16 @@ enum RemoteLaunch {
             }
             dir = p
         case .project(let name):
-            let idProbe = ssh(host, #"scutil --get ComputerName 2>/dev/null || hostname"#)
-            let hostKey = idProbe.out.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard idProbe.ok, !hostKey.isEmpty else {
-                fail("couldn't identify \(host) to resolve project '\(name)'"); return
-            }
             guard let project = PharosCore.findProject(name) else {
                 fail("project not found in registry: \(name)"); return
             }
-            guard let path = project.resolvedLocalPath(forHost: hostKey), !path.isEmpty else {
-                fail("project '\(name)' has no path registered for \(hostKey)"); return
+            let pathProbe = ssh(host, "pharos path \(sq(project.name))")
+            let path = pathProbe.out.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard pathProbe.ok, !path.isEmpty else {
+                fail("project '\(name)' has no path registered on \(host)"); return
             }
             guard ssh(host, "test -d \(sq(path))").ok else {
-                fail("project path missing on \(hostKey): \(path)"); return
+                fail("project path missing on \(host): \(path)"); return
             }
             dir = path
         }

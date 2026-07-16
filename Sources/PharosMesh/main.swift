@@ -100,12 +100,15 @@ private enum MeshHeadlessCLI {
         case "attachment":
             return runAttachment(Array(args.dropFirst()))
 
+        case "registry":
+            return runRegistry(Array(args.dropFirst()))
+
         case "--help", "-h", "help":
             print(usage)
             return 0
 
         case "--version", "version":
-            print("pharos-mesh 0.7.0")
+            print("pharos-mesh 0.8.0")
             return 0
 
         default:
@@ -120,7 +123,8 @@ private enum MeshHeadlessCLI {
             guard args.count >= 2 else { return usageError("attachment put <file>") }
             let url = URL(fileURLWithPath: args[1]).standardizedFileURL
             do {
-                let attachment = try MeshClient.uploadAttachment(fileAt: url)
+                let attachment = try MeshClient.uploadAttachment(
+                    fileAt: url, id: option("--id", in: args), name: option("--name", in: args))
                 print(attachment.id)
                 return 0
             } catch {
@@ -141,6 +145,36 @@ private enum MeshHeadlessCLI {
             }
         default:
             return usageError("attachment put|get …")
+        }
+    }
+
+    private static func runRegistry(_ args: [String]) -> Int32 {
+        guard let command = args.first else { return usageError("registry get|import …") }
+        do {
+            switch command {
+            case "get":
+                let snapshot = try MeshClient.fetchRegistry()
+                if let destination = option("--output", in: args) {
+                    try Data(snapshot.payload.utf8).write(to: URL(fileURLWithPath: destination), options: .atomic)
+                } else {
+                    print(snapshot.payload)
+                }
+                FileHandle.standardError.write(Data("revision \(snapshot.revision)\n".utf8))
+                return 0
+            case "import":
+                guard args.count >= 2, let expected = option("--expected", in: args) else {
+                    return usageError("registry import <projects.json> --expected REVISION")
+                }
+                let payload = try String(contentsOfFile: args[1], encoding: .utf8)
+                let revision = try MeshClient.replaceRegistry(payload: payload, expectedRevision: expected)
+                print(revision)
+                return 0
+            default:
+                return usageError("registry get|import …")
+            }
+        } catch {
+            FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+            return 1
         }
     }
 
@@ -216,8 +250,10 @@ private enum MeshHeadlessCLI {
       join <room> <nick> --session <id> [--kind codex|claude]
       say <room> <nick> <text> [--reply ID] [--attach FILE]
       recv <nick> [--member <session-id>]
-      attachment put <file>
+      attachment put <file> [--id UUID] [--name DISPLAY-NAME]
       attachment get <id> [--out PATH]
+      registry get [--output PATH]
+      registry import <projects.json> --expected REVISION
 
     Add `--endpoint HOST:PORT` to any client command to dial a remote broker.
     """
