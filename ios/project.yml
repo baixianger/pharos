@@ -47,6 +47,7 @@ targets:
         NSHumanReadableCopyright: "© 2026 Pai"
         LSApplicationCategoryType: public.app-category.developer-tools
         ITSAppUsesNonExemptEncryption: false
+        NSCameraUsageDescription: "Pharos uses the camera when you choose to attach a photo to a Mesh message."
         NSLocalNetworkUsageDescription: "Pharos connects to your private Mesh broker and SSH hosts over Tailscale."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true

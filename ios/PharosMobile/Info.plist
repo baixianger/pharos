@@ -31,6 +31,8 @@
 	</dict>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Pai</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Pharos uses the camera when you choose to attach a photo to a Mesh message.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Pharos connects to your private Mesh broker and SSH hosts over Tailscale.</string>
 	<key>UILaunchScreen</key>

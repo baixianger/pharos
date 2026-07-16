@@ -70,7 +70,7 @@ struct DashboardView: View {
                 statTiles
                 statusCard
                 if !blocked.isEmpty || !urgent.isEmpty { attentionCard }
-                if !activeAgents.isEmpty { agentsCard }
+                if !activeAgents.isEmpty { issueWorkCard }
                 if !store.allRunningSessions.isEmpty { trackedSessionsCard }
                 if !liveMeshAgents.isEmpty { meshAgentsCard }
                 if !meshMessages.isEmpty { meshCard }
@@ -149,7 +149,7 @@ struct DashboardView: View {
     // MARK: Mesh agents (all machines · attach / stop)
 
     private var trackedSessionsCard: some View {
-        card("Running sessions · \(store.allRunningSessions.count)") {
+        card("tmux sessions · \(store.allRunningSessions.count) running") {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(store.allRunningSessions.sorted(), id: \.self) { session in
                     let remoteHost = store.remoteSessionHosts[session]
@@ -181,7 +181,7 @@ struct DashboardView: View {
     }
 
     private var meshAgentsCard: some View {
-        card("Agents · \(liveMeshAgents.count) on the mesh") {
+        card("Mesh members · \(liveMeshAgents.count) registered") {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(liveMeshAgents, id: \.id) { m in
                     HStack(spacing: 9) {
@@ -363,7 +363,7 @@ struct DashboardView: View {
             tile("\(projects.count)", "Projects", "square.grid.2x2")
             tile("\(openIssues.count)", "Open issues", "smallcircle.filled.circle")
             tile("\(blocked.count)", "Blocked", "exclamationmark.octagon")
-            tile("\(agentCount)", "Agents running", "sparkles")
+            tile("\(agentCount)", "Local tmux sessions", "terminal")
         }
     }
 
@@ -424,8 +424,8 @@ struct DashboardView: View {
         }
     }
 
-    private var agentsCard: some View {
-        card("Agents working") {
+    private var issueWorkCard: some View {
+        card("Issue work · \(activeAgents.count) active") {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(activeAgents.prefix(8), id: \.i.id) { row in
                     HStack(spacing: 8) {

@@ -2,6 +2,7 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 import QuickLook
+import UIKit
 
 struct ConversationView: View {
     @Environment(RoomStore.self) private var store
@@ -10,10 +11,11 @@ struct ConversationView: View {
     @State private var destination: ConversationSheet?
     @State private var replyingTo: MeshMessage?
     @State private var pendingAttachments: [MeshAttachment] = []
-    @State private var showAttachmentActions = false
+    @State private var showAttachmentPanel = false
     @State private var showPhotoPicker = false
     @State private var showFileImporter = false
-    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var showCameraPicker = false
+    @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var isUploading = false
     @State private var previewURL: URL?
     @FocusState private var focused: Bool
@@ -42,14 +44,15 @@ struct ConversationView: View {
                 }
             }
         }
-        .confirmationDialog("Add attachment", isPresented: $showAttachmentActions) {
-            Button("Photo Library", systemImage: "photo.on.rectangle") { showPhotoPicker = true }
-            Button("Choose Image or PDF", systemImage: "folder") { showFileImporter = true }
-        }
-        .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhoto, matching: .images)
-        .onChange(of: selectedPhoto) { _, item in Task { await uploadPhoto(item) } }
+        .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhotos,
+                      maxSelectionCount: 5, matching: .images)
+        .onChange(of: selectedPhotos) { _, items in Task { await uploadPhotos(items) } }
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.image, .pdf]) { result in
             uploadFile(result)
+        }
+        .sheet(isPresented: $showCameraPicker) {
+            CameraPickerView { image in uploadCameraImage(image) }
+                .ignoresSafeArea()
         }
         .quickLookPreview($previewURL)
     }
@@ -110,26 +113,8 @@ struct ConversationView: View {
         }
 
         ToolbarItem(placement: .topBarTrailing) {
-            Menu {
-                if availableMembers.isEmpty {
-                    Text("No agents in this room")
-                } else {
-                    ForEach(availableMembers, id: \.nick) { member in
-                        Button {
-                            store.insertMention(member.nick, into: &draft)
-                            focused = true
-                        } label: {
-                            Label("Mention @\(member.nick)", systemImage: "at")
-                        }
-                    }
-                }
-
-                Divider()
-                Button("Add agent", systemImage: "person.badge.plus") { destination = .spawn }
-            } label: {
-                Image(systemName: "person.2")
-            }
-            .accessibilityLabel("Room members")
+            Button("Add agent", systemImage: "person.badge.plus") { destination = .spawn }
+                .labelStyle(.iconOnly)
         }
     }
 
@@ -159,6 +144,13 @@ struct ConversationView: View {
     @ViewBuilder
     private var composer: some View {
         VStack(spacing: 7) {
+            if !availableMembers.isEmpty {
+                RoomMentionStrip(members: availableMembers) { member in
+                    store.insertMention(member.nick, into: &draft)
+                    showAttachmentPanel = false
+                    focused = true
+                }
+            }
             if let replyingTo { replyComposerCard(replyingTo) }
             if !pendingAttachments.isEmpty || isUploading { pendingAttachmentStrip }
 
@@ -171,6 +163,25 @@ struct ConversationView: View {
                 composerField
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 23))
             }
+
+            if showAttachmentPanel {
+                AttachmentTray(
+                    cameraAvailable: UIImagePickerController.isSourceTypeAvailable(.camera),
+                    onCamera: {
+                        showAttachmentPanel = false
+                        showCameraPicker = true
+                    },
+                    onPhotos: {
+                        showAttachmentPanel = false
+                        showPhotoPicker = true
+                    },
+                    onFiles: {
+                        showAttachmentPanel = false
+                        showFileImporter = true
+                    }
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .padding(.horizontal, 10)
         .padding(.top, 7)
@@ -181,21 +192,34 @@ struct ConversationView: View {
     private var composerField: some View {
         HStack(alignment: .bottom, spacing: 8) {
             Button {
-                showAttachmentActions = true
+                focused = false
+                withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.82)) {
+                    showAttachmentPanel.toggle()
+                }
             } label: {
                 Image(systemName: "plus")
                     .font(.body.weight(.semibold))
                     .frame(width: 32, height: 32)
+                    .rotationEffect(showAttachmentPanel ? .degrees(45) : .zero)
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .accessibilityLabel("Add attachment")
 
             TextField("Message #\(store.selectedRoom ?? "room")", text: $draft, axis: .vertical)
-                .lineLimit(1...7)
+                .font(.body)
+                .lineSpacing(2)
+                .lineLimit(1...6)
+                .padding(.vertical, 5)
                 .focused($focused)
                 .submitLabel(.send)
                 .onSubmit(sendDraft)
+                .onChange(of: focused) { _, isFocused in
+                    guard isFocused, showAttachmentPanel else { return }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                        showAttachmentPanel = false
+                    }
+                }
 
             Button(action: sendDraft) {
                 Image(systemName: "arrow.up")
@@ -286,18 +310,34 @@ struct ConversationView: View {
         .scrollIndicators(.hidden)
     }
 
-    private func uploadPhoto(_ item: PhotosPickerItem?) async {
-        guard let item else { return }
+    private func uploadPhotos(_ items: [PhotosPickerItem]) async {
+        guard !items.isEmpty else { return }
         isUploading = true
-        defer { isUploading = false; selectedPhoto = nil }
-        guard let data = try? await item.loadTransferable(type: Data.self) else { return }
-        let type = item.supportedContentTypes.first ?? .image
-        let ext = type.preferredFilenameExtension ?? "jpg"
-        let name = "Image-\(UUID().uuidString.prefix(8)).\(ext)"
-        if let attachment = await store.uploadAttachment(
-            data: data, name: name, mimeType: type.preferredMIMEType ?? "image/jpeg"
-        ) {
-            pendingAttachments.append(attachment)
+        defer { isUploading = false; selectedPhotos = [] }
+        for item in items {
+            guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+            let type = item.supportedContentTypes.first ?? .image
+            let ext = type.preferredFilenameExtension ?? "jpg"
+            let name = "Image-\(UUID().uuidString.prefix(8)).\(ext)"
+            if let attachment = await store.uploadAttachment(
+                data: data, name: name, mimeType: type.preferredMIMEType ?? "image/jpeg"
+            ) {
+                pendingAttachments.append(attachment)
+            }
+        }
+    }
+
+    private func uploadCameraImage(_ image: UIImage) {
+        guard let data = image.jpegData(compressionQuality: 0.9) else { return }
+        Task {
+            isUploading = true
+            defer { isUploading = false }
+            let name = "Photo-\(UUID().uuidString.prefix(8)).jpg"
+            if let attachment = await store.uploadAttachment(
+                data: data, name: name, mimeType: "image/jpeg"
+            ) {
+                pendingAttachments.append(attachment)
+            }
         }
     }
 
@@ -360,6 +400,113 @@ struct ConversationView: View {
             Button("Retry") { Task { await store.refresh() } }.font(.caption.weight(.semibold))
         }
         .padding(10).background(.red.opacity(0.08))
+    }
+}
+
+private struct RoomMentionStrip: View {
+    let members: [MeshMember]
+    let onMention: (MeshMember) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 7) {
+                ForEach(members) { member in
+                    Button { onMention(member) } label: {
+                        HStack(spacing: 6) {
+                            ChatAvatar(name: member.nick, member: member, size: 25)
+                            Text("@\(member.nick)")
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
+                        }
+                        .padding(.leading, 4)
+                        .padding(.trailing, 10)
+                        .padding(.vertical, 4)
+                        .background(.secondary.opacity(0.1), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Mention \(member.nick)")
+                }
+            }
+            .padding(.horizontal, 1)
+        }
+        .scrollIndicators(.hidden)
+    }
+}
+
+private struct AttachmentTray: View {
+    let cameraAvailable: Bool
+    let onCamera: () -> Void
+    let onPhotos: () -> Void
+    let onFiles: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            AttachmentTrayButton(title: "Camera", systemImage: "camera",
+                                 isEnabled: cameraAvailable, action: onCamera)
+            AttachmentTrayButton(title: "Photos", systemImage: "photo.on.rectangle",
+                                 action: onPhotos)
+            AttachmentTrayButton(title: "Files", systemImage: "folder",
+                                 action: onFiles)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+    }
+}
+
+private struct AttachmentTrayButton: View {
+    let title: LocalizedStringKey
+    let systemImage: String
+    var isEnabled = true
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.title3.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 52, height: 52)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.4)
+    }
+}
+
+private struct CameraPickerView: UIViewControllerRepresentable {
+    let onImagePicked: (UIImage) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: CameraPickerView
+
+        init(parent: CameraPickerView) { self.parent = parent }
+
+        func imagePickerController(_ picker: UIImagePickerController,
+                                   didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            if let image = info[.originalImage] as? UIImage { parent.onImagePicked(image) }
+            parent.dismiss()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { parent.dismiss() }
     }
 }
 
