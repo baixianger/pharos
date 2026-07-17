@@ -388,6 +388,33 @@ enum MeshNode {
         counts.removeValue(forKey: member.id)
     }
 
+    /// Escape a form-blocked agent after the same pane/process validation as a
+    /// normal poke. On success the member is immediately CAS-marked busy so a
+    /// poke retry can never fire a second Escape into the turn that is already
+    /// processing the decline (a bare Escape there would interrupt it).
+    private static func dismissForm(_ member: MeshMemberInfo) -> String? {
+        guard let pane = member.tmuxPane, validPane(pane) else { return "missing or unsafe tmux pane" }
+        guard let tmux = tmuxExecutable else { return "tmux not found" }
+        if let socket = member.tmuxSocket, !validSocket(socket) { return "unsafe tmux socket" }
+        let prefix = member.tmuxSocket.map { ["-S", $0] } ?? []
+        let root = run(tmux, prefix + ["display-message", "-p", "-t", pane, "#{pane_pid}"])
+        guard root.ok, let rootPID = Int(root.output.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return "tmux pane is unavailable"
+        }
+        let processList = run("/bin/ps", ["-axo", "pid=,ppid=,comm="])
+        guard processList.ok,
+              MeshPaneSafety.processTreeContainsAgent(processList.output, rootPID: rootPID,
+                                                      kind: member.kind) else {
+            return "pane no longer runs the registered agent"
+        }
+        guard run(tmux, prefix + ["send-keys", "-t", pane, "Escape"]).ok else {
+            return "tmux Escape failed"
+        }
+        markObserved(member, state: .busy)
+        log("dismissed form for @\(member.nick); Stop hook delivers the answer")
+        return nil
+    }
+
     private static func markObserved(_ member: MeshMemberInfo, state: MeshSessionState) {
         var request = MeshRequest(cmd: "mark", memberID: member.id, state: state.rawValue)
         request.expectedState = member.state
@@ -406,6 +433,14 @@ enum MeshNode {
 
     static func poke(_ member: MeshMemberInfo) -> String? {
         if member.state == MeshSessionState.gone.rawValue { return "agent session is gone" }
+        // Blocked on an AskUserQuestion form: the unread @mention that caused
+        // this poke is (by design) the human's answer from the room. Escape
+        // dismisses the form; the declined tool ends the turn and the Stop
+        // hook then delivers the answer as normal room traffic.
+        if member.state == MeshSessionState.blocked.rawValue,
+           member.stateReason?.hasPrefix("form") == true {
+            return dismissForm(member)
+        }
         guard MeshPaneSafety.allowsPoke(state: member.state, stateTs: member.stateTs) else {
             return "hook owns delivery while state is \(member.state ?? "unknown")"
         }

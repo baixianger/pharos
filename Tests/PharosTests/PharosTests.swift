@@ -1303,6 +1303,32 @@ final class MeshStateMappingTests: XCTestCase {
         XCTAssertNil(codex["hookSpecificOutput"])
     }
 
+    func testFormMessageRendersQuestionsAndOptions() {
+        let toolInput: [String: Any] = [
+            "questions": [[
+                "question": "Which beam style should the icon use?",
+                "header": "Beam style",
+                "multiSelect": false,
+                "options": [
+                    ["label": "glow", "description": "Soft luminous halo."],
+                    ["label": "neg", "description": "Negative-space beam."],
+                ],
+            ], [
+                "question": "Ship it?",
+                "multiSelect": true,
+                "options": [["label": "yes"]],
+            ]],
+        ]
+        let text = MeshHooks.formMessage(toolInput: toolInput)
+        let rendered = try! XCTUnwrap(text)
+        XCTAssertTrue(rendered.contains("1. Which beam style should the icon use?［Beam style］"))
+        XCTAssertTrue(rendered.contains("◦ glow — Soft luminous halo."))
+        XCTAssertTrue(rendered.contains("◦ neg — Negative-space beam."))
+        XCTAssertTrue(rendered.contains("2. Ship it?（可多选）"))
+        XCTAssertTrue(rendered.contains("◦ yes"))
+        XCTAssertNil(MeshHooks.formMessage(toolInput: [:]))
+    }
+
     func testClaudeHookInstallerWritesFullManifestAndRepairsMatcher() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("pharos-hooks-\(UUID().uuidString)")
@@ -1315,9 +1341,11 @@ final class MeshStateMappingTests: XCTestCase {
         var hooks = try XCTUnwrap(root["hooks"] as? [String: Any])
         for event in ["Stop", "SessionStart", "UserPromptSubmit", "PermissionRequest",
                       "Notification", "ElicitationResult", "PostToolUseFailure",
-                      "StopFailure", "SessionEnd", "PostToolUse"] {
+                      "StopFailure", "SessionEnd", "PostToolUse", "PreToolUse"] {
             XCTAssertNotNil(hooks[event], "missing \(event)")
         }
+        let pre = try XCTUnwrap(hooks["PreToolUse"] as? [[String: Any]])
+        XCTAssertEqual(pre[0]["matcher"] as? String, "AskUserQuestion")
 
         var post = try XCTUnwrap(hooks["PostToolUse"] as? [[String: Any]])
         post[0]["matcher"] = "Edit"

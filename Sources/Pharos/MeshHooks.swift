@@ -65,6 +65,7 @@ enum MeshHooks {
         ("Notification", markMarker), ("ElicitationResult", markMarker),
         ("PostToolUseFailure", markMarker), ("StopFailure", markMarker),
         ("SessionEnd", markMarker), ("PostToolUse", postToolMarker),
+        ("PreToolUse", markMarker),
     ]
 
     private static let codexManifest: [(event: String, marker: String)] = [
@@ -220,14 +221,63 @@ enum MeshHooks {
     private static func markHook() -> Int32 {
         guard let input = readStdinIfPiped(),
               let obj = try? JSONSerialization.jsonObject(with: input) as? [String: Any],
-              let event = obj["hook_event_name"] as? String,
-              let state = stateFor(event: event, notificationType: obj["notification_type"] as? String)
-        else { return 0 }
+              let event = obj["hook_event_name"] as? String else { return 0 }
         let cwd = (obj["cwd"] as? String) ?? FileManager.default.currentDirectoryPath
-        report(state, cwd: cwd, session: obj["session_id"] as? String,
+        let session = obj["session_id"] as? String
+        // PreToolUse{AskUserQuestion}: the dialog is about to block the session
+        // on a HUMAN. Report blocked(form) and forward the full form into the
+        // member's room so the human can answer from chat (verified: the
+        // dialog itself renders normally as long as we emit no decision).
+        if event == "PreToolUse" {
+            guard obj["tool_name"] as? String == "AskUserQuestion" else { return 0 }
+            report(.blocked, cwd: cwd, session: session, reason: "form:AskUserQuestion")
+            forwardForm(toolInput: obj["tool_input"] as? [String: Any] ?? [:], session: session)
+            return 0
+        }
+        guard let state = stateFor(event: event, notificationType: obj["notification_type"] as? String)
+        else { return 0 }
+        report(state, cwd: cwd, session: session,
                reason: stateReason(event: event, notificationType: obj["notification_type"] as? String,
                                    payload: obj))
         return 0
+    }
+
+    /// Render an AskUserQuestion tool_input as a chat-readable form. Static and
+    /// pure for testability.
+    static func formMessage(toolInput: [String: Any]) -> String? {
+        guard let questions = toolInput["questions"] as? [[String: Any]],
+              !questions.isEmpty else { return nil }
+        var lines = ["📋 表单待填（AskUserQuestion）— 我停在这张表上等人选择。直接在群里 @我 回复选项即可，Pharos 会代我收表并送达你的答复。"]
+        for (index, question) in questions.enumerated() {
+            let header = (question["header"] as? String).map { "［\($0)］" } ?? ""
+            let multi = question["multiSelect"] as? Bool == true ? "（可多选）" : ""
+            lines.append("\(index + 1). \(question["question"] as? String ?? "?")\(header)\(multi)")
+            for option in question["options"] as? [[String: Any]] ?? [] {
+                let label = option["label"] as? String ?? "?"
+                let detail = (option["description"] as? String).map { " — \($0)" } ?? ""
+                lines.append("   ◦ \(label)\(detail)")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Fail-open forward of the form into the member's room(s). The member id
+    /// IS the session id for session-joined agents, so this works identically
+    /// for local-broker and dial-out sessions. A say without a room resolves
+    /// the single-room case; multi-room members fall back to one say per room.
+    private static func forwardForm(toolInput: [String: Any], session: String?) {
+        guard let session, !session.isEmpty,
+              let text = formMessage(toolInput: toolInput) else { return }
+        var say = MeshRequest(cmd: "say", text: text)
+        say.memberID = session
+        guard let response = MeshClient.sendIfUp(say), !response.ok else { return }
+        let roster = MeshClient.sendIfUp(MeshRequest(cmd: "who"))
+        let rooms = Set((roster?.members ?? []).filter { $0.id == session }.flatMap(\.rooms))
+        for room in rooms {
+            var perRoom = MeshRequest(cmd: "say", room: room, text: text)
+            perRoom.memberID = session
+            _ = MeshClient.sendIfUp(perRoom)
+        }
     }
 
     /// Human-attention and failure detail stays orthogonal to readiness state.
@@ -594,6 +644,11 @@ enum MeshHooks {
             ("PostToolUse", upsertHook(&hooks, event: "PostToolUse",
                                        command: hookCommand("unread --hook-post-tool"),
                                        marker: postToolMarker, matcher: "*")),
+            // AskUserQuestion only: report blocked(form) and forward the form
+            // content into the member's room before the dialog blocks the turn.
+            ("PreToolUse", upsertHook(&hooks, event: "PreToolUse",
+                                      command: markCmd, marker: markMarker,
+                                      matcher: "AskUserQuestion")),
         ]
         root["hooks"] = hooks
 
