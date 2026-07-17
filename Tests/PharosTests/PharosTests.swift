@@ -1610,6 +1610,33 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         XCTAssertEqual(history.last?.from, "real-agent")
     }
 
+    func testHistoryPagesBackwardFromAnchor() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "paging", nick: "agent",
+                                                 session: "session-page", host: "mac")).ok)
+        for index in 0..<12 {
+            XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "paging",
+                                                     memberID: "session-page",
+                                                     text: "m\(index)")).ok)
+        }
+        let tail = broker.process(MeshRequest(cmd: "history", room: "paging", limit: 4)).messages ?? []
+        XCTAssertEqual(tail.map(\.text), ["m8", "m9", "m10", "m11"])
+
+        var pageRequest = MeshRequest(cmd: "history", room: "paging", limit: 4)
+        pageRequest.beforeID = tail.first?.id
+        let middle = broker.process(pageRequest).messages ?? []
+        XCTAssertEqual(middle.map(\.text), ["m4", "m5", "m6", "m7"])
+
+        var headRequest = MeshRequest(cmd: "history", room: "paging", limit: 10)
+        headRequest.beforeID = middle.first?.id
+        let head = broker.process(headRequest).messages ?? []
+        XCTAssertEqual(head.map(\.text), ["m0", "m1", "m2", "m3"])
+
+        var unknownAnchor = MeshRequest(cmd: "history", room: "paging", limit: 4)
+        unknownAnchor.beforeID = "missing-id"
+        XCTAssertTrue((broker.process(unknownAnchor).messages ?? []).isEmpty)
+    }
+
     func testSayInfersOnlyJoinedRoomFromMemberSession() {
         let broker = MeshBroker()
         XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "only-room", nick: "agent",

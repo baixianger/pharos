@@ -21,7 +21,15 @@ final class RoomStore {
     private(set) var isRefreshing = false
     private(set) var notice: String?
     private(set) var error: String?
+    /// True while older pages likely remain above the loaded window.
+    private(set) var hasMoreHistory = false
+    private(set) var isLoadingOlder = false
     private var capabilities: Set<String>?
+    /// Messages fetched per page. The window starts as the latest page and
+    /// grows upward only when the user pulls for older history.
+    private static let historyPageSize = 50
+    /// Window cap for brokers without history paging (previous behavior).
+    private static let legacyHistoryLimit = 200
     private static let projectsCacheKey = "pharos.mobile.registry.projects.v1"
     private static let issuesCacheKey = "pharos.mobile.registry.issues.v1"
 
@@ -51,10 +59,10 @@ final class RoomStore {
                 selectedRoom = rooms.first?.name
             }
             if let selectedRoom {
-                let nextMessages = try await request(MeshRequest(cmd: "history", room: selectedRoom, limit: 200)).messages ?? []
-                if messages != nextMessages { messages = nextMessages }
+                try await loadLatestPage(for: selectedRoom)
             } else {
                 if !messages.isEmpty { messages = [] }
+                hasMoreHistory = false
             }
             error = nil
         } catch {
@@ -85,10 +93,55 @@ final class RoomStore {
     }
 
     func select(room: String) async {
+        if selectedRoom != room {
+            messages = []
+            hasMoreHistory = false
+        }
         selectedRoom = room
         do {
-            let nextMessages = try await request(MeshRequest(cmd: "history", room: room, limit: 200)).messages ?? []
-            if messages != nextMessages { messages = nextMessages }
+            try await loadLatestPage(for: room)
+            error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+
+    /// Fetch the newest page and graft it onto the loaded window. Older pages
+    /// the user already pulled in stay; only the overlapping tail is replaced.
+    /// If the window doesn't reach the new page (a gap after backgrounding),
+    /// the window resets to the latest page — the user can pull up to re-page.
+    private func loadLatestPage(for room: String) async throws {
+        let paged = await supportsHistoryPaging()
+        let limit = paged ? Self.historyPageSize : Self.legacyHistoryLimit
+        let tail = try await request(MeshRequest(cmd: "history", room: room, limit: limit)).messages ?? []
+        guard selectedRoom == room else { return }
+        guard let anchor = tail.first else {
+            if !messages.isEmpty { messages = [] }
+            hasMoreHistory = false
+            return
+        }
+        let next: [MeshMessage]
+        if let overlap = messages.firstIndex(where: { $0.id == anchor.id }) {
+            next = Array(messages[..<overlap]) + tail
+        } else {
+            next = tail
+            hasMoreHistory = paged && tail.count == limit
+        }
+        if messages != next { messages = next }
+        if !paged { hasMoreHistory = false }
+    }
+
+    /// Pull one page of history older than the current window (scroll-up).
+    func loadOlderMessages() async {
+        guard !isLoadingOlder, hasMoreHistory,
+              let room = selectedRoom, let anchor = messages.first?.id else { return }
+        isLoadingOlder = true
+        defer { isLoadingOlder = false }
+        do {
+            var page = MeshRequest(cmd: "history", room: room, limit: Self.historyPageSize)
+            page.beforeID = anchor
+            let older = try await request(page).messages ?? []
+            guard selectedRoom == room, messages.first?.id == anchor else { return }
+            hasMoreHistory = older.count == Self.historyPageSize
+            if !older.isEmpty { messages = older + messages }
             error = nil
         } catch { self.error = error.localizedDescription }
     }
@@ -121,8 +174,7 @@ final class RoomStore {
             outgoing.replyToID = replyTo?.id
             outgoing.attachments = attachments.isEmpty ? nil : attachments
             _ = try await request(outgoing)
-            let nextMessages = try await request(MeshRequest(cmd: "history", room: room, limit: 200)).messages ?? []
-            if messages != nextMessages { messages = nextMessages }
+            try await loadLatestPage(for: room)
             error = nil
             return true
         } catch {
@@ -336,11 +388,19 @@ final class RoomStore {
     }
 
     private func supportsAdvancedMessages() async -> Bool {
-        if let capabilities { return capabilities.contains("mesh-v2") }
-        guard let response = try? await request(MeshRequest(cmd: "capabilities")) else { return false }
+        await capabilitySet().contains("mesh-v2")
+    }
+
+    private func supportsHistoryPaging() async -> Bool {
+        await capabilitySet().contains("history-page-v1")
+    }
+
+    private func capabilitySet() async -> Set<String> {
+        if let capabilities { return capabilities }
+        guard let response = try? await request(MeshRequest(cmd: "capabilities")) else { return [] }
         let values = Set(response.capabilities ?? [])
         capabilities = values
-        return values.contains("mesh-v2")
+        return values
     }
 
 }

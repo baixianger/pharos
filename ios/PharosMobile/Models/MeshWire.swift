@@ -19,6 +19,8 @@ struct MeshRequest: Codable, Sendable, Equatable {
     var expectedState: String?
     var expectedStateTs: Double?
     var kind: String?
+    /// history only: return messages strictly before this message id (paging).
+    var beforeID: String?
     var replyToID: String?
     var attachments: [MeshAttachment]?
     var attachment: MeshAttachment?

@@ -28,6 +28,8 @@ public struct MeshRequest: Codable, Sendable {
     public var expectedStateTs: Double?
     public var kind: String?
     public var tailscaleIP: String?
+    /// history only: return messages strictly before this message id (paging).
+    public var beforeID: String?
     public var replyToID: String?
     public var attachments: [MeshAttachment]?
     public var attachment: MeshAttachment?
@@ -781,7 +783,7 @@ public final class MeshBroker: @unchecked Sendable {
             return MeshResponse(ok: true, capabilities: [
                 "mesh-v2", "message-id", "reply-v1", "attachment-v1", "headless-v1",
                 "registry-cas-v1", "pairing-v2", "events-v1", "node-v2",
-                "session-sender-v1"
+                "session-sender-v1", "history-page-v1"
             ])
 
         case "events":
@@ -1032,6 +1034,10 @@ public final class MeshBroker: @unchecked Sendable {
 
         case "history":
             guard let r = req.room else { return .fail("room required") }
+            if let before = req.beforeID {
+                return MeshResponse(ok: true, messages: transcriptPage(r, before: before,
+                                                                       limit: req.limit ?? 30))
+            }
             return MeshResponse(ok: true, messages: recentTranscript(r, limit: req.limit ?? 30))
 
         case "leave":
@@ -1930,6 +1936,16 @@ public final class MeshBroker: @unchecked Sendable {
     /// of everything said, mention or not).
     private func recentTranscript(_ room: String, limit: Int) -> [MeshMsg] {
         Array(transcript(room).suffix(max(0, limit)))
+    }
+
+    /// The `limit` messages immediately preceding the message with `before`'s
+    /// id. An unknown anchor returns empty — the client treats that as "no
+    /// further history" instead of silently restarting from the tail.
+    private func transcriptPage(_ room: String, before: String, limit: Int) -> [MeshMsg] {
+        let all = transcript(room)
+        guard let index = all.lastIndex(where: { $0.id == before }) else { return [] }
+        let lower = max(0, index - max(0, limit))
+        return Array(all[lower..<index])
     }
 
     private func appendTranscript(_ m: MeshMsg) {

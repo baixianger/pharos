@@ -18,6 +18,9 @@ struct ConversationView: View {
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var isUploading = false
     @State private var previewURL: URL?
+    /// Armed only after the opening scroll-to-bottom has settled, so the
+    /// top sentinel can't page (and re-anchor upward) while the room opens.
+    @State private var allowsHistoryPaging = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -33,6 +36,7 @@ struct ConversationView: View {
         .onAppear { draft = MobileRoomDraftCache.draft(for: store.selectedRoom) }
         .onChange(of: store.selectedRoom) { _, room in
             draft = MobileRoomDraftCache.draft(for: room)
+            allowsHistoryPaging = false
         }
         .onChange(of: draft) { _, nextDraft in
             MobileRoomDraftCache.save(nextDraft, for: store.selectedRoom)
@@ -61,7 +65,11 @@ struct ConversationView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    channelWelcome
+                    if store.hasMoreHistory {
+                        historyLoader(proxy: proxy)
+                    } else {
+                        channelWelcome
+                    }
 
                     ForEach(Array(store.messages.enumerated()), id: \.element.id) { index, message in
                         if startsNewDay(at: index) { dayDivider(for: message.date) }
@@ -85,10 +93,41 @@ struct ConversationView: View {
             }
             .background(Color(uiColor: .systemBackground))
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: store.messages.count) {
+            // Follow the newest message only when the tail actually changes;
+            // prepending older pages must not yank the reader to the bottom.
+            .onChange(of: store.messages.last?.id) {
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
+                if !allowsHistoryPaging, !store.messages.isEmpty {
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(500))
+                        allowsHistoryPaging = true
+                    }
+                }
+            }
+        }
+    }
+
+    /// Top-of-transcript sentinel: becoming visible pulls one older page,
+    /// then re-anchors the previous first message so the reading position
+    /// doesn't jump when rows are prepended above it.
+    private func historyLoader(proxy: ScrollViewProxy) -> some View {
+        ProgressView()
+            .controlSize(.small)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .onAppear { requestOlderPage(proxy: proxy) }
+            .onChange(of: allowsHistoryPaging) { requestOlderPage(proxy: proxy) }
+    }
+
+    private func requestOlderPage(proxy: ScrollViewProxy) {
+        guard allowsHistoryPaging, !store.isLoadingOlder else { return }
+        let anchorID = store.messages.first?.id
+        Task {
+            await store.loadOlderMessages()
+            if let anchorID {
+                proxy.scrollTo(anchorID, anchor: .top)
             }
         }
     }
