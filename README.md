@@ -72,6 +72,13 @@ The package installs the standalone Linux Broker and CLI, not the macOS project
 launcher. See [the headless Mesh guide](docs/MESH_HEADLESS.md) for Tailscale and
 systemd configuration.
 
+On a Mac or Linux execution Host, install the per-user node so Mesh can wake
+registered tmux agents even when the Pharos GUI is closed:
+
+```bash
+pharos-mesh node install --endpoint 100.78.109.51:47800
+```
+
 ### Build from Source
 
 ```bash

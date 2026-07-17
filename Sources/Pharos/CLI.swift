@@ -446,7 +446,9 @@ enum CLI {
         if let raw = prefs.string(forKey: "pharos.executionHosts"),
            let data = raw.data(using: .utf8),
            let profiles = try? JSONDecoder().decode([ExecutionHostProfile].self, from: data),
-           let profile = ExecutionHostProfile.resolve(meshHostID: member.host, in: profiles) {
+           let profile = ExecutionHostProfile.resolve(meshHostID: member.host,
+                                                      tailscaleIP: member.tailscaleIP,
+                                                      in: profiles) {
             return profile.sshHost
         }
         return prefs.string(forKey: "pharos.peerHost") ?? ""

@@ -24,6 +24,7 @@ struct MeshRequest: Codable, Sendable, Equatable {
     var attachmentID: String?
     var payload: String?
     var expectedRevision: String?
+    var cursor: UInt64?
 
     init(cmd: String, room: String? = nil, nick: String? = nil, text: String? = nil,
          to: [String]? = nil, limit: Int? = nil) {
@@ -34,6 +35,17 @@ struct MeshRequest: Codable, Sendable, Equatable {
         self.to = to
         self.limit = limit
     }
+}
+
+struct MeshEvent: Codable, Sendable, Equatable, Identifiable {
+    enum Kind: String, Codable, Sendable { case message, poke, roster, registry }
+    var id: UInt64 { sequence }
+    var sequence: UInt64
+    var kind: Kind
+    var ts: Double
+    var room: String?
+    var message: MeshMessage?
+    var member: MeshMember?
 }
 
 struct MeshMessage: Codable, Sendable, Equatable, Identifiable {
@@ -113,6 +125,14 @@ struct MeshMember: Codable, Sendable, Equatable, Identifiable {
     var tailscaleIP: String?
     var rooms: [String]
     var lastSeen: Double
+    var nodeOnline: Bool?
+}
+
+struct MeshNodeInfo: Codable, Sendable, Equatable, Identifiable {
+    var id: String
+    var host: String
+    var tailscaleIP: String?
+    var lastSeen: Double
 }
 
 struct MeshResponse: Codable, Sendable, Equatable {
@@ -127,6 +147,9 @@ struct MeshResponse: Codable, Sendable, Equatable {
     var capabilities: [String]?
     var attachment: MeshAttachment?
     var revision: String?
+    var events: [MeshEvent]?
+    var cursor: UInt64?
+    var nodes: [MeshNodeInfo]?
 }
 
 enum MentionParser {

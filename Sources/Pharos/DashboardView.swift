@@ -19,6 +19,20 @@ enum ActivityEntry: Identifiable {
     }
 }
 
+struct DashboardAgentSession: Hashable, Sendable, Identifiable {
+    let session: String
+    let sshHost: String?
+    var id: String { "\(sshHost ?? "local")|\(session)" }
+
+    static func unregistered(running: Set<String>, remoteHosts: [String: String],
+                             registered: Set<Self>) -> [Self] {
+        running.compactMap { session in
+            let value = Self(session: session, sshHost: remoteHosts[session])
+            return registered.contains(value) ? nil : value
+        }.sorted { $0.id < $1.id }
+    }
+}
+
 /// The home screen: a cross-project rollup with a group switcher up top, stat
 /// cards, and the recent-activity feed at the bottom. Click anything to jump in.
 struct DashboardView: View {
@@ -35,6 +49,7 @@ struct DashboardView: View {
     @State private var meshMessages: [MeshMsg] = []    // recent agent chatter (read from transcripts)
     @State private var agentToStop: StopTarget?
     @State private var meshAgents: [MeshMemberInfo] = []  // live roster across all machines (who)
+    @State private var meshAgentSessions: [String: DashboardAgentSession] = [:]
     @State private var meshAgentToStop: MeshMemberInfo?
     @State private var meshAgentToRename: MeshMemberInfo?
     @State private var meshAgentRenameText = ""
@@ -59,9 +74,7 @@ struct DashboardView: View {
     private var activeAgents: [(p: Project, i: Issue)] {
         allIssues.filter { if let s = $0.i.activeSession { return store.allRunningSessions.contains(s) } else { return false } }
     }
-    private var agentCount: Int {
-        store.runningSessions.filter { s in projects.contains { LaunchService.tmuxSessionPrefix($0).hasPrefix("pharos-") && s.hasPrefix(LaunchService.tmuxSessionPrefix($0)) } }.count
-    }
+    private var agentCount: Int { liveMeshAgents.count + unregisteredSessions.count }
 
     var body: some View {
         ScrollView {
@@ -71,8 +84,17 @@ struct DashboardView: View {
                 statusCard
                 if !blocked.isEmpty || !urgent.isEmpty { attentionCard }
                 if !activeAgents.isEmpty { issueWorkCard }
-                if !store.allRunningSessions.isEmpty { trackedSessionsCard }
-                if !liveMeshAgents.isEmpty { meshAgentsCard }
+                if agentCount > 0 {
+                    DashboardAgentsCard(
+                        meshAgents: liveMeshAgents,
+                        unregisteredSessions: unregisteredSessions,
+                        onRename: beginRename,
+                        onAttachMesh: attachMeshAgent,
+                        onStopMesh: { meshAgentToStop = $0 },
+                        onAttachSession: attachSession,
+                        onStopSession: beginStopSession
+                    )
+                }
                 if !meshMessages.isEmpty { meshCard }
                 if projects.contains(where: { !$0.milestones.isEmpty }) { milestonesCard }
                 activityCard
@@ -148,79 +170,46 @@ struct DashboardView: View {
 
     // MARK: Mesh agents (all machines · attach / stop)
 
-    private var trackedSessionsCard: some View {
-        card("tmux sessions · \(store.allRunningSessions.count) running") {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(store.allRunningSessions.sorted(), id: \.self) { session in
-                    let remoteHost = store.remoteSessionHosts[session]
-                    HStack(spacing: 9) {
-                        Circle().fill(.green).frame(width: 8, height: 8)
-                        Text(session).font(.callout.weight(.medium)).lineLimit(1)
-                        Text(remoteHost ?? HostIdentity.current)
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        Spacer()
-                        Button("Attach") {
-                            let command = RemoteLaunch.interactiveAttachCommand(
-                                session: session, host: remoteHost)
-                            LaunchService.openTerminal(command: command, terminal: store.terminal)
-                        }
-                        .font(.caption).buttonStyle(.borderless)
-                        Button("Stop") {
-                            agentToStop = StopTarget(session: session, host: remoteHost, label: session)
-                        }
-                        .font(.caption).buttonStyle(.borderless).foregroundStyle(.red)
-                    }
-                }
-            }
-        }
-    }
-
     private var liveMeshAgents: [MeshMemberInfo] {
-        meshAgents.filter { $0.nick != "human" }
-            .sorted { ($0.host ?? "", $0.nick) < ($1.host ?? "", $1.nick) }
-    }
-
-    private var meshAgentsCard: some View {
-        card("Mesh members · \(liveMeshAgents.count) registered") {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(liveMeshAgents, id: \.id) { m in
-                    HStack(spacing: 9) {
-                        Circle().fill(meshStateColor(m.state)).frame(width: 8, height: 8)
-                        Text(m.nick).font(.callout.weight(.medium))
-                        Text(m.kind ?? "claude").font(.caption).foregroundStyle(.secondary)
-                        if let h = m.host { Text(h).font(.caption).foregroundStyle(.secondary) }
-                        if let p = m.project {
-                            Text((p as NSString).abbreviatingWithTildeInPath)
-                                .font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
-                        }
-                        Spacer()
-                        Button {
-                            meshAgentRenameText = m.nick
-                            meshAgentToRename = m
-                        } label: {
-                            Image(systemName: "pencil")
-                        }
-                        .font(.caption).buttonStyle(.borderless).help("Rename agent")
-                        if m.tmuxPane != nil {
-                            Button("Attach") { attachMeshAgent(m) }.font(.caption).buttonStyle(.borderless)
-                            Button("Stop") { meshAgentToStop = m }.font(.caption).buttonStyle(.borderless).foregroundStyle(.red)
-                        } else {
-                            Text("no tmux").font(.caption2).foregroundStyle(.tertiary)
-                        }
-                    }
+        var byID: [String: MeshMemberInfo] = [:]
+        for member in meshAgents where member.nick != "human"
+            && MeshSessionState(rawValue: member.state ?? "") != .gone {
+            if var existing = byID[member.id] {
+                existing.rooms = Array(Set(existing.rooms + member.rooms)).sorted()
+                if member.lastSeen >= existing.lastSeen {
+                    var newest = member
+                    newest.rooms = existing.rooms
+                    byID[member.id] = newest
+                } else {
+                    byID[member.id] = existing
                 }
+            } else {
+                byID[member.id] = member
             }
         }
+        return byID.values.sorted { ($0.host ?? "", $0.nick) < ($1.host ?? "", $1.nick) }
     }
 
-    private func meshStateColor(_ raw: String?) -> Color {
-        switch raw.flatMap(MeshSessionState.init(rawValue:)) {
-        case .busy: return .orange
-        case .blocked: return .red
-        case .stopped, .idle: return .green
-        case .gone: return .gray.opacity(0.4)
-        case nil: return .gray
-        }
+    private var unregisteredSessions: [DashboardAgentSession] {
+        DashboardAgentSession.unregistered(running: store.allRunningSessions,
+                                           remoteHosts: store.remoteSessionHosts,
+                                           registered: Set(meshAgentSessions.values))
+    }
+
+    private func beginRename(_ member: MeshMemberInfo) {
+        meshAgentRenameText = member.nick
+        meshAgentToRename = member
+    }
+
+    private func attachSession(_ session: DashboardAgentSession) {
+        let command = RemoteLaunch.interactiveAttachCommand(session: session.session,
+                                                             host: session.sshHost)
+        LaunchService.openTerminal(command: command, terminal: store.terminal)
+    }
+
+    private func beginStopSession(_ session: DashboardAgentSession) {
+        agentToStop = StopTarget(session: session.session, host: session.sshHost,
+                                 label: session.session)
     }
 
     private func attachMeshAgent(_ m: MeshMemberInfo) {
@@ -230,9 +219,10 @@ struct DashboardView: View {
 
     private func stopMeshAgent(_ m: MeshMemberInfo) {
         guard let pane = m.tmuxPane else { return }
-        let host = (m.host == nil || m.host == HostIdentity.current)
-            ? nil : store.executionHost(forMeshHost: m.host)?.sshHost
-        guard m.host == nil || m.host == HostIdentity.current || !(host?.isEmpty ?? true) else {
+        let local = m.host == nil || HostIdentity.isCurrent(host: m.host, tailscaleIP: m.tailscaleIP)
+        let host = local ? nil : store.executionHost(forMeshHost: m.host,
+                                                     tailscaleIP: m.tailscaleIP)?.sshHost
+        guard local || !(host?.isEmpty ?? true) else {
             agentActionError = "No paired Mac SSH host is configured."
             return
         }
@@ -298,15 +288,18 @@ struct DashboardView: View {
     private func meshAttachCommand(_ m: MeshMemberInfo) -> String? {
         guard let pane = m.tmuxPane, pane.first == "%", pane.dropFirst().allSatisfy(\.isNumber) else { return nil }
         guard m.tmuxSocket == nil || RemoteLaunch.validTmuxSocket(m.tmuxSocket!) else { return nil }
-        if m.host != nil, m.host != HostIdentity.current, m.tmuxSocket == nil { return nil }
+        let local = m.host == nil || HostIdentity.isCurrent(host: m.host, tailscaleIP: m.tailscaleIP)
+        if !local, m.tmuxSocket == nil { return nil }
         let socket = m.tmuxSocket.map { " -S '\($0.replacingOccurrences(of: "'", with: "'\\''"))'" } ?? ""
         let action = "exec tmux\(socket) attach -t \"=$s\""
         let inner = RemoteLaunch.terminalSafeRemoteShell(
             "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin\"; "
                 + "s=$(tmux\(socket) display-message -p -t '\(pane)' '#{session_name}') && \(action)"
         )
-        if m.host == nil || m.host == HostIdentity.current { return inner }
-        guard let peer = store.executionHost(forMeshHost: m.host)?.sshHost, !peer.isEmpty else { return nil }
+        if local { return inner }
+        guard let peer = store.executionHost(forMeshHost: m.host,
+                                             tailscaleIP: m.tailscaleIP)?.sshHost,
+              !peer.isEmpty else { return nil }
         let escaped = inner.replacingOccurrences(of: "\\", with: "\\\\")
                            .replacingOccurrences(of: "$", with: "\\$")
                            .replacingOccurrences(of: "\"", with: "\\\"")
@@ -327,9 +320,30 @@ struct DashboardView: View {
         meshMessages = all.sorted { $0.ts > $1.ts }
         // Live roster across every machine — fetched off-main so the socket
         // round-trip never stutters the dashboard.
+        let hostProfiles = store.executionHosts
         Task.detached {
             let roster = MeshClient.send(MeshRequest(cmd: "who")).members ?? []
-            await MainActor.run { meshAgents = roster }
+            var resolved: [String: DashboardAgentSession] = [:]
+            for member in roster {
+                guard let pane = member.tmuxPane else { continue }
+                let local = member.host == nil
+                    || HostIdentity.isCurrent(host: member.host, tailscaleIP: member.tailscaleIP)
+                let sshHost = local ? nil : ExecutionHostProfile.resolve(
+                    meshHostID: member.host, tailscaleIP: member.tailscaleIP,
+                    in: hostProfiles
+                )?.sshHost
+                guard local || sshHost != nil else { continue }
+                if let session = RemoteLaunch.sessionName(pane: pane, host: sshHost,
+                                                          socket: member.tmuxSocket) {
+                    resolved[member.id] = DashboardAgentSession(session: session,
+                                                                sshHost: sshHost)
+                }
+            }
+            let resolvedSessions = resolved
+            await MainActor.run {
+                meshAgents = roster
+                meshAgentSessions = resolvedSessions
+            }
         }
     }
 
@@ -363,7 +377,7 @@ struct DashboardView: View {
             tile("\(projects.count)", "Projects", "square.grid.2x2")
             tile("\(openIssues.count)", "Open issues", "smallcircle.filled.circle")
             tile("\(blocked.count)", "Blocked", "exclamationmark.octagon")
-            tile("\(agentCount)", "Local tmux sessions", "terminal")
+            tile("\(agentCount)", "Agents", "terminal")
         }
     }
 
@@ -562,4 +576,134 @@ struct DashboardView: View {
     }
 
     private func openProject(_ p: Project) { selectedProject = p.id }
+}
+
+private struct DashboardAgentsCard: View {
+    let meshAgents: [MeshMemberInfo]
+    let unregisteredSessions: [DashboardAgentSession]
+    let onRename: (MeshMemberInfo) -> Void
+    let onAttachMesh: (MeshMemberInfo) -> Void
+    let onStopMesh: (MeshMemberInfo) -> Void
+    let onAttachSession: (DashboardAgentSession) -> Void
+    let onStopSession: (DashboardAgentSession) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Agents · \(meshAgents.count + unregisteredSessions.count) running")
+                .font(.headline)
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(meshAgents) { member in
+                    DashboardMeshAgentRow(
+                        member: member,
+                        onRename: { onRename(member) },
+                        onAttach: { onAttachMesh(member) },
+                        onStop: { onStopMesh(member) }
+                    )
+                }
+                ForEach(unregisteredSessions) { session in
+                    DashboardSessionAgentRow(
+                        session: session,
+                        onAttach: { onAttachSession(session) },
+                        onStop: { onStopSession(session) }
+                    )
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+private struct DashboardMeshAgentRow: View {
+    let member: MeshMemberInfo
+    let onRename: () -> Void
+    let onAttach: () -> Void
+    let onStop: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle().fill(stateColor).frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(member.nick).font(.callout.weight(.medium)).lineLimit(1)
+                    Text(member.kind ?? "agent").font(.caption).foregroundStyle(.secondary)
+                    Text(stateLabel).font(.caption2).foregroundStyle(.secondary)
+                }
+                Text(machineLine)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if !member.rooms.isEmpty {
+                    Text(member.rooms.sorted().map { "#\($0)" }.joined(separator: "  "))
+                        .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            Button("Rename", systemImage: "pencil", action: onRename)
+                .labelStyle(.iconOnly).help("Rename agent")
+            if member.tmuxPane != nil {
+                Button("Attach", action: onAttach)
+                Button("Stop", role: .destructive, action: onStop).foregroundStyle(.red)
+            } else {
+                Text("Not in tmux").font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .font(.caption)
+        .buttonStyle(.borderless)
+    }
+
+    private var machineLine: String {
+        var values: [String] = []
+        if let host = member.host, !host.isEmpty { values.append(host) }
+        if let ip = member.tailscaleIP, !ip.isEmpty, ip != member.host { values.append(ip) }
+        if let project = member.project, !project.isEmpty {
+            values.append((project as NSString).abbreviatingWithTildeInPath)
+        }
+        return values.isEmpty ? "Unknown machine" : values.joined(separator: " · ")
+    }
+
+    private var stateLabel: String {
+        switch member.state.flatMap(MeshSessionState.init(rawValue:)) {
+        case .busy: "working"
+        case .blocked: "waiting"
+        case .stopped, .idle: "idle"
+        case .gone: "ended"
+        case nil: "unknown"
+        }
+    }
+
+    private var stateColor: Color {
+        switch member.state.flatMap(MeshSessionState.init(rawValue:)) {
+        case .busy: .orange
+        case .blocked: .red
+        case .stopped, .idle: .green
+        case .gone: .gray.opacity(0.4)
+        case nil: .gray
+        }
+    }
+}
+
+private struct DashboardSessionAgentRow: View {
+    let session: DashboardAgentSession
+    let onAttach: () -> Void
+    let onStop: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle().fill(.green).frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(session.session).font(.callout.weight(.medium)).lineLimit(1)
+                    Text("Not in Mesh")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Text(session.sshHost ?? HostIdentity.current)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Button("Attach", action: onAttach)
+            Button("Stop", role: .destructive, action: onStop).foregroundStyle(.red)
+        }
+        .font(.caption)
+        .buttonStyle(.borderless)
+    }
 }

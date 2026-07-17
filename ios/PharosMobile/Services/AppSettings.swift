@@ -83,9 +83,15 @@ enum SSHHostResolver {
         let host = canonical(host)
         let tailscaleIP = canonical(tailscaleIP)
 
-        // The Broker's stable agent host identity is authoritative. This is
-        // what the Host picker stores and avoids routing to the wrong machine
-        // when two endpoints happen to share a short DNS label.
+        // A Tailscale address is the route identity when the member reports
+        // one. Computer names remain display labels and a legacy fallback.
+        if let tailscaleIP,
+           let exact = uniqueMatch(in: profiles, where: {
+               canonical($0.meshHost) == tailscaleIP || canonical($0.sshHost) == tailscaleIP
+           }) {
+            return exact
+        }
+
         if let host, let exact = uniqueMatch(in: profiles, where: { canonical($0.meshHost) == host }) {
             return exact
         }

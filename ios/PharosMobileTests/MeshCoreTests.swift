@@ -44,6 +44,9 @@ struct MeshCoreTests {
         let command = try TmuxPokeCommand.build(nick: "codex", memberID: "019f-test", pane: "%12",
                                                 socket: "/private/tmp/tmux-501/agent", kind: "codex")
         #expect(command.contains("capture-pane"))
+        #expect(command.contains("#{pane_pid}"))
+        #expect(command.contains("ps -axo pid=,ppid=,comm="))
+        #expect(command.contains("live[ppid[i]]"))
         #expect(command.contains("tmux -S '/private/tmp/tmux-501/agent'"))
         #expect(command.contains("esc to interrupt"))
         #expect(command.contains("pharos mesh recv codex --member 019f-test"))
@@ -70,6 +73,14 @@ struct MeshCoreTests {
                                         in: [expected])?.id == expected.id)
     }
 
+    @Test func hostResolverPrefersTailscaleIPOverConflictingComputerName() {
+        let correct = SSHHostProfile(meshHost: "office", sshHost: "100.64.0.8", username: "pai")
+        let wrongName = SSHHostProfile(meshHost: "Xiang's Mac mini", sshHost: "100.64.0.9",
+                                       username: "pai")
+        #expect(SSHHostResolver.profile(forHost: "Xiang's Mac mini", tailscaleIP: "100.64.0.8",
+                                        in: [wrongName, correct])?.id == correct.id)
+    }
+
     @Test func hostResolverRejectsAmbiguousEndpointAliases() {
         let one = SSHHostProfile(meshHost: "one", sshHost: "100.64.0.8", username: "pai")
         let two = SSHHostProfile(meshHost: "two", sshHost: "100.64.0.8", username: "pai")
@@ -80,10 +91,10 @@ struct MeshCoreTests {
     @Test func rosterAcceptsSameNickInMultipleRooms() {
         let older = MeshMember(id: "one", nick: "codex", project: nil, session: nil, host: nil,
                                tmuxPane: nil, state: nil, stateTs: nil, unread: nil, kind: "codex",
-                               rooms: ["a"], lastSeen: 1)
+                               tailscaleIP: nil, rooms: ["a"], lastSeen: 1, nodeOnline: nil)
         let newer = MeshMember(id: "one", nick: "codex", project: nil, session: nil, host: nil,
                                tmuxPane: nil, state: nil, stateTs: nil, unread: nil, kind: "codex",
-                               rooms: ["a", "b"], lastSeen: 2)
+                               tailscaleIP: nil, rooms: ["a", "b"], lastSeen: 2, nodeOnline: nil)
         let index = RosterIndex.byNick([older, newer])
         #expect(index.count == 1)
         #expect(index["codex"]?.rooms == ["a", "b"])

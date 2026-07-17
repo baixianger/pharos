@@ -39,7 +39,9 @@ enum MeshPoke {
         if let socket = m.tmuxSocket, !RemoteLaunch.validTmuxSocket(socket) {
             return .unpokeable("invalid tmux server identity")
         }
-        if host == HostIdentity.current { return .local(pane: pane) }
+        if HostIdentity.isCurrent(host: host, tailscaleIP: m.tailscaleIP) {
+            return .local(pane: pane)
+        }
         guard !peerHost.isEmpty else { return .unpokeable("on \(host), but no peer Mac is paired") }
         guard m.tmuxSocket != nil else {
             return .unpokeable("agent joined via an older Pharos without tmux server identity; rejoin it")
@@ -169,6 +171,9 @@ enum MeshPoke {
     static func followUp(targets: [MeshMemberInfo], peerHost: String) -> [String] {
         var notes: [String] = []
         for t in targets {
+            // A live Host node consumes the Broker's Poke event locally. The
+            // GUI/SSH path remains only as a rolling-upgrade fallback.
+            if t.nodeOnline == true { continue }
             let proj = t.project.map { " (\(($0 as NSString).abbreviatingWithTildeInPath))" } ?? ""
             switch MeshSessionState(rawValue: t.state ?? "") {
             case .stopped, .idle:

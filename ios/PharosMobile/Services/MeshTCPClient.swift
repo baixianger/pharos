@@ -30,7 +30,8 @@ actor MeshTCPClient {
         payload.append(0x0A)
         let exchange = MeshExchange(
             connection: NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .tcp),
-            payload: payload
+            payload: payload,
+            timeout: request.cmd == "events" ? 35 : 5
         )
         let response = try await exchange.run()
         guard response.ok else { throw MeshTransportError.broker(response.error ?? "Mesh request failed.") }
@@ -95,10 +96,12 @@ private final class MeshExchange: @unchecked Sendable {
     private var continuation: CheckedContinuation<MeshResponse, any Error>?
     private var timeoutWorkItem: DispatchWorkItem?
     private var finished = false
+    private let timeout: TimeInterval
 
-    init(connection: NWConnection, payload: Data) {
+    init(connection: NWConnection, payload: Data, timeout: TimeInterval = 5) {
         self.connection = connection
         self.payload = payload
+        self.timeout = timeout
     }
 
     func run() async throws -> MeshResponse {
@@ -116,10 +119,10 @@ private final class MeshExchange: @unchecked Sendable {
                 }
                 let queue = DispatchQueue(label: "me.pai.pharos.mobile.mesh")
                 let timeout = DispatchWorkItem { [weak self] in
-                    self?.finish(.failure(MeshTransportError.connection("The Broker did not respond within 5 seconds.")))
+                    self?.finish(.failure(MeshTransportError.connection("The Broker did not respond in time.")))
                 }
                 lock.withLock { timeoutWorkItem = timeout }
-                queue.asyncAfter(deadline: .now() + 5, execute: timeout)
+                queue.asyncAfter(deadline: .now() + self.timeout, execute: timeout)
                 connection.start(queue: queue)
             }
         } onCancel: {

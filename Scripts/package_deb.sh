@@ -26,11 +26,14 @@ install -d \
   "$PKG/DEBIAN" \
   "$PKG/usr/bin" \
   "$PKG/usr/lib/systemd/system" \
+  "$PKG/usr/lib/systemd/user" \
   "$PKG/etc" \
   "$PKG/usr/share/doc/pharos-mesh"
 install -m 0755 "$BINARY" "$PKG/usr/bin/pharos-mesh"
 install -m 0644 "$ROOT/Packaging/debian/pharos-mesh.service" \
   "$PKG/usr/lib/systemd/system/pharos-mesh.service"
+install -m 0644 "$ROOT/Packaging/debian/pharos-mesh-node.service" \
+  "$PKG/usr/lib/systemd/user/pharos-mesh-node.service"
 install -m 0644 "$ROOT/Packaging/debian/pharos-mesh.env" "$PKG/etc/pharos-mesh.env"
 install -m 0644 "$ROOT/docs/MESH_HEADLESS.md" "$PKG/usr/share/doc/pharos-mesh/README.md"
 install -m 0755 "$ROOT/Packaging/debian/postinst" "$PKG/DEBIAN/postinst"
@@ -51,8 +54,8 @@ Homepage: https://github.com/baixianger/pharos
 Description: Headless data broker and CLI for Pharos
  Pharos Mesh stores revisioned project data, backups, chat transcripts, and
  attachments for Pharos clients over a private Tailscale network. This package
- installs the portable broker, CLI, and a hardened systemd service. It does not
- execute agent shell commands; execution Hosts are configured separately.
+ installs the portable Broker, CLI, system service, and an optional per-user
+ Host node. The node only controls registered tmux panes owned by that user.
 EOF
 printf '%s\n' '/etc/pharos-mesh.env' > "$PKG/DEBIAN/conffiles"
 

@@ -439,14 +439,32 @@ struct ExecutionHostProfile: Codable, Equatable, Identifiable, Hashable, Sendabl
         return trimmed.isEmpty ? sshHost : trimmed
     }
 
-    static func resolve(meshHostID: String?, in profiles: [Self]) -> Self? {
+    static func resolve(meshHostID: String?, tailscaleIP: String? = nil,
+                        in profiles: [Self]) -> Self? {
+        if let tailscaleIP = normalized(tailscaleIP) {
+            let matches = profiles.filter {
+                normalized($0.sshHost) == tailscaleIP || normalized($0.meshHostID) == tailscaleIP
+            }
+            if matches.count == 1 { return matches[0] }
+            if matches.count > 1 { return nil }
+        }
         guard let meshHostID, !meshHostID.isEmpty else {
             return profiles.count == 1 ? profiles[0] : nil
         }
-        if let exact = profiles.first(where: {
-            $0.meshHostID == meshHostID || $0.name.caseInsensitiveCompare(meshHostID) == .orderedSame
-        }) { return exact }
+        let identity = normalized(meshHostID)
+        let matches = profiles.filter {
+            normalized($0.meshHostID) == identity || normalized($0.name) == identity
+        }
+        if matches.count == 1 { return matches[0] }
+        if matches.count > 1 { return nil }
         return profiles.count == 1 ? profiles[0] : nil
+    }
+
+    private static func normalized(_ value: String?) -> String? {
+        guard var value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !value.isEmpty else { return nil }
+        while value.last == "." { value.removeLast() }
+        return value.isEmpty ? nil : value
     }
 }
 

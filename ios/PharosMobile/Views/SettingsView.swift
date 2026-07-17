@@ -88,7 +88,7 @@ struct SettingsView: View {
                 }
 
                 Section("Runtime limits") {
-                    Label("Foreground polling every 2 seconds", systemImage: "arrow.triangle.2.circlepath")
+                    Label("Live Broker events with reconnect sync", systemImage: "bolt.horizontal.circle")
                     Label("Background delivery requires a future APNs relay", systemImage: "bell.slash")
                 }
             }

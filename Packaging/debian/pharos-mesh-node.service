@@ -1,0 +1,18 @@
+[Unit]
+Description=Pharos Mesh Host node
+Documentation=https://github.com/baixianger/pharos/blob/main/docs/MESH_HEADLESS.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/pharos-mesh/node.env
+ExecStart=/usr/bin/pharos-mesh node run --endpoint ${PHAROS_MESH_ENDPOINT}
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=default.target

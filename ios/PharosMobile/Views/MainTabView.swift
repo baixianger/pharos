@@ -3,7 +3,7 @@ import UIKit
 
 /// The full-app shell. Compact widths retain the existing iPhone tab bar;
 /// regular widths use the iPad sidebar navigator and split detail presentation.
-/// Owns the single `who`/`list` poll so every surface shows live agent status.
+/// Owns the Broker event cursor so every surface shows live agent status.
 struct MainTabView: View {
     @Environment(RoomStore.self) private var store
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -22,19 +22,17 @@ struct MainTabView: View {
         .onChange(of: horizontalSizeClass, initial: true) {
             store.autoSelectsFirstRoom = horizontalSizeClass != .compact
         }
-        .task { await pollWhileVisible() }
+        .task { await listenWhileVisible() }
     }
 
-    private func pollWhileVisible() async {
+    private func listenWhileVisible() async {
         let requestedRoom = PharosLaunchOptions.value(after: "--ui-room")
-        while !Task.isCancelled {
-            await store.refresh()
-            if let requestedRoom, store.selectedRoom != requestedRoom,
-               store.rooms.contains(where: { $0.name == requestedRoom }) {
-                await store.select(room: requestedRoom)
-            }
-            try? await Task.sleep(for: .seconds(2))
+        await store.refresh()
+        if let requestedRoom, store.selectedRoom != requestedRoom,
+           store.rooms.contains(where: { $0.name == requestedRoom }) {
+            await store.select(room: requestedRoom)
         }
+        await store.watchEvents()
     }
 }
 

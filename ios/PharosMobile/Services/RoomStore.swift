@@ -65,6 +65,28 @@ final class RoomStore {
         }
     }
 
+    /// Foreground Broker event loop. The server holds each request until a
+    /// change occurs, then the durable room/roster/history snapshot is reloaded.
+    /// A timeout refresh is the reconnect safety net and supports old Brokers.
+    func watchEvents() async {
+        var cursor: UInt64?
+        while !Task.isCancelled {
+            do {
+                var eventRequest = MeshRequest(cmd: "events")
+                eventRequest.cursor = cursor
+                eventRequest.timeoutMs = 25_000
+                let response = try await request(eventRequest)
+                if let next = response.cursor { cursor = next }
+                await refresh()
+            } catch is CancellationError {
+                return
+            } catch {
+                await refresh()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+
     func select(room: String) async {
         selectedRoom = room
         do {
@@ -324,6 +346,7 @@ final class RoomStore {
     private func pokeEligibleTargets(_ targets: [MeshMember]) async {
         var results: [String] = []
         for member in targets {
+            if member.nodeOnline == true { continue }
             guard MeshSessionState(rawValue: member.state ?? "")?.isPokeCandidate == true else { continue }
             guard let profile = settings.sshHost(for: member) else {
                 let identity = member.host ?? member.tailscaleIP ?? "unknown host"

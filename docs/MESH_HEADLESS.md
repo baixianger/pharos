@@ -9,6 +9,8 @@ iPhone app ─────┼── Tailscale TCP ── pharos-mesh ── JSON
 Agent CLI ──────┘                         ├───────── attachment blobs
                                          ├───────── projects.json + backups
                                          └───────── presence/unread state
+                                                   │ event cursor
+                    tmux agents ◀── pharos node ◀──┘
 ```
 
 ## Boundary
@@ -16,17 +18,20 @@ Agent CLI ──────┘                         ├───────
 `PharosMeshCore` contains the portable wire protocol, TCP/UDS transport,
 broker, transcript persistence, reply resolution, and attachment storage.
 `pharos-mesh` is the portable executable. The `Pharos` executable remains a
-macOS product because project launching, AppKit, Finder, Keychain, and local
-tmux control are not server responsibilities.
+macOS product because project launching, AppKit, Finder, and Keychain are not
+server responsibilities. `pharos-mesh node` is a separate per-user Host worker:
+it receives constrained Poke events and controls only registered tmux panes
+owned by that user.
 
 The headless Broker owns `projects.json` as opaque portable data. Reads carry a
 SHA-256 revision; writes require that revision and fail on conflicts. It does
 not launch agents or store/resolve Host checkout paths.
 
 Broker machines and execution Hosts are separate concepts. A Linux server may
-run only `pharos-mesh`, while macOS or Linux execution Hosts are configured in a
-client's Host list and controlled over SSH. Installing the Broker package does
-not grant it shell access to those Hosts. See
+run only the Broker, while macOS or Linux execution Hosts run a per-user node.
+The node connects outward to the Broker, so execution Hosts expose no inbound
+port. SSH remains an install/recovery fallback. Installing the Broker package
+does not grant it arbitrary shell access to those Hosts. See
 [`ADR-001-BROKER-AND-HOSTS.md`](ADR-001-BROKER-AND-HOSTS.md).
 
 ## Protocol v2
@@ -75,6 +80,28 @@ From another tailnet device, verify the service directly:
 ```bash
 pharos-mesh capabilities --endpoint 100.78.109.51:47800
 ```
+
+## Host node
+
+Install the node as the same user that owns the tmux sessions:
+
+```bash
+pharos-mesh node install --endpoint 100.78.109.51:47800
+```
+
+On macOS this installs `~/Library/LaunchAgents/me.pai.pharos.mesh-node.plist`.
+On Linux it installs and enables a user systemd unit. The Debian package also
+ships `pharos-mesh-node.service` under the systemd user-unit directory.
+
+The node keeps an outbound, cursor-based event subscription to the Broker. A
+Poke is accepted only when its Tailscale IP/Host identity matches, the exact
+tmux pane and socket are still present, the expected Codex/Claude process is in
+that pane's process tree, and the composer is visibly idle. It never accepts an
+arbitrary shell command from Mesh.
+
+Foreground macOS/iOS clients use the same Broker-held event requests and keep a
+low-frequency snapshot refresh for reconnect recovery. iOS background delivery
+still requires APNs because the operating system suspends private TCP sessions.
 
 Suggested systemd hardening:
 

@@ -1,12 +1,7 @@
 import Foundation
 import PharosMeshCore
 
-@main
-enum PharosMeshMain {
-    static func main() {
-        exit(MeshHeadlessCLI.run(Array(CommandLine.arguments.dropFirst())))
-    }
-}
+exit(MeshHeadlessCLI.run(Array(CommandLine.arguments.dropFirst())))
 
 private enum MeshHeadlessCLI {
     static func run(_ args: [String]) -> Int32 {
@@ -25,6 +20,9 @@ private enum MeshHeadlessCLI {
         case "serve", "daemon":
             configureServer(Array(args.dropFirst()))
             MeshBroker.runDaemon()
+
+        case "node":
+            return runNode(Array(args.dropFirst()))
 
         case "capabilities":
             return printResponse(MeshClient.send(MeshRequest(cmd: "capabilities")))
@@ -122,7 +120,7 @@ private enum MeshHeadlessCLI {
             return 0
 
         case "--version", "version":
-            print("pharos-mesh 0.8.0")
+            print("pharos-mesh 0.9.0")
             return 0
 
         default:
@@ -159,6 +157,38 @@ private enum MeshHeadlessCLI {
             }
         default:
             return usageError("attachment put|get …")
+        }
+    }
+
+    private static func runNode(_ args: [String]) -> Int32 {
+        let command = args.first ?? "run"
+        switch command {
+        case "run":
+            let endpoint = option("--endpoint", in: args)
+                ?? ProcessInfo.processInfo.environment["PHAROS_MESH_ENDPOINT"]
+            return MeshNode.run(endpoint: endpoint)
+        case "install":
+            let endpoint = option("--endpoint", in: args)
+            if let endpoint, meshSplitHostPort(endpoint) == nil { return usageError("node install [--endpoint HOST:PORT]") }
+            do {
+                let path = try MeshNodeService.install(endpoint: endpoint)
+                print("installed \(path)")
+                return 0
+            } catch {
+                FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+                return 1
+            }
+        case "uninstall":
+            do {
+                try MeshNodeService.uninstall()
+                print("uninstalled pharos node service")
+                return 0
+            } catch {
+                FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+                return 1
+            }
+        default:
+            return usageError("node run|install|uninstall [--endpoint HOST:PORT]")
         }
     }
 
@@ -271,6 +301,9 @@ private enum MeshHeadlessCLI {
     pharos-mesh — headless Pharos Mesh broker and client
 
       serve [--bind HOST:PORT] [--data-dir PATH]
+      node run --endpoint HOST:PORT
+      node install [--endpoint HOST:PORT]
+      node uninstall
       capabilities [--endpoint HOST:PORT]
       pair --endpoint HOST:PORT
       create <room>

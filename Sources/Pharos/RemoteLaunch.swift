@@ -599,4 +599,17 @@ enum RemoteLaunch {
         }
         return "killed '\(session)'\(at(host))"
     }
+
+    /// Resolve a registered pane to its owning tmux session without mutating
+    /// it. Dashboard uses this to merge a Mesh registration with the raw tmux
+    /// discovery row instead of showing the same agent twice.
+    static func sessionName(pane: String, host: String?, socket: String?) -> String? {
+        guard pane.first == "%", pane.dropFirst().allSatisfy(\.isNumber),
+              socket == nil || validTmuxSocket(socket!) else { return nil }
+        if host?.isEmpty == false, socket == nil { return nil }
+        let result = tmuxAny(host, ["display-message", "-p", "-t", pane, "#{session_name}"],
+                             socket: socket)
+        let session = result.out.trimmingCharacters(in: .whitespacesAndNewlines)
+        return result.ok && !session.isEmpty ? session : nil
+    }
 }

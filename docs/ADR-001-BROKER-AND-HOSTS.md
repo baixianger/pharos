@@ -1,6 +1,6 @@
 # ADR-001: Separate the Mesh Broker from execution Hosts
 
-**Status:** Accepted
+**Status:** Accepted, extended by the Host node section below
 
 **Date:** 2026-07-16
 
@@ -25,9 +25,9 @@ Broker configuration and execution Hosts are independent:
   to route attach, stop, and poke actions safely.
 - This Mac may be the Broker, or every client may dial one explicit remote
   Tailscale endpoint. Selecting a remote Broker clears the obsolete Mac-hub role.
-- SSH remains the bootstrap and control channel. A future authenticated
-  `pharos-node` may replace routine SSH operations, with SSH retained for install
-  and recovery; the Broker itself will still not become a shell executor.
+- SSH remains the bootstrap and recovery channel. `pharos mesh node` replaces
+  routine Poke operations with an outbound Broker event subscription; the
+  Broker itself still does not become a shell executor.
 
 ## Options considered
 
@@ -59,3 +59,13 @@ security boundary and supports any mix of macOS, iOS, and Linux clients.
   mirrored temporarily for rolling compatibility with older CLI/hooks.
 - Multi-Host routing must match a Broker-reported Host identity; it may fall back
   automatically only when exactly one remote Host exists.
+
+## Host node extension — 2026-07-17
+
+The portable CLI now has a per-user node mode for macOS and Linux execution
+Hosts. The Broker publishes typed events rather than shell strings. A node may
+only perform the built-in mailbox Poke after matching the target Host and
+revalidating the recorded tmux socket, pane, process tree, and idle composer.
+Clients retain the prior SSH Poke path only when the Broker reports no live node
+for that Host, enabling rolling upgrades without coupling GUI availability to
+agent delivery.

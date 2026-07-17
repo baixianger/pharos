@@ -3,7 +3,8 @@ import UniformTypeIdentifiers
 
 /// In-window chat-room pane: the conversation, with a room-switcher dropdown in
 /// the title row (rename/delete live in the `…` menu beside it). Reads the
-/// per-room transcript JSONL the broker writes, refreshing on a timer. The
+/// per-room transcript JSONL the broker writes, refreshed by the Broker event
+/// cursor with a low-frequency recovery poll. The
 /// human input box at the bottom delivers @mentions for real: a
 /// mentioned agent is notified at its next turn boundary via the mesh Stop hook
 /// (see MeshHooks). Typing `@` pops a member autocomplete fed by the same
@@ -32,13 +33,14 @@ struct MeshRoomView: View {
     @State private var resolving = false
     @State private var resolved = false
     private struct IssueRef: Identifiable { let project: String; let number: Int; var id: String { "\(project)#\(number)" } }
-    private let tick = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
+    private let recoveryTick = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     var body: some View {
         chatPane
         .navigationTitle(PharosViewTitle.rooms)
         .task(id: brokerRouteID) { await resolveRemote() }   // resolve transport BEFORE first load
-        .onReceive(tick) { _ in reload() }
+        .task(id: brokerRouteID + "|events") { await watchEvents() }
+        .onReceive(recoveryTick) { _ in reload() }
         .task(id: room) {
             // Rapid switches can leave several detached history reads in
             // flight. Only the room still visible may update the transcript.
@@ -655,6 +657,7 @@ struct MeshRoomView: View {
                 guard let targets = resp.members, !targets.isEmpty else { return (true, []) }
                 let notes = targets.flatMap { target in
                     let ssh = ExecutionHostProfile.resolve(meshHostID: target.host,
+                                                           tailscaleIP: target.tailscaleIP,
                                                            in: hostProfiles)?.sshHost ?? ""
                     return MeshPoke.followUp(targets: [target], peerHost: ssh)
                 }
@@ -691,6 +694,31 @@ struct MeshRoomView: View {
             guard room == selected else { return }
             room = snap.pick
             messages = snap.messages
+        }
+    }
+
+    /// Broker-held long poll: idle connections consume no refresh traffic and
+    /// return as soon as a message/roster event is published. History remains
+    /// authoritative, so every event simply triggers the existing snapshot
+    /// reload and a 30-second recovery poll covers old Brokers/disconnections.
+    private func watchEvents() async {
+        while !Task.isCancelled && !resolved {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard !Task.isCancelled else { return }
+        var cursor: UInt64?
+        while !Task.isCancelled {
+            let currentCursor = cursor
+            let response = await Task.detached {
+                MeshClient.events(after: currentCursor, timeoutMs: 25_000)
+            }.value
+            guard !Task.isCancelled else { return }
+            if response.ok, let next = response.cursor {
+                cursor = next
+                if !(response.events ?? []).isEmpty { reload() }
+            } else {
+                try? await Task.sleep(for: .seconds(2))
+            }
         }
     }
 

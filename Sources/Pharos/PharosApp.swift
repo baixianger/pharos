@@ -94,6 +94,10 @@ struct PharosApp: App {
                             }
                         }
                     }
+                    // The packaged helper installs a per-user LaunchAgent whose
+                    // lifetime is independent from this window/app process.
+                    let nodeEndpoint = store.validMeshServerEndpoint ?? MeshClient.remoteEndpoint
+                    await Task.detached { MeshNodeBootstrap.ensureInstalled(endpoint: nodeEndpoint) }.value
                 }
         }
         .defaultSize(width: 1180, height: 760)

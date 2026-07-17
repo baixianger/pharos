@@ -44,12 +44,30 @@ enum TmuxPokeCommand {
         }
         if let socket, !isSafeSocket(socket) { throw TmuxPokeError.unsafeValue(socket) }
         let tmux = socket.map { "tmux -S '\($0)'" } ?? "tmux"
-        let expected = kind == "codex" ? "codex" : "claude|node|bun|[0-9]+\\.[0-9]+\\.[0-9]+"
+        let expected = kind == "codex"
+            ? "codex.*"
+            : "claude|node|bun|[0-9]+\\.[0-9]+\\.[0-9]+"
         let message = "You have new mesh messages. Run: pharos mesh recv \(nick) --member \(memberID)"
         return """
         export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH
-        c=$(\(tmux) display-message -p -t '\(paneID)' '#{pane_current_command}' 2>/dev/null) || exit 31
-        printf '%s' "$c" | grep -Eq '^(\(expected))$' || exit 32
+        root=$(\(tmux) display-message -p -t '\(paneID)' '#{pane_pid}' 2>/dev/null) || exit 31
+        ps -axo pid=,ppid=,comm= | awk -v root="$root" '
+          { pid[NR]=$1; ppid[NR]=$2; cmd[NR]=$3 }
+          END {
+            live[root]=1; changed=1
+            while (changed) {
+              changed=0
+              for (i=1; i<=NR; i++) if (live[ppid[i]] && !live[pid[i]]) {
+                live[pid[i]]=1; changed=1
+              }
+            }
+            for (i=1; i<=NR; i++) if (live[pid[i]]) {
+              sub(".*/", "", cmd[i])
+              if (cmd[i] ~ /^(\(expected))$/) exit 0
+            }
+            exit 1
+          }
+        ' || exit 32
         view=$(\(tmux) capture-pane -p -t '\(paneID)' 2>/dev/null) || exit 33
         printf '%s' "$view" | grep -Eqi 'esc to interrupt|working|do you want to proceed|enter to confirm|esc to cancel' && exit 34
         printf '%s' "$view" | grep -Eq '❯|›' || exit 35

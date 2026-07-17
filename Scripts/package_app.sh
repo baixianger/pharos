@@ -31,7 +31,7 @@ done
 
 APP="$ROOT/${APP_NAME}.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 
 # Build the app icon from the canonical tracked source. A developer machine may
 # already have an ignored Icon.icns, but clean peers and release runners must
@@ -140,6 +140,7 @@ install_binary() {
 }
 
 install_binary "$APP_NAME" "$APP/Contents/MacOS/$APP_NAME"
+install_binary "pharos-mesh" "$APP/Contents/Helpers/pharos-mesh"
 
 # Bundle app resources (if any).
 APP_RESOURCES_DIR="$ROOT/Sources/$APP_NAME/Resources"
@@ -242,6 +243,10 @@ sign_frameworks() {
   done
 }
 sign_frameworks
+
+# The per-user LaunchAgent executes this stable embedded helper after the GUI
+# quits, so it must be signed before sealing the containing app bundle.
+codesign "${CODESIGN_ARGS[@]}" "$APP/Contents/Helpers/pharos-mesh"
 
 codesign "${CODESIGN_ARGS[@]}" \
   --entitlements "$APP_ENTITLEMENTS" \

@@ -533,8 +533,9 @@ final class ProjectStore {
         executionHosts.removeAll { $0.id == id }
     }
 
-    func executionHost(forMeshHost hostID: String?) -> ExecutionHostProfile? {
-        ExecutionHostProfile.resolve(meshHostID: hostID, in: executionHosts)
+    func executionHost(forMeshHost hostID: String?, tailscaleIP: String? = nil) -> ExecutionHostProfile? {
+        ExecutionHostProfile.resolve(meshHostID: hostID, tailscaleIP: tailscaleIP,
+                                     in: executionHosts)
     }
 
     private func persistExecutionHosts() {
@@ -776,7 +777,7 @@ final class ProjectStore {
             // because its Stop hook can stay stale; nudge probes for an idle `›`
             // and rejects a genuinely Working pane. Claude busy/blocked/gone refuse.
             let st = MeshSessionState(rawValue: m.state ?? "")
-            guard m.host == HostIdentity.current,
+            guard HostIdentity.isCurrent(host: m.host, tailscaleIP: m.tailscaleIP),
                   (m.unread ?? 0) > 0,
                   st?.pokeable == true || (st == nil && m.state == nil)
                     || (st == .busy && m.kind == AgentKind.codex.rawValue),

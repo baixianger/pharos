@@ -350,6 +350,42 @@ final class ExecutionHostProfileTests: XCTestCase {
         XCTAssertNil(ExecutionHostProfile.resolve(meshHostID: "unknown", in: [a, b]))
         XCTAssertEqual(ExecutionHostProfile.resolve(meshHostID: "unknown", in: [a]), a)
     }
+
+    func testTailscaleIPWinsOverConflictingDisplayName() {
+        let mini = ExecutionHostProfile(name: "Office", sshHost: "100.64.0.8",
+                                        meshHostID: "Xiang's Mac mini")
+        let air = ExecutionHostProfile(name: "Xiang's Mac mini", sshHost: "100.64.0.9",
+                                       meshHostID: "home")
+        XCTAssertEqual(ExecutionHostProfile.resolve(meshHostID: "Xiang's Mac mini",
+                                                    tailscaleIP: "100.64.0.8",
+                                                    in: [air, mini]), mini)
+    }
+
+    func testAmbiguousTailscaleIPNeverRoutes() {
+        let a = ExecutionHostProfile(name: "A", sshHost: "100.64.0.8")
+        let b = ExecutionHostProfile(name: "B", sshHost: "100.64.0.8")
+        XCTAssertNil(ExecutionHostProfile.resolve(meshHostID: "A", tailscaleIP: "100.64.0.8",
+                                                  in: [a, b]))
+    }
+}
+
+final class DashboardAgentMergeTests: XCTestCase {
+    func testMeshBackedTmuxSessionIsNotDuplicated() {
+        let registered = DashboardAgentSession(session: "pharos-pharos-codex", sshHost: nil)
+        let result = DashboardAgentSession.unregistered(
+            running: ["pharos-pharos-codex", "manual-shell"], remoteHosts: [:],
+            registered: [registered]
+        )
+        XCTAssertEqual(result.map(\.session), ["manual-shell"])
+    }
+
+    func testSameSessionNameOnAnotherHostRemainsDistinct() {
+        let registered = DashboardAgentSession(session: "agent", sshHost: "home-ts")
+        let result = DashboardAgentSession.unregistered(
+            running: ["agent"], remoteHosts: ["agent": "office-ts"], registered: [registered]
+        )
+        XCTAssertEqual(result, [DashboardAgentSession(session: "agent", sshHost: "office-ts")])
+    }
 }
 
 final class HostLocalProjectPathTests: XCTestCase {
@@ -1249,13 +1285,20 @@ final class MeshStateMappingTests: XCTestCase {
 
 final class MeshPokeRouteTests: XCTestCase {
 
-    override func setUp() { setenv("PHAROS_HOST", "test-mac", 1) }
-    override func tearDown() { unsetenv("PHAROS_HOST") }
+    override func setUp() {
+        setenv("PHAROS_HOST", "test-mac", 1)
+        setenv("PHAROS_TAILSCALE_IP", "100.64.0.8", 1)
+    }
+    override func tearDown() {
+        unsetenv("PHAROS_HOST")
+        unsetenv("PHAROS_TAILSCALE_IP")
+    }
 
-    private func member(pane: String?, host: String?, socket: String? = "/private/tmp/tmux-501/agent") -> MeshMemberInfo {
+    private func member(pane: String?, host: String?, socket: String? = "/private/tmp/tmux-501/agent",
+                        tailscaleIP: String? = nil) -> MeshMemberInfo {
         MeshMemberInfo(id: "s", nick: "bot", project: "/tmp/x", session: "s", host: host,
                        tmuxPane: pane, tmuxSocket: socket, state: "stopped", stateTs: 0,
-                       rooms: ["r"], lastSeen: 0)
+                       tailscaleIP: tailscaleIP, rooms: ["r"], lastSeen: 0)
     }
 
     func testLocalPane() {
@@ -1269,6 +1312,15 @@ final class MeshPokeRouteTests: XCTestCase {
             XCTAssertEqual(pane, "%2")
             XCTAssertEqual(host, "home-ts")   // SSH alias, not the presence host name
         } else { XCTFail("expected .remote") }
+    }
+
+    func testLocalPaneUsesTailscaleIdentityWhenComputerNameDiffers() {
+        if case .local(let pane) = MeshPoke.route(
+            for: member(pane: "%7", host: "another display name", tailscaleIP: "100.64.0.8"),
+            peerHost: "peer"
+        ) {
+            XCTAssertEqual(pane, "%7")
+        } else { XCTFail("expected Tailscale IP to identify the local machine") }
     }
 
     func testNoPaneIsUnpokeable() {
@@ -1594,6 +1646,41 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         XCTAssertTrue(capabilities.contains("attachment-v1"))
         XCTAssertTrue(capabilities.contains("registry-cas-v1"))
         XCTAssertTrue(capabilities.contains("pairing-v1"))
+        XCTAssertTrue(capabilities.contains("events-v1"))
+        XCTAssertTrue(capabilities.contains("node-v1"))
+    }
+
+    func testEventCursorPublishesMessageAndDirectedPoke() throws {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "dev", nick: "agent",
+                                                 session: "session-1", host: "mac",
+                                                 tmuxPane: "%7", kind: "codex")).ok)
+        let baseline = try XCTUnwrap(broker.process(MeshRequest(cmd: "events")).cursor)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "dev", nick: "human",
+                                                 text: "@agent hello", to: ["agent"])).ok)
+        let response = broker.process(MeshRequest(cmd: "events", timeoutMs: 250, cursor: baseline))
+        XCTAssertEqual(response.events?.map(\.kind), [.message, .poke])
+        XCTAssertEqual(response.events?.last?.member?.id, "session-1")
+        XCTAssertEqual(response.events?.last?.message?.text, "@agent hello")
+        XCTAssertEqual(response.cursor, response.events?.last?.sequence)
+    }
+
+    func testNodeHeartbeatMarksOnlyItsHostMembersManaged() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "node-heartbeat", memberID: "node-1",
+                                                 host: "display-name", tailscaleIP: "100.64.0.8")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "dev", nick: "local",
+                                                 session: "local-1", host: "different-name",
+                                                 tmuxPane: "%1", kind: "codex",
+                                                 tailscaleIP: "100.64.0.8")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "dev", nick: "remote",
+                                                 session: "remote-1", host: "remote",
+                                                 tmuxPane: "%2", kind: "codex",
+                                                 tailscaleIP: "100.64.0.9")).ok)
+        let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
+        XCTAssertEqual(roster.first { $0.nick == "local" }?.nodeOnline, true)
+        XCTAssertEqual(roster.first { $0.nick == "remote" }?.nodeOnline, false)
+        XCTAssertEqual(broker.process(MeshRequest(cmd: "node-list")).nodes?.map(\.id), ["node-1"])
     }
 
     func testPairingLinkRejectsDuplicateQueryKeys() throws {

@@ -51,9 +51,10 @@ public enum MeshClient {
     /// still takes precedence (agents / CLI). nil ⇒ use the local broker.
     nonisolated(unsafe) public static var remoteEndpoint: String?
 
-    /// The active remote endpoint: env > app-managed mesh-endpoint file > the
-    /// GUI's in-memory resolution.
-    private static var activeRemote: String? { MeshPaths.dialEndpoint ?? remoteEndpoint }
+    /// The active remote endpoint. An explicit caller selection (`--endpoint`
+    /// or the GUI's resolved setting) must beat a stale app-managed endpoint
+    /// file; otherwise node install/migration can silently dial the old Broker.
+    private static var activeRemote: String? { remoteEndpoint ?? MeshPaths.dialEndpoint }
 
     /// Pick the transport: a remote broker over TCP when configured (this Mac
     /// dials another's broker), else the local UDS.
@@ -145,6 +146,14 @@ public enum MeshClient {
         guard let fd = connectUDS() else { return .fail("cannot reach mesh daemon") }
         defer { close(fd) }
         return roundTrip(fd, req)
+    }
+
+    /// Broker-driven change feed. The first call with a nil cursor establishes
+    /// a baseline; later calls are held by the broker until an event arrives or
+    /// the timeout expires. This removes foreground polling without making the
+    /// event buffer the source of truth.
+    public static func events(after cursor: UInt64?, timeoutMs: Int = 25_000) -> MeshResponse {
+        send(MeshRequest(cmd: "events", timeoutMs: timeoutMs, cursor: cursor))
     }
 
     /// Send directly to a specific TCP broker, bypassing the environment and

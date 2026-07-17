@@ -33,6 +33,7 @@ public struct MeshRequest: Codable, Sendable {
     public var attachmentID: String?
     public var payload: String?
     public var expectedRevision: String?
+    public var cursor: UInt64?
 
     public init(cmd: String, room: String? = nil, nick: String? = nil, memberID: String? = nil,
                 text: String? = nil, to: [String]? = nil, timeoutMs: Int? = nil, limit: Int? = nil,
@@ -42,7 +43,7 @@ public struct MeshRequest: Codable, Sendable {
                 tailscaleIP: String? = nil, replyToID: String? = nil,
                 attachments: [MeshAttachment]? = nil, attachment: MeshAttachment? = nil,
                 attachmentID: String? = nil, payload: String? = nil,
-                expectedRevision: String? = nil) {
+                expectedRevision: String? = nil, cursor: UInt64? = nil) {
         self.cmd = cmd; self.room = room; self.nick = nick; self.memberID = memberID
         self.text = text; self.to = to; self.timeoutMs = timeoutMs; self.limit = limit
         self.project = project; self.session = session; self.host = host; self.tmuxPane = tmuxPane
@@ -52,6 +53,29 @@ public struct MeshRequest: Codable, Sendable {
         self.attachmentID = attachmentID
         self.payload = payload
         self.expectedRevision = expectedRevision
+        self.cursor = cursor
+    }
+}
+
+/// Monotonic, broker-runtime event used by foreground clients and headless
+/// Host nodes. A fresh subscriber first asks for the current cursor, reloads
+/// its durable snapshot, then blocks on `events` for changes after that cursor.
+/// The message transcript/mailbox remains authoritative across broker restarts.
+public struct MeshEvent: Codable, Sendable, Equatable, Identifiable {
+    public enum Kind: String, Codable, Sendable { case message, poke, roster, registry }
+
+    public var id: UInt64 { sequence }
+    public var sequence: UInt64
+    public var kind: Kind
+    public var ts: Double
+    public var room: String?
+    public var message: MeshMsg?
+    public var member: MeshMemberInfo?
+
+    public init(sequence: UInt64, kind: Kind, ts: Double = Date().timeIntervalSince1970,
+                room: String? = nil, message: MeshMsg? = nil, member: MeshMemberInfo? = nil) {
+        self.sequence = sequence; self.kind = kind; self.ts = ts
+        self.room = room; self.message = message; self.member = member
     }
 }
 
@@ -187,16 +211,30 @@ public struct MeshMemberInfo: Codable, Sendable, Equatable, Identifiable {
     public var tailscaleIP: String?
     public var rooms: [String]
     public var lastSeen: Double
+    public var nodeOnline: Bool?
 
     public init(id: String, nick: String, project: String? = nil, session: String? = nil,
                 host: String? = nil, tmuxPane: String? = nil,
                 tmuxSocket: String? = nil, state: String? = nil, stateTs: Double? = nil,
                 unread: Int? = nil, kind: String? = nil,
-                tailscaleIP: String? = nil, rooms: [String], lastSeen: Double) {
+                tailscaleIP: String? = nil, rooms: [String], lastSeen: Double,
+                nodeOnline: Bool? = nil) {
         self.id = id; self.nick = nick; self.project = project; self.session = session; self.host = host
         self.tmuxPane = tmuxPane; self.tmuxSocket = tmuxSocket; self.state = state; self.stateTs = stateTs
         self.unread = unread; self.kind = kind; self.tailscaleIP = tailscaleIP
         self.rooms = rooms; self.lastSeen = lastSeen
+        self.nodeOnline = nodeOnline
+    }
+}
+
+public struct MeshNodeInfo: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var host: String
+    public var tailscaleIP: String?
+    public var lastSeen: Double
+
+    public init(id: String, host: String, tailscaleIP: String?, lastSeen: Double) {
+        self.id = id; self.host = host; self.tailscaleIP = tailscaleIP; self.lastSeen = lastSeen
     }
 }
 
@@ -218,15 +256,21 @@ public struct MeshResponse: Codable, Sendable, Equatable {
     public var capabilities: [String]?
     public var attachment: MeshAttachment?
     public var revision: String?
+    public var events: [MeshEvent]?
+    public var cursor: UInt64?
+    public var nodes: [MeshNodeInfo]?
 
     public init(ok: Bool, error: String? = nil, rooms: [MeshRoomInfo]? = nil, messages: [MeshMsg]? = nil,
                 members: [MeshMemberInfo]? = nil, note: String? = nil, memberID: String? = nil,
                 payload: String? = nil, capabilities: [String]? = nil, attachment: MeshAttachment? = nil,
-                revision: String? = nil) {
+                revision: String? = nil, events: [MeshEvent]? = nil, cursor: UInt64? = nil,
+                nodes: [MeshNodeInfo]? = nil) {
         self.ok = ok; self.error = error; self.rooms = rooms; self.messages = messages; self.members = members
         self.note = note; self.memberID = memberID; self.payload = payload
         self.capabilities = capabilities; self.attachment = attachment
         self.revision = revision
+        self.events = events; self.cursor = cursor
+        self.nodes = nodes
     }
 
     public static func okay(_ note: String? = nil) -> MeshResponse { MeshResponse(ok: true, note: note) }
@@ -435,11 +479,16 @@ func meshReadExactly(_ fd: Int32, count: Int) -> Data? {
 /// is by @mention into its mailbox; the Stop hook surfaces it at the next turn.
 public final class MeshBroker: @unchecked Sendable {
     private let lock = NSLock()
+    private let eventCondition = NSCondition()
+    private var eventSequence: UInt64 = 0
+    private var events: [MeshEvent] = []
+    private let maximumEvents = 2_000
     /// alias → immutable member id; mailboxes are keyed only by member id.
     private struct Room { var members: [String: String] = [:]; var mailboxes: [String: [MeshMsg]] = [:] }
     private var rooms: [String: Room] = [:]
     private var presence: [String: MeshPresenceEntry] = [:]
     private var pairingTokens: [String: Double] = [:]
+    private var nodes: [String: MeshNodeInfo] = [:]
     private var cachedBrokerID: String?
 
     public init() {}
@@ -596,8 +645,28 @@ public final class MeshBroker: @unchecked Sendable {
         case "capabilities":
             return MeshResponse(ok: true, capabilities: [
                 "mesh-v2", "message-id", "reply-v1", "attachment-v1", "headless-v1",
-                "registry-cas-v1", "pairing-v1"
+                "registry-cas-v1", "pairing-v1", "events-v1", "node-v1"
             ])
+
+        case "events":
+            return waitForEvents(after: req.cursor, timeoutMs: req.timeoutMs)
+
+        case "node-heartbeat":
+            guard let id = req.memberID, !id.isEmpty, let host = req.host, !host.isEmpty else {
+                return .fail("node id and host required")
+            }
+            lock.lock()
+            nodes[id] = MeshNodeInfo(id: id, host: host, tailscaleIP: req.tailscaleIP,
+                                     lastSeen: Date().timeIntervalSince1970)
+            pruneNodesLocked()
+            lock.unlock()
+            return .okay()
+
+        case "node-list":
+            lock.lock(); pruneNodesLocked()
+            let activeNodes = nodes.values.sorted { $0.host < $1.host }
+            lock.unlock()
+            return MeshResponse(ok: true, nodes: activeNodes)
 
         case "pairing-create":
             guard let endpoint = req.host,
@@ -652,6 +721,7 @@ public final class MeshBroker: @unchecked Sendable {
         case "create":
             guard let r = req.room else { return .fail("room required") }
             lock.lock(); if rooms[r] == nil { rooms[r] = Room() }; lock.unlock()
+            publish(kind: .roster, room: r)
             return .okay()
 
         case "list":
@@ -701,6 +771,7 @@ public final class MeshBroker: @unchecked Sendable {
                                 tailscaleIP: req.tailscaleIP)
             syncUnreadLocked(memberID)
             lock.unlock()
+            publish(kind: .roster, room: r)
             // Hand the joiner the recent conversation so it can catch up.
             return MeshResponse(ok: true, messages: recentTranscript(r, limit: req.limit ?? 30))
 
@@ -721,6 +792,7 @@ public final class MeshBroker: @unchecked Sendable {
                 writePresenceLocked()
             }
             lock.unlock()
+            publish(kind: .roster, room: r)
             return .okay()
 
         case "rename-member":
@@ -745,6 +817,7 @@ public final class MeshBroker: @unchecked Sendable {
                 writePresenceLocked()
             }
             lock.unlock()
+            publish(kind: .roster, room: r)
             return .okay()
 
         case "say":
@@ -768,8 +841,14 @@ public final class MeshBroker: @unchecked Sendable {
             } else {
                 reply = nil
             }
-            deliver(room: r, from: n, text: t, to: req.to, replyTo: reply,
-                    attachments: attachments.isEmpty ? nil : attachments)
+            let delivery = deliver(room: r, from: n, text: t, to: req.to, replyTo: reply,
+                                   attachments: attachments.isEmpty ? nil : attachments)
+            publish(kind: .message, room: r, message: delivery.message)
+            if req.to?.isEmpty == false {
+                for target in delivery.targets {
+                    publish(kind: .poke, room: r, message: delivery.message, member: target)
+                }
+            }
             // Echo EVERY @-target's presence so the sender can act on delivery:
             // poke a stopped/idle tmux session, tell the human to nudge a
             // session we can't reach (no pane / blocked on a dialog) — and an
@@ -800,6 +879,7 @@ public final class MeshBroker: @unchecked Sendable {
                 writePresenceLocked()
             }
             lock.unlock()
+            publish(kind: .roster)
             return .okay()
 
         case "who":
@@ -928,7 +1008,8 @@ public final class MeshBroker: @unchecked Sendable {
     /// The empty-vs-non-empty `to` on the stored `MeshMsg` is exactly what the
     /// poke path keys on, so no separate flag is needed.
     private func deliver(room r: String, from n: String, text t: String, to: [String]?,
-                         replyTo: MeshReply?, attachments: [MeshAttachment]?) {
+                         replyTo: MeshReply?, attachments: [MeshAttachment]?)
+        -> (message: MeshMsg, targets: [MeshMemberInfo]) {
         let msg = MeshMsg(id: UUID().uuidString, from: n, room: r, text: t,
                           ts: Date().timeIntervalSince1970, to: to ?? [],
                           replyTo: replyTo, attachments: attachments)
@@ -946,8 +1027,52 @@ public final class MeshBroker: @unchecked Sendable {
         for memberID in targetIDs { rooms[r]!.mailboxes[memberID, default: []].append(msg) }
         for memberID in targetIDs { syncUnreadLocked(memberID) }
         if let senderID = rooms[r]!.members[n] { touchPresenceLocked(senderID) }
+        let targets = targetIDs.compactMap { memberID -> MeshMemberInfo? in
+            guard let alias = rooms[r]!.members.first(where: { $0.value == memberID })?.key else { return nil }
+            return memberInfoLocked(room: r, nick: alias)
+        }
         lock.unlock()
         appendTranscript(msg)
+        return (msg, targets)
+    }
+
+    // MARK: event stream
+
+    /// Publish into a bounded runtime replay buffer and wake every blocked
+    /// subscriber. Durable state is intentionally elsewhere: reconnecting
+    /// clients reload history/roster, while the cursor prevents duplicate UI
+    /// refreshes and duplicate Pokes during an uninterrupted broker lifetime.
+    private func publish(kind: MeshEvent.Kind, room: String? = nil,
+                         message: MeshMsg? = nil, member: MeshMemberInfo? = nil) {
+        eventCondition.lock()
+        eventSequence &+= 1
+        events.append(MeshEvent(sequence: eventSequence, kind: kind, room: room,
+                                message: message, member: member))
+        if events.count > maximumEvents { events.removeFirst(events.count - maximumEvents) }
+        eventCondition.broadcast()
+        eventCondition.unlock()
+    }
+
+    /// Long-poll one broker-owned event cursor. `cursor == nil` establishes a
+    /// baseline without replaying old Pokes. Subsequent calls block until a new
+    /// event arrives or the bounded timeout expires, then return immediately.
+    private func waitForEvents(after cursor: UInt64?, timeoutMs: Int?) -> MeshResponse {
+        eventCondition.lock()
+        defer { eventCondition.unlock() }
+        guard let cursor else {
+            return MeshResponse(ok: true, events: [], cursor: eventSequence)
+        }
+        if cursor > eventSequence {
+            return MeshResponse(ok: true, events: [], cursor: eventSequence)
+        }
+        let bounded = min(30_000, max(250, timeoutMs ?? 25_000))
+        let deadline = Date(timeIntervalSinceNow: Double(bounded) / 1_000)
+        while eventSequence <= cursor {
+            if !eventCondition.wait(until: deadline) { break }
+        }
+        let batch = Array(events.lazy.filter { $0.sequence > cursor }.prefix(200))
+        return MeshResponse(ok: true, events: batch,
+                            cursor: batch.last?.sequence ?? eventSequence)
     }
 
     // MARK: mirrored state (call with `lock` held)
@@ -1031,7 +1156,26 @@ public final class MeshBroker: @unchecked Sendable {
                               tmuxPane: e.tmuxPane, tmuxSocket: e.tmuxSocket,
                               state: e.state, stateTs: e.stateTs,
                               unread: unread, kind: e.kind, tailscaleIP: e.tailscaleIP,
-                              rooms: [room], lastSeen: e.lastSeen)
+                              rooms: [room], lastSeen: e.lastSeen,
+                              nodeOnline: nodeIsOnlineLocked(host: e.host, tailscaleIP: e.tailscaleIP))
+    }
+
+    private func pruneNodesLocked(now: Double = Date().timeIntervalSince1970) {
+        nodes = nodes.filter { now - $0.value.lastSeen < 70 }
+    }
+
+    private func nodeIsOnlineLocked(host: String?, tailscaleIP: String?) -> Bool {
+        pruneNodesLocked()
+        return nodes.values.contains { node in
+            if let tailscaleIP, !tailscaleIP.isEmpty,
+               let nodeIP = node.tailscaleIP, !nodeIP.isEmpty { return tailscaleIP == nodeIP }
+            return normalizedHost(host) == normalizedHost(node.host)
+        }
+    }
+
+    private func normalizedHost(_ value: String?) -> String {
+        (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
     }
 
     // MARK: - Registry (the hub is the source of truth; clients read over mesh)
