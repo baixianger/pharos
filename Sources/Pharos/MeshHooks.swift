@@ -380,19 +380,19 @@ enum MeshHooks {
         return try? JSONDecoder().decode(MeshUnread.self, from: d)
     }
 
-    // MARK: session identity (SessionStart hook → context injection)
+    // MARK: session identity (SessionStart hook → pane-local identity)
 
-    /// `pharos mesh session-start` — Claude Code SessionStart hook. Reads the
-    /// hook JSON on stdin (`{session_id, …}`) and injects the session id back
-    /// into the agent's context, instructing it to pass `--session <id>` when it
-    /// joins a room. That gives `join` a per-SESSION identity, so two sessions
-    /// in one directory stay distinct — which cwd alone can't disambiguate.
-    /// Fail-open: on any gap it emits nothing and exits 0 (no context added, and
-    /// `join` simply falls back to cwd-based addressing).
+    /// Both agents record the immutable session id against the exact tmux
+    /// socket/pane. Codex uses `--silent` because SessionStart additionalContext
+    /// persists as developer context and is surfaced again after tool calls.
+    /// Claude retains the explicit instruction for non-Pharos/manual sessions.
     static func sessionStart(_ args: [String]) -> Int32 {
         guard let input = readStdinIfPiped(),
               let obj = try? JSONSerialization.jsonObject(with: input) as? [String: Any],
               let sid = obj["session_id"] as? String, !sid.isEmpty else { return 0 }
+        let cwd = obj["cwd"] as? String ?? FileManager.default.currentDirectoryPath
+        recordSessionContext(sessionID: sid, cwd: cwd)
+        if args.contains("--silent") { return 0 }
         let ctx = "Pharos mesh: your session id is \(sid). When you join a mesh chat "
                 + "room, pass it so delivery targets this exact session — "
                 + "`pharos mesh join <room> <nick> --session \(sid)`."
@@ -406,6 +406,59 @@ enum MeshHooks {
             print(String(decoding: d, as: UTF8.self))
         }
         return 0
+    }
+
+    private struct SessionContext: Codable {
+        var sessionID: String
+        var cwd: String
+        var tmuxPane: String
+        var tmuxSocket: String?
+        var updatedAt: Double
+    }
+
+    private static var sessionContextDirectory: URL {
+        MeshPaths.stateDir.appendingPathComponent("session-contexts", isDirectory: true)
+    }
+
+    @discardableResult
+    static func recordSessionContext(sessionID: String, cwd: String,
+                                     environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        guard !sessionID.isEmpty, let pane = environment["TMUX_PANE"], !pane.isEmpty,
+              environment["TMUX"] != nil else { return false }
+        let socket = RemoteLaunch.tmuxSocket(fromEnvironmentValue: environment["TMUX"])
+        let context = SessionContext(sessionID: sessionID, cwd: cwd, tmuxPane: pane,
+                                     tmuxSocket: socket, updatedAt: Date().timeIntervalSince1970)
+        let file = sessionContextFile(pane: pane, socket: socket)
+        do {
+            try FileManager.default.createDirectory(at: sessionContextDirectory,
+                                                    withIntermediateDirectories: true)
+            try JSONEncoder().encode(context).write(to: file, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    static func currentSessionID(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        guard let pane = environment["TMUX_PANE"], !pane.isEmpty,
+              environment["TMUX"] != nil else { return nil }
+        let socket = RemoteLaunch.tmuxSocket(fromEnvironmentValue: environment["TMUX"])
+        let file = sessionContextFile(pane: pane, socket: socket)
+        guard let data = try? Data(contentsOf: file),
+              let context = try? JSONDecoder().decode(SessionContext.self, from: data),
+              context.tmuxPane == pane, context.tmuxSocket == socket else { return nil }
+        return context.sessionID
+    }
+
+    private static func sessionContextFile(pane: String, socket: String?) -> URL {
+        let identity = "\(socket ?? "default")|\(pane)"
+        let name = Data(identity.utf8).base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "=", with: "")
+        return sessionContextDirectory.appendingPathComponent(name + ".json")
     }
 
     /// Read stdin to EOF, but only when it's piped — a manual terminal run must
@@ -482,11 +535,9 @@ enum MeshHooks {
         return 0
     }
 
-    /// `install-hooks --codex` — wire the SAME `pharos mesh` hook commands into
-    /// Codex's `~/.codex/hooks.json`. Codex ships a Claude-Code-parity hook
-    /// engine (JSON on stdin, PascalCase event names), so the existing handlers
-    /// (`mark --hook`, `unread --hook-stop/--hook-post-tool`, `session-start`)
-    /// work unchanged. Two events Codex lacks — Notification and SessionEnd —
+    /// `install-hooks --codex` — wire Pharos into Codex's native lifecycle hook
+    /// engine. SessionStart records identity silently; it must not inject
+    /// persistent developer context. Two events Codex lacks — Notification and SessionEnd —
     /// are simply not wired: a Codex agent reports busy/stopped but not
     /// blocked/idle/gone (the mesh degrades gracefully). NOTE: Codex prompts to
     /// TRUST new/changed hooks on first run; spawn Codex with
@@ -509,7 +560,7 @@ enum MeshHooks {
             ("Stop", upsertHook(&hooks, event: "Stop",
                                 command: hookCommand("unread --hook-stop"), marker: marker)),
             ("SessionStart", upsertHook(&hooks, event: "SessionStart",
-                                        command: hookCommand("session-start"), marker: startMarker)),
+                                        command: hookCommand("session-start --silent"), marker: startMarker)),
             ("UserPromptSubmit", upsertHook(&hooks, event: "UserPromptSubmit",
                                             command: hookCommand("mark --hook"), marker: markMarker)),
             ("PostToolUse", upsertHook(&hooks, event: "PostToolUse",

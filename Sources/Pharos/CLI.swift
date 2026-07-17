@@ -212,19 +212,20 @@ enum CLI {
             for ri in rooms { print("\(ri.name)  [\(ri.members.joined(separator: ", "))]") }
             return 0
         case "join":
-            guard a.count >= 2 else { print("usage: pharos mesh join <room> <nick> --session <id> [--kind claude|codex]"); return 2 }
+            guard a.count >= 2 else { print("usage: pharos mesh join <room> <nick> [--session <id>] [--kind claude|codex]"); return 2 }
             // cwd is recorded as the nick's project so hooks can resolve cwd → nick;
             // --session (the id the SessionStart hook injected) makes it exact.
+            let env = ProcessInfo.processInfo.environment
             var session: String?
             if let i = a.firstIndex(of: "--session"), i + 1 < a.count { session = a[i + 1] }
+            session = session ?? MeshHooks.currentSessionID(environment: env)
             guard session?.isEmpty == false else {
-                print("error: --session is required (the SessionStart hook prints the id)")
+                print("error: no session identity for this pane; restart the agent or pass --session <id>")
                 return 2
             }
             // The CLI runs inside the agent's own shell, so a tmux-wrapped
             // session exposes its pane right here — captured into presence, it's
             // what lets this Host's headless node locate the pane safely.
-            let env = ProcessInfo.processInfo.environment
             let pane = env["TMUX"] != nil ? env["TMUX_PANE"] : nil
             let socket = RemoteLaunch.tmuxSocket(fromEnvironmentValue: env["TMUX"])
             // Agent kind → which avatar set the GUI shows. Explicit --kind wins;
@@ -458,7 +459,7 @@ enum CLI {
     pharos mesh — agent chat room
       create <room>                       create a room
       list                                list rooms + members
-      join   <room> <nick> --session <id>     register this session under a room-local alias
+      join   <room> <nick> [--session <id>]   register this pane under a room-local alias
       history <room> [--limit N]          recent messages in a room (catch up)
       say    <room> <nick> <text> [@n …] [--reply ID] [--attach FILE]
                                           send text, quote a message, or attach an image/PDF
@@ -472,7 +473,7 @@ enum CLI {
       unread --hook-stop                  Claude Code Stop-hook mode (fail-open, reads hook JSON on stdin)
       unread --hook-post-tool             Claude Code PostToolUse-hook mode (poke mode: mid-turn delivery)
       mark --hook                         Claude Code state-hook mode (UserPromptSubmit/Notification/SessionEnd)
-      session-start                       Claude Code SessionStart-hook mode (injects session id into context)
+      session-start [--silent]            record hook session identity for the current tmux pane
       install-hooks [--project <dir> | --user]   wire all mesh hooks into .claude/settings.json
       install-hooks --codex                      wire mesh hooks into ~/.codex/hooks.json (Codex agents)
       leave  <room> <nick>                leave a room

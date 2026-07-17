@@ -57,7 +57,7 @@ enum MeshSpawn {
     }
 
     /// A scratch working dir per spawned member (keeps cwd stable + off the
-    /// user's real projects). The nick + --session + --kind make it addressable
+    /// user's real projects). The pane-recorded session id + nick make it addressable
     /// regardless of cwd, so a neutral dir is fine.
     private static func agentDir(room: String, nick: String) -> String {
         let dir = FileManager.default.homeDirectoryForCurrentUser
@@ -94,8 +94,7 @@ enum MeshSpawn {
     /// shared guarantees local and remote spawn register the same identity.
     static func joinBrief(room: String, nick: String, kind: AgentKind) -> String {
         "Join the mesh chat room \(room) as nick \(nick): run  "
-            + "pharos mesh join \(room) \(nick) --session <the session id the Pharos mesh "
-            + "SessionStart hook gave you in your context> --kind \(kind.rawValue). "
+            + "pharos mesh join \(room) \(nick) --kind \(kind.rawValue). "
             + "Then run  pharos mesh say \(room) \(nick) \"\(nick) joined\". "
             + "Return to the idle composer after announcing; do not run a listener or polling command. "
             + "Pharos hooks and nudges will wake you for new messages. Do nothing else."

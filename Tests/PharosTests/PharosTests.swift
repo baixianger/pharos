@@ -1312,6 +1312,33 @@ final class MeshWireTests: XCTestCase {
     }
 }
 
+final class MeshSessionContextTests: XCTestCase {
+    func testSessionStartIdentityIsResolvedByExactTmuxServerAndPane() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pharos-session-context-\(UUID().uuidString)")
+        setenv("PHAROS_MESH_DIR", directory.path, 1)
+        defer {
+            unsetenv("PHAROS_MESH_DIR")
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let environment = [
+            "TMUX": "/private/tmp/tmux-501/default,123,0",
+            "TMUX_PANE": "%22",
+        ]
+        XCTAssertTrue(MeshHooks.recordSessionContext(sessionID: "session-abc", cwd: "/tmp/project",
+                                                     environment: environment))
+        XCTAssertEqual(MeshHooks.currentSessionID(environment: environment), "session-abc")
+        XCTAssertNil(MeshHooks.currentSessionID(environment: [
+            "TMUX": "/private/tmp/tmux-501/default,123,0",
+            "TMUX_PANE": "%23",
+        ]))
+        XCTAssertNil(MeshHooks.currentSessionID(environment: [
+            "TMUX": "/private/tmp/tmux-501/other,123,0",
+            "TMUX_PANE": "%22",
+        ]))
+    }
+}
+
 final class MeshPaneSafetyTests: XCTestCase {
     func testOnlyExplicitTurnBoundaryStatesAllowNodePoke() {
         XCTAssertTrue(MeshPaneSafety.allowsPoke(state: "stopped"))

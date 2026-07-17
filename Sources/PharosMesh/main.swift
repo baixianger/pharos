@@ -120,7 +120,7 @@ private enum MeshHeadlessCLI {
             return 0
 
         case "--version", "version":
-            print("pharos-mesh 0.9.4")
+            print("pharos-mesh 0.9.5")
             return 0
 
         default:
