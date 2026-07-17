@@ -2095,6 +2095,31 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         XCTAssertNotEqual(MeshSpawn.sessionName(room: "room-a", nick: "codex"),
                           MeshSpawn.sessionName(room: "room-b", nick: "codex"))
     }
+
+    func testFormReasonStaysStickyWhileBlocked() {
+        let broker = MeshBroker()
+        _ = broker.process(MeshRequest(cmd: "join", room: "dev", nick: "bot", session: "sid"))
+
+        func reason() -> String? {
+            (broker.process(MeshRequest(cmd: "who")).members ?? [])
+                .first(where: { $0.nick == "bot" })?.stateReason
+        }
+        // PreToolUse{AskUserQuestion} sets blocked(form:…).
+        var form = MeshRequest(cmd: "mark", session: "sid", state: "blocked")
+        form.stateReason = "form:AskUserQuestion"
+        _ = broker.process(form)
+        XCTAssertEqual(reason(), "form:AskUserQuestion")
+
+        // The dialog's Notification{permission_prompt} must NOT clobber it.
+        var perm = MeshRequest(cmd: "mark", session: "sid", state: "blocked")
+        perm.stateReason = "permission"
+        _ = broker.process(perm)
+        XCTAssertEqual(reason(), "form:AskUserQuestion")
+
+        // A non-blocked state clears the sticky form reason normally.
+        _ = broker.process(MeshRequest(cmd: "mark", session: "sid", state: "busy"))
+        XCTAssertNil(reason())
+    }
 }
 
 final class MeshPaneProbeTests: XCTestCase {

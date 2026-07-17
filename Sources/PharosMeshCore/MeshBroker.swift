@@ -1160,9 +1160,21 @@ public final class MeshBroker: @unchecked Sendable {
             if let memberID = resolveMemberIDLocked(request: req),
                presence[memberID] != nil,
                Self.markMatchesSnapshot(presence[memberID]!, request: req) {
+                let prior = presence[memberID]!.stateReason
                 presence[memberID]!.state = s
                 presence[memberID]!.stateTs = Date().timeIntervalSince1970
-                presence[memberID]!.stateReason = req.stateReason
+                // An open AskUserQuestion form reports blocked(form:…) from
+                // PreToolUse, but the dialog then fires Notification{permission_prompt}
+                // which would clobber the reason to "permission" and hide the
+                // form from the node's Escape path. Keep the form reason sticky
+                // while the session stays blocked; any non-blocked state clears it.
+                if s == MeshSessionState.blocked.rawValue,
+                   prior?.hasPrefix("form") == true,
+                   req.stateReason?.hasPrefix("form") != true {
+                    presence[memberID]!.stateReason = prior
+                } else {
+                    presence[memberID]!.stateReason = req.stateReason
+                }
                 writePresenceLocked()
             }
             lock.unlock()
