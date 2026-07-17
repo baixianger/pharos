@@ -94,10 +94,30 @@ struct PharosApp: App {
                             }
                         }
                     }
-                    // The packaged helper installs a per-user LaunchAgent whose
-                    // lifetime is independent from this window/app process.
-                    let nodeEndpoint = store.validMeshServerEndpoint ?? MeshClient.remoteEndpoint
-                    await Task.detached { MeshNodeBootstrap.ensureInstalled(endpoint: nodeEndpoint) }.value
+                    // One user-facing login toggle reconciles the two roles of
+                    // the embedded helper. A local Broker gets broker + node;
+                    // a Mac using a remote Broker gets only its Host node.
+                    let remoteEndpoint = store.validMeshServerEndpoint
+                    let localBrokerEndpoint = store.isMeshHub
+                        ? await Task.detached {
+                            PairingService.selfTailscaleIP().map { "\($0):\(MeshRemote.port)" }
+                        }.value
+                        : nil
+                    if store.launchMeshAtLogin, localBrokerEndpoint != nil {
+                        MeshClient.stopLocalDaemon()
+                    }
+                    let nodeEndpoint = remoteEndpoint ?? localBrokerEndpoint ?? MeshClient.remoteEndpoint
+                    let launchMeshAtLogin = store.launchMeshAtLogin
+                    await Task.detached {
+                        MeshNodeBootstrap.reconcile(enabled: launchMeshAtLogin,
+                                                    brokerEndpoint: localBrokerEndpoint,
+                                                    nodeEndpoint: nodeEndpoint)
+                    }.value
+                    if store.launchMeshAtLogin, let localBrokerEndpoint {
+                        MeshClient.hostTCPEndpoint = nil
+                        MeshClient.remoteEndpoint = localBrokerEndpoint
+                        MeshPaths.setDialEndpointFile(localBrokerEndpoint)
+                    }
                 }
         }
         .defaultSize(width: 1180, height: 760)

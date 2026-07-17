@@ -181,6 +181,14 @@ private struct MachinesSettingsTab: View {
             }
             Section("Mesh Broker") {
                 brokerStatusView
+                Toggle("Launch Mesh at Login", isOn: $store.launchMeshAtLogin)
+                    .onChange(of: store.launchMeshAtLogin) { _, _ in
+                        reconcileLoginServices()
+                    }
+                Text(store.isMeshHub
+                     ? "Keeps this Mac's Broker and Host node running after login, independently of the Pharos app."
+                     : "Keeps this Mac's Host node connected to the Broker after login, independently of the Pharos app.")
+                    .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Text(brokerTarget)
                         .font(.system(.caption, design: .monospaced))
@@ -211,12 +219,23 @@ private struct MachinesSettingsTab: View {
                 return PairingService.selfTailscaleIP().map { "\($0):47800" }
             }.value
             await checkBroker()
+            reconcileLoginServices()
             if !brokerTargetIsInvalid { store.syncRegistryNow() }
         }
         .sheet(isPresented: $showsPairingAssistant) {
             if let advertisedEndpoint {
                 PairDeviceSheet(endpoint: advertisedEndpoint)
             }
+        }
+    }
+
+    private func reconcileLoginServices() {
+        let enabled = store.launchMeshAtLogin
+        let remote = store.validMeshServerEndpoint
+        let broker = store.isMeshHub ? advertisedEndpoint : nil
+        let node = remote ?? broker
+        Task.detached {
+            MeshNodeBootstrap.reconcile(enabled: enabled, brokerEndpoint: broker, nodeEndpoint: node)
         }
     }
 

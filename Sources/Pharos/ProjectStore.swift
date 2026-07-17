@@ -564,6 +564,9 @@ final class ProjectStore {
         let endpoint = meshServerEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         return meshSplitHostPort(endpoint) == nil ? nil : endpoint
     }
+    var launchMeshAtLogin = true {
+        didSet { PharosPrefs.shared.set(launchMeshAtLogin, forKey: "pharos.launchMeshAtLogin") }
+    }
     /// Legacy-compatible display value for a Broker hosted on this Mac. The
     /// choice itself is local and never written into the Broker registry.
     private(set) var meshHubHostID: String?
@@ -630,6 +633,9 @@ final class ProjectStore {
             executionHosts = [ExecutionHostProfile(name: legacy, sshHost: legacy)]
         }
         meshServerEndpoint = d.string(forKey: "pharos.meshServerEndpoint") ?? ""
+        if d.object(forKey: "pharos.launchMeshAtLogin") != nil {
+            launchMeshAtLogin = d.bool(forKey: "pharos.launchMeshAtLogin")
+        }
         meshHubHostID = d.bool(forKey: "pharos.hostBroker") ? HostIdentity.current : nil
         if let endpoint = validMeshServerEndpoint { MeshClient.remoteEndpoint = endpoint }
         registrySync = BrokerRegistrySync(revision: d.string(forKey: "pharos.registryRevision")) { [weak self] event in
