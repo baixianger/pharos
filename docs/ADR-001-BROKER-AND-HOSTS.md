@@ -20,9 +20,9 @@ Broker configuration and execution Hosts are independent:
 
 - The **Broker** owns rooms, messages, attachments, presence, unread state, and
   the opaque project registry served to clients. It never executes shell input.
-- A **Host** runs coding agents. macOS and iOS control remote Hosts over SSH and
-  tmux. Host profiles include an SSH route and the exact Mesh `HostIdentity` used
-  to route attach, stop, and poke actions safely.
+- A **Host** runs coding agents and a user-scoped `pharos-mesh node`. macOS and
+  iOS use SSH only for explicit launch, attach, and stop actions. Routine Poke
+  delivery goes Broker → Host node → locally owned tmux.
 - This Mac may be the Broker, or every client may dial one explicit remote
   Tailscale endpoint. Selecting a remote Broker clears the obsolete Mac-hub role.
 - SSH remains the bootstrap and recovery channel. `pharos mesh node` replaces
@@ -55,8 +55,8 @@ security boundary and supports any mix of macOS, iOS, and Linux clients.
   it does not need AppKit or the macOS launcher.
 - The Broker also owns portable project data under ADR-002; execution checkout
   paths and credentials remain local to each Host.
-- Existing `peerHost` preferences migrate into the first Host profile and remain
-  mirrored temporarily for rolling compatibility with older CLI/hooks.
+- Host profiles retain SSH routes for explicit remote-control actions; they are
+  not part of message delivery.
 - Multi-Host routing must match a Broker-reported Host identity; it may fall back
   automatically only when exactly one remote Host exists.
 
@@ -66,6 +66,6 @@ The portable CLI now has a per-user node mode for macOS and Linux execution
 Hosts. The Broker publishes typed events rather than shell strings. A node may
 only perform the built-in mailbox Poke after matching the target Host and
 revalidating the recorded tmux socket, pane, process tree, and idle composer.
-Clients retain the prior SSH Poke path only when the Broker reports no live node
-for that Host, enabling rolling upgrades without coupling GUI availability to
-agent delivery.
+Client apps have no Poke fallback. If the Host node is offline, delivery remains
+durable in the Broker mailbox and the node recovers unread directed messages
+when it reconnects.

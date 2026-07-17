@@ -1283,80 +1283,6 @@ final class MeshStateMappingTests: XCTestCase {
     }
 }
 
-final class MeshPokeRouteTests: XCTestCase {
-
-    override func setUp() {
-        setenv("PHAROS_HOST", "test-mac", 1)
-        setenv("PHAROS_TAILSCALE_IP", "100.64.0.8", 1)
-    }
-    override func tearDown() {
-        unsetenv("PHAROS_HOST")
-        unsetenv("PHAROS_TAILSCALE_IP")
-    }
-
-    private func member(pane: String?, host: String?, socket: String? = "/private/tmp/tmux-501/agent",
-                        tailscaleIP: String? = nil) -> MeshMemberInfo {
-        MeshMemberInfo(id: "s", nick: "bot", project: "/tmp/x", session: "s", host: host,
-                       tmuxPane: pane, tmuxSocket: socket, state: "stopped", stateTs: 0,
-                       tailscaleIP: tailscaleIP, rooms: ["r"], lastSeen: 0)
-    }
-
-    func testLocalPane() {
-        if case .local(let pane) = MeshPoke.route(for: member(pane: "%7", host: "test-mac"), peerHost: "peer") {
-            XCTAssertEqual(pane, "%7")
-        } else { XCTFail("expected .local") }
-    }
-
-    func testRemotePaneViaPeer() {
-        if case .remote(let pane, let host) = MeshPoke.route(for: member(pane: "%2", host: "other-mac"), peerHost: "home-ts") {
-            XCTAssertEqual(pane, "%2")
-            XCTAssertEqual(host, "home-ts")   // SSH alias, not the presence host name
-        } else { XCTFail("expected .remote") }
-    }
-
-    func testLocalPaneUsesTailscaleIdentityWhenComputerNameDiffers() {
-        if case .local(let pane) = MeshPoke.route(
-            for: member(pane: "%7", host: "another display name", tailscaleIP: "100.64.0.8"),
-            peerHost: "peer"
-        ) {
-            XCTAssertEqual(pane, "%7")
-        } else { XCTFail("expected Tailscale IP to identify the local machine") }
-    }
-
-    func testNoPaneIsUnpokeable() {
-        if case .unpokeable = MeshPoke.route(for: member(pane: nil, host: "test-mac"), peerHost: "peer") {
-        } else { XCTFail("expected .unpokeable without a pane") }
-    }
-
-    func testUnknownHostIsUnpokeable() {
-        // Guessing a host would send keystrokes to the wrong machine.
-        if case .unpokeable = MeshPoke.route(for: member(pane: "%1", host: nil), peerHost: "peer") {
-        } else { XCTFail("expected .unpokeable without a host") }
-    }
-
-    func testRemoteWithoutPeerIsUnpokeable() {
-        if case .unpokeable = MeshPoke.route(for: member(pane: "%1", host: "other-mac"), peerHost: "") {
-        } else { XCTFail("expected .unpokeable without a paired peer") }
-    }
-
-    func testLegacyRemoteWithoutSocketIsUnpokeable() {
-        if case .unpokeable(let reason) = MeshPoke.route(
-            for: member(pane: "%1", host: "other-mac", socket: nil), peerHost: "home-ts"
-        ) {
-            XCTAssertTrue(reason.contains("rejoin"))
-        } else { XCTFail("expected .unpokeable without exact tmux server") }
-    }
-
-    /// The nudge is typed into a live pane; if it ever hit a shell instead, it
-    /// must stay inert — so no quoting/expansion metacharacters, ever.
-    func testNudgeTextHasNoShellMetacharacters() {
-        let text = MeshPoke.nudgeText(for: "agent-a.1_x")
-        let forbidden = CharacterSet(charactersIn: "`$\"';|&<>(){}[]*?~#!")
-        XCTAssertNil(text.unicodeScalars.first(where: { forbidden.contains($0) }),
-                     "nudge text must be shell-inert: \(text)")
-    }
-}
-
 final class MeshWireTests: XCTestCase {
 
     func testSessionKeyedPresenceDecodes() throws {
@@ -1386,58 +1312,31 @@ final class MeshWireTests: XCTestCase {
     }
 }
 
-final class MeshPokePaneCommandTests: XCTestCase {
-    private func result(_ out: String) -> Shell.Result { Shell.Result(out: out, err: "", code: 0) }
-
-    /// Claude Code's pane command is claude/node/bun — or a bare version number
-    /// ("2.1.207") on current installs, where the launcher execs a versioned
-    /// binary (observed live 2026-07-11).
-    func testAcceptedPaneCommands() {
-        for ok in ["claude", "node", "bun", "2.1.207", "10.0.1",
-                   "codex", "codex-aarch64-apple-darwin"] {
-            XCTAssertTrue(MeshPoke.paneRunsAgent(result(ok)), ok)
-        }
-        for bad in ["zsh", "bash", "vim", "2.1", "2.1.207-beta", "python3.11"] {
-            XCTAssertFalse(MeshPoke.paneRunsAgent(result(bad)), bad)
-        }
-    }
-
-    func testCodexStaleBusyRequiresProbeButClaudeBusyRefuses() {
-        func member(kind: AgentKind, state: String?) -> MeshMemberInfo {
-            MeshMemberInfo(id: "s", nick: "bot", project: "/tmp", session: "s", host: "mac",
-                           tmuxPane: "%1", state: state, stateTs: 1, kind: kind.rawValue,
-                           rooms: ["r"], lastSeen: 1)
-        }
-        XCTAssertEqual(MeshPoke.probeRequirement(for: member(kind: .codex, state: "busy")), true)
-        XCTAssertNil(MeshPoke.probeRequirement(for: member(kind: .claude, state: "busy")))
-        XCTAssertEqual(MeshPoke.probeRequirement(for: member(kind: .codex, state: "stopped")), true)
-        XCTAssertEqual(MeshPoke.probeRequirement(for: member(kind: .codex, state: nil)), true)
-    }
-
+final class MeshPaneSafetyTests: XCTestCase {
     func testAgentDetectedBehindTmuxWrapperShell() {
         let codex = """
           100     1 /bin/zsh
           101   100 /opt/homebrew/bin/codex
           102   101 /usr/bin/helper
         """
-        XCTAssertTrue(MeshPoke.processTreeContainsAgent(codex, rootPID: 100))
-        XCTAssertTrue(MeshPoke.processTreeContainsAgent(codex, rootPID: 100, kind: .codex))
-        XCTAssertFalse(MeshPoke.processTreeContainsAgent(codex, rootPID: 100, kind: .claude))
+        XCTAssertTrue(MeshPaneSafety.processTreeContainsAgent(codex, rootPID: 100, kind: nil))
+        XCTAssertTrue(MeshPaneSafety.processTreeContainsAgent(codex, rootPID: 100, kind: "codex"))
+        XCTAssertFalse(MeshPaneSafety.processTreeContainsAgent(codex, rootPID: 100, kind: "claude"))
 
         let nestedClaude = """
           200     1 /bin/zsh
           201   200 /usr/bin/env
           202   201 /Users/u/.local/bin/claude
         """
-        XCTAssertTrue(MeshPoke.processTreeContainsAgent(nestedClaude, rootPID: 200))
-        XCTAssertFalse(MeshPoke.processTreeContainsAgent(nestedClaude, rootPID: 200, kind: .codex),
+        XCTAssertTrue(MeshPaneSafety.processTreeContainsAgent(nestedClaude, rootPID: 200, kind: nil))
+        XCTAssertFalse(MeshPaneSafety.processTreeContainsAgent(nestedClaude, rootPID: 200, kind: "codex"),
                        "a stale Codex registration must not claim a Claude pane")
 
         let shellOnly = """
           300     1 /bin/zsh
           301   300 /usr/bin/vim
         """
-        XCTAssertFalse(MeshPoke.processTreeContainsAgent(shellOnly, rootPID: 300))
+        XCTAssertFalse(MeshPaneSafety.processTreeContainsAgent(shellOnly, rootPID: 300, kind: nil))
     }
 }
 
@@ -1683,6 +1582,22 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         XCTAssertEqual(broker.process(MeshRequest(cmd: "node-list")).nodes?.map(\.id), ["node-1"])
     }
 
+    func testManualPokeRequiresHostNodeAndPublishesOnlyBrokerEvent() throws {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "dev", nick: "agent",
+                                                 session: "session-1", host: "mac",
+                                                 tmuxPane: "%7", kind: "codex")).ok)
+        XCTAssertFalse(broker.process(MeshRequest(cmd: "poke", room: "dev", nick: "agent")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "node-heartbeat", memberID: "node-1",
+                                                 host: "mac")).ok)
+        let baseline = try XCTUnwrap(broker.process(MeshRequest(cmd: "events")).cursor)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "poke", room: "dev", nick: "agent")).ok)
+        let response = broker.process(MeshRequest(cmd: "events", timeoutMs: 250, cursor: baseline))
+        XCTAssertEqual(response.events?.map(\.kind), [.poke])
+        XCTAssertEqual(response.events?.first?.member?.id, "session-1")
+        XCTAssertNil(response.events?.first?.message)
+    }
+
     func testPairingLinkRejectsDuplicateQueryKeys() throws {
         let raw = "pharos://pair?v=1&v=1&host=100.64.0.1&port=47800&broker=broker-id&token=12345678901234567890&expires=9999999999"
         XCTAssertNil(MeshPairingLink(url: try XCTUnwrap(URL(string: raw))))
@@ -1819,13 +1734,13 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
 final class MeshPaneProbeTests: XCTestCase {
     /// The unknown-state pane probe: only a visibly idle composer passes.
     func testPaneIdleDetection() {
-        XCTAssertTrue(MeshPoke.paneLooksIdle("some output\n❯ \n  bypass permissions on"))
-        XCTAssertTrue(MeshPoke.paneLooksIdle("ready\n› "), "Codex composer is pokeable")
-        XCTAssertFalse(MeshPoke.paneLooksIdle("✻ Cooking… (esc to interrupt)"))
-        XCTAssertFalse(MeshPoke.paneLooksIdle("Working\n› "), "busy Codex must never be poked")
-        XCTAssertFalse(MeshPoke.paneLooksIdle("Do you want to proceed?\n❯ 1. Yes\n 2. No"))
-        XCTAssertFalse(MeshPoke.paneLooksIdle("❯ 1. Yes, I trust this folder\nEnter to confirm · Esc to cancel"))
-        XCTAssertFalse(MeshPoke.paneLooksIdle("plain shell output, no composer"))
+        XCTAssertTrue(MeshPaneSafety.paneLooksIdle("some output\n❯ \n  bypass permissions on"))
+        XCTAssertTrue(MeshPaneSafety.paneLooksIdle("ready\n› "), "Codex composer is pokeable")
+        XCTAssertFalse(MeshPaneSafety.paneLooksIdle("✻ Cooking… (esc to interrupt)"))
+        XCTAssertFalse(MeshPaneSafety.paneLooksIdle("Working\n› "), "busy Codex must never be poked")
+        XCTAssertFalse(MeshPaneSafety.paneLooksIdle("Do you want to proceed?\n❯ 1. Yes\n 2. No"))
+        XCTAssertFalse(MeshPaneSafety.paneLooksIdle("❯ 1. Yes, I trust this folder\nEnter to confirm · Esc to cancel"))
+        XCTAssertFalse(MeshPaneSafety.paneLooksIdle("plain shell output, no composer"))
     }
 }
 

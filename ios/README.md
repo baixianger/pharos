@@ -8,16 +8,15 @@ existing Pharos agent mesh from iPhone and iPad.
 | Concern | Owner | Transport | Security boundary |
 |---|---|---|---|
 | Rooms, roster, history, `say` | Configured Pharos Mesh Broker | newline-delimited JSON over TCP `47800` | the Broker must bind only to its Tailscale address; Tailscale ACLs are the current authentication boundary |
-| Live refresh | iOS app while foregrounded | one request per TCP connection, polled every 2 seconds | no arbitrary-LAN endpoint should be configured |
-| Agent wake-up | iOS app to the agent's Mac | SSH over Tailscale, then guarded `tmux capture-pane` + `send-keys` | device-local Ed25519 key; explicit opt-in while host keys remain unpinned |
+| Live refresh | iOS app while foregrounded | Broker event long-poll with a monotonic cursor | no arbitrary-LAN endpoint should be configured |
+| Agent wake-up | per-Host `pharos-mesh node` | outbound Broker event stream, then guarded local `tmux capture-pane` + `send-keys` | the GUI has no tmux write path; the node runs as the tmux-owning user |
 | Interactive control | iOS app to the member's Mac | Citadel PTY + SwiftTerm, resolving the reported pane to its exact tmux session | explicit target confirmation; same device-local key and host-key opt-in |
 | Spawn member | selected member host | SSH command invoking that host's `pharos mesh spawn` | shared CLI owns hooks, tmux, launch flags, and join confirmation |
 | Non-secret configuration | one iOS device | `UserDefaults` | Broker endpoint and Host profiles stay device-local |
 | SSH private key | one iOS device | Keychain, `AfterFirstUnlockThisDeviceOnly` | never iCloud-synced |
 
-The wire structs intentionally mirror `Sources/Pharos/MeshBroker.swift`. They
-must remain backward compatible. A future cleanup can extract them into a
-shared package once both apps can migrate together.
+The iOS wire structs intentionally mirror `PharosMeshCore`; all Pharos clients
+and services are released as one protocol generation during rapid development.
 
 ## Deliberate boundaries
 
@@ -31,8 +30,8 @@ shared package once both apps can migrate together.
 - SSH host-key pinning is not yet wired. The app requires a per-host risk toggle
   before using Citadel's `acceptAnything()` validator, and should only connect
   through the private tailnet.
-- A poke is attempted only for `stopped`/`idle` members, a numeric tmux pane,
-  a recognized Claude/Codex foreground process, and a visibly idle composer.
+- The iOS app never pokes tmux over SSH. The Host node validates a numeric pane,
+  the expected Claude/Codex process tree, and a visibly idle composer locally.
 - Remote control shows the host, SSH user, member, and pane before attaching.
   Closing the full-screen terminal disconnects SSH.
 - Mobile spawn delegates to the remote host's installed Pharos CLI; the iOS app
@@ -77,10 +76,8 @@ xcodebuild -project PharosMobile.xcodeproj \
   CODE_SIGNING_ALLOWED=NO test
 ```
 
-Before first SSH poke, copy the generated public key into the target Mac's
-`~/.ssh/authorized_keys`, add a mapping from the Mesh member's `host` value to
-its Tailscale SSH address, and explicitly acknowledge the unpinned-host-key
-limitation.
+SSH keys are still required for interactive terminal attachment and remote
+agent launch, but not for Mesh message delivery or Poke.
 
 ## Last verified
 

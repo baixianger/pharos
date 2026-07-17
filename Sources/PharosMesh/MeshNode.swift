@@ -76,11 +76,12 @@ enum MeshNode {
             return "tmux pane is unavailable"
         }
         let processList = run("/bin/ps", ["-axo", "pid=,ppid=,comm="])
-        guard processList.ok, processTreeContainsAgent(processList.output, rootPID: rootPID, kind: member.kind) else {
+        guard processList.ok,
+              MeshPaneSafety.processTreeContainsAgent(processList.output, rootPID: rootPID, kind: member.kind) else {
             return "pane no longer runs the registered agent"
         }
         let capture = run(tmux, prefix + ["capture-pane", "-p", "-t", pane])
-        guard capture.ok, paneLooksIdle(capture.output) else { return "agent is not safely idle" }
+        guard capture.ok, MeshPaneSafety.paneLooksIdle(capture.output) else { return "agent is not safely idle" }
 
         let message = "You have new mesh messages. Run: pharos mesh recv \(member.nick) --member \(member.id)"
         guard run(tmux, prefix + ["send-keys", "-t", pane, "-l", "--", message]).ok else {
@@ -91,42 +92,6 @@ enum MeshNode {
             return "tmux Enter failed"
         }
         return nil
-    }
-
-    static func processTreeContainsAgent(_ output: String, rootPID: Int, kind: String?) -> Bool {
-        struct Row { let pid: Int; let parent: Int; let executable: String }
-        let rows: [Row] = output.split(separator: "\n").compactMap { line in
-            let fields = line.split(maxSplits: 2, whereSeparator: \.isWhitespace)
-            guard fields.count == 3, let pid = Int(fields[0]), let parent = Int(fields[1]) else { return nil }
-            return Row(pid: pid, parent: parent, executable: String(fields[2]))
-        }
-        var descendants: Set<Int> = [rootPID]
-        var changed = true
-        while changed {
-            changed = false
-            for row in rows where descendants.contains(row.parent) && !descendants.contains(row.pid) {
-                descendants.insert(row.pid); changed = true
-            }
-        }
-        return rows.contains { descendants.contains($0.pid) && isAgent($0.executable, kind: kind) }
-    }
-
-    static func paneLooksIdle(_ output: String) -> Bool {
-        let value = output.lowercased()
-        if value.contains("esc to interrupt") || value.contains("working")
-            || value.contains("do you want to proceed") || value.contains("enter to confirm")
-            || value.contains("esc to cancel") { return false }
-        return output.contains("❯") || output.contains("›")
-    }
-
-    private static func isAgent(_ path: String, kind: String?) -> Bool {
-        let executable = URL(fileURLWithPath: path).lastPathComponent
-        let codex = executable.hasPrefix("codex")
-        let claude = ["claude", "node", "bun"].contains(executable)
-            || executable.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression) != nil
-        if kind == "codex" { return codex }
-        if kind == "claude" { return claude }
-        return codex || claude
     }
 
     private static var hostName: String {

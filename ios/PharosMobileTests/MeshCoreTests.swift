@@ -34,31 +34,6 @@ struct MeshCoreTests {
         #expect(message.attachments?.first?.name == "design.pdf")
     }
 
-    @Test func pokeCommandRejectsShellInjection() {
-        #expect(throws: (any Error).self) {
-            try TmuxPokeCommand.build(nick: "codex;rm", memberID: "session", pane: "%1", kind: "codex")
-        }
-    }
-
-    @Test func pokeCommandIncludesSafetyProbe() throws {
-        let command = try TmuxPokeCommand.build(nick: "codex", memberID: "019f-test", pane: "%12",
-                                                socket: "/private/tmp/tmux-501/agent", kind: "codex")
-        #expect(command.contains("capture-pane"))
-        #expect(command.contains("#{pane_pid}"))
-        #expect(command.contains("ps -axo pid=,ppid=,comm="))
-        #expect(command.contains("live[ppid[i]]"))
-        #expect(command.contains("tmux -S '/private/tmp/tmux-501/agent'"))
-        #expect(command.contains("esc to interrupt"))
-        #expect(command.contains("pharos mesh recv codex --member 019f-test"))
-        #expect(command.contains("Enter || exit 36"))
-    }
-
-    @Test func pokeCommandFailureExplainsLostPane() {
-        let message = TmuxPokeError.remoteCommandFailed(36).errorDescription
-        #expect(message?.contains("recorded tmux pane") == true)
-        #expect(!message!.contains("Citadel"))
-    }
-
     @Test func hostResolverUsesStableAgentIdentity() {
         let expected = SSHHostProfile(meshHost: "home-ts", sshHost: "100.64.0.8", username: "pai")
         let other = SSHHostProfile(meshHost: "mac-mini", sshHost: "100.64.0.9", username: "pai")

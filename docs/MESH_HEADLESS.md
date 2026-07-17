@@ -30,14 +30,15 @@ not launch agents or store/resolve Host checkout paths.
 Broker machines and execution Hosts are separate concepts. A Linux server may
 run only the Broker, while macOS or Linux execution Hosts run a per-user node.
 The node connects outward to the Broker, so execution Hosts expose no inbound
-port. SSH remains an install/recovery fallback. Installing the Broker package
-does not grant it arbitrary shell access to those Hosts. See
+port. SSH may be used to install or repair a Host, but it is never a message
+delivery fallback. Installing the Broker package does not grant it arbitrary
+shell access to those Hosts. See
 [`ADR-001-BROKER-AND-HOSTS.md`](ADR-001-BROKER-AND-HOSTS.md).
 
 ## Protocol v2
 
-- `capabilities` prevents a new client from silently sending advanced fields to
-  an old broker that would ignore them.
+- `capabilities` identifies the current protocol generation and optional
+  features to user interfaces.
 - Every new message receives a UUID. A deterministic legacy key keeps old JSONL
   rows quoteable without rewriting history.
 - A reply stores both the original message ID and a short immutable snapshot, so

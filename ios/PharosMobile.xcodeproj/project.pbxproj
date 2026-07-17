@@ -23,7 +23,6 @@
 		726C04B3396A0C926F18D327 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01A1958E7B3D76D91A3B1081 /* SettingsView.swift */; };
 		7F1BDE768D8B320243656FC4 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 0D9BD0AD6FE2B9D70C3D9B01 /* SwiftTerm */; };
 		8A4176112EC9BE6DD5675C1E /* InteractiveSSHSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B67BDD4799E7DC5921C9DB99 /* InteractiveSSHSession.swift */; };
-		960DDC2D1993594446CAEDD6 /* SSHTmuxPokeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A5F3F48B710E5856DF83A3B /* SSHTmuxPokeService.swift */; };
 		9B6D4E0AE776436E597FEFC0 /* ProjectsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC48202BA5281EFE1A847C38 /* ProjectsView.swift */; };
 		9D785850F4EF8B8D7347834C /* PairingLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56D8039FCBC9DCEF0AFD7C6E /* PairingLink.swift */; };
 		A011AB606225E6F999109A5D /* IPadWorkspaceShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F2817C51018E7CAF0BF7175 /* IPadWorkspaceShell.swift */; };
@@ -66,7 +65,6 @@
 		5F2817C51018E7CAF0BF7175 /* IPadWorkspaceShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPadWorkspaceShell.swift; sourceTree = "<group>"; };
 		6B59AA89BEDF3EEEE53EA9CD /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		81DA9594F9E9536D3C2B9D94 /* PharosMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PharosMobileApp.swift; sourceTree = "<group>"; };
-		8A5F3F48B710E5856DF83A3B /* SSHTmuxPokeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTmuxPokeService.swift; sourceTree = "<group>"; };
 		8FF7F26A2AD53C1C21F2EC36 /* MeshTCPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshTCPClient.swift; sourceTree = "<group>"; };
 		9330688B2F8752D883096C6D /* PairBrokerViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairBrokerViews.swift; sourceTree = "<group>"; };
 		9DA45AD4654541D589FEEB66 /* RemoteTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTerminalView.swift; sourceTree = "<group>"; };
@@ -117,7 +115,6 @@
 				C295516F5D699D1341EA7107 /* RemoteAgentService.swift */,
 				4943F19EA86159D3DD4EB0F4 /* RoomStore.swift */,
 				F4EEE4B12F0CADE232BED280 /* SSHIdentityStore.swift */,
-				8A5F3F48B710E5856DF83A3B /* SSHTmuxPokeService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -327,7 +324,6 @@
 				42E05B3FB61CF671E6AC0F71 /* RoomStore.swift in Sources */,
 				DD62AC67C8371A27078C66E4 /* RootView.swift in Sources */,
 				4BE334EC910DCEE6D384603B /* SSHIdentityStore.swift in Sources */,
-				960DDC2D1993594446CAEDD6 /* SSHTmuxPokeService.swift in Sources */,
 				726C04B3396A0C926F18D327 /* SettingsView.swift in Sources */,
 				A3405FB84FF614549626759D /* SpawnAgentView.swift in Sources */,
 			);

@@ -864,6 +864,23 @@ public final class MeshBroker: @unchecked Sendable {
             lock.unlock()
             return MeshResponse(ok: true, members: targetInfo.isEmpty ? nil : targetInfo)
 
+        case "poke":
+            guard let room = req.room, let nick = req.nick else {
+                return .fail("room and nick required")
+            }
+            lock.lock()
+            guard let member = memberInfoLocked(room: room, nick: nick) else {
+                lock.unlock()
+                return .fail("member not found in room")
+            }
+            guard member.nodeOnline == true else {
+                lock.unlock()
+                return .fail("the member's Host node is offline")
+            }
+            lock.unlock()
+            publish(kind: .poke, room: room, member: member)
+            return MeshResponse(ok: true, members: [member])
+
         case "mark":
             // Hook-reported session state (fire-and-forget from the reporter's
             // point of view). Resolve the agent by explicit nick, else by

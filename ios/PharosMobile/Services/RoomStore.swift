@@ -5,9 +5,7 @@ import Observation
 @MainActor
 final class RoomStore {
     private let settings: AppSettings
-    private let identities: SSHIdentityStore
     private let mesh = MeshTCPClient()
-    private let ssh = SSHTmuxPokeService()
 
     private(set) var rooms: [MeshRoom] = []
     var selectedRoom: String?
@@ -29,7 +27,6 @@ final class RoomStore {
 
     init(settings: AppSettings, identities: SSHIdentityStore) {
         self.settings = settings
-        self.identities = identities
     }
 
     func refresh() async {
@@ -67,7 +64,7 @@ final class RoomStore {
 
     /// Foreground Broker event loop. The server holds each request until a
     /// change occurs, then the durable room/roster/history snapshot is reloaded.
-    /// A timeout refresh is the reconnect safety net and supports old Brokers.
+    /// A timeout refresh is the reconnect safety net.
     func watchEvents() async {
         var cursor: UInt64?
         while !Task.isCancelled {
@@ -123,11 +120,10 @@ final class RoomStore {
                                        to: targets.isEmpty ? nil : targets)
             outgoing.replyToID = replyTo?.id
             outgoing.attachments = attachments.isEmpty ? nil : attachments
-            let response = try await request(outgoing)
+            _ = try await request(outgoing)
             let nextMessages = try await request(MeshRequest(cmd: "history", room: room, limit: 200)).messages ?? []
             if messages != nextMessages { messages = nextMessages }
             error = nil
-            if let targets = response.members { await pokeEligibleTargets(targets) }
             return true
         } catch {
             self.error = error.localizedDescription
@@ -343,30 +339,6 @@ final class RoomStore {
         return values.contains("mesh-v2")
     }
 
-    private func pokeEligibleTargets(_ targets: [MeshMember]) async {
-        var results: [String] = []
-        for member in targets {
-            if member.nodeOnline == true { continue }
-            guard MeshSessionState(rawValue: member.state ?? "")?.isPokeCandidate == true else { continue }
-            guard let profile = settings.sshHost(for: member) else {
-                let identity = member.host ?? member.tailscaleIP ?? "unknown host"
-                results.append("@\(member.nick): delivered; no SSH mapping for \(identity)")
-                continue
-            }
-            guard let identityID = profile.identityID,
-                  let key = try? identities.privateKey(for: identityID) else {
-                results.append("@\(member.nick): delivered; SSH identity unavailable")
-                continue
-            }
-            do {
-                try await ssh.poke(member: member, profile: profile, privateKey: key)
-                results.append("⚡ poked @\(member.nick)")
-            } catch {
-                results.append("@\(member.nick): delivered; poke skipped — \(error.localizedDescription)")
-            }
-        }
-        if !results.isEmpty { notice = results.joined(separator: "\n") }
-    }
 }
 
 private enum RegistryMutationError: LocalizedError {

@@ -638,10 +638,7 @@ struct MeshRoomView: View {
         // poke). Shared parser with the CLI `say` so both surfaces match.
         let mentions = MeshHooks.parseTextMentions(text)
         let to = mentions.isEmpty ? nil : mentions
-        let hostProfiles = store.executionHosts
         Task {
-            // say echoes each target's presence; act on it: nudge the
-            // stopped/idle, and report what needs the human's hands.
             let result = await Task.detached { () -> (sent: Bool, notes: [String]) in
                 if reply != nil || !attachments.isEmpty {
                     let capabilities = MeshClient.send(MeshRequest(cmd: "capabilities"))
@@ -654,14 +651,7 @@ struct MeshRoomView: View {
                 request.attachments = attachments.isEmpty ? nil : attachments
                 let resp = MeshClient.send(request)
                 if !resp.ok { return (false, [resp.error ?? "Message could not be sent."]) }
-                guard let targets = resp.members, !targets.isEmpty else { return (true, []) }
-                let notes = targets.flatMap { target in
-                    let ssh = ExecutionHostProfile.resolve(meshHostID: target.host,
-                                                           tailscaleIP: target.tailscaleIP,
-                                                           in: hostProfiles)?.sshHost ?? ""
-                    return MeshPoke.followUp(targets: [target], peerHost: ssh)
-                }
-                return (true, notes)
+                return (true, [])
             }.value
             if !result.sent {
                 draft = text
@@ -700,7 +690,7 @@ struct MeshRoomView: View {
     /// Broker-held long poll: idle connections consume no refresh traffic and
     /// return as soon as a message/roster event is published. History remains
     /// authoritative, so every event simply triggers the existing snapshot
-    /// reload and a 30-second recovery poll covers old Brokers/disconnections.
+    /// reload and a 30-second recovery poll covers disconnections.
     private func watchEvents() async {
         while !Task.isCancelled && !resolved {
             try? await Task.sleep(for: .milliseconds(100))

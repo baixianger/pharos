@@ -223,7 +223,7 @@ enum CLI {
             }
             // The CLI runs inside the agent's own shell, so a tmux-wrapped
             // session exposes its pane right here — captured into presence, it's
-            // what lets the GUI poke a stopped agent (nil = not poke-able).
+            // what lets this Host's headless node locate the pane safely.
             let env = ProcessInfo.processInfo.environment
             let pane = env["TMUX"] != nil ? env["TMUX_PANE"] : nil
             let socket = RemoteLaunch.tmuxSocket(fromEnvironmentValue: env["TMUX"])
@@ -291,14 +291,7 @@ enum CLI {
                 catch { print("error: \(error.localizedDescription)"); return 1 }
             }
             let r = MeshClient.send(request)
-            let code = report(r)
-            if r.ok, let targets = r.members, !targets.isEmpty {
-                for target in targets {
-                    let host = configuredSSHHost(for: target)
-                    for note in MeshPoke.followUp(targets: [target], peerHost: host) { print(note) }
-                }
-            }
-            return code
+            return report(r)
         case "attachment":
             guard let action = a.first else { print("usage: pharos mesh attachment put|get …"); return 2 }
             switch action {
@@ -397,25 +390,10 @@ enum CLI {
             }
             return final == .joined ? 0 : 1
         case "poke":
-            // Manual/debug poke — aliases can repeat across rooms, so accept
-            // `poke <room> <nick>` and reject ambiguous legacy `poke <nick>`.
-            guard let last = a.last else { print("usage: pharos mesh poke [<room>] <nick>"); return 2 }
-            let room = a.count >= 2 ? a[0] : nil
-            let nick = last
-            let who = MeshClient.send(MeshRequest(cmd: "who"))
-            guard who.ok else { return report(who) }
-            let matches = (who.members ?? []).filter { $0.nick == nick && (room == nil || $0.rooms.contains(room!)) }
-            guard matches.count == 1, let m = matches.first else {
-                if matches.count > 1 { print("error: '\(nick)' is in multiple rooms; use: pharos mesh poke <room> \(nick)"); return 2 }
-                print("error: no such member '\(nick)' (see: pharos mesh who)")
-                return 1
-            }
-            let peer = configuredSSHHost(for: m)
-            if let why = MeshPoke.nudge(m, peerHost: peer) {
-                print("not poked: \(why)")
-                return 1
-            }
-            print("poked \(nick) (\(m.host ?? "?") \(m.tmuxPane ?? "?"))")
+            guard a.count == 2 else { print("usage: pharos mesh poke <room> <nick>"); return 2 }
+            let response = MeshClient.send(MeshRequest(cmd: "poke", room: a[0], nick: a[1]))
+            guard response.ok else { return report(response) }
+            print("poke queued for @\(a[1]) on its Host node")
             return 0
         case "unread":
             return MeshHooks.unread(a)
@@ -437,21 +415,6 @@ enum CLI {
         if env.keys.contains(where: { $0.hasPrefix("CODEX_") })
             || (env["PATH"]?.contains("codex.system") ?? false) { return "codex" }
         return nil
-    }
-
-    /// Resolve a Broker-reported machine to the device-local Host list. The old
-    /// single-peer preference remains a rolling-upgrade fallback only.
-    private static func configuredSSHHost(for member: MeshMemberInfo) -> String {
-        let prefs = PharosPrefs.shared
-        if let raw = prefs.string(forKey: "pharos.executionHosts"),
-           let data = raw.data(using: .utf8),
-           let profiles = try? JSONDecoder().decode([ExecutionHostProfile].self, from: data),
-           let profile = ExecutionHostProfile.resolve(meshHostID: member.host,
-                                                      tailscaleIP: member.tailscaleIP,
-                                                      in: profiles) {
-            return profile.sshHost
-        }
-        return prefs.string(forKey: "pharos.peerHost") ?? ""
     }
 
     /// This machine's own Tailscale IPv4, captured at join so the mobile app can
