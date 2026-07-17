@@ -17,12 +17,18 @@ enum MeshNode {
         FileHandle.standardError.write(Data("pharos node: starting as \(hostName)\(tailscaleIP.map { " (\($0))" } ?? "")\n".utf8))
 
         // Each iteration runs inside its own autorelease pool: Process/Pipe/
-        // FileHandle are ObjC-backed, and a CLI main loop never drains the
-        // implicit pool — without this, every subprocess probe leaks its pipe
-        // fds until the process hits the fd ceiling and silently loses every
-        // authenticated Broker call (heartbeat, command drain, mark).
+        // FileHandle are ObjC-backed on Darwin, and a CLI main loop never
+        // drains the implicit pool — without this, every subprocess probe
+        // leaks its pipe fds until the process hits the fd ceiling and
+        // silently loses every authenticated Broker call (heartbeat, command
+        // drain, mark). Linux Foundation has no autorelease semantics; the
+        // explicit pipe closes in run(_:_:) are sufficient there.
         while true {
+            #if canImport(Darwin)
             autoreleasepool { iterate(&state, buildID: buildID) }
+            #else
+            iterate(&state, buildID: buildID)
+            #endif
         }
     }
 
