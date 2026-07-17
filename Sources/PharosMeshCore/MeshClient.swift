@@ -282,7 +282,9 @@ public enum MeshClient {
 
     /// One request → one response over an already-connected fd (UDS or TCP).
     private static func roundTrip(_ fd: Int32, _ req: MeshRequest) -> MeshResponse {
-        guard let data = try? JSONEncoder().encode(req) else { return .fail("encode failed") }
+        var request = req
+        if request.authToken == nil { request.authToken = MeshPaths.controlToken }
+        guard let data = try? JSONEncoder().encode(request) else { return .fail("encode failed") }
         meshWriteAll(fd, data)
         guard let line = meshReadLine(fd),
               let rdata = line.data(using: .utf8),

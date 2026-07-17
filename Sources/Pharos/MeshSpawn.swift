@@ -105,6 +105,39 @@ enum MeshSpawn {
     static func spawn(room: String, nick: String, kind: AgentKind, host: String? = nil,
                       workDir: WorkDir = .scratch,
                       onProgress: @escaping (Progress) -> Void) async {
+        let projectID: String?
+        switch workDir {
+        case .scratch:
+            projectID = "__scratch__"
+        case .project(let name):
+            projectID = PharosCore.findProject(name)?.id.uuidString
+        case .path:
+            projectID = nil // explicit paths remain an SSH/local rescue path
+        }
+        if let projectID, let node = MeshNodeControl.activeNode(for: host) {
+            let name = sessionName(room: room, nick: nick)
+            onProgress(Progress(phase: .booting, detail: "asking Node \(node.host) to start \(kind.rawValue)…"))
+            let command = await MeshNodeControl.spawn(
+                node: node,
+                payload: MeshNodeSpawnPayload(projectID: projectID, sessionName: name,
+                                              agent: kind.rawValue, yolo: true,
+                                              room: room, nick: nick)
+            )
+            guard command.state == .succeeded else {
+                onProgress(Progress(phase: .failed, detail: command.result ?? "Node spawn failed"))
+                return
+            }
+            onProgress(Progress(phase: .joining, detail: "waiting for \(nick) to join \(room)…"))
+            for _ in 0..<40 {
+                try? await Task.sleep(for: .seconds(1))
+                if didJoin(room: room, nick: nick) {
+                    onProgress(Progress(phase: .joined, detail: "joined \(room) via Node"))
+                    return
+                }
+            }
+            onProgress(Progress(phase: .failed, detail: "Node started the agent but it did not join the room"))
+            return
+        }
         if let host, !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             RemoteLaunch.spawnMeshAgent(room: room, nick: nick, kind: kind,
                                         host: host.trimmingCharacters(in: .whitespacesAndNewlines),

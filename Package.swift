@@ -50,7 +50,8 @@ let package = Package(
         .testTarget(
             name: "PharosTests",
             dependencies: ["Pharos"],
-            path: "Tests/PharosTests"
+            path: "Tests/PharosTests",
+            resources: [.copy("Fixtures")]
         ),
     ]
 )

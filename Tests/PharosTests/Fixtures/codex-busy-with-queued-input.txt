@@ -1,0 +1,9 @@
+› previous request
+
+• This output quoted a historical “Worked for 2m” marker from an earlier turn.
+
+• Working (8s • esc to interrupt)
+
+› queued while busy
+
+  tab to queue message

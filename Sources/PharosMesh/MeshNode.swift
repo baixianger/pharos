@@ -11,15 +11,25 @@ import Glibc
 /// registered tmux pane that still contains the expected coding-agent process
 /// and visibly shows an idle composer.
 enum MeshNode {
-    static func run(endpoint: String?) -> Int32 {
+    static func run(endpoint: String?, buildID: String? = nil) -> Int32 {
         if let endpoint { MeshClient.remoteEndpoint = endpoint }
         var cursor: UInt64?
         var backoff: UInt32 = 1
+        var missingProbeCounts: [String: Int] = [:]
+        var nextReconcile = Date.distantPast
         FileHandle.standardError.write(Data("pharos node: starting as \(hostName)\(tailscaleIP.map { " (\($0))" } ?? "")\n".utf8))
 
         while true {
-            heartbeat()
-            let response = MeshClient.events(after: cursor, timeoutMs: 25_000)
+            heartbeat(buildID: buildID)
+            drainNodeCommands(missingProbeCounts: &missingProbeCounts)
+            if Date() >= nextReconcile {
+                reconcileMembers(missingProbeCounts: &missingProbeCounts)
+                nextReconcile = Date().addingTimeInterval(20)
+            }
+            // The held event request is still push-style delivery; a five
+            // second ceiling also bounds durable-command retry latency when a
+            // trust/composer transition itself produced no new Broker event.
+            let response = MeshClient.events(after: cursor, timeoutMs: 5_000)
             guard response.ok, let next = response.cursor else {
                 FileHandle.standardError.write(Data("pharos node: broker unavailable; retrying\n".utf8))
                 sleep(backoff)
@@ -27,31 +37,312 @@ enum MeshNode {
                 continue
             }
             backoff = 1
-            let establishingBaseline = cursor == nil || next < (cursor ?? 0)
             cursor = next
-            if establishingBaseline { sweepUnread() }
-            for event in response.events ?? [] where event.kind == .poke {
-                guard let member = event.member, owns(member) else { continue }
-                let result = poke(member)
-                log(result == nil ? "poked @\(member.nick) in \(member.tmuxPane ?? "?")"
-                                  : "skipped @\(member.nick): \(result!)")
+        }
+    }
+
+    private static func drainNodeCommands(missingProbeCounts: inout [String: Int]) {
+        for _ in 0..<20 {
+            let response = MeshClient.send(MeshRequest(cmd: "node-command-next", nodeID: nodeID))
+            guard response.ok, let command = response.command else { return }
+            switch command.action {
+            case .poke:
+                executePokeCommand(command)
+            case .reconcile:
+                reconcileMembers(missingProbeCounts: &missingProbeCounts)
+                update(command, state: .running, result: "reconciling")
+                update(command, state: .succeeded, result: managedSessionInventory())
+            case .spawnAgent:
+                executeSpawnCommand(command)
+            case .stopSession:
+                executeStopCommand(command)
             }
         }
     }
 
-    private static func heartbeat() {
-        _ = MeshClient.send(MeshRequest(cmd: "node-heartbeat", memberID: nodeID,
-                                        host: hostName, tailscaleIP: tailscaleIP))
+    private static func executePokeCommand(_ command: MeshNodeCommand) {
+        guard let payload = command.payload?.data(using: .utf8),
+              let request = try? JSONDecoder().decode(MeshNodePokePayload.self, from: payload) else {
+            update(command, state: .failed, result: "invalid poke payload")
+            return
+        }
+        let roster = MeshClient.send(MeshRequest(cmd: "who"))
+        guard roster.ok, let member = roster.members?.first(where: { $0.id == request.memberID }) else {
+            update(command, state: .failed, result: "member no longer exists")
+            return
+        }
+        guard owns(member) else {
+            update(command, state: .failed, result: "member is not owned by this node")
+            return
+        }
+        if request.requireUnread, (member.unread ?? 0) == 0 {
+            update(command, state: .running, result: "mailbox already consumed")
+            update(command, state: .succeeded, result: "mailbox already consumed")
+            return
+        }
+        if let reason = poke(member) {
+            if reason == "agent session is gone" {
+                update(command, state: .failed, result: reason)
+            } else if reason.hasPrefix("hook owns delivery") {
+                update(command, state: .accepted, result: reason,
+                       retryAt: Date().timeIntervalSince1970 + 5)
+            } else {
+                update(command, state: .failed, result: reason)
+            }
+            return
+        }
+        update(command, state: .running, result: "wake-up injected")
+        update(command, state: .succeeded, result: "wake-up injected")
     }
 
-    /// Recover directed messages that arrived while this node was offline.
-    private static func sweepUnread() {
+    private static func executeSpawnCommand(_ command: MeshNodeCommand) {
+        guard let data = command.payload?.data(using: .utf8),
+              let payload = try? JSONDecoder().decode(MeshNodeSpawnPayload.self, from: data),
+              validSessionName(payload.sessionName),
+              ["claude", "codex"].contains(payload.agent),
+              let tmux = tmuxExecutable,
+              let executable = agentExecutable(payload.agent) else {
+            update(command, state: .failed, result: "invalid spawn payload, project path, or agent executable")
+            return
+        }
+        guard validRoomField(payload.room), validRoomField(payload.nick) else {
+            update(command, state: .failed, result: "room or nick contains unsafe control characters")
+            return
+        }
+        let projectPath: String
+        if payload.projectID == "__scratch__", let room = payload.room, let nick = payload.nick {
+            let directory = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".pharos/mesh-agents/\(safePathPart(room))/\(safePathPart(nick))",
+                                      isDirectory: true)
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            projectPath = directory.path
+        } else if let registered = MeshNodeProjectPaths.path(for: payload.projectID) {
+            projectPath = registered
+        } else {
+            update(command, state: .failed, result: "project path is not registered on this node")
+            return
+        }
+        prepareNodeTmuxDirectory()
+        let prefix = ["-S", nodeTmuxSocket]
+        if run(tmux, prefix + ["has-session", "-t", payload.sessionName]).ok {
+            continueSpawnBootstrap(command, payload: payload, tmux: tmux, prefix: prefix)
+            return
+        }
+        var arguments = prefix + ["new-session", "-d", "-s", payload.sessionName,
+                                  "-c", projectPath, "-x", "200", "-y", "50", executable]
+        if payload.yolo {
+            arguments += payload.agent == "claude"
+                ? ["--dangerously-skip-permissions"]
+                : ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"]
+        }
+        let result = run(tmux, arguments)
+        if result.ok {
+            _ = run(tmux, prefix + ["set-option", "-t", payload.sessionName, "window-size", "latest"])
+            if payload.room?.isEmpty == false, payload.nick?.isEmpty == false {
+                update(command, state: .accepted, result: "agent started; waiting for bootstrap",
+                       retryAt: Date().timeIntervalSince1970 + 2)
+            } else {
+                update(command, state: .running, result: "managed tmux session started")
+                update(command, state: .succeeded,
+                       result: "started \(payload.sessionName) on \(nodeTmuxSocket)")
+            }
+        } else {
+            update(command, state: .failed, result: result.output.isEmpty ? "tmux spawn failed" : result.output)
+        }
+    }
+
+    /// Starting an interactive coding agent is a durable state machine, not a
+    /// fire-and-forget shell command. Both Claude and Codex can stop at a
+    /// first-use workspace trust screen before they expose their composer. We
+    /// only acknowledge the exact built-in prompts, then wait for a verified
+    /// idle composer before injecting the fixed room bootstrap instruction.
+    private static func continueSpawnBootstrap(_ command: MeshNodeCommand,
+                                               payload: MeshNodeSpawnPayload,
+                                               tmux: String, prefix: [String]) {
+        guard let room = payload.room, let nick = payload.nick,
+              !room.isEmpty, !nick.isEmpty else {
+            update(command, state: .running, result: "session already exists")
+            update(command, state: .succeeded, result: "session already exists")
+            return
+        }
+
+        let roster = MeshClient.send(MeshRequest(cmd: "who"))
+        if roster.ok, roster.members?.contains(where: {
+            $0.nick == nick && $0.rooms.contains(room) && owns($0)
+                && $0.tmuxSocket == nodeTmuxSocket
+        }) == true {
+            update(command, state: .running, result: "agent joined room")
+            update(command, state: .succeeded,
+                   result: "started \(payload.sessionName); @\(nick) joined \(room)")
+            return
+        }
+
+        if command.result?.hasPrefix("room bootstrap submitted") == true {
+            update(command, state: .accepted, result: "room bootstrap submitted; waiting for room join",
+                   retryAt: Date().timeIntervalSince1970 + 5)
+            return
+        }
+
+        let capture = run(tmux, prefix + ["capture-pane", "-p", "-t", payload.sessionName])
+        guard capture.ok else {
+            update(command, state: .accepted, result: "waiting for agent pane",
+                   retryAt: Date().timeIntervalSince1970 + 2)
+            return
+        }
+        if MeshPaneSafety.isKnownWorkspaceTrustPrompt(capture.output) {
+            let confirmed = run(tmux, prefix + ["send-keys", "-t", payload.sessionName, "Enter"])
+            update(command, state: confirmed.ok ? .accepted : .failed,
+                   result: confirmed.ok ? "confirmed coding-agent workspace trust" : "failed to confirm workspace trust",
+                   retryAt: confirmed.ok ? Date().timeIntervalSince1970 + 2 : nil)
+            return
+        }
+        if MeshPaneSafety.paneLooksIdle(capture.output) {
+            let prompt = "Join the Pharos mesh room \(room) as \(nick), announce that you joined, then return to the idle composer. Use the session id supplied by your SessionStart context when joining."
+            let typed = run(tmux, prefix + ["send-keys", "-t", payload.sessionName, "-l", "--", prompt])
+            if typed.ok { usleep(350_000) }
+            let submitted = typed.ok
+                ? run(tmux, prefix + ["send-keys", "-t", payload.sessionName, "Enter"])
+                : CommandResult(ok: false, output: "literal send-keys failed")
+            update(command, state: submitted.ok ? .accepted : .failed,
+                   result: submitted.ok ? "room bootstrap submitted" : submitted.output,
+                   retryAt: submitted.ok ? Date().timeIntervalSince1970 + 4 : nil)
+            return
+        }
+        update(command, state: .accepted, result: "waiting for coding-agent composer or room join",
+               retryAt: Date().timeIntervalSince1970 + 2)
+    }
+
+    private static func executeStopCommand(_ command: MeshNodeCommand) {
+        guard let data = command.payload?.data(using: .utf8),
+              let payload = try? JSONDecoder().decode(MeshNodeStopPayload.self, from: data),
+              validSessionName(payload.sessionName), let tmux = tmuxExecutable else {
+            update(command, state: .failed, result: "invalid stop payload or tmux unavailable")
+            return
+        }
+        prepareNodeTmuxDirectory()
+        let prefix = ["-S", nodeTmuxSocket]
+        update(command, state: .running, result: "stopping managed tmux session")
+        guard run(tmux, prefix + ["has-session", "-t", payload.sessionName]).ok else {
+            update(command, state: .succeeded, result: "session already absent")
+            return
+        }
+        let result = run(tmux, prefix + ["kill-session", "-t", payload.sessionName])
+        update(command, state: result.ok ? .succeeded : .failed,
+               result: result.ok ? "stopped \(payload.sessionName)" : result.output)
+    }
+
+    private static func managedSessionInventory() -> String {
+        guard let tmux = tmuxExecutable else { return "[]" }
+        prepareNodeTmuxDirectory()
+        let result = run(tmux, ["-S", nodeTmuxSocket, "list-sessions", "-F", "#{session_name}"])
+        let sessions = result.ok ? result.output.split(whereSeparator: \.isNewline).map(String.init) : []
+        guard let data = try? JSONEncoder().encode(sessions) else { return "[]" }
+        return String(data: data, encoding: .utf8) ?? "[]"
+    }
+
+    private static var nodeTmuxSocket: String {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".pharos/tmux/node.sock").path
+    }
+
+    private static func prepareNodeTmuxDirectory() {
+        let directory = URL(fileURLWithPath: nodeTmuxSocket).deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+    }
+
+    private static func validSessionName(_ value: String) -> Bool {
+        !value.isEmpty && value.count <= 120
+            && value.allSatisfy { $0.isLetter || $0.isNumber || "._-".contains($0) }
+    }
+
+    private static func validRoomField(_ value: String?) -> Bool {
+        guard let value else { return true }
+        return value.count <= 120 && !value.contains(where: { $0.isNewline || $0.asciiValue == 0 })
+    }
+
+    private static func safePathPart(_ value: String) -> String {
+        let safe = String(value.map { $0.isLetter || $0.isNumber || "._-".contains($0) ? $0 : "-" })
+        return String(safe.prefix(120))
+    }
+
+    private static func agentExecutable(_ agent: String) -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates: [String]
+        if agent == "claude" {
+            candidates = ["\(home)/.local/bin/claude", "\(home)/.npm-global/bin/claude",
+                          "\(home)/.bun/bin/claude", "/opt/homebrew/bin/claude",
+                          "/usr/local/bin/claude"]
+        } else {
+            candidates = ["\(home)/.local/bin/codex", "\(home)/.npm-global/bin/codex",
+                          "\(home)/.bun/bin/codex", "/opt/homebrew/bin/codex",
+                          "/usr/local/bin/codex", "/Applications/Codex.app/Contents/Resources/codex"]
+        }
+        if let direct = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+            return direct
+        }
+        let shell = FileManager.default.isExecutableFile(atPath: "/bin/zsh") ? "/bin/zsh" : "/bin/bash"
+        let resolved = run(shell, ["-lic", "command -v \(agent)"]).output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return resolved.hasPrefix("/") && FileManager.default.isExecutableFile(atPath: resolved) ? resolved : nil
+    }
+
+    private static func update(_ command: MeshNodeCommand, state: MeshNodeCommandState,
+                               result: String, retryAt: Double? = nil) {
+        var request = MeshRequest(cmd: "node-command-update", state: state.rawValue,
+                                  payload: result, nodeID: nodeID, commandID: command.id)
+        request.retryAt = retryAt
+        let response = MeshClient.send(request)
+        if !response.ok { log("command \(command.id) ACK failed: \(response.error ?? "unknown")") }
+    }
+
+    private static func heartbeat(buildID: String?) {
+        _ = MeshClient.send(MeshRequest(cmd: "node-heartbeat", memberID: nodeID,
+                                        host: hostName, tailscaleIP: tailscaleIP, payload: buildID))
+    }
+
+    /// Periodically verify only durable machine facts: the exact pane and its
+    /// coding-agent process still exist. UI text is intentionally not parsed;
+    /// hook leases alone govern busy/blocked expiry.
+    private static func reconcileMembers(missingProbeCounts: inout [String: Int]) {
         let response = MeshClient.send(MeshRequest(cmd: "who"))
         guard response.ok else { return }
-        for member in response.members ?? [] where (member.unread ?? 0) > 0 && owns(member) {
-            if let reason = poke(member) { log("unread sweep skipped @\(member.nick): \(reason)") }
-            else { log("unread sweep poked @\(member.nick)") }
+        var seen = Set<String>()
+        for member in response.members ?? [] where owns(member) && seen.insert(member.id).inserted {
+            guard member.state != MeshSessionState.gone.rawValue,
+                  let pane = member.tmuxPane, validPane(pane),
+                  let tmux = tmuxExecutable else { continue }
+            if let socket = member.tmuxSocket, !validSocket(socket) { continue }
+            let prefix = member.tmuxSocket.map { ["-S", $0] } ?? []
+            let root = run(tmux, prefix + ["display-message", "-p", "-t", pane, "#{pane_pid}"])
+            guard root.ok, let rootPID = Int(root.output.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                recordMissing(member, counts: &missingProbeCounts)
+                continue
+            }
+            let processList = run("/bin/ps", ["-axo", "pid=,ppid=,comm="])
+            guard processList.ok,
+                  MeshPaneSafety.processTreeContainsAgent(processList.output, rootPID: rootPID,
+                                                          kind: member.kind) else {
+                recordMissing(member, counts: &missingProbeCounts)
+                continue
+            }
+            missingProbeCounts.removeValue(forKey: member.id)
         }
+    }
+
+    private static func recordMissing(_ member: MeshMemberInfo, counts: inout [String: Int]) {
+        let count = (counts[member.id] ?? 0) + 1
+        counts[member.id] = count
+        guard count >= 2 else { return }
+        markObserved(member, state: .gone)
+        counts.removeValue(forKey: member.id)
+    }
+
+    private static func markObserved(_ member: MeshMemberInfo, state: MeshSessionState) {
+        var request = MeshRequest(cmd: "mark", memberID: member.id, state: state.rawValue)
+        request.expectedState = member.state
+        request.expectedStateTs = member.stateTs
+        let response = MeshClient.send(request)
+        if response.ok { log("reconciled @\(member.nick) to \(state.rawValue)") }
     }
 
     static func owns(_ member: MeshMemberInfo) -> Bool {
@@ -63,7 +354,8 @@ enum MeshNode {
     }
 
     static func poke(_ member: MeshMemberInfo) -> String? {
-        guard MeshPaneSafety.allowsPoke(state: member.state) else {
+        if member.state == MeshSessionState.gone.rawValue { return "agent session is gone" }
+        guard MeshPaneSafety.allowsPoke(state: member.state, stateTs: member.stateTs) else {
             return "hook owns delivery while state is \(member.state ?? "unknown")"
         }
         guard let pane = member.tmuxPane, validPane(pane) else { return "missing or unsafe tmux pane" }
@@ -80,9 +372,6 @@ enum MeshNode {
               MeshPaneSafety.processTreeContainsAgent(processList.output, rootPID: rootPID, kind: member.kind) else {
             return "pane no longer runs the registered agent"
         }
-        let capture = run(tmux, prefix + ["capture-pane", "-p", "-t", pane])
-        guard capture.ok, MeshPaneSafety.paneLooksIdle(capture.output) else { return "agent is not safely idle" }
-
         let message = "You have new mesh messages. Run: pharos mesh recv \(member.nick) --member \(member.id)"
         guard run(tmux, prefix + ["send-keys", "-t", pane, "-l", "--", message]).ok else {
             return "tmux send-keys failed"

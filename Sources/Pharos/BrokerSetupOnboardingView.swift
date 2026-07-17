@@ -320,7 +320,10 @@ struct BrokerSetupOnboardingView: View {
             let response = await Task.detached {
                 MeshClient.send(request, to: invitation.endpoint)
             }.value
-            guard response.ok, response.payload == invitation.brokerID else {
+            guard response.ok, let payload = response.payload,
+                  let data = payload.data(using: .utf8),
+                  let credential = try? JSONDecoder().decode(MeshPairingCredential.self, from: data),
+                  credential.brokerID == invitation.brokerID else {
                 errorMessage = response.error ?? "The Broker identity did not match the pairing link."
                 return
             }
@@ -328,6 +331,7 @@ struct BrokerSetupOnboardingView: View {
             store.meshServerEndpoint = invitation.endpoint
             MeshClient.remoteEndpoint = invitation.endpoint
             MeshPaths.setDialEndpointFile(invitation.endpoint)
+            MeshPaths.setControlTokenFile(credential.controlToken)
         }
         step = 2
     }

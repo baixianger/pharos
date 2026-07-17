@@ -34,6 +34,14 @@ public struct MeshRequest: Codable, Sendable {
     public var payload: String?
     public var expectedRevision: String?
     public var cursor: UInt64?
+    public var authToken: String?
+    public var nodeID: String?
+    public var commandID: String?
+    public var action: String?
+    public var idempotencyKey: String?
+    public var deadline: Double?
+    public var retryAt: Double?
+    public var maxAttempts: Int?
 
     public init(cmd: String, room: String? = nil, nick: String? = nil, memberID: String? = nil,
                 text: String? = nil, to: [String]? = nil, timeoutMs: Int? = nil, limit: Int? = nil,
@@ -43,7 +51,10 @@ public struct MeshRequest: Codable, Sendable {
                 tailscaleIP: String? = nil, replyToID: String? = nil,
                 attachments: [MeshAttachment]? = nil, attachment: MeshAttachment? = nil,
                 attachmentID: String? = nil, payload: String? = nil,
-                expectedRevision: String? = nil, cursor: UInt64? = nil) {
+                expectedRevision: String? = nil, cursor: UInt64? = nil,
+                authToken: String? = nil, nodeID: String? = nil, commandID: String? = nil,
+                action: String? = nil, idempotencyKey: String? = nil, deadline: Double? = nil,
+                retryAt: Double? = nil, maxAttempts: Int? = nil) {
         self.cmd = cmd; self.room = room; self.nick = nick; self.memberID = memberID
         self.text = text; self.to = to; self.timeoutMs = timeoutMs; self.limit = limit
         self.project = project; self.session = session; self.host = host; self.tmuxPane = tmuxPane
@@ -54,6 +65,9 @@ public struct MeshRequest: Codable, Sendable {
         self.payload = payload
         self.expectedRevision = expectedRevision
         self.cursor = cursor
+        self.authToken = authToken; self.nodeID = nodeID; self.commandID = commandID
+        self.action = action; self.idempotencyKey = idempotencyKey; self.deadline = deadline
+        self.retryAt = retryAt; self.maxAttempts = maxAttempts
     }
 }
 
@@ -62,7 +76,7 @@ public struct MeshRequest: Codable, Sendable {
 /// its durable snapshot, then blocks on `events` for changes after that cursor.
 /// The message transcript/mailbox remains authoritative across broker restarts.
 public struct MeshEvent: Codable, Sendable, Equatable, Identifiable {
-    public enum Kind: String, Codable, Sendable { case message, poke, roster, registry }
+    public enum Kind: String, Codable, Sendable { case message, poke, roster, registry, nodeCommand }
 
     public var id: UInt64 { sequence }
     public var sequence: UInt64
@@ -76,6 +90,92 @@ public struct MeshEvent: Codable, Sendable, Equatable, Identifiable {
                 room: String? = nil, message: MeshMsg? = nil, member: MeshMemberInfo? = nil) {
         self.sequence = sequence; self.kind = kind; self.ts = ts
         self.room = room; self.message = message; self.member = member
+    }
+}
+
+public enum MeshNodeCommandAction: String, Codable, Sendable, CaseIterable {
+    case spawnAgent, stopSession, poke, reconcile
+}
+
+public enum MeshNodeCommandState: String, Codable, Sendable {
+    case queued, accepted, running, succeeded, failed, expired, canceled
+
+    public var isTerminal: Bool {
+        switch self {
+        case .succeeded, .failed, .expired, .canceled: true
+        default: false
+        }
+    }
+}
+
+/// Durable, allow-listed control request. The Broker owns desired state; a
+/// Host node repeatedly claims the same command until it records a terminal
+/// result, which makes delivery idempotent across disconnects and restarts.
+public struct MeshNodeCommand: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var nodeID: String
+    public var action: MeshNodeCommandAction
+    public var payload: String?
+    public var idempotencyKey: String
+    public var state: MeshNodeCommandState
+    public var createdAt: Double
+    public var updatedAt: Double
+    public var deadline: Double
+    public var result: String?
+    public var attempts: Int
+    public var maxAttempts: Int
+    public var nextAttemptAt: Double
+
+    public init(id: String = UUID().uuidString, nodeID: String, action: MeshNodeCommandAction,
+                payload: String?, idempotencyKey: String, state: MeshNodeCommandState = .queued,
+                createdAt: Double = Date().timeIntervalSince1970,
+                updatedAt: Double = Date().timeIntervalSince1970,
+                deadline: Double, result: String? = nil, attempts: Int = 0,
+                maxAttempts: Int = 120, nextAttemptAt: Double? = nil) {
+        self.id = id; self.nodeID = nodeID; self.action = action; self.payload = payload
+        self.idempotencyKey = idempotencyKey; self.state = state
+        self.createdAt = createdAt; self.updatedAt = updatedAt; self.deadline = deadline
+        self.result = result
+        self.attempts = attempts; self.maxAttempts = maxAttempts
+        self.nextAttemptAt = nextAttemptAt ?? createdAt
+    }
+}
+
+public struct MeshNodePokePayload: Codable, Sendable, Equatable {
+    public var memberID: String
+    public var requireUnread: Bool
+
+    public init(memberID: String, requireUnread: Bool = true) {
+        self.memberID = memberID; self.requireUnread = requireUnread
+    }
+}
+
+public struct MeshNodeStopPayload: Codable, Sendable, Equatable {
+    public var sessionName: String
+    public init(sessionName: String) { self.sessionName = sessionName }
+}
+
+public struct MeshNodeSpawnPayload: Codable, Sendable, Equatable {
+    public var projectID: String
+    public var sessionName: String
+    public var agent: String
+    public var yolo: Bool
+    public var room: String?
+    public var nick: String?
+
+    public init(projectID: String, sessionName: String, agent: String, yolo: Bool,
+                room: String? = nil, nick: String? = nil) {
+        self.projectID = projectID; self.sessionName = sessionName; self.agent = agent
+        self.yolo = yolo; self.room = room; self.nick = nick
+    }
+}
+
+public struct MeshPairingCredential: Codable, Sendable, Equatable {
+    public var brokerID: String
+    public var controlToken: String
+
+    public init(brokerID: String, controlToken: String) {
+        self.brokerID = brokerID; self.controlToken = controlToken
     }
 }
 
@@ -232,9 +332,12 @@ public struct MeshNodeInfo: Codable, Sendable, Equatable, Identifiable {
     public var host: String
     public var tailscaleIP: String?
     public var lastSeen: Double
+    public var buildID: String?
 
-    public init(id: String, host: String, tailscaleIP: String?, lastSeen: Double) {
+    public init(id: String, host: String, tailscaleIP: String?, lastSeen: Double,
+                buildID: String? = nil) {
         self.id = id; self.host = host; self.tailscaleIP = tailscaleIP; self.lastSeen = lastSeen
+        self.buildID = buildID
     }
 }
 
@@ -259,18 +362,22 @@ public struct MeshResponse: Codable, Sendable, Equatable {
     public var events: [MeshEvent]?
     public var cursor: UInt64?
     public var nodes: [MeshNodeInfo]?
+    public var command: MeshNodeCommand?
+    public var commands: [MeshNodeCommand]?
 
     public init(ok: Bool, error: String? = nil, rooms: [MeshRoomInfo]? = nil, messages: [MeshMsg]? = nil,
                 members: [MeshMemberInfo]? = nil, note: String? = nil, memberID: String? = nil,
                 payload: String? = nil, capabilities: [String]? = nil, attachment: MeshAttachment? = nil,
                 revision: String? = nil, events: [MeshEvent]? = nil, cursor: UInt64? = nil,
-                nodes: [MeshNodeInfo]? = nil) {
+                nodes: [MeshNodeInfo]? = nil, command: MeshNodeCommand? = nil,
+                commands: [MeshNodeCommand]? = nil) {
         self.ok = ok; self.error = error; self.rooms = rooms; self.messages = messages; self.members = members
         self.note = note; self.memberID = memberID; self.payload = payload
         self.capabilities = capabilities; self.attachment = attachment
         self.revision = revision
         self.events = events; self.cursor = cursor
         self.nodes = nodes
+        self.command = command; self.commands = commands
     }
 
     public static func okay(_ note: String? = nil) -> MeshResponse { MeshResponse(ok: true, note: note) }
@@ -318,6 +425,10 @@ public enum MeshPaths {
     /// decision stays env-only (`tcpEndpoint`), or a satellite would try to bind
     /// the hub's address.
     public static var endpointFile: URL { supportDir.appendingPathComponent("mesh-endpoint") }
+    public static var controlTokenFile: URL { supportDir.appendingPathComponent("mesh-control-token") }
+    public static var brokerControlTokenFile: URL { dataDirectory.appendingPathComponent("mesh-control-token") }
+    public static var nodeCommandsFile: URL { dataDirectory.appendingPathComponent("mesh-node-commands.json") }
+    public static var mailboxesFile: URL { dataDirectory.appendingPathComponent("mesh-mailboxes.json") }
     public static var dialEndpoint: String? {
         if let env = tcpEndpoint { return env }
         guard let raw = try? String(contentsOf: endpointFile, encoding: .utf8) else { return nil }
@@ -330,6 +441,24 @@ public enum MeshPaths {
             try? (ep + "\n").write(to: endpointFile, atomically: true, encoding: .utf8)
         } else {
             try? FileManager.default.removeItem(at: endpointFile)
+        }
+    }
+
+    public static var controlToken: String? {
+        guard let raw = try? String(contentsOf: controlTokenFile, encoding: .utf8) else { return nil }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.count >= 32 ? value : nil
+    }
+
+    public static func setControlTokenFile(_ token: String?) {
+        if let token, token.count >= 32 {
+            try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+            try? (token + "\n").write(to: controlTokenFile, atomically: true, encoding: .utf8)
+            #if !os(Windows)
+            chmod(controlTokenFile.path, 0o600)
+            #endif
+        } else {
+            try? FileManager.default.removeItem(at: controlTokenFile)
         }
     }
 
@@ -484,17 +613,25 @@ public final class MeshBroker: @unchecked Sendable {
     private var events: [MeshEvent] = []
     private let maximumEvents = 2_000
     /// alias → immutable member id; mailboxes are keyed only by member id.
-    private struct Room { var members: [String: String] = [:]; var mailboxes: [String: [MeshMsg]] = [:] }
+    private struct Room: Codable { var members: [String: String] = [:]; var mailboxes: [String: [MeshMsg]] = [:] }
     private var rooms: [String: Room] = [:]
     private var presence: [String: MeshPresenceEntry] = [:]
     private var pairingTokens: [String: Double] = [:]
     private var nodes: [String: MeshNodeInfo] = [:]
+    private var nodeCommands: [MeshNodeCommand] = []
     private var cachedBrokerID: String?
+    private var cachedControlToken: String?
 
-    public init() {}
+    public init(loadPersistentState: Bool = false) {
+        if loadPersistentState {
+            loadNodeCommandsLocked()
+            loadMailboxesLocked()
+            loadPresenceLocked(resetStates: true)
+        }
+    }
 
     public static func runDaemon() -> Never {
-        let broker = MeshBroker() // keep strong lifetime for weak listener closures
+        let broker = MeshBroker(loadPersistentState: true) // keep strong lifetime for weak listener closures
         broker.serve()
         exit(0)   // unreachable
     }
@@ -514,6 +651,7 @@ public final class MeshBroker: @unchecked Sendable {
         try? FileManager.default.createDirectory(at: MeshPaths.attachmentDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: MeshPaths.registryBackupDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: MeshPaths.unreadDir, withIntermediateDirectories: true)
+        _ = controlToken() // local Host nodes may dial this Broker's TCP endpoint
         // Fresh broker = fresh MAILBOXES: reset the unread signal files so hooks
         // never see a signal this broker didn't write. Transcripts are durable.
         if let stale = try? FileManager.default.contentsOfDirectory(at: MeshPaths.unreadDir, includingPropertiesForKeys: nil) {
@@ -524,22 +662,10 @@ public final class MeshBroker: @unchecked Sendable {
         // this, a broker restart stranded every joined agent: hooks resolve
         // nicks via presence, so delivery/state/avatars all went dark (gray)
         // until each agent manually re-joined (observed 2026-07-11). States are
-        // dropped — a stale busy/idle must never steer a poke; the agent's next
-        // hook event repopulates them.
-        if let d = try? Data(contentsOf: MeshPaths.presenceFile),
-           let prev = try? JSONDecoder().decode(MeshPresence.self, from: d) {
-            for (memberID, entry) in prev.members {
-                var e = entry
-                e.state = nil
-                e.stateTs = nil
-                presence[memberID] = e
-                for (r, alias) in e.aliases {
-                    if rooms[r] == nil { rooms[r] = Room() }
-                    rooms[r]!.members[alias] = memberID
-                    if rooms[r]!.mailboxes[memberID] == nil { rooms[r]!.mailboxes[memberID] = [] }
-                }
-            }
-        }
+        // dropped to unknown on restart. Unknown is an expired lease and may
+        // be poked; the agent's next hook event repopulates exact state.
+        for memberID in presence.keys { syncUnreadLocked(memberID) }
+        writeMailboxesLocked()
         writePresenceLocked()
 
         let path = MeshPaths.socketPath
@@ -569,7 +695,7 @@ public final class MeshBroker: @unchecked Sendable {
         while true {
             let cfd = accept(sfd, nil, nil)
             if cfd < 0 { continue }
-            Thread.detachNewThread { [weak self] in self?.handle(cfd) }
+            Thread.detachNewThread { [weak self] in self?.handle(cfd, trustedLocal: true) }
         }
     }
 
@@ -606,18 +732,18 @@ public final class MeshBroker: @unchecked Sendable {
             return
         }
         meshLog("listening on TCP \(ep)")
-        let up = "mesh: cross-host TCP listener on \(ep) (UNAUTHENTICATED — Tailscale is the trust boundary)\n"
+        let up = "mesh: cross-host TCP listener on \(ep) (control API authenticated; Tailscale-only transport recommended)\n"
         FileHandle.standardError.write(Data(up.utf8))
         Thread.detachNewThread { [weak self] in
             while true {
                 let cfd = accept(tfd, nil, nil)
                 if cfd < 0 { continue }
-                Thread.detachNewThread { [weak self] in self?.handle(cfd) }
+                Thread.detachNewThread { [weak self] in self?.handle(cfd, trustedLocal: false) }
             }
         }
     }
 
-    private func handle(_ cfd: Int32) {
+    private func handle(_ cfd: Int32, trustedLocal: Bool) {
         defer { close(cfd) }
         meshLog("conn accepted fd=\(cfd)")
         guard let line = meshReadLine(cfd),
@@ -636,16 +762,16 @@ public final class MeshBroker: @unchecked Sendable {
             handleAttachmentDownload(cfd, request: req)
             return
         }
-        let resp = process(req)               // for `wait`, this blocks until ready
+        let resp = process(req, trustedLocal: trustedLocal) // for `wait`, this blocks until ready
         if let d = try? JSONEncoder().encode(resp) { meshWriteAll(cfd, d); meshLog("response written ok=\(resp.ok)") }
     }
 
-    public func process(_ req: MeshRequest) -> MeshResponse {
+    public func process(_ req: MeshRequest, trustedLocal: Bool = true) -> MeshResponse {
         switch req.cmd {
         case "capabilities":
             return MeshResponse(ok: true, capabilities: [
                 "mesh-v2", "message-id", "reply-v1", "attachment-v1", "headless-v1",
-                "registry-cas-v1", "pairing-v1", "events-v1", "node-v1",
+                "registry-cas-v1", "pairing-v2", "events-v1", "node-v2",
                 "session-sender-v1"
             ])
 
@@ -653,15 +779,126 @@ public final class MeshBroker: @unchecked Sendable {
             return waitForEvents(after: req.cursor, timeoutMs: req.timeoutMs)
 
         case "node-heartbeat":
+            guard authorizeControl(req, trustedLocal: trustedLocal) else {
+                return .fail("valid control credential required")
+            }
             guard let id = req.memberID, !id.isEmpty, let host = req.host, !host.isEmpty else {
                 return .fail("node id and host required")
             }
             lock.lock()
             nodes[id] = MeshNodeInfo(id: id, host: host, tailscaleIP: req.tailscaleIP,
-                                     lastSeen: Date().timeIntervalSince1970)
+                                     lastSeen: Date().timeIntervalSince1970, buildID: req.payload)
             pruneNodesLocked()
             lock.unlock()
+            recoverUnreadPokes(nodeID: id, host: host, tailscaleIP: req.tailscaleIP)
             return .okay()
+
+        case "node-command-enqueue":
+            guard authorizeControl(req, trustedLocal: trustedLocal) else {
+                return .fail("valid control credential required")
+            }
+            guard let nodeID = req.nodeID, !nodeID.isEmpty,
+                  let rawAction = req.action, let action = MeshNodeCommandAction(rawValue: rawAction) else {
+                return .fail("node id and allow-listed action required")
+            }
+            let now = Date().timeIntervalSince1970
+            let deadline = min(req.deadline ?? now + 3_600, now + 86_400)
+            guard deadline > now else { return .fail("command deadline must be in the future") }
+            let key = req.idempotencyKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let key, !key.isEmpty, key.count <= 200 else {
+                return .fail("idempotency key required")
+            }
+            lock.lock()
+            expireNodeCommandsLocked(now: now)
+            if let existing = nodeCommands.first(where: { $0.nodeID == nodeID && $0.idempotencyKey == key }) {
+                lock.unlock()
+                return MeshResponse(ok: true, command: existing)
+            }
+            let command = MeshNodeCommand(nodeID: nodeID, action: action, payload: req.payload,
+                                          idempotencyKey: key, deadline: deadline,
+                                          maxAttempts: min(1_000, max(1, req.maxAttempts ?? 120)))
+            nodeCommands.append(command)
+            writeNodeCommandsLocked()
+            lock.unlock()
+            publish(kind: .nodeCommand)
+            return MeshResponse(ok: true, command: command)
+
+        case "node-command-next":
+            guard authorizeControl(req, trustedLocal: trustedLocal) else {
+                return .fail("valid control credential required")
+            }
+            guard let nodeID = req.nodeID, !nodeID.isEmpty else { return .fail("node id required") }
+            let now = Date().timeIntervalSince1970
+            lock.lock()
+            expireNodeCommandsLocked(now: now)
+            guard let index = nodeCommands.indices.first(where: {
+                nodeCommands[$0].nodeID == nodeID && !nodeCommands[$0].state.isTerminal
+                    && nodeCommands[$0].nextAttemptAt <= now
+            }) else {
+                lock.unlock(); return MeshResponse(ok: true)
+            }
+            if nodeCommands[index].state == .queued {
+                nodeCommands[index].state = .accepted
+                nodeCommands[index].updatedAt = now
+                writeNodeCommandsLocked()
+            }
+            let command = nodeCommands[index]
+            lock.unlock()
+            return MeshResponse(ok: true, command: command)
+
+        case "node-command-update":
+            guard authorizeControl(req, trustedLocal: trustedLocal) else {
+                return .fail("valid control credential required")
+            }
+            guard let nodeID = req.nodeID, let commandID = req.commandID,
+                  let rawState = req.state, let nextState = MeshNodeCommandState(rawValue: rawState) else {
+                return .fail("node id, command id, and valid state required")
+            }
+            lock.lock()
+            guard let index = nodeCommands.firstIndex(where: { $0.id == commandID && $0.nodeID == nodeID }) else {
+                lock.unlock(); return .fail("command not found for node")
+            }
+            guard validCommandTransition(from: nodeCommands[index].state, to: nextState) else {
+                lock.unlock(); return .fail("invalid command state transition")
+            }
+            if nextState == .running && nodeCommands[index].state != .running {
+                nodeCommands[index].attempts += 1
+            } else if nextState == .accepted, req.retryAt != nil {
+                nodeCommands[index].attempts += 1
+            } else if nextState.isTerminal && nodeCommands[index].attempts == 0 {
+                // Executors may reject a command before entering `running`
+                // (invalid ownership, gone pane, malformed payload). It was
+                // still a real delivery attempt and observability must not
+                // report the misleading 0/N.
+                nodeCommands[index].attempts = 1
+            }
+            nodeCommands[index].state = nextState
+            nodeCommands[index].updatedAt = Date().timeIntervalSince1970
+            nodeCommands[index].result = req.payload
+            if let retryAt = req.retryAt {
+                nodeCommands[index].nextAttemptAt = max(nodeCommands[index].updatedAt, retryAt)
+            }
+            if !nodeCommands[index].state.isTerminal,
+               nodeCommands[index].attempts >= nodeCommands[index].maxAttempts {
+                nodeCommands[index].state = .failed
+                nodeCommands[index].result = req.payload ?? "retry attempts exhausted"
+            }
+            let command = nodeCommands[index]
+            writeNodeCommandsLocked()
+            lock.unlock()
+            publish(kind: .nodeCommand)
+            return MeshResponse(ok: true, command: command)
+
+        case "node-command-list":
+            guard authorizeControl(req, trustedLocal: trustedLocal) else {
+                return .fail("valid control credential required")
+            }
+            lock.lock()
+            expireNodeCommandsLocked()
+            let values = nodeCommands.filter { req.nodeID == nil || $0.nodeID == req.nodeID }
+                .sorted { $0.createdAt > $1.createdAt }
+            lock.unlock()
+            return MeshResponse(ok: true, commands: values)
 
         case "node-list":
             lock.lock(); pruneNodesLocked()
@@ -670,6 +907,9 @@ public final class MeshBroker: @unchecked Sendable {
             return MeshResponse(ok: true, nodes: activeNodes)
 
         case "pairing-create":
+            guard authorizeControl(req, trustedLocal: trustedLocal) else {
+                return .fail("valid control credential required")
+            }
             guard let endpoint = req.host,
                   let split = meshSplitHostPort(endpoint),
                   let port = UInt16(split.port) else {
@@ -706,8 +946,13 @@ public final class MeshBroker: @unchecked Sendable {
             let expiry = pairingTokens.removeValue(forKey: token)
             lock.unlock()
             guard let expiry, expiry > now else { return .fail("pairing code expired or already used") }
-            return MeshResponse(ok: true, payload: brokerID, capabilities: [
-                "mesh-v2", "pairing-v1"
+            let credential = MeshPairingCredential(brokerID: brokerID, controlToken: controlToken())
+            guard let data = try? JSONEncoder().encode(credential),
+                  let payload = String(data: data, encoding: .utf8) else {
+                return .fail("couldn't encode pairing credential")
+            }
+            return MeshResponse(ok: true, payload: payload, capabilities: [
+                "mesh-v2", "pairing-v2", "node-v2"
             ])
 
         case "registry-get":
@@ -721,7 +966,7 @@ public final class MeshBroker: @unchecked Sendable {
 
         case "create":
             guard let r = req.room else { return .fail("room required") }
-            lock.lock(); if rooms[r] == nil { rooms[r] = Room() }; lock.unlock()
+            lock.lock(); if rooms[r] == nil { rooms[r] = Room() }; writeMailboxesLocked(); lock.unlock()
             publish(kind: .roster, room: r)
             return .okay()
 
@@ -850,7 +1095,9 @@ public final class MeshBroker: @unchecked Sendable {
             publish(kind: .message, room: r, message: delivery.message)
             if req.to?.isEmpty == false {
                 for target in delivery.targets {
-                    publish(kind: .poke, room: r, message: delivery.message, member: target)
+                    _ = enqueuePokeCommand(for: target,
+                                           idempotencyKey: "message:\(delivery.message.id ?? "unknown")",
+                                           requireUnread: true)
                 }
             }
             // Echo EVERY @-target's presence so the sender can act on delivery:
@@ -882,7 +1129,10 @@ public final class MeshBroker: @unchecked Sendable {
                 return .fail("the member's Host node is offline")
             }
             lock.unlock()
-            publish(kind: .poke, room: room, member: member)
+            guard enqueuePokeCommand(for: member, idempotencyKey: "manual:\(UUID().uuidString)",
+                                     requireUnread: false) != nil else {
+                return .fail("the member's Host node is offline")
+            }
             return MeshResponse(ok: true, members: [member])
 
         case "mark":
@@ -974,6 +1224,7 @@ public final class MeshBroker: @unchecked Sendable {
             if let room = rooms[r] { affected.formUnion(room.members.values); affected.formUnion(room.mailboxes.keys) }
             rooms[r] = nil
             for n in affected { syncUnreadLocked(n); refreshPresenceRoomsLocked(n) }
+            writeMailboxesLocked()
             writePresenceLocked()
             lock.unlock()
             try? FileManager.default.removeItem(at: MeshPaths.transcript(r))
@@ -987,6 +1238,7 @@ public final class MeshBroker: @unchecked Sendable {
             for memberID in rooms[new]?.members.values ?? Dictionary<String, String>().values {
                 syncUnreadLocked(memberID); refreshPresenceRoomsLocked(memberID)
             }
+            writeMailboxesLocked()
             writePresenceLocked()
             lock.unlock()
             try? FileManager.default.moveItem(at: MeshPaths.transcript(old), to: MeshPaths.transcript(new))
@@ -1096,6 +1348,173 @@ public final class MeshBroker: @unchecked Sendable {
                             cursor: batch.last?.sequence ?? eventSequence)
     }
 
+    // MARK: authenticated durable Host commands
+
+    private struct NodeCommandStore: Codable { var version: Int; var commands: [MeshNodeCommand] }
+    private struct MailboxStore: Codable { var version: Int; var rooms: [String: Room] }
+
+    private func loadPresenceLocked(resetStates: Bool) {
+        guard let data = try? Data(contentsOf: MeshPaths.presenceFile),
+              let previous = try? JSONDecoder().decode(MeshPresence.self, from: data) else { return }
+        for (memberID, entry) in previous.members {
+            var value = entry
+            if resetStates { value.state = nil; value.stateTs = nil }
+            presence[memberID] = value
+            for (room, alias) in value.aliases {
+                if rooms[room] == nil { rooms[room] = Room() }
+                rooms[room]!.members[alias] = memberID
+                if rooms[room]!.mailboxes[memberID] == nil { rooms[room]!.mailboxes[memberID] = [] }
+            }
+        }
+    }
+
+    private func loadMailboxesLocked() {
+        guard let data = try? Data(contentsOf: MeshPaths.mailboxesFile),
+              let store = try? JSONDecoder().decode(MailboxStore.self, from: data),
+              store.version == 1 else { return }
+        rooms = store.rooms
+    }
+
+    private func writeMailboxesLocked() {
+        guard let data = try? JSONEncoder().encode(MailboxStore(version: 1, rooms: rooms)) else { return }
+        try? FileManager.default.createDirectory(at: MeshPaths.dataDirectory, withIntermediateDirectories: true)
+        try? data.write(to: MeshPaths.mailboxesFile, options: .atomic)
+        #if !os(Windows)
+        chmod(MeshPaths.mailboxesFile.path, 0o600)
+        #endif
+    }
+
+    @discardableResult
+    private func enqueuePokeCommand(for member: MeshMemberInfo, idempotencyKey: String,
+                                    requireUnread: Bool, preferredNodeID: String? = nil) -> MeshNodeCommand? {
+        lock.lock()
+        pruneNodesLocked()
+        let nodeID = preferredNodeID.flatMap { nodes[$0]?.id } ?? nodes.values.first(where: { node in
+            if let memberIP = member.tailscaleIP, !memberIP.isEmpty,
+               let nodeIP = node.tailscaleIP, !nodeIP.isEmpty { return memberIP == nodeIP }
+            return normalizedHost(member.host) == normalizedHost(node.host)
+        })?.id
+        lock.unlock()
+        guard let nodeID,
+              let data = try? JSONEncoder().encode(MeshNodePokePayload(memberID: member.id,
+                                                                       requireUnread: requireUnread)),
+              let payload = String(data: data, encoding: .utf8) else { return nil }
+        return process(MeshRequest(cmd: "node-command-enqueue", payload: payload,
+                                   nodeID: nodeID, action: MeshNodeCommandAction.poke.rawValue,
+                                   idempotencyKey: idempotencyKey + ":" + member.id,
+                                   deadline: Date().timeIntervalSince1970 + 86_400,
+                                   maxAttempts: 240), trustedLocal: true).command
+    }
+
+    /// A node may have been offline when messages were written. Its first
+    /// heartbeat rebuilds missing durable poke commands from authoritative
+    /// mailboxes, keyed by the newest directed message so repeats deduplicate.
+    private func recoverUnreadPokes(nodeID: String, host: String, tailscaleIP: String?) {
+        lock.lock()
+        var recoveries: [(MeshMemberInfo, String)] = []
+        for (memberID, entry) in presence {
+            let owned: Bool
+            if let tailscaleIP, !tailscaleIP.isEmpty,
+               let memberIP = entry.tailscaleIP, !memberIP.isEmpty {
+                owned = tailscaleIP == memberIP
+            } else {
+                owned = normalizedHost(host) == normalizedHost(entry.host)
+            }
+            guard owned else { continue }
+            let directed = rooms.values.flatMap { room -> [MeshMsg] in
+                guard let alias = room.members.first(where: { $0.value == memberID })?.key else { return [] }
+                return (room.mailboxes[memberID] ?? []).filter { $0.to.contains(alias) }
+            }
+            guard let newest = directed.max(by: { $0.ts < $1.ts }),
+                  let room = entry.rooms.first,
+                  let nick = entry.aliases[room],
+                  let member = memberInfoLocked(room: room, nick: nick) else { continue }
+            // Use the same key as initial directed delivery. Heartbeats are
+            // frequent and recovery must converge on that command rather than
+            // create a parallel poke for the same mailbox message.
+            recoveries.append((member, "message:\(newest.id ?? "unknown")"))
+        }
+        lock.unlock()
+        for (member, key) in recoveries {
+            _ = enqueuePokeCommand(for: member, idempotencyKey: key, requireUnread: true,
+                                   preferredNodeID: nodeID)
+        }
+    }
+
+    private func controlToken() -> String {
+        lock.lock(); defer { lock.unlock() }
+        if let cachedControlToken { return cachedControlToken }
+        if let raw = try? String(contentsOf: MeshPaths.brokerControlTokenFile, encoding: .utf8) {
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.count >= 32 {
+                cachedControlToken = value
+                MeshPaths.setControlTokenFile(value)
+                return value
+            }
+        }
+        let value = (0..<32).map { _ in String(format: "%02x", UInt8.random(in: .min ... .max)) }.joined()
+        try? FileManager.default.createDirectory(at: MeshPaths.dataDirectory, withIntermediateDirectories: true)
+        try? (value + "\n").write(to: MeshPaths.brokerControlTokenFile,
+                                    atomically: true, encoding: .utf8)
+        #if !os(Windows)
+        chmod(MeshPaths.brokerControlTokenFile.path, 0o600)
+        #endif
+        cachedControlToken = value
+        MeshPaths.setControlTokenFile(value)
+        return value
+    }
+
+    private func authorizeControl(_ request: MeshRequest, trustedLocal: Bool) -> Bool {
+        if trustedLocal { return true }
+        guard let supplied = request.authToken else { return false }
+        let expected = controlToken()
+        guard supplied.utf8.count == expected.utf8.count else { return false }
+        return zip(supplied.utf8, expected.utf8).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
+    }
+
+    private func loadNodeCommandsLocked() {
+        guard let data = try? Data(contentsOf: MeshPaths.nodeCommandsFile),
+              let store = try? JSONDecoder().decode(NodeCommandStore.self, from: data) else { return }
+        nodeCommands = store.commands
+        expireNodeCommandsLocked()
+    }
+
+    private func writeNodeCommandsLocked() {
+        let retained = nodeCommands.filter {
+            !$0.state.isTerminal || Date().timeIntervalSince1970 - $0.updatedAt < 7 * 86_400
+        }
+        nodeCommands = retained
+        guard let data = try? JSONEncoder().encode(NodeCommandStore(version: 1, commands: retained)) else { return }
+        try? FileManager.default.createDirectory(at: MeshPaths.dataDirectory, withIntermediateDirectories: true)
+        try? data.write(to: MeshPaths.nodeCommandsFile, options: .atomic)
+        #if !os(Windows)
+        chmod(MeshPaths.nodeCommandsFile.path, 0o600)
+        #endif
+    }
+
+    private func expireNodeCommandsLocked(now: Double = Date().timeIntervalSince1970) {
+        var changed = false
+        for index in nodeCommands.indices where !nodeCommands[index].state.isTerminal
+            && nodeCommands[index].deadline <= now {
+            nodeCommands[index].state = .expired
+            nodeCommands[index].updatedAt = now
+            nodeCommands[index].result = "deadline exceeded"
+            changed = true
+        }
+        if changed { writeNodeCommandsLocked() }
+    }
+
+    private func validCommandTransition(from: MeshNodeCommandState,
+                                        to: MeshNodeCommandState) -> Bool {
+        if from == to { return true } // idempotent ACK after a lost response
+        return switch (from, to) {
+        case (.queued, .accepted), (.queued, .running), (.queued, .failed), (.queued, .canceled),
+             (.accepted, .running), (.accepted, .succeeded), (.accepted, .failed), (.accepted, .canceled),
+             (.running, .succeeded), (.running, .failed), (.running, .canceled): true
+        default: false
+        }
+    }
+
     // MARK: mirrored state (call with `lock` held)
 
     /// Rewrite `nick`'s unread signal file from its in-RAM mailboxes across all
@@ -1107,6 +1526,8 @@ public final class MeshBroker: @unchecked Sendable {
     /// report a smaller count than a later `recv` drains — that's read timing,
     /// not lost state; the mailbox is authoritative and recv returns all of it.
     private func syncUnreadLocked(_ memberID: String) {
+        writeMailboxesLocked()
+        try? FileManager.default.createDirectory(at: MeshPaths.unreadDir, withIntermediateDirectories: true)
         var msgs: [MeshMsg] = []
         for (_, room) in rooms {
             if let box = room.mailboxes[memberID], !box.isEmpty { msgs.append(contentsOf: box) }
@@ -1412,6 +1833,7 @@ public final class MeshBroker: @unchecked Sendable {
 
     private func writePresenceLocked() {
         let snap = MeshPresence(v: 2, members: presence)
+        try? FileManager.default.createDirectory(at: MeshPaths.stateDir, withIntermediateDirectories: true)
         if let d = try? JSONEncoder().encode(snap) { try? d.write(to: MeshPaths.presenceFile, options: .atomic) }
     }
 

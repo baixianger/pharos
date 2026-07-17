@@ -51,6 +51,9 @@ fi
 
 BUILD_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+if [[ "$GIT_COMMIT" != "unknown" ]] && [[ -n "$(git status --porcelain --untracked-files=normal 2>/dev/null)" ]]; then
+  GIT_COMMIT="${GIT_COMMIT}-dirty"
+fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

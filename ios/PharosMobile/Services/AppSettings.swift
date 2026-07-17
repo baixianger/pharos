@@ -4,6 +4,7 @@ import Observation
 struct MeshProfile: Codable, Equatable, Sendable {
     var host = ""
     var port: UInt16 = 47_800
+    var controlToken = ""
 }
 
 struct SSHHostProfile: Codable, Equatable, Identifiable, Sendable {
@@ -35,8 +36,9 @@ final class AppSettings {
 
     init() { load() }
 
-    func updateMesh(host: String, port: UInt16) {
-        mesh = MeshProfile(host: host.trimmingCharacters(in: .whitespacesAndNewlines), port: port)
+    func updateMesh(host: String, port: UInt16, controlToken: String? = nil) {
+        mesh = MeshProfile(host: host.trimmingCharacters(in: .whitespacesAndNewlines), port: port,
+                           controlToken: controlToken ?? mesh.controlToken)
         save()
     }
 

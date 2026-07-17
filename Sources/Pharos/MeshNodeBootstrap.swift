@@ -25,7 +25,7 @@ enum MeshNodeBootstrap {
     }
 
     private static func ensureNode(helper: String, endpoint: String?) {
-        let buildID = Bundle.main.object(forInfoDictionaryKey: "GitCommit") as? String ?? "development"
+        let buildID = buildIdentifier
         let expected = [helper, "node", "run"]
             + (endpoint.map { ["--endpoint", $0] } ?? []) + ["--build-id", buildID]
         let plist = FileManager.default.homeDirectoryForCurrentUser
@@ -43,7 +43,7 @@ enum MeshNodeBootstrap {
         let logs = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/Pharos", isDirectory: true)
         let plist = directory.appendingPathComponent("\(brokerLabel).plist")
-        let buildID = Bundle.main.object(forInfoDictionaryKey: "GitCommit") as? String ?? "development"
+        let buildID = buildIdentifier
         let expected = [helper, "serve", "--bind", endpoint, "--data-dir", MeshPaths.dataDirectory.path,
                         "--build-id", buildID]
         let installed = (NSDictionary(contentsOf: plist)?["ProgramArguments"] as? [String]) ?? []
@@ -89,6 +89,15 @@ enum MeshNodeBootstrap {
         process.standardError = FileHandle.nullDevice
         do { try process.run(); process.waitUntilExit(); return process.terminationStatus == 0 }
         catch { return false }
+    }
+
+    /// A commit alone is ambiguous during rapid local deployment because two
+    /// dirty packages can contain different code. Include the package time so
+    /// Node observability identifies the exact installed artifact.
+    private static var buildIdentifier: String {
+        let commit = Bundle.main.object(forInfoDictionaryKey: "GitCommit") as? String ?? "development"
+        let timestamp = Bundle.main.object(forInfoDictionaryKey: "BuildTimestamp") as? String ?? "unknown-time"
+        return "\(commit)@\(timestamp)"
     }
 }
 

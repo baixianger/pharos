@@ -328,7 +328,11 @@ final class RoomStore {
     }
 
     private func request(_ request: MeshRequest) async throws -> MeshResponse {
-        try await mesh.send(request, host: settings.mesh.host, port: settings.mesh.port)
+        var authenticated = request
+        if authenticated.authToken == nil, !settings.mesh.controlToken.isEmpty {
+            authenticated.authToken = settings.mesh.controlToken
+        }
+        return try await mesh.send(authenticated, host: settings.mesh.host, port: settings.mesh.port)
     }
 
     private func supportsAdvancedMessages() async -> Bool {

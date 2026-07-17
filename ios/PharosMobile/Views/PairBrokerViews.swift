@@ -238,11 +238,14 @@ struct PairBrokerConfirmation: View {
             request.memberID = invitation.brokerID
             request.payload = invitation.token
             let response = try await client.send(request, host: invitation.host, port: invitation.port)
-            guard response.payload == invitation.brokerID else {
+            guard let payload = response.payload, let data = payload.data(using: .utf8),
+                  let credential = try? JSONDecoder().decode(MeshPairingCredential.self, from: data),
+                  credential.brokerID == invitation.brokerID else {
                 state = .failed("The Broker identity did not match the pairing code.")
                 return
             }
-            settings.updateMesh(host: invitation.host, port: invitation.port)
+            settings.updateMesh(host: invitation.host, port: invitation.port,
+                                controlToken: credential.controlToken)
             dismiss()
         } catch {
             state = .failed(error.localizedDescription)

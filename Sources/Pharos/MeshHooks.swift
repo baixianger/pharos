@@ -13,11 +13,11 @@ import Darwin
 ///
 /// Design history: the 2026-07-04 decision made the room tmux-AGNOSTIC — hooks
 /// (turn-boundary delivery) are the guaranteed contract for ANY session.
-/// 2026-07-11 layers OPPORTUNISTIC poke on top: join captures $TMUX_PANE, these
-/// hooks report the session lifecycle (probed ground truth, cc-hook-probe
-/// FINDINGS re-verified on CC v2.1.207), and the GUI send-keys-nudges a target
-/// that is verifiably stopped/idle in a known tmux pane. Every uncertainty
-/// degrades to the old behavior, never to a wrong keystroke.
+/// 2026-07-17 layers durable Node poke on top. Hooks are the ONLY source of
+/// busy/blocked/stopped/idle state. Their reports are leases: fresh busy and
+/// blocked suppress poke; expired or unknown state permits eventual delivery.
+/// tmux output and ANSI/TUI text never infer state. The Node observes only an
+/// exact pane/process identity so it can mark a session `gone` after exit.
 enum MeshHooks {
 
     /// Substring identifying our hook entry in a settings.json, whatever the

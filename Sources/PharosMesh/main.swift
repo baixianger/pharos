@@ -28,9 +28,25 @@ private enum MeshHeadlessCLI {
             return printResponse(MeshClient.send(MeshRequest(cmd: "capabilities")))
 
         case "pair":
+            if args.count >= 3, args[1] == "redeem" {
+                guard let url = URL(string: args[2]), let invitation = MeshPairingLink(url: url) else {
+                    return usageError("pair redeem <pharos://pair?...>")
+                }
+                var request = MeshRequest(cmd: "pairing-redeem", memberID: invitation.brokerID)
+                request.payload = invitation.token
+                let response = MeshClient.send(request, to: invitation.endpoint)
+                guard response.ok, let payload = response.payload,
+                      let data = payload.data(using: .utf8),
+                      let credential = try? JSONDecoder().decode(MeshPairingCredential.self, from: data),
+                      credential.brokerID == invitation.brokerID else { return printResponse(response) }
+                MeshPaths.setDialEndpointFile(invitation.endpoint)
+                MeshPaths.setControlTokenFile(credential.controlToken)
+                print("paired \(invitation.endpoint) as Broker \(credential.brokerID)")
+                return 0
+            }
             guard let endpoint = option("--endpoint", in: args),
                   meshSplitHostPort(endpoint) != nil else {
-                return usageError("pair --endpoint HOST:PORT")
+                return usageError("pair --endpoint HOST:PORT | pair redeem <link>")
             }
             let response = MeshClient.send(MeshRequest(cmd: "pairing-create",
                                                        timeoutMs: 300_000, host: endpoint),
@@ -201,7 +217,7 @@ private enum MeshHeadlessCLI {
         case "run":
             let endpoint = option("--endpoint", in: args)
                 ?? ProcessInfo.processInfo.environment["PHAROS_MESH_ENDPOINT"]
-            return MeshNode.run(endpoint: endpoint)
+            return MeshNode.run(endpoint: endpoint, buildID: option("--build-id", in: args))
         case "install":
             let endpoint = option("--endpoint", in: args)
             let buildID = option("--build-id", in: args)
@@ -223,9 +239,101 @@ private enum MeshHeadlessCLI {
                 FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
                 return 1
             }
+        case "path":
+            guard args.count >= 2 else { return usageError("node path list|set|clear …") }
+            do {
+                switch args[1] {
+                case "list":
+                    for (id, path) in MeshNodeProjectPaths.all().sorted(by: { $0.key < $1.key }) {
+                        print("\(id)\t\(path)")
+                    }
+                case "set":
+                    guard args.count >= 4 else { return usageError("node path set <project-uuid> <directory>") }
+                    try MeshNodeProjectPaths.set(projectID: args[2], path: args[3])
+                    print("registered \(args[2])")
+                case "clear":
+                    guard args.count >= 3 else { return usageError("node path clear <project-uuid>") }
+                    try MeshNodeProjectPaths.clear(projectID: args[2])
+                    print("cleared \(args[2])")
+                default:
+                    return usageError("node path list|set|clear …")
+                }
+                return 0
+            } catch {
+                FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+                return 1
+            }
+        case "list":
+            let response = MeshClient.send(MeshRequest(cmd: "node-list"))
+            guard response.ok else { return printResponse(response) }
+            for node in response.nodes ?? [] {
+                print("\(node.id)\t\(node.host)\t\(node.tailscaleIP ?? "-")\t\(node.buildID ?? "-")")
+            }
+            return 0
+        case "commands":
+            let response = MeshClient.send(MeshRequest(cmd: "node-command-list",
+                                                       nodeID: option("--node", in: args)))
+            guard response.ok else { return printResponse(response) }
+            for command in response.commands ?? [] {
+                print("\(command.id)\t\(command.nodeID)\t\(command.action.rawValue)\t"
+                      + "\(command.state.rawValue)\t\(command.attempts)/\(command.maxAttempts)\t"
+                      + "\(command.result ?? "-")")
+            }
+            return 0
+        case "reconcile":
+            guard args.count >= 2 else { return usageError("node reconcile <node-id> [--wait]") }
+            return enqueueNodeAction(nodeID: args[1], action: .reconcile, payload: Optional<String>.none,
+                                     idempotencyKey: "reconcile:\(UUID().uuidString)", wait: args.contains("--wait"))
+        case "spawn":
+            guard args.count >= 5, ["claude", "codex"].contains(args[4]) else {
+                return usageError("node spawn <node-id> <project-uuid> <session> <claude|codex> [--room R --nick N] [--wait]")
+            }
+            let payload = MeshNodeSpawnPayload(projectID: args[2], sessionName: args[3], agent: args[4],
+                                               yolo: !args.contains("--no-yolo"),
+                                               room: option("--room", in: args),
+                                               nick: option("--nick", in: args))
+            return enqueueNodeAction(nodeID: args[1], action: .spawnAgent, payload: payload,
+                                     idempotencyKey: "spawn:\(args[1]):\(args[3]):\(UUID().uuidString)",
+                                     wait: args.contains("--wait"))
+        case "stop":
+            guard args.count >= 3 else { return usageError("node stop <node-id> <session> [--wait]") }
+            return enqueueNodeAction(nodeID: args[1], action: .stopSession,
+                                     payload: MeshNodeStopPayload(sessionName: args[2]),
+                                     idempotencyKey: "stop:\(args[1]):\(args[2]):\(UUID().uuidString)",
+                                     wait: args.contains("--wait"))
         default:
-            return usageError("node run|install|uninstall [--endpoint HOST:PORT]")
+            return usageError("node run|install|uninstall|list|commands|path|spawn|stop|reconcile …")
         }
+    }
+
+    private static func enqueueNodeAction<T: Encodable>(nodeID: String, action: MeshNodeCommandAction,
+                                                        payload: T?, idempotencyKey: String,
+                                                        wait: Bool) -> Int32 {
+        let payloadString: String?
+        if let payload, let data = try? JSONEncoder().encode(payload) {
+            payloadString = String(data: data, encoding: .utf8)
+        } else {
+            payloadString = nil
+        }
+        let response = MeshClient.send(MeshRequest(cmd: "node-command-enqueue", payload: payloadString,
+                                                   nodeID: nodeID, action: action.rawValue,
+                                                   idempotencyKey: idempotencyKey,
+                                                   deadline: Date().timeIntervalSince1970 + 3_600,
+                                                   maxAttempts: 120))
+        guard response.ok, let command = response.command else { return printResponse(response) }
+        print(command.id)
+        guard wait else { return 0 }
+        for _ in 0..<360 {
+            let current = MeshClient.send(MeshRequest(cmd: "node-command-list", nodeID: nodeID))
+                .commands?.first(where: { $0.id == command.id })
+            if let current, current.state.isTerminal {
+                print("\(current.state.rawValue): \(current.result ?? "")")
+                return current.state == .succeeded ? 0 : 1
+            }
+            usleep(500_000)
+        }
+        FileHandle.standardError.write(Data("error: timed out waiting for node command\n".utf8))
+        return 1
     }
 
     private static func runRegistry(_ args: [String]) -> Int32 {

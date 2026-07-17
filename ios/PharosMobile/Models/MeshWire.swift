@@ -25,6 +25,14 @@ struct MeshRequest: Codable, Sendable, Equatable {
     var payload: String?
     var expectedRevision: String?
     var cursor: UInt64?
+    var authToken: String?
+    var nodeID: String?
+    var commandID: String?
+    var action: String?
+    var idempotencyKey: String?
+    var deadline: Double?
+    var retryAt: Double?
+    var maxAttempts: Int?
 
     init(cmd: String, room: String? = nil, nick: String? = nil, text: String? = nil,
          to: [String]? = nil, limit: Int? = nil) {
@@ -38,7 +46,7 @@ struct MeshRequest: Codable, Sendable, Equatable {
 }
 
 struct MeshEvent: Codable, Sendable, Equatable, Identifiable {
-    enum Kind: String, Codable, Sendable { case message, poke, roster, registry }
+    enum Kind: String, Codable, Sendable { case message, poke, roster, registry, nodeCommand }
     var id: UInt64 { sequence }
     var sequence: UInt64
     var kind: Kind
@@ -133,6 +141,28 @@ struct MeshNodeInfo: Codable, Sendable, Equatable, Identifiable {
     var host: String
     var tailscaleIP: String?
     var lastSeen: Double
+    var buildID: String?
+}
+
+struct MeshNodeCommand: Codable, Sendable, Equatable, Identifiable {
+    var id: String
+    var nodeID: String
+    var action: String
+    var payload: String?
+    var idempotencyKey: String
+    var state: String
+    var createdAt: Double
+    var updatedAt: Double
+    var deadline: Double
+    var result: String?
+    var attempts: Int
+    var maxAttempts: Int
+    var nextAttemptAt: Double
+}
+
+struct MeshPairingCredential: Codable, Sendable, Equatable {
+    var brokerID: String
+    var controlToken: String
 }
 
 struct MeshResponse: Codable, Sendable, Equatable {
@@ -150,6 +180,8 @@ struct MeshResponse: Codable, Sendable, Equatable {
     var events: [MeshEvent]?
     var cursor: UInt64?
     var nodes: [MeshNodeInfo]?
+    var command: MeshNodeCommand?
+    var commands: [MeshNodeCommand]?
 }
 
 enum MentionParser {
@@ -169,7 +201,6 @@ enum MentionParser {
 
 enum MeshSessionState: String, Sendable {
     case busy, blocked, stopped, idle, gone
-    var isPokeCandidate: Bool { self == .stopped || self == .idle }
 }
 
 enum RosterIndex {

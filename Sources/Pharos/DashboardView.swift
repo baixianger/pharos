@@ -218,6 +218,25 @@ struct DashboardView: View {
     }
 
     private func stopMeshAgent(_ m: MeshMemberInfo) {
+        if m.tmuxSocket?.hasSuffix("/.pharos/tmux/node.sock") == true,
+           let room = m.rooms.first,
+           let node = MeshNodeControl.activeNode(for: m.tailscaleIP ?? m.host) {
+            let registrations = meshAgents.filter { $0.id == m.id }.flatMap { member in
+                member.rooms.map { (room: $0, nick: member.nick) }
+            }
+            let sessionName = MeshSpawn.sessionName(room: room, nick: m.nick)
+            Task {
+                let command = await MeshNodeControl.stop(node: node, sessionName: sessionName)
+                if command.state == .succeeded {
+                    if let error = await removeMeshRegistrations(registrations, memberID: m.id) {
+                        agentActionError = error
+                    }
+                } else {
+                    agentActionError = command.result ?? "Node could not stop the agent."
+                }
+            }
+            return
+        }
         guard let pane = m.tmuxPane else { return }
         let local = m.host == nil || HostIdentity.isCurrent(host: m.host, tailscaleIP: m.tailscaleIP)
         let host = local ? nil : store.executionHost(forMeshHost: m.host,

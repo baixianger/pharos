@@ -1350,6 +1350,23 @@ final class MeshPaneSafetyTests: XCTestCase {
         XCTAssertFalse(MeshPaneSafety.allowsPoke(state: "future-state"))
     }
 
+    func testStaleBusyAndBlockedLeasesPermitAProbeButGoneNeverDoes() {
+        let now = 10_000.0
+        XCTAssertFalse(MeshPaneSafety.allowsPoke(state: "busy", stateTs: now - 10, now: now))
+        XCTAssertTrue(MeshPaneSafety.allowsPoke(
+            state: "busy", stateTs: now - MeshPaneSafety.busyLeaseSeconds - 1, now: now
+        ))
+        XCTAssertFalse(MeshPaneSafety.allowsPoke(state: "blocked", stateTs: now - 10, now: now))
+        XCTAssertTrue(MeshPaneSafety.allowsPoke(
+            state: "blocked", stateTs: now - MeshPaneSafety.blockedLeaseSeconds - 1, now: now
+        ))
+        XCTAssertFalse(MeshPaneSafety.allowsPoke(state: "gone", stateTs: 1, now: now))
+        XCTAssertTrue(MeshPaneSafety.allowsPoke(state: "busy", stateTs: nil, now: now))
+        XCTAssertTrue(MeshPaneSafety.allowsPoke(state: nil, stateTs: nil, now: now))
+        XCTAssertTrue(MeshPaneSafety.allowsPoke(state: "future-state", stateTs: nil, now: now))
+        XCTAssertFalse(MeshPaneSafety.allowsPoke(state: "busy", stateTs: now + 1, now: now))
+    }
+
     func testAgentDetectedBehindTmuxWrapperShell() {
         let codex = """
           100     1 /bin/zsh
@@ -1636,14 +1653,16 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         XCTAssertTrue(capabilities.contains("reply-v1"))
         XCTAssertTrue(capabilities.contains("attachment-v1"))
         XCTAssertTrue(capabilities.contains("registry-cas-v1"))
-        XCTAssertTrue(capabilities.contains("pairing-v1"))
+        XCTAssertTrue(capabilities.contains("pairing-v2"))
         XCTAssertTrue(capabilities.contains("events-v1"))
-        XCTAssertTrue(capabilities.contains("node-v1"))
+        XCTAssertTrue(capabilities.contains("node-v2"))
         XCTAssertTrue(capabilities.contains("session-sender-v1"))
     }
 
-    func testEventCursorPublishesMessageAndDirectedPoke() throws {
+    func testEventCursorPublishesMessageAndDurableNodeCommand() throws {
         let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "node-heartbeat", memberID: "node-1",
+                                                 host: "mac")).ok)
         XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "dev", nick: "agent",
                                                  session: "session-1", host: "mac",
                                                  tmuxPane: "%7", kind: "codex")).ok)
@@ -1651,9 +1670,10 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "dev", nick: "human",
                                                  text: "@agent hello", to: ["agent"])).ok)
         let response = broker.process(MeshRequest(cmd: "events", timeoutMs: 250, cursor: baseline))
-        XCTAssertEqual(response.events?.map(\.kind), [.message, .poke])
-        XCTAssertEqual(response.events?.last?.member?.id, "session-1")
-        XCTAssertEqual(response.events?.last?.message?.text, "@agent hello")
+        XCTAssertEqual(response.events?.map(\.kind), [.message, .nodeCommand])
+        let commands = broker.process(MeshRequest(cmd: "node-command-list", nodeID: "node-1")).commands
+        XCTAssertEqual(commands?.first?.action, .poke)
+        XCTAssertEqual(commands?.first?.state, .queued)
         XCTAssertEqual(response.cursor, response.events?.last?.sequence)
     }
 
@@ -1675,7 +1695,7 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         XCTAssertEqual(broker.process(MeshRequest(cmd: "node-list")).nodes?.map(\.id), ["node-1"])
     }
 
-    func testManualPokeRequiresHostNodeAndPublishesOnlyBrokerEvent() throws {
+    func testManualPokeRequiresHostNodeAndPublishesDurableCommand() throws {
         let broker = MeshBroker()
         XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "dev", nick: "agent",
                                                  session: "session-1", host: "mac",
@@ -1686,9 +1706,122 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         let baseline = try XCTUnwrap(broker.process(MeshRequest(cmd: "events")).cursor)
         XCTAssertTrue(broker.process(MeshRequest(cmd: "poke", room: "dev", nick: "agent")).ok)
         let response = broker.process(MeshRequest(cmd: "events", timeoutMs: 250, cursor: baseline))
-        XCTAssertEqual(response.events?.map(\.kind), [.poke])
-        XCTAssertEqual(response.events?.first?.member?.id, "session-1")
-        XCTAssertNil(response.events?.first?.message)
+        XCTAssertEqual(response.events?.map(\.kind), [.nodeCommand])
+        let command = try XCTUnwrap(broker.process(
+            MeshRequest(cmd: "node-command-list", nodeID: "node-1")
+        ).commands?.first)
+        XCTAssertEqual(command.action, .poke)
+        XCTAssertEqual(command.state, .queued)
+    }
+
+    func testHeartbeatRecoveryDeduplicatesTheOriginalMessagePoke() throws {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "node-heartbeat", memberID: "node-1",
+                                                 host: "mac")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "dev", nick: "agent",
+                                                 session: "session-1", host: "mac",
+                                                 tmuxPane: "%7", kind: "codex")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "dev", nick: "human",
+                                                 text: "directed", to: ["agent"])).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "node-heartbeat", memberID: "node-1",
+                                                 host: "mac")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "node-heartbeat", memberID: "node-1",
+                                                 host: "mac")).ok)
+        let commands = broker.process(MeshRequest(cmd: "node-command-list", nodeID: "node-1"))
+            .commands?.filter { $0.action == .poke }
+        XCTAssertEqual(commands?.count, 1)
+    }
+
+    func testDurableNodeCommandIsIdempotentAndExhaustsRetries() throws {
+        let broker = MeshBroker()
+        let deadline = Date().timeIntervalSince1970 + 300
+        let request = MeshRequest(cmd: "node-command-enqueue", payload: "{}", nodeID: "node-1",
+                                  action: MeshNodeCommandAction.reconcile.rawValue,
+                                  idempotencyKey: "same-request", deadline: deadline,
+                                  maxAttempts: 2)
+        let first = try XCTUnwrap(broker.process(request).command)
+        let duplicate = try XCTUnwrap(broker.process(request).command)
+        XCTAssertEqual(first.id, duplicate.id)
+
+        let accepted = try XCTUnwrap(broker.process(
+            MeshRequest(cmd: "node-command-next", nodeID: "node-1")
+        ).command)
+        XCTAssertEqual(accepted.state, .accepted)
+        for _ in 0..<2 {
+            var deferred = MeshRequest(cmd: "node-command-update",
+                                       state: MeshNodeCommandState.accepted.rawValue,
+                                       payload: "still busy", nodeID: "node-1",
+                                       commandID: first.id)
+            deferred.retryAt = Date().timeIntervalSince1970
+            _ = broker.process(deferred)
+        }
+        let final = try XCTUnwrap(broker.process(
+            MeshRequest(cmd: "node-command-list", nodeID: "node-1")
+        ).commands?.first)
+        XCTAssertEqual(final.state, .failed)
+        XCTAssertEqual(final.attempts, 2)
+    }
+
+    func testDirectTerminalNodeCommandAckCountsOneAttempt() throws {
+        let broker = MeshBroker()
+        let command = try XCTUnwrap(broker.process(MeshRequest(
+            cmd: "node-command-enqueue", payload: "{}", nodeID: "node-1",
+            action: MeshNodeCommandAction.poke.rawValue,
+            idempotencyKey: "permanent-rejection",
+            deadline: Date().timeIntervalSince1970 + 300
+        )).command)
+        _ = broker.process(MeshRequest(cmd: "node-command-next", nodeID: "node-1"))
+        let failed = try XCTUnwrap(broker.process(MeshRequest(
+            cmd: "node-command-update", state: MeshNodeCommandState.failed.rawValue,
+            payload: "agent session is gone", nodeID: "node-1", commandID: command.id
+        )).command)
+        XCTAssertEqual(failed.state, .failed)
+        XCTAssertEqual(failed.attempts, 1)
+    }
+
+    func testRemoteControlCommandsRequireCredential() {
+        let broker = MeshBroker()
+        XCTAssertFalse(broker.process(MeshRequest(cmd: "node-heartbeat", memberID: "node-1",
+                                                  host: "mac"), trustedLocal: false).ok)
+        XCTAssertFalse(broker.process(MeshRequest(cmd: "node-command-list"),
+                                      trustedLocal: false).ok)
+    }
+
+    func testBrokerRestartRestoresUnreadMailboxAndNodeCommandThenPersistsAck() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pharos-mesh-restart-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        setenv("PHAROS_MESH_DIR", directory.path, 1)
+        setenv("PHAROS_MESH_DATA_DIR", directory.path, 1)
+        defer {
+            unsetenv("PHAROS_MESH_DIR")
+            unsetenv("PHAROS_MESH_DATA_DIR")
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let first = MeshBroker()
+        XCTAssertTrue(first.process(MeshRequest(cmd: "node-heartbeat", memberID: "node-1",
+                                                host: "mac")).ok)
+        XCTAssertTrue(first.process(MeshRequest(cmd: "join", room: "dev", nick: "agent",
+                                                session: "session-1", host: "mac",
+                                                tmuxPane: "%7", kind: "codex")).ok)
+        XCTAssertTrue(first.process(MeshRequest(cmd: "say", room: "dev", nick: "human",
+                                                text: "@agent durable", to: ["agent"])).ok)
+        let commandID = try XCTUnwrap(first.process(
+            MeshRequest(cmd: "node-command-list", nodeID: "node-1")
+        ).commands?.first?.id)
+
+        let restarted = MeshBroker(loadPersistentState: true)
+        XCTAssertEqual(restarted.process(
+            MeshRequest(cmd: "node-command-list", nodeID: "node-1")
+        ).commands?.first?.id, commandID)
+        let delivered = restarted.process(MeshRequest(cmd: "recv", memberID: "session-1"))
+        XCTAssertEqual(delivered.messages?.map(\.text), ["@agent durable"])
+
+        let restartedAfterAck = MeshBroker(loadPersistentState: true)
+        XCTAssertEqual(restartedAfterAck.process(
+            MeshRequest(cmd: "recv", memberID: "session-1")
+        ).messages, [])
     }
 
     func testPairingLinkRejectsDuplicateQueryKeys() throws {
@@ -1719,7 +1852,10 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
                                                    memberID: link.brokerID,
                                                    payload: link.token))
         XCTAssertTrue(accepted.ok)
-        XCTAssertEqual(accepted.payload, link.brokerID)
+        let credentialData = try XCTUnwrap(accepted.payload?.data(using: .utf8))
+        let credential = try JSONDecoder().decode(MeshPairingCredential.self, from: credentialData)
+        XCTAssertEqual(credential.brokerID, link.brokerID)
+        XCTAssertGreaterThanOrEqual(credential.controlToken.count, 32)
 
         let replay = broker.process(MeshRequest(cmd: "pairing-redeem",
                                                  memberID: link.brokerID,
@@ -1827,6 +1963,12 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
 }
 
 final class MeshPaneProbeTests: XCTestCase {
+    private func fixture(_ name: String) throws -> String {
+        let file = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/\(name).txt")
+        return try String(contentsOf: file, encoding: .utf8)
+    }
+
     /// The unknown-state pane probe: only a visibly idle composer passes.
     func testPaneIdleDetection() {
         XCTAssertTrue(MeshPaneSafety.paneLooksIdle("some output\n❯ \n  bypass permissions on"))
@@ -1836,6 +1978,87 @@ final class MeshPaneProbeTests: XCTestCase {
         XCTAssertFalse(MeshPaneSafety.paneLooksIdle("Do you want to proceed?\n❯ 1. Yes\n 2. No"))
         XCTAssertFalse(MeshPaneSafety.paneLooksIdle("❯ 1. Yes, I trust this folder\nEnter to confirm · Esc to cancel"))
         XCTAssertFalse(MeshPaneSafety.paneLooksIdle("plain shell output, no composer"))
+    }
+
+    func testHistoricalBusyWordsDoNotPoisonCurrentComposer() {
+        XCTAssertTrue(MeshPaneSafety.paneLooksIdle("""
+        Both delivered. I checked messages while I was working, then returned to idle.
+        ✻ Cogitated for 10m 41s
+        ❯
+        """))
+        XCTAssertTrue(MeshPaneSafety.paneLooksIdle("""
+        › previous request
+        • Working (8s • esc to interrupt)
+        ─ Worked for 12s ─
+        ›
+        """))
+    }
+
+    func testRealClaudeLongSessionWithQuotedBusyMarkerAndRandomCompletionVerbIsIdle() {
+        XCTAssertTrue(MeshPaneSafety.paneLooksIdle("""
+        Root cause: ordinary words like \"working\"/\"esc to interrupt\" saturate transcripts.
+        Both v3 messages delivered. Returning to the idle composer.
+        ✻ Baked for 12m 24s
+        ❯ 保留横向台阶，scale 降到 1.0
+        """))
+    }
+
+    func testCurrentBusyStatusStillBlocksPokeAfterQueuedComposerText() {
+        XCTAssertFalse(MeshPaneSafety.paneLooksIdle("""
+        › previous request
+        • Working (8s • esc to interrupt)
+        › queued while busy
+        tab to queue message
+        """))
+    }
+
+    func testClaudeBootstrapSpinnerBlocksPokeEvenWithVisibleComposer() {
+        XCTAssertFalse(MeshPaneSafety.paneLooksIdle("""
+        ❯ Join the room
+        ✳ Bootstrapping… (1m 34s · ↓ 2.2k tokens)
+        ❯
+        """))
+        XCTAssertFalse(MeshPaneSafety.paneLooksIdle("""
+        ❯ Do the work
+        Running 6 shell commands…
+        ❯
+        """))
+    }
+
+    func testResolvedHistoricalConfirmationDoesNotBlockIdleComposer() {
+        XCTAssertTrue(MeshPaneSafety.paneLooksIdle("""
+        ❯ 1. Yes, I trust this folder
+        Enter to confirm · Esc to cancel
+        accepted
+        ✻ Cogitated for 1s
+        ❯
+        """))
+    }
+
+    func testRealClaude212IdlePaneFixtureIsPokeable() throws {
+        XCTAssertTrue(MeshPaneSafety.paneLooksIdle(try fixture("claude-2.1.212-idle")))
+    }
+
+    func testRealCodexBusyPaneFixtureIsNotPokeable() throws {
+        XCTAssertFalse(MeshPaneSafety.paneLooksIdle(try fixture("codex-busy-with-queued-input")))
+    }
+
+    func testOnlyNativeWorkspaceTrustPromptsAreAutoConfirmable() {
+        XCTAssertTrue(MeshPaneSafety.isKnownWorkspaceTrustPrompt("""
+        ❯ 1. Yes, I trust this folder
+        Enter to confirm · Esc to cancel
+        """))
+        XCTAssertTrue(MeshPaneSafety.isKnownWorkspaceTrustPrompt("""
+        Do you trust the contents of this directory?
+        › 1. Yes, continue
+        Press enter to continue
+        """))
+        XCTAssertFalse(MeshPaneSafety.isKnownWorkspaceTrustPrompt("""
+        Do you want to proceed?
+        ❯ 1. Yes
+        Enter to confirm · Esc to cancel
+        """))
+        XCTAssertFalse(MeshPaneSafety.isKnownWorkspaceTrustPrompt("Press enter to continue"))
     }
 }
 
