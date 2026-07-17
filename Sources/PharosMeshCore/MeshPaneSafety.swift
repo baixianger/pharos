@@ -6,6 +6,15 @@ public enum MeshPaneSafety {
     public static let busyLeaseSeconds: Double = 180
     public static let blockedLeaseSeconds: Double = 900
 
+    public static func validTmuxPane(_ value: String) -> Bool {
+        let digits = value.first == "%" ? value.dropFirst() : Substring(value)
+        return !digits.isEmpty && digits.allSatisfy(\.isNumber)
+    }
+
+    public static func validTmuxSocket(_ value: String) -> Bool {
+        value.hasPrefix("/") && !value.contains("\n") && !value.contains("\r")
+    }
+
     /// Hooks own delivery only while their busy/blocked lease is fresh. A
     /// missing/unknown state is treated as expired and therefore pokeable: the
     /// product deliberately prefers eventual delivery over a permanent lock

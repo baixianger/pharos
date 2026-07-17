@@ -117,6 +117,10 @@ enum MeshNodeService {
         let process = Process(); let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: executable); process.arguments = arguments
         process.standardOutput = pipe; process.standardError = pipe
+        defer {
+            try? pipe.fileHandleForReading.close()
+            try? pipe.fileHandleForWriting.close()
+        }
         do { try process.run() }
         catch { return (1, error.localizedDescription) }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()

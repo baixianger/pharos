@@ -36,18 +36,14 @@ enum MeshHooks {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/settings.json")
     }
 
-    /// True if the global (~/.claude) mesh Stop hook is present — the GUI's
-    /// installed/not-installed state.
+    /// True only when the complete current Claude hook manifest is present.
+    /// Checking one legacy Stop entry made partially upgraded installs look
+    /// healthy even when newer lifecycle events were absent.
     static func userHookInstalled() -> Bool {
         guard let d = try? Data(contentsOf: userSettingsFile),
               let root = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
-              let hooks = root["hooks"] as? [String: Any],
-              let stops = hooks["Stop"] as? [[String: Any]] else { return false }
-        return stops.contains { entry in
-            ((entry["hooks"] as? [[String: Any]]) ?? []).contains {
-                ($0["command"] as? String)?.contains(marker) == true
-            }
-        }
+              let hooks = root["hooks"] as? [String: Any] else { return false }
+        return claudeManifest.allSatisfy { hookEntryPresent(hooks, event: $0.event, marker: $0.marker) }
     }
 
     /// The Codex user-scope hooks file the `--codex` install writes.
@@ -55,13 +51,32 @@ enum MeshHooks {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/hooks.json")
     }
 
-    /// True if the Codex mesh Stop hook is present in ~/.codex/hooks.json.
+    /// True only when the complete current Codex hook manifest is present.
     static func codexHookInstalled() -> Bool {
         guard let d = try? Data(contentsOf: codexHooksFile),
               let root = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
-              let hooks = root["hooks"] as? [String: Any],
-              let stops = hooks["Stop"] as? [[String: Any]] else { return false }
-        return stops.contains { entry in
+              let hooks = root["hooks"] as? [String: Any] else { return false }
+        return codexManifest.allSatisfy { hookEntryPresent(hooks, event: $0.event, marker: $0.marker) }
+    }
+
+    private static let claudeManifest: [(event: String, marker: String)] = [
+        ("Stop", marker), ("SessionStart", startMarker),
+        ("UserPromptSubmit", markMarker), ("PermissionRequest", markMarker),
+        ("Notification", markMarker), ("ElicitationResult", markMarker),
+        ("PostToolUseFailure", markMarker), ("StopFailure", markMarker),
+        ("SessionEnd", markMarker), ("PostToolUse", postToolMarker),
+    ]
+
+    private static let codexManifest: [(event: String, marker: String)] = [
+        ("Stop", marker), ("SessionStart", startMarker),
+        ("UserPromptSubmit", markMarker), ("PermissionRequest", markMarker),
+        ("PostToolUse", postToolMarker),
+    ]
+
+    private static func hookEntryPresent(_ hooks: [String: Any], event: String,
+                                         marker: String) -> Bool {
+        guard let entries = hooks[event] as? [[String: Any]] else { return false }
+        return entries.contains { entry in
             ((entry["hooks"] as? [[String: Any]]) ?? []).contains {
                 ($0["command"] as? String)?.contains(marker) == true
             }
@@ -71,16 +86,18 @@ enum MeshHooks {
     // MARK: `pharos mesh unread`
 
     /// Modes: plain peek (`unread [<nick>] [--json]`, never consumes),
-    /// `--hook-stop` (Claude Code Stop hook: reads the hook JSON on stdin,
-    /// emits a `decision: block` JSON when unread @you messages are pending)
+    /// `--hook-stop` (Stop hook: reads hook JSON on stdin and continues the
+    /// agent with unread @you messages using the platform's supported output)
     /// and `--hook-post-tool` (PostToolUse: poke-mode mid-turn delivery).
     static func unread(_ args: [String]) -> Int32 {
         let hookStop = args.contains("--hook-stop")
         let json = args.contains("--json")
         let explicitNick = args.first { !$0.hasPrefix("-") }
 
-        if hookStop { return stopHook(explicitNick: explicitNick) }
-        if args.contains("--hook-post-tool") { return postToolHook(explicitNick: explicitNick) }
+        if hookStop { return stopHook(explicitNick: explicitNick, codex: args.contains("--codex")) }
+        if args.contains("--hook-post-tool") {
+            return postToolHook(explicitNick: explicitNick, codex: args.contains("--codex"))
+        }
 
         guard let member = resolveMember(cwd: FileManager.default.currentDirectoryPath,
                                          preferredNick: explicitNick) else {
@@ -104,16 +121,17 @@ enum MeshHooks {
     /// Fire-and-forget a state report for this session (broker resolves the
     /// nick by session/cwd when none is given). Never spawns a broker.
     private static func report(_ state: MeshSessionState, nick: String? = nil,
-                               cwd: String, session: String?) {
+                               cwd: String, session: String?, reason: String? = nil) {
         MeshClient.sendIfUp(MeshRequest(cmd: "mark", nick: nick, project: cwd,
-                                        session: session, state: state.rawValue))
+                                        session: session, state: state.rawValue,
+                                        stateReason: reason))
     }
 
     /// Stop-hook body. Every failure path returns 0 with no output: a broken or
     /// absent mesh must never disturb the session. Doubles as the `stopped`
     /// state reporter — unless our own block continues the turn, in which case
     /// the session is working again (`busy`).
-    private static func stopHook(explicitNick: String?) -> Int32 {
+    private static func stopHook(explicitNick: String?, codex: Bool) -> Int32 {
         var cwd = FileManager.default.currentDirectoryPath
         var session: String?
         var reentry = false
@@ -128,7 +146,8 @@ enum MeshHooks {
         // Cross-host: a dial-out session has no local presence/unread files, so
         // ask the remote broker (fail-open — unreachable broker never blocks).
         if MeshPaths.dialEndpoint != nil {
-            return stopHookRemote(cwd: cwd, session: session, explicitNick: explicitNick, reentry: reentry)
+            return stopHookRemote(cwd: cwd, session: session, explicitNick: explicitNick,
+                                  reentry: reentry, codex: codex)
         }
         if reentry { report(.stopped, nick: explicitNick, cwd: cwd, session: session); return 0 }
         guard let member = resolveMember(cwd: cwd, session: session, preferredNick: explicitNick),
@@ -136,7 +155,7 @@ enum MeshHooks {
             report(.stopped, nick: explicitNick, cwd: cwd, session: session)
             return 0
         }
-        emitBlock(nick: member.nick, memberID: member.id, messages: u.messages)
+        emitContinuation(nick: member.nick, memberID: member.id, messages: u.messages, codex: codex)
         report(.busy, nick: member.nick, cwd: cwd, session: session)   // the block continues the turn
         return 0
     }
@@ -145,21 +164,21 @@ enum MeshHooks {
     /// AND piggybacks the `stopped` report. Fail-open — an unreachable broker,
     /// no nick, or no unread all exit 0 without blocking.
     private static func stopHookRemote(cwd: String, session: String?, explicitNick: String?,
-                                       reentry: Bool) -> Int32 {
+                                       reentry: Bool, codex: Bool) -> Int32 {
         if reentry { report(.stopped, nick: explicitNick, cwd: cwd, session: session); return 0 }
         let resp = MeshClient.send(MeshRequest(cmd: "peek", nick: explicitNick,
                                                project: cwd, session: session,
                                                state: MeshSessionState.stopped.rawValue))
         guard resp.ok, let msgs = resp.messages, !msgs.isEmpty, let nick = resp.note else { return 0 }
-        emitBlock(nick: nick, memberID: resp.memberID, messages: msgs)
+        emitContinuation(nick: nick, memberID: resp.memberID, messages: msgs, codex: codex)
         report(.busy, nick: nick, cwd: cwd, session: session)   // ditto: turn continues
         return 0
     }
 
     // MARK: `pharos mesh mark` — session-state reporting
 
-    /// `--hook` mode: shared body for the UserPromptSubmit / Notification /
-    /// SessionEnd hooks — maps the event (probed ground truth, cc-hook-probe
+    /// `--hook` mode: shared body for lifecycle hooks — maps the event
+    /// (official schema plus probed ground truth, cc-hook-probe
     /// FINDINGS) to a state and reports it. Plain mode (`mark <nick> <state>`)
     /// is for manual testing. Always exits 0 in hook mode.
     static func mark(_ args: [String]) -> Int32 {
@@ -178,6 +197,10 @@ enum MeshHooks {
     static func stateFor(event: String, notificationType: String?) -> MeshSessionState? {
         switch event {
         case "UserPromptSubmit": .busy       // a turn begins (incl. our own nudge → self-debouncing)
+        case "PermissionRequest": .blocked   // an approval dialog is about to be shown
+        case "ElicitationResult", "PostToolUseFailure":
+            .busy                            // human/form response returned to the active turn
+        case "StopFailure":      .stopped    // API error ended the turn; composer is poke-safe
         case "SessionEnd":       .gone       // never poke again
         case "Notification":
             switch notificationType {
@@ -185,6 +208,8 @@ enum MeshHooks {
                 .blocked                     // mid-turn, waiting on the HUMAN — poking would type into the dialog
             case "idle_prompt":
                 .idle                        // fires 60s after Stop: confirmed sitting at the composer
+            case "elicitation_complete", "elicitation_response":
+                .busy                        // clear the blocked lease as the form closes
             default:
                 nil
             }
@@ -199,8 +224,32 @@ enum MeshHooks {
               let state = stateFor(event: event, notificationType: obj["notification_type"] as? String)
         else { return 0 }
         let cwd = (obj["cwd"] as? String) ?? FileManager.default.currentDirectoryPath
-        report(state, cwd: cwd, session: obj["session_id"] as? String)
+        report(state, cwd: cwd, session: obj["session_id"] as? String,
+               reason: stateReason(event: event, notificationType: obj["notification_type"] as? String,
+                                   payload: obj))
         return 0
+    }
+
+    /// Human-attention and failure detail stays orthogonal to readiness state.
+    /// It is replaced on every mark, so a later busy/stopped event clears a
+    /// stale permission or error reason automatically.
+    private static func stateReason(event: String, notificationType: String?,
+                                    payload: [String: Any]) -> String? {
+        switch event {
+        case "PermissionRequest":
+            return (payload["tool_name"] as? String).map { "permission:\($0)" } ?? "permission"
+        case "Notification" where notificationType == "permission_prompt":
+            return "permission"
+        case "Notification" where notificationType == "elicitation_dialog":
+            return "elicitation"
+        case "StopFailure":
+            let error = payload["error"] as? String ?? "unknown"
+            let details = (payload["error_details"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let details, !details.isEmpty { return "api_error:\(error):\(details)" }
+            return "api_error:\(error)"
+        default:
+            return nil
+        }
     }
 
     // MARK: PostToolUse — poke mode's mid-turn delivery
@@ -210,7 +259,7 @@ enum MeshHooks {
     /// NOW via `additionalContext` (neutral framing, no error label) instead
     /// of waiting for the turn to end. A marker file de-dups so the same
     /// messages aren't re-announced on every tool call.
-    private static func postToolHook(explicitNick: String?) -> Int32 {
+    private static func postToolHook(explicitNick: String?, codex: Bool) -> Int32 {
         var cwd = FileManager.default.currentDirectoryPath
         var session: String?
         if let input = readStdinIfPiped(),
@@ -237,18 +286,18 @@ enum MeshHooks {
                 if let u = loadUnread(member.id) { msgs = u.messages }
             }
         }
-        guard let n = nick else { return 0 }
+        guard let n = nick else { return finishPostTool(codex: codex) }
         // The mailbox is already addressed by immutable member id. A non-empty
         // `to` means directed @mention; aliases may differ between this
         // session's rooms, so never re-filter by one display nick here.
         msgs = msgs.filter { !$0.to.isEmpty }
-        guard !msgs.isEmpty else { return 0 }
+        guard !msgs.isEmpty else { return finishPostTool(codex: codex) }
         // De-dup: only announce messages newer than the last mid-turn notice.
         let newest = msgs.map(\.ts).max() ?? 0
         let markerURL = MeshPaths.notifiedFile(memberID ?? n)
         let last = (try? String(contentsOf: markerURL, encoding: .utf8))
             .flatMap { Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
-        guard newest > last else { return 0 }
+        guard newest > last else { return finishPostTool(codex: codex) }
         try? FileManager.default.createDirectory(at: MeshPaths.stateDir, withIntermediateDirectories: true)
         try? String(newest).write(to: markerURL, atomically: true, encoding: .utf8)
 
@@ -257,25 +306,35 @@ enum MeshHooks {
         let memberArg = memberID.map { " --member \($0)" } ?? ""
         lines.append("When you reach a natural pause, pick them up with `pharos mesh recv \(n)\(memberArg)` "
                      + "and reply in the room if a response is expected.")
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "hookSpecificOutput": [
                 "hookEventName": "PostToolUse",
                 "additionalContext": lines.joined(separator: "\n"),
             ]
         ]
+        if codex { payload["suppressOutput"] = true }
         if let d = try? JSONSerialization.data(withJSONObject: payload) {
             print(String(decoding: d, as: UTF8.self))
         }
         return 0
     }
 
-    /// Emit the `decision:block` turn-end notice for `nick`'s pending messages.
-    ///
-    /// Note: Claude Code renders any decision:block Stop hook under its own
-    /// "Stop hook error" label — there is no non-error-labeled block form
-    /// (verified against the probed hooks reference, 2026-07-04). Only the
-    /// reason text below is ours, so keep it friendly.
-    private static func emitBlock(nick: String, memberID: String?, messages: [MeshMsg]) {
+    /// Codex supports `suppressOutput` on command-hook output. Emit it even
+    /// when there is no unread message so the all-tools heartbeat does not add
+    /// a completed hook cell after every tool invocation.
+    private static func finishPostTool(codex: Bool) -> Int32 {
+        guard codex else { return 0 }
+        if let d = try? JSONSerialization.data(withJSONObject: ["suppressOutput": true]) {
+            print(String(decoding: d, as: UTF8.self))
+        }
+        return 0
+    }
+
+    /// Continue the agent with unread room context. Claude now has a first-class
+    /// non-error Stop feedback form. Codex's Stop schema intentionally remains
+    /// top-level `decision:block`, with `suppressOutput` hiding hook chrome.
+    private static func emitContinuation(nick: String, memberID: String?, messages: [MeshMsg],
+                                         codex: Bool) {
         var perRoom: [String: Int] = [:]
         for m in messages { perRoom[m.room, default: 0] += 1 }
         var lines = ["New mesh message(s) for @\(nick) — \(messages.count) pending in "
@@ -285,10 +344,19 @@ enum MeshHooks {
         lines.append("Pick them up with `pharos mesh recv \(nick)\(memberArg)`, then reply in the room "
                      + "(`pharos mesh send \"…\" @<sender> --room <room>` or `ask` to wait for an answer). "
                      + "Run recv even if no reply is needed, so this notice clears.")
-        let payload: [String: Any] = ["decision": "block", "reason": lines.joined(separator: "\n")]
+        let text = lines.joined(separator: "\n")
+        let payload = continuationPayload(text: text, codex: codex)
         if let d = try? JSONSerialization.data(withJSONObject: payload) {
             print(String(decoding: d, as: UTF8.self))
         }
+    }
+
+    /// Kept testable because Claude and Codex deliberately expose different
+    /// Stop output schemas despite sharing the same event name.
+    static func continuationPayload(text: String, codex: Bool) -> [String: Any] {
+        codex
+            ? ["decision": "block", "reason": text, "suppressOutput": true]
+            : ["hookSpecificOutput": ["hookEventName": "Stop", "additionalContext": text]]
     }
 
     private static func messageSummary(_ message: MeshMsg) -> String {
@@ -493,12 +561,15 @@ enum MeshHooks {
         }
 
         var hooks = root["hooks"] as? [String: Any] ?? [:]
-        // Six hooks power delivery + session addressing + live state:
+        // Lifecycle hooks power delivery + session addressing + live state:
         //  • Stop             — surface unread @mentions at turn-end; reports `stopped`.
         //  • SessionStart     — record cwd/session id so `join` can resolve a nick
         //                       precisely (two sessions in one dir stay distinct).
-        //  • UserPromptSubmit / Notification / SessionEnd
-        //                     — report busy / blocked·idle / gone (poke safety).
+        //  • UserPromptSubmit / PermissionRequest / Notification
+        //                     — report busy / blocked·idle (poke safety).
+        //  • ElicitationResult / PostToolUseFailure
+        //                     — clear blocked back to busy.
+        //  • StopFailure / SessionEnd — report stopped(error) / gone.
         //  • PostToolUse      — refresh busy; poke mode: mid-turn delivery.
         let markCmd = hookCommand("mark --hook")
         let results: [(String, UpsertResult)] = [
@@ -508,8 +579,16 @@ enum MeshHooks {
                                         command: hookCommand("session-start"), marker: startMarker)),
             ("UserPromptSubmit", upsertHook(&hooks, event: "UserPromptSubmit",
                                             command: markCmd, marker: markMarker)),
+            ("PermissionRequest", upsertHook(&hooks, event: "PermissionRequest",
+                                              command: markCmd, marker: markMarker, matcher: "*")),
             ("Notification", upsertHook(&hooks, event: "Notification",
                                         command: markCmd, marker: markMarker)),
+            ("ElicitationResult", upsertHook(&hooks, event: "ElicitationResult",
+                                              command: markCmd, marker: markMarker, matcher: "*")),
+            ("PostToolUseFailure", upsertHook(&hooks, event: "PostToolUseFailure",
+                                               command: markCmd, marker: markMarker, matcher: "*")),
+            ("StopFailure", upsertHook(&hooks, event: "StopFailure",
+                                        command: markCmd, marker: markMarker, matcher: "*")),
             ("SessionEnd", upsertHook(&hooks, event: "SessionEnd",
                                       command: markCmd, marker: markMarker)),
             ("PostToolUse", upsertHook(&hooks, event: "PostToolUse",
@@ -537,9 +616,9 @@ enum MeshHooks {
 
     /// `install-hooks --codex` — wire Pharos into Codex's native lifecycle hook
     /// engine. SessionStart records identity silently; it must not inject
-    /// persistent developer context. Two events Codex lacks — Notification and SessionEnd —
-    /// are simply not wired: a Codex agent reports busy/stopped but not
-    /// blocked/idle/gone (the mesh degrades gracefully). NOTE: Codex prompts to
+    /// persistent developer context. Codex's PermissionRequest provides a
+    /// structured blocked signal even though it lacks Notification. SessionEnd
+    /// remains unavailable, so Node liveness owns `gone`. NOTE: Codex prompts to
     /// TRUST new/changed hooks on first run; spawn Codex with
     /// `--dangerously-bypass-hook-trust` (or approve once) so this takes effect.
     private static func installCodexHooks() -> Int32 {
@@ -558,13 +637,16 @@ enum MeshHooks {
         var hooks = root["hooks"] as? [String: Any] ?? [:]
         let results: [(String, UpsertResult)] = [
             ("Stop", upsertHook(&hooks, event: "Stop",
-                                command: hookCommand("unread --hook-stop"), marker: marker)),
+                                command: hookCommand("unread --hook-stop --codex"), marker: marker)),
             ("SessionStart", upsertHook(&hooks, event: "SessionStart",
                                         command: hookCommand("session-start --silent"), marker: startMarker)),
             ("UserPromptSubmit", upsertHook(&hooks, event: "UserPromptSubmit",
                                             command: hookCommand("mark --hook"), marker: markMarker)),
+            ("PermissionRequest", upsertHook(&hooks, event: "PermissionRequest",
+                                              command: hookCommand("mark --hook"),
+                                              marker: markMarker, matcher: "*")),
             ("PostToolUse", upsertHook(&hooks, event: "PostToolUse",
-                                       command: hookCommand("unread --hook-post-tool"),
+                                       command: hookCommand("unread --hook-post-tool --codex"),
                                        marker: postToolMarker, matcher: "*")),
         ]
         root["hooks"] = hooks
@@ -583,7 +665,7 @@ enum MeshHooks {
             return 1
         }
         print(results.map { "\($0.0): \($0.1.verb)" }.joined(separator: "; ") + " → \(file.path)")
-        print("(Codex has no Notification/SessionEnd hooks — blocked/idle/gone won't report.)")
+        print("(Codex PermissionRequest reports blocked; Notification/SessionEnd remain unavailable.)")
         print("(first run: Codex prompts to trust hooks — spawn with --dangerously-bypass-hook-trust)")
         return 0
     }
@@ -603,9 +685,22 @@ enum MeshHooks {
         for (i, entry) in arr.enumerated() {
             guard var inner = entry["hooks"] as? [[String: Any]] else { continue }
             for (j, h) in inner.enumerated() where (h["command"] as? String)?.contains(marker) == true {
-                if h["command"] as? String == command { return .unchanged }
-                inner[j]["command"] = command
-                arr[i]["hooks"] = inner
+                if h["type"] as? String == "command",
+                   h["command"] as? String == command,
+                   h["timeout"] as? Int == 10,
+                   (entry["matcher"] as? String) == matcher {
+                    return .unchanged
+                }
+                var desiredHandler = h
+                desiredHandler["type"] = "command"
+                desiredHandler["command"] = command
+                desiredHandler["timeout"] = 10
+                inner[j] = desiredHandler
+                var desiredEntry = entry
+                desiredEntry["hooks"] = inner
+                if let matcher { desiredEntry["matcher"] = matcher }
+                else { desiredEntry.removeValue(forKey: "matcher") }
+                arr[i] = desiredEntry
                 hooks[event] = arr
                 return .updated
             }

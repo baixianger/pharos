@@ -23,6 +23,7 @@ public struct MeshRequest: Codable, Sendable {
     public var tmuxPane: String?
     public var tmuxSocket: String? = nil
     public var state: String?
+    public var stateReason: String?
     public var expectedState: String?
     public var expectedStateTs: Double?
     public var kind: String?
@@ -47,6 +48,7 @@ public struct MeshRequest: Codable, Sendable {
                 text: String? = nil, to: [String]? = nil, timeoutMs: Int? = nil, limit: Int? = nil,
                 project: String? = nil, session: String? = nil, host: String? = nil,
                 tmuxPane: String? = nil, tmuxSocket: String? = nil, state: String? = nil,
+                stateReason: String? = nil,
                 expectedState: String? = nil, expectedStateTs: Double? = nil, kind: String? = nil,
                 tailscaleIP: String? = nil, replyToID: String? = nil,
                 attachments: [MeshAttachment]? = nil, attachment: MeshAttachment? = nil,
@@ -58,7 +60,8 @@ public struct MeshRequest: Codable, Sendable {
         self.cmd = cmd; self.room = room; self.nick = nick; self.memberID = memberID
         self.text = text; self.to = to; self.timeoutMs = timeoutMs; self.limit = limit
         self.project = project; self.session = session; self.host = host; self.tmuxPane = tmuxPane
-        self.tmuxSocket = tmuxSocket; self.state = state; self.expectedState = expectedState
+        self.tmuxSocket = tmuxSocket; self.state = state; self.stateReason = stateReason
+        self.expectedState = expectedState
         self.expectedStateTs = expectedStateTs; self.kind = kind; self.tailscaleIP = tailscaleIP
         self.replyToID = replyToID; self.attachments = attachments; self.attachment = attachment
         self.attachmentID = attachmentID
@@ -151,8 +154,8 @@ public struct MeshNodePokePayload: Codable, Sendable, Equatable {
 }
 
 public struct MeshNodeStopPayload: Codable, Sendable, Equatable {
-    public var sessionName: String
-    public init(sessionName: String) { self.sessionName = sessionName }
+    public var memberID: String
+    public init(memberID: String) { self.memberID = memberID }
 }
 
 public struct MeshNodeSpawnPayload: Codable, Sendable, Equatable {
@@ -182,9 +185,9 @@ public struct MeshPairingCredential: Codable, Sendable, Equatable {
 /// Hook-reported lifecycle states (probed ground truth, cc-hook-probe FINDINGS,
 /// re-verified on CC v2.1.207 2026-07-11):
 ///  busy    — UserPromptSubmit/PostToolUse fired, turn in flight
-///  blocked — Notification{permission_prompt|elicitation_dialog}: mid-turn,
+///  blocked — PermissionRequest or Notification{permission_prompt|elicitation_dialog}:
 ///            waiting on the HUMAN — send-keys would type into the dialog
-///  stopped — Stop fired: turn over, composer idle → poke-safe
+///  stopped — Stop or StopFailure fired: turn over, composer idle → poke-safe
 ///  idle    — Notification{idle_prompt} (60s after Stop): confirmed idle
 ///  gone    — SessionEnd: never poke
 public enum MeshSessionState: String, Codable, Sendable {
@@ -275,6 +278,7 @@ public struct MeshPresenceEntry: Codable, Sendable {
     public var tmuxSocket: String? = nil
     public var state: String?
     public var stateTs: Double?
+    public var stateReason: String?
     public var kind: String?
     public var tailscaleIP: String?
     public var aliases: [String: String]
@@ -284,10 +288,12 @@ public struct MeshPresenceEntry: Codable, Sendable {
 
     public init(project: String? = nil, session: String? = nil, host: String? = nil,
                 tmuxPane: String? = nil, tmuxSocket: String? = nil,
-                state: String? = nil, stateTs: Double? = nil, kind: String? = nil, tailscaleIP: String? = nil,
+                state: String? = nil, stateTs: Double? = nil, stateReason: String? = nil,
+                kind: String? = nil, tailscaleIP: String? = nil,
                 aliases: [String: String], rooms: [String], lastSeen: Double, online: Bool) {
         self.project = project; self.session = session; self.host = host; self.tmuxPane = tmuxPane
-        self.tmuxSocket = tmuxSocket; self.state = state; self.stateTs = stateTs; self.kind = kind
+        self.tmuxSocket = tmuxSocket; self.state = state; self.stateTs = stateTs
+        self.stateReason = stateReason; self.kind = kind
         self.tailscaleIP = tailscaleIP; self.aliases = aliases; self.rooms = rooms
         self.lastSeen = lastSeen; self.online = online
     }
@@ -306,6 +312,7 @@ public struct MeshMemberInfo: Codable, Sendable, Equatable, Identifiable {
     public var tmuxSocket: String? = nil
     public var state: String?
     public var stateTs: Double?
+    public var stateReason: String?
     public var unread: Int?
     public var kind: String?
     public var tailscaleIP: String?
@@ -316,11 +323,13 @@ public struct MeshMemberInfo: Codable, Sendable, Equatable, Identifiable {
     public init(id: String, nick: String, project: String? = nil, session: String? = nil,
                 host: String? = nil, tmuxPane: String? = nil,
                 tmuxSocket: String? = nil, state: String? = nil, stateTs: Double? = nil,
+                stateReason: String? = nil,
                 unread: Int? = nil, kind: String? = nil,
                 tailscaleIP: String? = nil, rooms: [String], lastSeen: Double,
                 nodeOnline: Bool? = nil) {
         self.id = id; self.nick = nick; self.project = project; self.session = session; self.host = host
         self.tmuxPane = tmuxPane; self.tmuxSocket = tmuxSocket; self.state = state; self.stateTs = stateTs
+        self.stateReason = stateReason
         self.unread = unread; self.kind = kind; self.tailscaleIP = tailscaleIP
         self.rooms = rooms; self.lastSeen = lastSeen
         self.nodeOnline = nodeOnline
@@ -1147,6 +1156,7 @@ public final class MeshBroker: @unchecked Sendable {
                Self.markMatchesSnapshot(presence[memberID]!, request: req) {
                 presence[memberID]!.state = s
                 presence[memberID]!.stateTs = Date().timeIntervalSince1970
+                presence[memberID]!.stateReason = req.stateReason
                 writePresenceLocked()
             }
             lock.unlock()
@@ -1183,6 +1193,7 @@ public final class MeshBroker: @unchecked Sendable {
             if let s = req.state, MeshSessionState(rawValue: s) != nil, presence[memberID] != nil {
                 presence[memberID]!.state = s
                 presence[memberID]!.stateTs = Date().timeIntervalSince1970
+                presence[memberID]!.stateReason = req.stateReason
                 writePresenceLocked()
             }
             var pending: [MeshMsg] = []
@@ -1358,7 +1369,7 @@ public final class MeshBroker: @unchecked Sendable {
               let previous = try? JSONDecoder().decode(MeshPresence.self, from: data) else { return }
         for (memberID, entry) in previous.members {
             var value = entry
-            if resetStates { value.state = nil; value.stateTs = nil }
+            if resetStates { value.state = nil; value.stateTs = nil; value.stateReason = nil }
             presence[memberID] = value
             for (room, alias) in value.aliases {
                 if rooms[room] == nil { rooms[room] = Room() }
@@ -1575,6 +1586,7 @@ public final class MeshBroker: @unchecked Sendable {
         if let st = state {
             e.state = st
             e.stateTs = Date().timeIntervalSince1970
+            e.stateReason = nil
         }
         e.aliases = aliases
         e.rooms = aliases.keys.sorted()
@@ -1596,7 +1608,7 @@ public final class MeshBroker: @unchecked Sendable {
         }
         return MeshMemberInfo(id: memberID, nick: nick, project: e.project, session: e.session, host: e.host,
                               tmuxPane: e.tmuxPane, tmuxSocket: e.tmuxSocket,
-                              state: e.state, stateTs: e.stateTs,
+                              state: e.state, stateTs: e.stateTs, stateReason: e.stateReason,
                               unread: unread, kind: e.kind, tailscaleIP: e.tailscaleIP,
                               rooms: [room], lastSeen: e.lastSeen,
                               nodeOnline: nodeIsOnlineLocked(host: e.host, tailscaleIP: e.tailscaleIP))

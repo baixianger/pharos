@@ -588,7 +588,7 @@ private struct CLISettingsTab: View {
                         : "Install failed — check ~/.claude/settings.json (a file with invalid JSON is never overwritten)."
                 }
                 .buttonStyle(.borderedProminent)
-                HelpBadge(text: "Installs the Claude Code hooks that power the agent mesh: Stop surfaces unread @mentions at turn-end, SessionStart injects the session id, and UserPromptSubmit / Notification / PostToolUse report live state (busy / blocked / idle) so idle agents can be poked awake. Per-repo alternative: `pharos mesh install-hooks --project <dir>`. Safe globally — un-joined sessions no-op.")
+                HelpBadge(text: "Installs the Claude Code hooks that power the agent mesh: Stop surfaces unread @mentions as normal hook feedback, SessionStart injects the session id, and structured lifecycle hooks report busy / blocked / idle / stopped / gone without reading terminal text. Permission, elicitation completion, tool failure, and API failure are tracked explicitly. Per-repo alternative: `pharos mesh install-hooks --project <dir>`. Safe globally — un-joined sessions no-op.")
             }
             if let s = meshHookStatus {
                 Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -639,7 +639,7 @@ private struct CLISettingsTab: View {
                         : "Install failed — check ~/.codex/hooks.json (invalid JSON is never overwritten)."
                 }
                 .buttonStyle(.borderedProminent)
-                HelpBadge(text: "Codex ships a Claude-parity hook engine, so the same mesh commands wire in: Stop (unread + stopped), SessionStart (session id), UserPromptSubmit + PostToolUse (busy + mid-turn delivery). Codex has no Notification/SessionEnd hooks, so a Codex agent reports busy/stopped but not blocked/idle/gone. Needs a recent Codex build (older ones only have `notify`).")
+                HelpBadge(text: "Codex ships structured lifecycle hooks: Stop handles unread + stopped, SessionStart records identity, UserPromptSubmit / PostToolUse report busy, and PermissionRequest reports blocked. PostToolUse output is suppressed when there is nothing to show. Codex still lacks Notification/SessionEnd, so idle is unavailable and Node liveness owns gone. Needs a recent Codex build (older ones only have `notify`).")
             }
             if let s = codexHookStatus {
                 Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

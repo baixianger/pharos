@@ -13,32 +13,46 @@ import Glibc
 enum MeshNode {
     static func run(endpoint: String?, buildID: String? = nil) -> Int32 {
         if let endpoint { MeshClient.remoteEndpoint = endpoint }
+        var state = LoopState()
+        FileHandle.standardError.write(Data("pharos node: starting as \(hostName)\(tailscaleIP.map { " (\($0))" } ?? "")\n".utf8))
+
+        // Each iteration runs inside its own autorelease pool: Process/Pipe/
+        // FileHandle are ObjC-backed, and a CLI main loop never drains the
+        // implicit pool — without this, every subprocess probe leaks its pipe
+        // fds until the process hits the fd ceiling and silently loses every
+        // authenticated Broker call (heartbeat, command drain, mark).
+        while true {
+            autoreleasepool { iterate(&state, buildID: buildID) }
+        }
+    }
+
+    private struct LoopState {
         var cursor: UInt64?
         var backoff: UInt32 = 1
         var missingProbeCounts: [String: Int] = [:]
         var nextReconcile = Date.distantPast
-        FileHandle.standardError.write(Data("pharos node: starting as \(hostName)\(tailscaleIP.map { " (\($0))" } ?? "")\n".utf8))
+        var heartbeatHealthy = true
+    }
 
-        while true {
-            heartbeat(buildID: buildID)
-            drainNodeCommands(missingProbeCounts: &missingProbeCounts)
-            if Date() >= nextReconcile {
-                reconcileMembers(missingProbeCounts: &missingProbeCounts)
-                nextReconcile = Date().addingTimeInterval(20)
-            }
-            // The held event request is still push-style delivery; a five
-            // second ceiling also bounds durable-command retry latency when a
-            // trust/composer transition itself produced no new Broker event.
-            let response = MeshClient.events(after: cursor, timeoutMs: 5_000)
-            guard response.ok, let next = response.cursor else {
-                FileHandle.standardError.write(Data("pharos node: broker unavailable; retrying\n".utf8))
-                sleep(backoff)
-                backoff = min(backoff * 2, 15)
-                continue
-            }
-            backoff = 1
-            cursor = next
+    private static func iterate(_ state: inout LoopState, buildID: String?) {
+        heartbeat(buildID: buildID, healthy: &state.heartbeatHealthy)
+        drainNodeCommands(missingProbeCounts: &state.missingProbeCounts)
+        if Date() >= state.nextReconcile {
+            reconcileMembers(missingProbeCounts: &state.missingProbeCounts)
+            state.nextReconcile = Date().addingTimeInterval(20)
         }
+        // The held event request is still push-style delivery; a five
+        // second ceiling also bounds durable-command retry latency when a
+        // trust/composer transition itself produced no new Broker event.
+        let response = MeshClient.events(after: state.cursor, timeoutMs: 5_000)
+        guard response.ok, let next = response.cursor else {
+            FileHandle.standardError.write(Data("pharos node: broker unavailable; retrying\n".utf8))
+            sleep(state.backoff)
+            state.backoff = min(state.backoff * 2, 15)
+            return
+        }
+        state.backoff = 1
+        state.cursor = next
     }
 
     private static func drainNodeCommands(missingProbeCounts: inout [String: Int]) {
@@ -215,20 +229,43 @@ enum MeshNode {
     private static func executeStopCommand(_ command: MeshNodeCommand) {
         guard let data = command.payload?.data(using: .utf8),
               let payload = try? JSONDecoder().decode(MeshNodeStopPayload.self, from: data),
-              validSessionName(payload.sessionName), let tmux = tmuxExecutable else {
+              !payload.memberID.isEmpty, let tmux = tmuxExecutable else {
             update(command, state: .failed, result: "invalid stop payload or tmux unavailable")
             return
         }
-        prepareNodeTmuxDirectory()
-        let prefix = ["-S", nodeTmuxSocket]
+        let roster = MeshClient.send(MeshRequest(cmd: "who"))
+        guard roster.ok, let member = roster.members?.first(where: { $0.id == payload.memberID }) else {
+            update(command, state: .succeeded, result: "member already absent")
+            return
+        }
+        guard owns(member), let target = stopTarget(member) else {
+            update(command, state: .failed, result: "member is not owned by this node or has no safe tmux target")
+            return
+        }
+        let prefix = target.socket.map { ["-S", $0] } ?? []
         update(command, state: .running, result: "stopping managed tmux session")
-        guard run(tmux, prefix + ["has-session", "-t", payload.sessionName]).ok else {
+        let lookup = run(tmux, prefix + ["display-message", "-p", "-t", target.pane, "#{session_name}"])
+        guard lookup.ok else {
             update(command, state: .succeeded, result: "session already absent")
             return
         }
-        let result = run(tmux, prefix + ["kill-session", "-t", payload.sessionName])
+        let sessionName = lookup.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard validSessionName(sessionName) else {
+            update(command, state: .failed, result: "tmux returned an unsafe session name")
+            return
+        }
+        let result = run(tmux, prefix + ["kill-session", "-t", sessionName])
         update(command, state: result.ok ? .succeeded : .failed,
-               result: result.ok ? "stopped \(payload.sessionName)" : result.output)
+               result: result.ok ? "stopped \(sessionName)" : result.output)
+    }
+
+    /// Resolve stop authority from Broker-owned member identity, never from a
+    /// caller-supplied session name. nil socket deliberately means tmux's
+    /// default server; an explicit socket is accepted only after path checks.
+    static func stopTarget(_ member: MeshMemberInfo) -> (socket: String?, pane: String)? {
+        guard let pane = member.tmuxPane, validPane(pane) else { return nil }
+        if let socket = member.tmuxSocket, !validSocket(socket) { return nil }
+        return (member.tmuxSocket, pane)
     }
 
     private static func managedSessionInventory() -> String {
@@ -295,9 +332,17 @@ enum MeshNode {
         if !response.ok { log("command \(command.id) ACK failed: \(response.error ?? "unknown")") }
     }
 
-    private static func heartbeat(buildID: String?) {
-        _ = MeshClient.send(MeshRequest(cmd: "node-heartbeat", memberID: nodeID,
-                                        host: hostName, tailscaleIP: tailscaleIP, payload: buildID))
+    private static func heartbeat(buildID: String?, healthy: inout Bool) {
+        let response = MeshClient.send(MeshRequest(cmd: "node-heartbeat", memberID: nodeID,
+                                                   host: hostName, tailscaleIP: tailscaleIP,
+                                                   payload: buildID))
+        // A rejected heartbeat unregisters this Node from every control path
+        // (stop/spawn/poke). That must never be silent — log the transition.
+        if response.ok != healthy {
+            healthy = response.ok
+            log(healthy ? "heartbeat restored"
+                        : "heartbeat rejected: \(response.error ?? "no response")")
+        }
     }
 
     /// Periodically verify only durable machine facts: the exact pane and its
@@ -400,7 +445,19 @@ enum MeshNode {
         return value
     }()
 
+    /// Cached: the getter is consulted on every heartbeat and every ownership
+    /// check, and the underlying probe shells out to the tailscale CLI. The
+    /// single-threaded node loop is the only reader/writer.
+    nonisolated(unsafe) private static var tailscaleIPCache: (value: String?, expires: Date) = (nil, .distantPast)
+
     private static var tailscaleIP: String? {
+        if Date() < tailscaleIPCache.expires { return tailscaleIPCache.value }
+        let value = probeTailscaleIP()
+        tailscaleIPCache = (value, Date().addingTimeInterval(60))
+        return value
+    }
+
+    private static func probeTailscaleIP() -> String? {
         if let value = ProcessInfo.processInfo.environment["PHAROS_TAILSCALE_IP"], !value.isEmpty { return value }
         for executable in ["/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale",
                            "/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/usr/bin/tailscale"]
@@ -424,12 +481,11 @@ enum MeshNode {
     }
 
     private static func validPane(_ value: String) -> Bool {
-        let digits = value.first == "%" ? value.dropFirst() : Substring(value)
-        return !digits.isEmpty && digits.allSatisfy(\.isNumber)
+        MeshPaneSafety.validTmuxPane(value)
     }
 
     private static func validSocket(_ value: String) -> Bool {
-        value.hasPrefix("/") && !value.contains("\n") && !value.contains("\r")
+        MeshPaneSafety.validTmuxSocket(value)
     }
 
     private struct CommandResult { let ok: Bool; let output: String }
@@ -440,6 +496,13 @@ enum MeshNode {
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         process.standardOutput = pipe; process.standardError = pipe
+        // Close both ends deterministically: FileHandle deallocation is not
+        // prompt in this daemon (see the loop's autorelease note), and leaked
+        // pipe fds eventually exhaust the process fd table.
+        defer {
+            try? pipe.fileHandleForReading.close()
+            try? pipe.fileHandleForWriting.close()
+        }
         do { try process.run() }
         catch { return CommandResult(ok: false, output: error.localizedDescription) }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()

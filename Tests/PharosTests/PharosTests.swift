@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import Darwin
 @testable import Pharos
 
 // MARK: - SessionsService.encodeClaudePath
@@ -1258,10 +1259,16 @@ final class MeshStateMappingTests: XCTestCase {
     /// re-verified on CC v2.1.207, 2026-07-11).
     func testHookEventMapping() {
         XCTAssertEqual(MeshHooks.stateFor(event: "UserPromptSubmit", notificationType: nil), .busy)
+        XCTAssertEqual(MeshHooks.stateFor(event: "PermissionRequest", notificationType: nil), .blocked)
+        XCTAssertEqual(MeshHooks.stateFor(event: "ElicitationResult", notificationType: nil), .busy)
+        XCTAssertEqual(MeshHooks.stateFor(event: "PostToolUseFailure", notificationType: nil), .busy)
+        XCTAssertEqual(MeshHooks.stateFor(event: "StopFailure", notificationType: nil), .stopped)
         XCTAssertEqual(MeshHooks.stateFor(event: "SessionEnd", notificationType: nil), .gone)
         XCTAssertEqual(MeshHooks.stateFor(event: "Notification", notificationType: "permission_prompt"), .blocked)
         XCTAssertEqual(MeshHooks.stateFor(event: "Notification", notificationType: "elicitation_dialog"), .blocked)
         XCTAssertEqual(MeshHooks.stateFor(event: "Notification", notificationType: "idle_prompt"), .idle)
+        XCTAssertEqual(MeshHooks.stateFor(event: "Notification", notificationType: "elicitation_complete"), .busy)
+        XCTAssertEqual(MeshHooks.stateFor(event: "Notification", notificationType: "elicitation_response"), .busy)
     }
 
     /// Unknown events/notification types are deliberately ignored — a CC
@@ -1281,15 +1288,88 @@ final class MeshStateMappingTests: XCTestCase {
         XCTAssertFalse(MeshSessionState.blocked.pokeable)
         XCTAssertFalse(MeshSessionState.gone.pokeable)
     }
+
+    func testStopContinuationUsesPlatformSpecificOutputSchema() {
+        let claude = MeshHooks.continuationPayload(text: "hello", codex: false)
+        XCTAssertNil(claude["decision"])
+        let claudeOutput = claude["hookSpecificOutput"] as? [String: String]
+        XCTAssertEqual(claudeOutput?["hookEventName"], "Stop")
+        XCTAssertEqual(claudeOutput?["additionalContext"], "hello")
+
+        let codex = MeshHooks.continuationPayload(text: "hello", codex: true)
+        XCTAssertEqual(codex["decision"] as? String, "block")
+        XCTAssertEqual(codex["reason"] as? String, "hello")
+        XCTAssertEqual(codex["suppressOutput"] as? Bool, true)
+        XCTAssertNil(codex["hookSpecificOutput"])
+    }
+
+    func testClaudeHookInstallerWritesFullManifestAndRepairsMatcher() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pharos-hooks-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        XCTAssertEqual(MeshHooks.installHooks(["--project", directory.path]), 0)
+        let settings = directory.appendingPathComponent(".claude/settings.json")
+        var root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: settings))
+                                 as? [String: Any])
+        var hooks = try XCTUnwrap(root["hooks"] as? [String: Any])
+        for event in ["Stop", "SessionStart", "UserPromptSubmit", "PermissionRequest",
+                      "Notification", "ElicitationResult", "PostToolUseFailure",
+                      "StopFailure", "SessionEnd", "PostToolUse"] {
+            XCTAssertNotNil(hooks[event], "missing \(event)")
+        }
+
+        var post = try XCTUnwrap(hooks["PostToolUse"] as? [[String: Any]])
+        post[0]["matcher"] = "Edit"
+        hooks["PostToolUse"] = post
+        root["hooks"] = hooks
+        try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+            .write(to: settings, options: .atomic)
+
+        XCTAssertEqual(MeshHooks.installHooks(["--project", directory.path]), 0)
+        root = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: settings))
+                             as? [String: Any])
+        hooks = try XCTUnwrap(root["hooks"] as? [String: Any])
+        post = try XCTUnwrap(hooks["PostToolUse"] as? [[String: Any]])
+        XCTAssertEqual(post[0]["matcher"] as? String, "*")
+    }
+}
+
+final class MeshTransportResilienceTests: XCTestCase {
+    func testSocketReadTimeoutPreventsHalfOpenNodeLoop() {
+        var descriptors: [Int32] = [-1, -1]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors), 0)
+        guard descriptors[0] >= 0, descriptors[1] >= 0 else { return }
+        defer { close(descriptors[0]); close(descriptors[1]) }
+
+        meshSetSocketTimeouts(descriptors[0], seconds: 0.25)
+        let start = Date()
+        var byte: UInt8 = 0
+        XCTAssertEqual(read(descriptors[0], &byte, 1), -1)
+        XCTAssertTrue(errno == EAGAIN || errno == EWOULDBLOCK)
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertGreaterThanOrEqual(elapsed, 0.15)
+        XCTAssertLessThan(elapsed, 1.5)
+    }
+
+    func testTmuxTargetValidationAcceptsDefaultAndAbsoluteSocketsOnly() {
+        XCTAssertTrue(MeshPaneSafety.validTmuxPane("%28"))
+        XCTAssertTrue(MeshPaneSafety.validTmuxPane("28"))
+        XCTAssertFalse(MeshPaneSafety.validTmuxPane("%2;kill-server"))
+        XCTAssertTrue(MeshPaneSafety.validTmuxSocket("/private/tmp/tmux-501/default"))
+        XCTAssertFalse(MeshPaneSafety.validTmuxSocket("relative.sock"))
+        XCTAssertFalse(MeshPaneSafety.validTmuxSocket("/tmp/ok\nkill-server"))
+    }
 }
 
 final class MeshWireTests: XCTestCase {
 
     func testSessionKeyedPresenceDecodes() throws {
-        let raw = #"{"v":2,"members":{"sid":{"project":"/tmp/x","session":"sid","aliases":{"r":"bot"},"rooms":["r"],"lastSeen":1.0,"online":true}}}"#
+        let raw = #"{"v":2,"members":{"sid":{"project":"/tmp/x","session":"sid","state":"blocked","stateReason":"permission:Bash","aliases":{"r":"bot"},"rooms":["r"],"lastSeen":1.0,"online":true}}}"#
         let p = try JSONDecoder().decode(MeshPresence.self, from: Data(raw.utf8))
         XCTAssertEqual(p.members["sid"]?.aliases["r"], "bot")
         XCTAssertEqual(p.members["sid"]?.session, "sid")
+        XCTAssertEqual(p.members["sid"]?.stateReason, "permission:Bash")
     }
 
     /// Text-mention parsing feeds both the GUI input and CLI say — the poke

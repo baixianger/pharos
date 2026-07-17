@@ -15,6 +15,7 @@ struct MeshRequest: Codable, Sendable, Equatable {
     var tmuxPane: String?
     var tmuxSocket: String? = nil
     var state: String?
+    var stateReason: String?
     var expectedState: String?
     var expectedStateTs: Double?
     var kind: String?
@@ -128,6 +129,7 @@ struct MeshMember: Codable, Sendable, Equatable, Identifiable {
     var tmuxSocket: String? = nil
     var state: String?
     var stateTs: Double?
+    var stateReason: String?
     var unread: Int?
     var kind: String?
     var tailscaleIP: String?

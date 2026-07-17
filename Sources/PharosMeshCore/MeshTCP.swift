@@ -66,6 +66,7 @@ public func meshTCPConnect(_ endpoint: String, timeoutSec: Double = 5) -> Int32?
             let cr = meshSystemConnect(fd, p.pointee.ai_addr, p.pointee.ai_addrlen)
             if cr == 0 {
                 _ = fcntl(fd, F_SETFL, flags)                 // restore blocking
+                meshSetSocketTimeouts(fd, seconds: timeoutSec)
                 return fd
             }
             if errno == EINPROGRESS {
@@ -76,6 +77,7 @@ public func meshTCPConnect(_ endpoint: String, timeoutSec: Double = 5) -> Int32?
                     getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len)
                     if err == 0 {
                         _ = fcntl(fd, F_SETFL, flags)         // restore blocking
+                        meshSetSocketTimeouts(fd, seconds: timeoutSec)
                         return fd
                     }
                 }
@@ -85,6 +87,29 @@ public func meshTCPConnect(_ endpoint: String, timeoutSec: Double = 5) -> Int32?
         cur = p.pointee.ai_next
     }
     return nil
+}
+
+/// Bound both halves of an established TCP round-trip. A connect timeout alone
+/// is insufficient: if a broker or Tailscale path disappears after connect,
+/// a blocking `read` can otherwise leave a Node process alive forever while
+/// its heartbeat and command loop have silently stopped.
+public func meshSetSocketTimeouts(_ fd: Int32, seconds: Double) {
+    let clamped = max(0.25, seconds)
+    let whole = Int(clamped)
+    let micros = Int((clamped - Double(whole)) * 1_000_000)
+    var value = timeval()
+    value.tv_sec = numericCast(whole)
+    value.tv_usec = numericCast(micros)
+    let size = socklen_t(MemoryLayout<timeval>.size)
+    withUnsafePointer(to: &value) { pointer in
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, pointer, size)
+        _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, pointer, size)
+    }
+    #if canImport(Darwin)
+    var noSignal: Int32 = 1
+    _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal,
+                   socklen_t(MemoryLayout<Int32>.size))
+    #endif
 }
 
 /// Bind + listen a TCP socket for the broker. host empty → any interface

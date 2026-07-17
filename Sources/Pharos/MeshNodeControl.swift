@@ -20,10 +20,10 @@ enum MeshNodeControl {
                       key: "spawn:\(node.id):\(payload.sessionName):\(UUID().uuidString)")
     }
 
-    static func stop(node: MeshNodeInfo, sessionName: String) async -> MeshNodeCommand {
+    static func stop(node: MeshNodeInfo, memberID: String) async -> MeshNodeCommand {
         await enqueue(nodeID: node.id, action: .stopSession,
-                      payload: MeshNodeStopPayload(sessionName: sessionName),
-                      key: "stop:\(node.id):\(sessionName):\(UUID().uuidString)")
+                      payload: MeshNodeStopPayload(memberID: memberID),
+                      key: "stop:\(node.id):\(memberID):\(UUID().uuidString)")
     }
 
     private static func enqueue<T: Encodable>(nodeID: String, action: MeshNodeCommandAction,

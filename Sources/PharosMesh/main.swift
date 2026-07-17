@@ -296,9 +296,9 @@ private enum MeshHeadlessCLI {
                                      idempotencyKey: "spawn:\(args[1]):\(args[3]):\(UUID().uuidString)",
                                      wait: args.contains("--wait"))
         case "stop":
-            guard args.count >= 3 else { return usageError("node stop <node-id> <session> [--wait]") }
+            guard args.count >= 3 else { return usageError("node stop <node-id> <member-id> [--wait]") }
             return enqueueNodeAction(nodeID: args[1], action: .stopSession,
-                                     payload: MeshNodeStopPayload(sessionName: args[2]),
+                                     payload: MeshNodeStopPayload(memberID: args[2]),
                                      idempotencyKey: "stop:\(args[1]):\(args[2]):\(UUID().uuidString)",
                                      wait: args.contains("--wait"))
         default:

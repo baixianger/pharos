@@ -153,7 +153,15 @@ public enum MeshClient {
     /// the timeout expires. This removes foreground polling without making the
     /// event buffer the source of truth.
     public static func events(after cursor: UInt64?, timeoutMs: Int = 25_000) -> MeshResponse {
-        send(MeshRequest(cmd: "events", timeoutMs: timeoutMs, cursor: cursor))
+        let request = MeshRequest(cmd: "events", timeoutMs: timeoutMs, cursor: cursor)
+        guard activeRemote != nil else { return send(request) }
+        guard let fd = connect() else { return .fail("cannot reach remote mesh broker") }
+        defer { close(fd) }
+        // The broker deliberately holds this request open. Give it a small
+        // grace period beyond the requested long-poll deadline, but never an
+        // unbounded read if the connection becomes half-open.
+        meshSetSocketTimeouts(fd, seconds: Double(timeoutMs) / 1_000 + 2)
+        return roundTrip(fd, request)
     }
 
     /// Send directly to a specific TCP broker, bypassing the environment and

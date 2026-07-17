@@ -26,6 +26,19 @@ enum AgentStatus {
     static func icon(_ kind: String?) -> String {
         kind == "codex" ? "chevron.left.forwardslash.chevron.right" : "sparkles"
     }
+
+    static func reason(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty else { return nil }
+        if raw == "permission" { return "Permission required" }
+        if raw.hasPrefix("permission:") {
+            return "Permission required · " + String(raw.dropFirst("permission:".count))
+        }
+        if raw == "elicitation" { return "Waiting for form response" }
+        if raw.hasPrefix("api_error:") {
+            return "API error · " + String(raw.dropFirst("api_error:".count))
+        }
+        return raw
+    }
 }
 
 /// Live roster of every agent across every machine on the mesh — the "see other
@@ -135,6 +148,9 @@ struct AgentRow: View {
                     Text(AgentStatus.label(member.state)).font(.caption).foregroundStyle(.secondary)
                 }
                 Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                if let reason = AgentStatus.reason(member.stateReason) {
+                    Text(reason).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
                 if !member.rooms.isEmpty {
                     Text(member.rooms.map { "#\($0)" }.joined(separator: "  "))
                         .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
@@ -179,6 +195,9 @@ struct AgentDetailView: View {
                     }
                 }
                 LabeledContent("Agent", value: (member.kind ?? "claude").capitalized)
+                if let reason = AgentStatus.reason(member.stateReason) {
+                    LabeledContent("Attention", value: reason)
+                }
                 if let host = member.host { LabeledContent("Host", value: host) }
                 if let ip = member.tailscaleIP { LabeledContent("Tailscale IP", value: ip) }
                 if let project = member.project { LabeledContent("Directory", value: (project as NSString).abbreviatingWithTildeInPath) }

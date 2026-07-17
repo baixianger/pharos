@@ -218,15 +218,12 @@ struct DashboardView: View {
     }
 
     private func stopMeshAgent(_ m: MeshMemberInfo) {
-        if m.tmuxSocket?.hasSuffix("/.pharos/tmux/node.sock") == true,
-           let room = m.rooms.first,
-           let node = MeshNodeControl.activeNode(for: m.tailscaleIP ?? m.host) {
+        if let node = MeshNodeControl.activeNode(for: m.tailscaleIP ?? m.host) {
             let registrations = meshAgents.filter { $0.id == m.id }.flatMap { member in
                 member.rooms.map { (room: $0, nick: member.nick) }
             }
-            let sessionName = MeshSpawn.sessionName(room: room, nick: m.nick)
             Task {
-                let command = await MeshNodeControl.stop(node: node, sessionName: sessionName)
+                let command = await MeshNodeControl.stop(node: node, memberID: m.id)
                 if command.state == .succeeded {
                     if let error = await removeMeshRegistrations(registrations, memberID: m.id) {
                         agentActionError = error
@@ -651,6 +648,9 @@ private struct DashboardMeshAgentRow: View {
                 }
                 Text(machineLine)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if let reason = stateReasonLabel {
+                    Text(reason).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
                 if !member.rooms.isEmpty {
                     Text(member.rooms.sorted().map { "#\($0)" }.joined(separator: "  "))
                         .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
@@ -698,6 +698,19 @@ private struct DashboardMeshAgentRow: View {
         case .gone: .gray.opacity(0.4)
         case nil: .gray
         }
+    }
+
+    private var stateReasonLabel: String? {
+        guard let reason = member.stateReason, !reason.isEmpty else { return nil }
+        if reason == "permission" { return "Permission required" }
+        if reason.hasPrefix("permission:") {
+            return "Permission required · " + String(reason.dropFirst("permission:".count))
+        }
+        if reason == "elicitation" { return "Waiting for form response" }
+        if reason.hasPrefix("api_error:") {
+            return "API error · " + String(reason.dropFirst("api_error:".count))
+        }
+        return reason
     }
 }
 
