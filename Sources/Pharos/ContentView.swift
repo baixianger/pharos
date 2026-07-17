@@ -17,6 +17,9 @@ struct ContentView: View {
     /// dashboard); non-nil = this tab is a chat room showing that room (""
     /// until the first is picked). Per window tab, so tabs never co-switch.
     @State private var openRoom: String?
+    /// Menu-bar nav target for the Dashboard to scroll to, applied once then
+    /// cleared so a manual scroll isn't yanked back on the next redraw.
+    @State private var dashboardFocus: DashboardFocus?
     @State private var showAdd = false
     @State private var showImport = false
     @State private var showPalette = false
@@ -46,7 +49,8 @@ struct ContentView: View {
             } else if let id = selectedProject, store.project(id) != nil {
                 ProjectDetailView(projectID: id)
             } else {
-                DashboardView(selectedProject: $selectedProject, openRoom: $openRoom)
+                DashboardView(selectedProject: $selectedProject, openRoom: $openRoom,
+                              focus: $dashboardFocus)
             }
         }
         // Project ⇄ room are mutually exclusive within a tab.
@@ -131,6 +135,19 @@ struct ContentView: View {
         }
         .onChange(of: store.paletteRequested) { _, requested in
             if requested { showPalette = true; store.paletteRequested = false }
+        }
+        .onChange(of: store.menuNavRequest) { _, target in
+            guard let target else { return }
+            store.menuNavRequest = nil
+            switch target {
+            case .projects, .issues, .agents:
+                openRoom = nil
+                selectedProject = nil          // → Dashboard (cross-project home)
+                dashboardFocus = target.dashboardFocus
+            case .chatRooms:
+                selectedProject = nil
+                if openRoom == nil { openRoom = "" }   // open the rooms surface
+            }
         }
         .onChange(of: store.trashRequested) { _, requested in
             if requested { showTrash = true; store.trashRequested = false }

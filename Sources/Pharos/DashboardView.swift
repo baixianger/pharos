@@ -39,6 +39,8 @@ struct DashboardView: View {
     @Environment(ProjectStore.self) private var store
     @Binding var selectedProject: Project.ID?
     @Binding var openRoom: String?
+    /// Menu-bar deep-link: scroll to a section (issues/agents), then self-clear.
+    @Binding var focus: DashboardFocus?
 
     enum ActivityFilter: String, CaseIterable, Identifiable {
         case all = "All", issues = "Issues", updates = "Updates"
@@ -77,30 +79,41 @@ struct DashboardView: View {
     private var agentCount: Int { liveMeshAgents.count + unregisteredSessions.count }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                if !store.groups.isEmpty { groupTabs }
-                statTiles
-                statusCard
-                if !blocked.isEmpty || !urgent.isEmpty { attentionCard }
-                if !activeAgents.isEmpty { issueWorkCard }
-                if agentCount > 0 {
-                    DashboardAgentsCard(
-                        meshAgents: liveMeshAgents,
-                        unregisteredSessions: unregisteredSessions,
-                        onRename: beginRename,
-                        onAttachMesh: attachMeshAgent,
-                        onStopMesh: { meshAgentToStop = $0 },
-                        onAttachSession: attachSession,
-                        onStopSession: beginStopSession
-                    )
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    if !store.groups.isEmpty { groupTabs }
+                    statTiles
+                    statusCard
+                        .id(DashboardFocus.issues.rawValue)
+                    if !blocked.isEmpty || !urgent.isEmpty { attentionCard }
+                    if !activeAgents.isEmpty { issueWorkCard }
+                    if agentCount > 0 {
+                        DashboardAgentsCard(
+                            meshAgents: liveMeshAgents,
+                            unregisteredSessions: unregisteredSessions,
+                            onRename: beginRename,
+                            onAttachMesh: attachMeshAgent,
+                            onStopMesh: { meshAgentToStop = $0 },
+                            onAttachSession: attachSession,
+                            onStopSession: beginStopSession
+                        )
+                        .id(DashboardFocus.agents.rawValue)
+                    }
+                    if !meshMessages.isEmpty { meshCard }
+                    if projects.contains(where: { !$0.milestones.isEmpty }) { milestonesCard }
+                    activityCard
                 }
-                if !meshMessages.isEmpty { meshCard }
-                if projects.contains(where: { !$0.milestones.isEmpty }) { milestonesCard }
-                activityCard
+                .padding(22)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(22)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .onChange(of: focus) { _, target in
+                guard let target else { return }
+                withAnimation(.easeOut(duration: 0.25)) {
+                    proxy.scrollTo(target.rawValue, anchor: .top)
+                }
+                focus = nil            // one-shot: don't fight a later manual scroll
+            }
         }
         .navigationTitle(PharosViewTitle.dashboard)
         .onAppear(perform: loadMesh)

@@ -464,6 +464,10 @@ final class ProjectStore {
     var importRequested = false
     var paletteRequested = false
     var trashRequested = false
+    /// A menu-bar navigation request the main window consumes and clears.
+    /// Mirrors the iOS workspace tabs so the Mac menu-bar launches the same
+    /// four surfaces (projects/issues/agents/chat rooms).
+    var menuNavRequest: MenuNavTarget?
     var lastError: String?
     private(set) var registrySyncStatus: RegistrySyncStatus = .connecting
     private var registrySync: BrokerRegistrySync!
@@ -1227,6 +1231,7 @@ final class ProjectStore {
     func requestAdd() { addRequested = true }
     func requestImport() { importRequested = true }
     func requestPalette() { paletteRequested = true }
+    func requestMenuNav(_ target: MenuNavTarget) { menuNavRequest = target }
     func reportError(_ message: String) { lastError = message }
 
     // MARK: Scan roots
