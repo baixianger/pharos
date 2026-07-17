@@ -9,7 +9,7 @@ import Glibc
 enum MeshNodeService {
     private static let label = "me.pai.pharos.mesh-node"
 
-    static func install(endpoint: String?) throws -> String {
+    static func install(endpoint: String?, buildID: String? = nil) throws -> String {
         if let endpoint, !safeEndpoint(endpoint) { throw ServiceError.invalidEndpoint }
         #if os(macOS)
         let directory = FileManager.default.homeDirectoryForCurrentUser
@@ -23,6 +23,9 @@ enum MeshNodeService {
         let endpointArguments = endpoint.map {
             "<string>--endpoint</string><string>\(xml($0))</string>"
         } ?? ""
+        let buildArguments = buildID.map {
+            "<string>--build-id</string><string>\(xml($0))</string>"
+        } ?? ""
         let plist = """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -30,7 +33,7 @@ enum MeshNodeService {
           <key>Label</key><string>\(label)</string>
           <key>ProgramArguments</key><array>
             <string>\(xml(executable))</string><string>node</string><string>run</string>
-            \(endpointArguments)
+            \(endpointArguments)\(buildArguments)
           </array>
           <key>RunAtLoad</key><true/>
           <key>KeepAlive</key><true/>

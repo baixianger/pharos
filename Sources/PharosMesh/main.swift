@@ -120,7 +120,7 @@ private enum MeshHeadlessCLI {
             return 0
 
         case "--version", "version":
-            print("pharos-mesh 0.9.2")
+            print("pharos-mesh 0.9.3")
             return 0
 
         default:
@@ -169,9 +169,10 @@ private enum MeshHeadlessCLI {
             return MeshNode.run(endpoint: endpoint)
         case "install":
             let endpoint = option("--endpoint", in: args)
+            let buildID = option("--build-id", in: args)
             if let endpoint, meshSplitHostPort(endpoint) == nil { return usageError("node install [--endpoint HOST:PORT]") }
             do {
-                let path = try MeshNodeService.install(endpoint: endpoint)
+                let path = try MeshNodeService.install(endpoint: endpoint, buildID: buildID)
                 print("installed \(path)")
                 return 0
             } catch {

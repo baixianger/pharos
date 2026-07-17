@@ -25,13 +25,16 @@ enum MeshNodeBootstrap {
     }
 
     private static func ensureNode(helper: String, endpoint: String?) {
-        let expected = [helper, "node", "run"] + (endpoint.map { ["--endpoint", $0] } ?? [])
+        let buildID = Bundle.main.object(forInfoDictionaryKey: "GitCommit") as? String ?? "development"
+        let expected = [helper, "node", "run"]
+            + (endpoint.map { ["--endpoint", $0] } ?? []) + ["--build-id", buildID]
         let plist = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents/\(nodeLabel).plist")
         let installedArguments = (NSDictionary(contentsOf: plist)?["ProgramArguments"] as? [String]) ?? []
         if installedArguments == expected, serviceIsLoaded(nodeLabel) { return }
 
-        run(helper, ["node", "install"] + (endpoint.map { ["--endpoint", $0] } ?? []))
+        run(helper, ["node", "install"] + (endpoint.map { ["--endpoint", $0] } ?? [])
+            + ["--build-id", buildID])
     }
 
     private static func installBroker(helper: String, endpoint: String) {
@@ -40,7 +43,9 @@ enum MeshNodeBootstrap {
         let logs = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/Pharos", isDirectory: true)
         let plist = directory.appendingPathComponent("\(brokerLabel).plist")
-        let expected = [helper, "serve", "--bind", endpoint, "--data-dir", MeshPaths.dataDirectory.path]
+        let buildID = Bundle.main.object(forInfoDictionaryKey: "GitCommit") as? String ?? "development"
+        let expected = [helper, "serve", "--bind", endpoint, "--data-dir", MeshPaths.dataDirectory.path,
+                        "--build-id", buildID]
         let installed = (NSDictionary(contentsOf: plist)?["ProgramArguments"] as? [String]) ?? []
         if installed == expected, serviceIsLoaded(brokerLabel) { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
