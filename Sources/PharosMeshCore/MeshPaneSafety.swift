@@ -3,6 +3,13 @@ import Foundation
 /// Pure validation shared by the headless Host node and its tests. Client apps
 /// never receive an API that can write to tmux.
 public enum MeshPaneSafety {
+    /// Hooks own delivery while an agent is running or blocked. The Host node
+    /// may type only when the Broker has an explicit turn-boundary state.
+    public static func allowsPoke(state: String?) -> Bool {
+        guard let state, let value = MeshSessionState(rawValue: state) else { return false }
+        return value.pokeable
+    }
+
     public static func processTreeContainsAgent(_ output: String, rootPID: Int, kind: String?) -> Bool {
         struct Row { let pid: Int; let parent: Int; let executable: String }
         let rows: [Row] = output.split(separator: "\n").compactMap { line in

@@ -36,9 +36,6 @@ enum MeshNode {
                 log(result == nil ? "poked @\(member.nick) in \(member.tmuxPane ?? "?")"
                                   : "skipped @\(member.nick): \(result!)")
             }
-            if (response.events ?? []).contains(where: { $0.kind == .roster }) {
-                sweepUnread()
-            }
         }
     }
 
@@ -66,6 +63,9 @@ enum MeshNode {
     }
 
     static func poke(_ member: MeshMemberInfo) -> String? {
+        guard MeshPaneSafety.allowsPoke(state: member.state) else {
+            return "hook owns delivery while state is \(member.state ?? "unknown")"
+        }
         guard let pane = member.tmuxPane, validPane(pane) else { return "missing or unsafe tmux pane" }
         guard let tmux = tmuxExecutable else { return "tmux not found" }
         if let socket = member.tmuxSocket, !validSocket(socket) { return "unsafe tmux socket" }

@@ -1313,6 +1313,16 @@ final class MeshWireTests: XCTestCase {
 }
 
 final class MeshPaneSafetyTests: XCTestCase {
+    func testOnlyExplicitTurnBoundaryStatesAllowNodePoke() {
+        XCTAssertTrue(MeshPaneSafety.allowsPoke(state: "stopped"))
+        XCTAssertTrue(MeshPaneSafety.allowsPoke(state: "idle"))
+        XCTAssertFalse(MeshPaneSafety.allowsPoke(state: "busy"))
+        XCTAssertFalse(MeshPaneSafety.allowsPoke(state: "blocked"))
+        XCTAssertFalse(MeshPaneSafety.allowsPoke(state: "gone"))
+        XCTAssertFalse(MeshPaneSafety.allowsPoke(state: nil))
+        XCTAssertFalse(MeshPaneSafety.allowsPoke(state: "future-state"))
+    }
+
     func testAgentDetectedBehindTmuxWrapperShell() {
         let codex = """
           100     1 /bin/zsh
