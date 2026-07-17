@@ -468,6 +468,16 @@ final class ProjectStore {
     /// Mirrors the iOS workspace tabs so the Mac menu-bar launches the same
     /// four surfaces (projects/issues/agents/chat rooms).
     var menuNavRequest: MenuNavTarget?
+    /// Menu-bar submenu deep-links: open one specific project or chat room in
+    /// the main window. Consumed and cleared by ContentView.
+    var requestedProjectOpen: Project.ID?
+    var requestedRoomOpen: String?
+    /// Cached mesh snapshot for the menu-bar Agents/Chat-Rooms submenus, so the
+    /// menu never blocks on a synchronous round-trip to the (possibly remote)
+    /// broker. Refreshed by a light background poll while the app runs.
+    private(set) var meshRoster: [MeshMemberInfo] = []
+    private(set) var meshRoomNames: [String] = []
+    private var meshSnapshotPolling = false
     var lastError: String?
     private(set) var registrySyncStatus: RegistrySyncStatus = .connecting
     private var registrySync: BrokerRegistrySync!
@@ -1232,6 +1242,38 @@ final class ProjectStore {
     func requestImport() { importRequested = true }
     func requestPalette() { paletteRequested = true }
     func requestMenuNav(_ target: MenuNavTarget) { menuNavRequest = target }
+    func requestOpenProject(_ id: Project.ID) { requestedProjectOpen = id }
+
+    /// Keep `meshRoster`/`meshRoomNames` warm for the menu bar. Idempotent: the
+    /// first caller starts the loop; later calls are no-ops.
+    func startMeshSnapshotPolling() {
+        guard !meshSnapshotPolling else { return }
+        meshSnapshotPolling = true
+        Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshMeshSnapshot()
+                try? await Task.sleep(for: .seconds(4))
+            }
+        }
+    }
+
+    func refreshMeshSnapshot() async {
+        let snapshot = await Task.detached { () -> (roster: [MeshMemberInfo], rooms: [String]) in
+            let roster = MeshClient.send(MeshRequest(cmd: "who")).members ?? []
+            let rooms = (MeshClient.send(MeshRequest(cmd: "list")).rooms ?? []).map(\.name)
+            return (roster, rooms)
+        }.value
+        meshRoster = snapshot.roster.filter { $0.nick != "human" }
+            .sorted { $0.nick.lowercased() < $1.nick.lowercased() }
+        meshRoomNames = snapshot.rooms.sorted { $0.lowercased() < $1.lowercased() }
+    }
+    func requestOpenRoom(_ room: String) { requestedRoomOpen = room }
+    /// Open a specific issue: select its project, then queue the issue so the
+    /// project detail view opens its sheet.
+    func requestOpenIssue(projectID: Project.ID, number: Int) {
+        requestedProjectOpen = projectID
+        requestIssue(projectID, number: number)
+    }
     func reportError(_ message: String) { lastError = message }
 
     // MARK: Scan roots

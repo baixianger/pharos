@@ -60,6 +60,8 @@ struct PharosApp: App {
                 .environment(store)
                 .preferredColorScheme(store.appearance.colorScheme)
                 .task {
+                    // Keep the menu-bar Agents/Chat-Rooms submenus warm.
+                    store.startMeshSnapshotPolling()
                     // Upgrade bridge: restore a reachable legacy Mac pairing
                     // before mesh routing/spawn/poke reads `peerHost`.
                     await store.recoverLegacyPeerIfNeeded()

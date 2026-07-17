@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <!-- Pharos — lighthouse mark (office v1 geometry, structured & parametric).
        disc c(512,474) r303 · beams: bowtie wedges, center y 458,
-       tip half-height 5.5, edge slope 0.127 · tower taper 0.148/side.
+       tip half-height 5.5, edge slope 0.176 · tower taper 0.148/side.
        Lighthouse + beams are a mask cutout: they show the background through the disc.
        Wave bands: edit band-1..4 fills (all #2F2F2F = solid disc). -->
   <defs>
@@ -9,8 +9,8 @@
     <mask id="cutout" maskUnits="userSpaceOnUse">
       <rect width="1024" height="1024" fill="#fff"/>
       <g id="beams-neg" fill="#000">
-        <polygon id="beam-left" points="529,452.5 529,463.5 185,507.2 185,408.8"/>
-        <polygon id="beam-right" points="663,452.5 663,463.5 839,485.9 839,430.1"/>
+        <polygon id="beam-left" points="529,452.5 529,463.5 185,524 185,392"/>
+        <polygon id="beam-right" points="663,452.5 663,463.5 839,494.5 839,421.5"/>
       </g>
       <g id="lighthouse-neg" fill="#000">
         <polygon id="roof" points="596,343.5 661,402 531,402"/>

@@ -7,6 +7,45 @@ import SwiftUI
 /// Only touched from the main actor (`onAppear`), so the unchecked access is safe.
 private nonisolated(unsafe) var launchCountedThisProcess = false
 
+/// Routes menu-bar requests (surface nav + specific project/room deep-links)
+/// into the main window's split-view selection. Bundled as one modifier so
+/// ContentView's body stays within the type-checker's budget.
+private struct MenuBarRouting: ViewModifier {
+    @Environment(ProjectStore.self) private var store
+    @Binding var selectedProject: Project.ID?
+    @Binding var openRoom: String?
+    @Binding var dashboardFocus: DashboardFocus?
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: store.menuNavRequest) { _, target in
+                guard let target else { return }
+                store.menuNavRequest = nil
+                switch target {
+                case .projects, .issues, .agents:
+                    openRoom = nil
+                    selectedProject = nil          // → Dashboard (cross-project home)
+                    dashboardFocus = target.dashboardFocus
+                case .chatRooms:
+                    selectedProject = nil
+                    if openRoom == nil { openRoom = "" }   // open the rooms surface
+                }
+            }
+            .onChange(of: store.requestedProjectOpen) { _, id in
+                guard let id else { return }
+                store.requestedProjectOpen = nil
+                openRoom = nil
+                selectedProject = id
+            }
+            .onChange(of: store.requestedRoomOpen) { _, room in
+                guard let room else { return }
+                store.requestedRoomOpen = nil
+                selectedProject = nil
+                openRoom = room
+            }
+    }
+}
+
 struct ContentView: View {
     @Environment(ProjectStore.self) private var store
     @State private var snapSettingsTab: Int?   // snapshot mode: Settings shown as a sheet
@@ -35,23 +74,28 @@ struct ContentView: View {
         return PharosTabTitle.dashboard
     }
 
+    @ViewBuilder
+    private var detailView: some View {
+        if let t = snapSettingsTab {
+            SettingsView(initialTab: t)   // snapshot mode: Settings inline in the detail pane
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if openRoom != nil {
+            MeshRoomView(room: Binding(get: { openRoom ?? "" }, set: { openRoom = $0 }))
+        } else if let id = selectedProject, store.project(id) != nil {
+            ProjectDetailView(projectID: id)
+        } else {
+            DashboardView(selectedProject: $selectedProject, openRoom: $openRoom,
+                          focus: $dashboardFocus)
+        }
+    }
+
     var body: some View {
         @Bindable var store = store
         NavigationSplitView {
             ProjectsSidebar(selectedProject: $selectedProject, openRoom: $openRoom, searchText: searchText)
                 .navigationSplitViewColumnWidth(min: 248, ideal: 300, max: 400)
         } detail: {
-            if let t = snapSettingsTab {
-                SettingsView(initialTab: t)   // snapshot mode: Settings inline in the detail pane
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if openRoom != nil {
-                MeshRoomView(room: Binding(get: { openRoom ?? "" }, set: { openRoom = $0 }))
-            } else if let id = selectedProject, store.project(id) != nil {
-                ProjectDetailView(projectID: id)
-            } else {
-                DashboardView(selectedProject: $selectedProject, openRoom: $openRoom,
-                              focus: $dashboardFocus)
-            }
+            detailView
         }
         // Project ⇄ room are mutually exclusive within a tab.
         .onChange(of: selectedProject) { _, id in if id != nil { openRoom = nil } }
@@ -136,19 +180,8 @@ struct ContentView: View {
         .onChange(of: store.paletteRequested) { _, requested in
             if requested { showPalette = true; store.paletteRequested = false }
         }
-        .onChange(of: store.menuNavRequest) { _, target in
-            guard let target else { return }
-            store.menuNavRequest = nil
-            switch target {
-            case .projects, .issues, .agents:
-                openRoom = nil
-                selectedProject = nil          // → Dashboard (cross-project home)
-                dashboardFocus = target.dashboardFocus
-            case .chatRooms:
-                selectedProject = nil
-                if openRoom == nil { openRoom = "" }   // open the rooms surface
-            }
-        }
+        .modifier(MenuBarRouting(selectedProject: $selectedProject, openRoom: $openRoom,
+                                 dashboardFocus: $dashboardFocus))
         .onChange(of: store.trashRequested) { _, requested in
             if requested { showTrash = true; store.trashRequested = false }
         }
