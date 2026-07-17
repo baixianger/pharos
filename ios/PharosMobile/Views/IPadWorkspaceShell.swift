@@ -66,6 +66,7 @@ struct IPadWorkspaceShell: View {
             SettingsView(showsDoneButton: true)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 10)
+                .background(Color(uiColor: .systemBackground))
                 .presentationSizing(.form)
         }
         .task {
