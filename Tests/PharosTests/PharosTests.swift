@@ -1501,6 +1501,61 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
                        ["session-orbidash", "session-lelantos"])
     }
 
+    func testSayDerivesSenderAliasFromMemberSession() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "dev", nick: "real-agent",
+                                                 session: "session-real", host: "mac")).ok)
+
+        let sent = broker.process(MeshRequest(cmd: "say", room: "dev", nick: "spoofed-agent",
+                                              memberID: "session-real", text: "hello"))
+        XCTAssertTrue(sent.ok)
+        let history = broker.process(MeshRequest(cmd: "history", room: "dev")).messages ?? []
+        XCTAssertEqual(history.last?.from, "real-agent")
+    }
+
+    func testSayInfersOnlyJoinedRoomFromMemberSession() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "only-room", nick: "agent",
+                                                 session: "session-only", host: "mac")).ok)
+
+        let sent = broker.process(MeshRequest(cmd: "say", memberID: "session-only", text: "hello"))
+        XCTAssertTrue(sent.ok)
+        XCTAssertEqual(broker.process(MeshRequest(cmd: "history", room: "only-room"))
+            .messages?.last?.from, "agent")
+    }
+
+    func testSayRequiresExplicitRoomWhenSessionJoinedMultipleRooms() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "alpha", nick: "alpha-agent",
+                                                 session: "session-many", host: "mac")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "beta", nick: "beta-agent",
+                                                 session: "session-many", host: "mac")).ok)
+
+        let ambiguous = broker.process(MeshRequest(cmd: "say", memberID: "session-many", text: "wrong room"))
+        XCTAssertFalse(ambiguous.ok)
+        XCTAssertTrue(ambiguous.error?.contains("multiple rooms") == true)
+        XCTAssertTrue((broker.process(MeshRequest(cmd: "history", room: "alpha")).messages ?? []).isEmpty)
+        XCTAssertTrue((broker.process(MeshRequest(cmd: "history", room: "beta")).messages ?? []).isEmpty)
+
+        let explicit = broker.process(MeshRequest(cmd: "say", room: "beta",
+                                                  memberID: "session-many", text: "right room"))
+        XCTAssertTrue(explicit.ok)
+        XCTAssertEqual(broker.process(MeshRequest(cmd: "history", room: "beta"))
+            .messages?.last?.from, "beta-agent")
+    }
+
+    func testSayRejectsUnregisteredAgentButAllowsExplicitHuman() {
+        let broker = MeshBroker()
+        let agent = broker.process(MeshRequest(cmd: "say", room: "dev", nick: "agent", text: "hello"))
+        XCTAssertFalse(agent.ok)
+        XCTAssertTrue(agent.error?.contains("member identity required") == true)
+
+        let human = broker.process(MeshRequest(cmd: "say", room: "dev", nick: "human", text: "hello"))
+        XCTAssertTrue(human.ok)
+        XCTAssertEqual(broker.process(MeshRequest(cmd: "history", room: "dev"))
+            .messages?.last?.from, "human")
+    }
+
     func testJoinReportsTailscaleIPInRosterAndSay() {
         let broker = MeshBroker()
         XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "ts-room", nick: "ip-agent",
@@ -1584,6 +1639,7 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         XCTAssertTrue(capabilities.contains("pairing-v1"))
         XCTAssertTrue(capabilities.contains("events-v1"))
         XCTAssertTrue(capabilities.contains("node-v1"))
+        XCTAssertTrue(capabilities.contains("session-sender-v1"))
     }
 
     func testEventCursorPublishesMessageAndDirectedPoke() throws {
@@ -1674,12 +1730,14 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
 
     func testReplyResolvesStableMessageAndPersistsSnapshot() {
         let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "dev", nick: "codex",
+                                                 session: "session-codex", host: "mac")).ok)
         XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "dev", nick: "human",
                                                  text: "original context")).ok)
         let original = broker.process(MeshRequest(cmd: "history", room: "dev")).messages!.first!
         XCTAssertFalse(original.stableID.isEmpty)
 
-        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "dev", nick: "codex",
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "dev", memberID: "session-codex",
                                                  text: "answer", replyToID: original.stableID)).ok)
         let reply = broker.process(MeshRequest(cmd: "history", room: "dev")).messages!.last!
         XCTAssertEqual(reply.replyTo?.messageID, original.stableID)

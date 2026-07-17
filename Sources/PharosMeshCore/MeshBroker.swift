@@ -645,7 +645,8 @@ public final class MeshBroker: @unchecked Sendable {
         case "capabilities":
             return MeshResponse(ok: true, capabilities: [
                 "mesh-v2", "message-id", "reply-v1", "attachment-v1", "headless-v1",
-                "registry-cas-v1", "pairing-v1", "events-v1", "node-v1"
+                "registry-cas-v1", "pairing-v1", "events-v1", "node-v1",
+                "session-sender-v1"
             ])
 
         case "events":
@@ -821,7 +822,10 @@ public final class MeshBroker: @unchecked Sendable {
             return .okay()
 
         case "say":
-            guard let r = req.room, let n = req.nick else { return .fail("room and nick required") }
+            let identity = resolveMessageSender(request: req)
+            guard let r = identity.room, let n = identity.nick else {
+                return .fail(identity.error ?? "member identity required")
+            }
             let t = req.text ?? ""
             let attachments = req.attachments ?? []
             guard !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty else {
@@ -1351,6 +1355,43 @@ public final class MeshBroker: @unchecked Sendable {
             }
         }
         return best?.id
+    }
+
+    /// Resolve an agent's display identity from broker-owned membership state.
+    /// Agent-provided nicknames are deliberately ignored: a member/session ID
+    /// selects the room-scoped alias that was registered by `join`. GUI/mobile
+    /// requests remain the explicit `human` actor under the Tailscale trust boundary.
+    private func resolveMessageSender(request req: MeshRequest)
+        -> (room: String?, nick: String?, error: String?) {
+        guard let memberID = req.memberID, !memberID.isEmpty else {
+            guard req.nick == "human", let room = req.room, !room.isEmpty else {
+                return (nil, nil, "member identity required; run this command from a joined agent session")
+            }
+            return (room, "human", nil)
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = presence[memberID] else {
+            return (nil, nil, "member session is not joined; run pharos mesh join first")
+        }
+        let memberships = entry.aliases.filter { room, alias in
+            rooms[room]?.members[alias] == memberID
+        }
+        if let requestedRoom = req.room, !requestedRoom.isEmpty {
+            guard let alias = memberships[requestedRoom] else {
+                return (nil, nil, "member session has not joined room \(requestedRoom)")
+            }
+            return (requestedRoom, alias, nil)
+        }
+        guard !memberships.isEmpty else {
+            return (nil, nil, "member session has not joined a room")
+        }
+        guard memberships.count == 1, let only = memberships.first else {
+            let names = memberships.keys.sorted().joined(separator: ", ")
+            return (nil, nil, "member session belongs to multiple rooms (\(names)); specify --room")
+        }
+        return (only.key, only.value, nil)
     }
 
     /// Recompute a nick's room list without bumping lastSeen (room deleted/renamed).

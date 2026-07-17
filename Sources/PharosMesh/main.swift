@@ -79,7 +79,10 @@ private enum MeshHeadlessCLI {
 
         case "say":
             guard args.count >= 4 else { return usageError("say <room> <nick> <text> [--reply ID] [--attach FILE]") }
-            var request = MeshRequest(cmd: "say", room: args[1], nick: args[2], text: args[3])
+            let memberID = option("--member", in: args)
+                ?? ProcessInfo.processInfo.environment["PHAROS_MESH_SESSION"]
+            var request = MeshRequest(cmd: "say", room: args[1], nick: args[2], memberID: memberID,
+                                      text: args[3])
             request.to = mentions(in: args[3])
             request.replyToID = option("--reply", in: args)
             if request.replyToID != nil || option("--attach", in: args) != nil {
@@ -99,10 +102,42 @@ private enum MeshHeadlessCLI {
             }
             return printResponse(MeshClient.send(request))
 
+        case "send":
+            guard args.count >= 2, !args[1].hasPrefix("--") else {
+                return usageError("send <text> [--room ROOM] [--member SESSION] [--reply ID] [--attach FILE]")
+            }
+            guard let memberID = option("--member", in: args)
+                    ?? ProcessInfo.processInfo.environment["PHAROS_MESH_SESSION"],
+                  !memberID.isEmpty else {
+                FileHandle.standardError.write(Data("error: pass --member <session-id> or set PHAROS_MESH_SESSION\n".utf8))
+                return 2
+            }
+            var request = MeshRequest(cmd: "say", room: option("--room", in: args),
+                                      memberID: memberID, text: args[1])
+            let textMentions = mentions(in: args[1]) ?? []
+            request.to = textMentions + args.dropFirst(2).compactMap {
+                $0.hasPrefix("@") ? String($0.dropFirst()) : nil
+            }.filter { !textMentions.contains($0) }
+            request.replyToID = option("--reply", in: args)
+            if let path = option("--attach", in: args) {
+                do {
+                    request.attachments = [try MeshClient.uploadAttachment(fileAt: URL(fileURLWithPath: path))]
+                } catch {
+                    FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+                    return 1
+                }
+            }
+            return printResponse(MeshClient.send(request))
+
         case "recv":
-            guard args.count >= 2 else { return usageError("recv <nick> [--member <session-id>]") }
-            var request = MeshRequest(cmd: "recv", nick: args[1])
-            request.memberID = option("--member", in: args)
+            let nick = args.dropFirst().first.flatMap { $0.hasPrefix("--") ? nil : $0 }
+            let memberID = option("--member", in: args)
+                ?? ProcessInfo.processInfo.environment["PHAROS_MESH_SESSION"]
+            guard nick != nil || memberID != nil else {
+                return usageError("recv [<nick>] [--member <session-id>]")
+            }
+            var request = MeshRequest(cmd: "recv", nick: nick)
+            request.memberID = memberID
             request.project = FileManager.default.currentDirectoryPath
             let response = MeshClient.send(request)
             guard response.ok else { return printResponse(response) }
@@ -120,7 +155,7 @@ private enum MeshHeadlessCLI {
             return 0
 
         case "--version", "version":
-            print("pharos-mesh 0.9.5")
+            print("pharos-mesh 0.10.0")
             return 0
 
         default:
@@ -311,8 +346,9 @@ private enum MeshHeadlessCLI {
       list
       history <room> [--limit N]
       join <room> <nick> --session <id> [--kind codex|claude]
-      say <room> <nick> <text> [--reply ID] [--attach FILE]
-      recv <nick> [--member <session-id>]
+      send <text> [@target ...] [--room ROOM] [--member SESSION] [--reply ID] [--attach FILE]
+      say <room> <nick> <text> [--member SESSION] [--reply ID] [--attach FILE]
+      recv [<nick>] [--member <session-id>]
       attachment put <file> [--id UUID] [--name DISPLAY-NAME]
       attachment get <id> [--out PATH]
       registry get [--output PATH]

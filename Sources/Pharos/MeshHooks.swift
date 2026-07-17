@@ -283,7 +283,7 @@ enum MeshHooks {
         for m in messages.suffix(10) { lines.append("  " + messageSummary(m)) }
         let memberArg = memberID.map { " --member \($0)" } ?? ""
         lines.append("Pick them up with `pharos mesh recv \(nick)\(memberArg)`, then reply in the room "
-                     + "(`pharos mesh say <room> \(nick) \"…\" @<sender>` or `ask` to wait for an answer). "
+                     + "(`pharos mesh send \"…\" @<sender> --room <room>` or `ask` to wait for an answer). "
                      + "Run recv even if no reply is needed, so this notice clears.")
         let payload: [String: Any] = ["decision": "block", "reason": lines.joined(separator: "\n")]
         if let d = try? JSONSerialization.data(withJSONObject: payload) {

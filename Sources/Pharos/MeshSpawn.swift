@@ -95,7 +95,7 @@ enum MeshSpawn {
     static func joinBrief(room: String, nick: String, kind: AgentKind) -> String {
         "Join the mesh chat room \(room) as nick \(nick): run  "
             + "pharos mesh join \(room) \(nick) --kind \(kind.rawValue). "
-            + "Then run  pharos mesh say \(room) \(nick) \"\(nick) joined\". "
+            + "Then run  pharos mesh send \"\(nick) joined\". "
             + "Return to the idle composer after announcing; do not run a listener or polling command. "
             + "Pharos hooks and nudges will wake you for new messages. Do nothing else."
     }

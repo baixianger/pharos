@@ -285,7 +285,10 @@ enum CLI {
                     return 1
                 }
             }
-            var request = MeshRequest(cmd: "say", room: a[0], nick: a[1], text: a[2], to: to)
+            let memberID = a.firstIndex(of: "--member").flatMap { $0 + 1 < a.count ? a[$0 + 1] : nil }
+                ?? MeshHooks.currentSessionID()
+            var request = MeshRequest(cmd: "say", room: a[0], nick: a[1], memberID: memberID,
+                                      text: a[2], to: to)
             request.replyToID = replyID
             if let attachmentPath {
                 do { request.attachments = [try MeshClient.uploadAttachment(fileAt: URL(fileURLWithPath: attachmentPath))] }
@@ -293,6 +296,29 @@ enum CLI {
             }
             let r = MeshClient.send(request)
             return report(r)
+        case "send":
+            guard let text = a.first, !text.hasPrefix("--") else {
+                print("usage: pharos mesh send <text> [@target …] [--room ROOM] [--reply ID] [--attach FILE]")
+                return 2
+            }
+            let room = a.firstIndex(of: "--room").flatMap { $0 + 1 < a.count ? a[$0 + 1] : nil }
+            let memberID = a.firstIndex(of: "--member").flatMap { $0 + 1 < a.count ? a[$0 + 1] : nil }
+                ?? MeshHooks.currentSessionID()
+            guard let memberID, !memberID.isEmpty else {
+                print("error: no session identity for this pane; restart the agent or pass --member <session-id>")
+                return 2
+            }
+            var to = a.dropFirst().compactMap { $0.hasPrefix("@") ? String($0.dropFirst()) : nil }
+            for mention in MeshHooks.parseTextMentions(text) where !to.contains(mention) { to.append(mention) }
+            let replyID = a.firstIndex(of: "--reply").flatMap { $0 + 1 < a.count ? a[$0 + 1] : nil }
+            let attachmentPath = a.firstIndex(of: "--attach").flatMap { $0 + 1 < a.count ? a[$0 + 1] : nil }
+            var request = MeshRequest(cmd: "say", room: room, memberID: memberID, text: text, to: to,
+                                      replyToID: replyID)
+            if let attachmentPath {
+                do { request.attachments = [try MeshClient.uploadAttachment(fileAt: URL(fileURLWithPath: attachmentPath))] }
+                catch { print("error: \(error.localizedDescription)"); return 1 }
+            }
+            return report(MeshClient.send(request))
         case "attachment":
             guard let action = a.first else { print("usage: pharos mesh attachment put|get …"); return 2 }
             switch action {
@@ -309,8 +335,13 @@ enum CLI {
                 print("usage: pharos mesh attachment put|get …"); return 2
             }
         case "recv":
-            guard let nick = a.first else { print("usage: pharos mesh recv <nick> [--member <session-id>]"); return 2 }
+            let nick = a.first.flatMap { $0.hasPrefix("--") ? nil : $0 }
             let memberID = a.firstIndex(of: "--member").flatMap { i in i + 1 < a.count ? a[i + 1] : nil }
+                ?? MeshHooks.currentSessionID()
+            guard nick != nil || memberID != nil else {
+                print("usage: pharos mesh recv [<nick>] [--member <session-id>]")
+                return 2
+            }
             let r = MeshClient.send(MeshRequest(cmd: "recv", nick: nick, memberID: memberID,
                                                 project: FileManager.default.currentDirectoryPath))
             guard r.ok else { return report(r) }
@@ -461,10 +492,12 @@ enum CLI {
       list                                list rooms + members
       join   <room> <nick> [--session <id>]   register this pane under a room-local alias
       history <room> [--limit N]          recent messages in a room (catch up)
+      send   <text> [@n …] [--room ROOM] [--reply ID] [--attach FILE]
+                                          send as the current joined session; a sole room is inferred
       say    <room> <nick> <text> [@n …] [--reply ID] [--attach FILE]
-                                          send text, quote a message, or attach an image/PDF
+                                          explicit legacy form; sender still comes from session identity
       attachment put|get …                upload or download a Mesh attachment
-      recv   <nick> [--member <id>]       drain unread for this session across ALL its rooms
+      recv   [<nick>] [--member <id>]     drain unread for this session across ALL its rooms
       who                                 roster: every joined agent + live state/host/tmux pane
       pair [--endpoint HOST:PORT]         show an iPhone pairing link (and QR when qrencode is installed)
       spawn  <room> <nick> [claude|codex] [--host <ssh>]  spawn local/remote + confirm join (GUI "add member")

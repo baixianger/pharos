@@ -72,7 +72,7 @@ xcodebuild -project PharosMobile.xcodeproj \
 
 xcodebuild -project PharosMobile.xcodeproj \
   -scheme PharosMobile \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' \
   CODE_SIGNING_ALLOWED=NO test
 ```
 
