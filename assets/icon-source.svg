@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Pharos — lighthouse mark (office v1 geometry, structured & parametric).
+       disc c(512,474) r303 · beams: bowtie wedges, center y 458,
+       tip half-height 5.5, edge slope 0.127 · tower taper 0.148/side.
+       Lighthouse + beams are a mask cutout: they show the background through the disc.
+       Wave bands: edit band-1..4 fills (all #2F2F2F = solid disc). -->
+  <defs>
+    <clipPath id="disc-clip"><circle cx="512" cy="474" r="303"/></clipPath>
+    <mask id="cutout" maskUnits="userSpaceOnUse">
+      <rect width="1024" height="1024" fill="#fff"/>
+      <g id="beams-neg" fill="#000">
+        <polygon id="beam-left" points="529,452.5 529,463.5 185,507.2 185,408.8"/>
+        <polygon id="beam-right" points="663,452.5 663,463.5 839,485.9 839,430.1"/>
+      </g>
+      <g id="lighthouse-neg" fill="#000">
+        <polygon id="roof" points="596,343.5 661,402 531,402"/>
+        <rect id="lamp" x="544" y="419" width="104" height="89"/>
+        <rect id="ledge" x="525" y="517" width="142" height="16.5"/>
+        <polygon id="tower" points="543,533.5 649,533.5 688.4,800 503.6,800"/>
+      </g>
+      <path id="window" fill="#fff" d="M 575 487.5 V 447 a 21 21 0 0 1 42 0 V 487.5 Z"/>
+    </mask>
+  </defs>
+  <g id="background">
+    <rect width="1024" height="1024" fill="#FEFAF4"/>
+  </g>
+  <g id="disc" clip-path="url(#disc-clip)" mask="url(#cutout)">
+      <path id="band-1" fill="#2F2F2F" d="M 189 151 H 835 V 797 H 189 Z"/>
+      <path id="band-2" fill="#2F2F2F" d="M 193.8 318 C 207.1 318.2, 250.3 318.8, 273.2 319.5 C 296.2 320.2, 312 322.2, 331.4 322.2 C 350.9 322.2, 370.4 321.1, 389.9 319.5 C 409.4 317.9, 428.9 315.2, 448.4 312.5 C 467.8 309.8, 487.1 306.5, 506.5 303.4 C 526 300.3, 545.5 296.9, 565 294 C 584.5 291.1, 604.1 288.1, 623.5 286.1 C 642.9 284.2, 662.2 283.1, 681.7 282.5 C 701.1 281.9, 715.4 282.6, 740.2 282.5 C 764.9 282.5, 815.2 282.3, 830.2 282.2 L 830.2 797 L 193.8 797 Z"/>
+      <path id="band-3" fill="#2F2F2F" d="M 193.8 477 C 197.3 477.6, 201.5 478.2, 214.8 480.7 C 228 483.1, 253.8 489.3, 273.2 491.6 C 292.7 493.8, 312 494.3, 331.4 494.3 C 350.9 494.3, 370.4 493.2, 389.9 491.6 C 409.4 490, 428.9 487.3, 448.4 484.6 C 467.8 481.9, 487.1 478.6, 506.5 475.5 C 526 472.4, 535.8 470.5, 565 466.1 C 594.2 461.7, 652.5 451.8, 681.7 449.2 C 710.9 446.5, 715.4 449.9, 740.2 450.1 C 764.9 450.3, 815.2 450.3, 830.2 450.4 L 830.2 797 L 193.8 797 Z"/>
+      <path id="band-4" fill="#2F2F2F" d="M 193.8 667.9 C 216.8 667.7, 298.7 667.4, 331.4 666.7 C 364.1 666, 370.4 665.4, 389.9 663.7 C 409.4 662, 428.9 659.2, 448.4 656.4 C 467.8 653.6, 467.7 652.1, 506.5 647 C 545.4 641.9, 642.7 629.2, 681.7 625.8 C 720.6 622.4, 715.4 626.7, 740.2 626.7 C 764.9 626.8, 815.2 626.2, 830.2 626.1 L 830.2 797 L 193.8 797 Z"/>
+  </g>
+</svg>
