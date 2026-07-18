@@ -67,9 +67,17 @@ final class AppSettings {
 
     private func load() {
         let source = UserDefaults.standard.data(forKey: Self.storageKey)
-        guard let source, let decoded = try? JSONDecoder().decode(SyncedConfiguration.self, from: source) else { return }
-        mesh = decoded.mesh
-        sshHosts = decoded.sshHosts
+        if let source, let decoded = try? JSONDecoder().decode(SyncedConfiguration.self, from: source) {
+            mesh = decoded.mesh
+            sshHosts = decoded.sshHosts
+        }
+        // Debug/testing override: point at a Broker via launch arguments
+        // (`--mesh-host <ip> --mesh-port <n>`). Never passed in normal use, so
+        // production behavior is unchanged.
+        if let host = PharosLaunchOptions.value(after: "--mesh-host"), !host.isEmpty {
+            let port = PharosLaunchOptions.value(after: "--mesh-port").flatMap { UInt16($0) } ?? mesh.port
+            mesh = MeshProfile(host: host, port: port, controlToken: mesh.controlToken)
+        }
     }
 
     private func save() {
