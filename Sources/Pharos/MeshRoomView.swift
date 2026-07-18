@@ -224,6 +224,8 @@ struct MeshRoomView: View {
         return HStack(alignment: .top, spacing: 8) {
             if mine { Spacer(minLength: 60) } else { avatar(m.from) }
             VStack(alignment: mine ? .trailing : .leading, spacing: 3) {
+                // Identity/avatar row — the reply icon lives here, flat, at the
+                // outer edge: right of the header for incoming, left for own.
                 HStack(spacing: 6) {
                     Text(m.from).font(.caption.weight(.semibold))
                         .foregroundStyle(mine ? Color.secondary : Color.accentColor)
@@ -233,6 +235,7 @@ struct MeshRoomView: View {
                     }
                     Text(Date(timeIntervalSince1970: m.ts).formatted(date: .omitted, time: .standard))
                         .font(.caption2).foregroundStyle(.tertiary)
+                    replyButton(for: m)
                 }
                 .environment(\.layoutDirection, mine ? .rightToLeft : .leftToRight)
                 // Full markdown body (Wick-derived MarkdownText — same renderer
@@ -251,12 +254,6 @@ struct MeshRoomView: View {
                             .buttonStyle(.plain)
                     }
                 }
-                // Persistent reply affordance hugging the bubble's bottom corner,
-                // so it's always clickable (a hover-reveal vanished when the
-                // cursor left the row to reach it).
-                .overlay(alignment: mine ? .bottomLeading : .bottomTrailing) {
-                    replyButton(for: m).offset(x: mine ? -18 : 18, y: 6)
-                }
             }
             if mine { avatar(m.from) } else { Spacer(minLength: 60) }
         }
@@ -270,17 +267,17 @@ struct MeshRoomView: View {
         }
     }
 
-    /// Small always-present reply icon aligned to the bubble corner.
+    /// Small flat reply icon on the identity row. Forced LTR so the glyph
+    /// isn't mirrored inside the header's right-to-left (own-message) layout.
     private func replyButton(for m: MeshMsg) -> some View {
         Button {
             replyingTo = m
             inputFocused = true
         } label: {
             Image(systemName: "arrowshape.turn.up.left")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(4)
-                .background(.quaternary.opacity(0.45), in: Circle())
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .environment(\.layoutDirection, .leftToRight)
         }
         .buttonStyle(.plain)
         .help("Reply")
@@ -466,15 +463,19 @@ struct MeshRoomView: View {
             if !mentionableMembers.isEmpty { memberMentionStrip }
             if let replyingTo {
                 HStack(spacing: 7) {
-                    Capsule().fill(Color.accentColor).frame(width: 3)
-                    Text("Replying to \(replyingTo.from == "human" ? "yourself" : replyingTo.from)")
-                        .font(.caption.weight(.semibold))
-                    Text(replyingTo.text.isEmpty ? "Attachment" : replyingTo.text)
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Capsule().fill(Color.accentColor).frame(width: 3, height: 28)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Replying to \(replyingTo.from == "human" ? "yourself" : replyingTo.from)")
+                            .font(.caption.weight(.semibold))
+                        Text(replyingTo.text.isEmpty ? "Attachment" : replyingTo.text)
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
                     Spacer()
                     Button { self.replyingTo = nil } label: { Image(systemName: "xmark") }
                         .buttonStyle(.plain)
                 }
+                // Follow content, but never let a long quote balloon the bar.
+                .fixedSize(horizontal: false, vertical: true)
             }
             if !pendingAttachments.isEmpty || uploadingAttachment {
                 HStack(spacing: 7) {
@@ -499,14 +500,21 @@ struct MeshRoomView: View {
                 Button(action: chooseAttachment) { Image(systemName: "plus") }
                     .disabled(room.isEmpty || uploadingAttachment)
             TextField("Message the room — @nick to poke someone, plain text broadcasts",
-                      text: $draft)
+                      text: $draft, axis: .vertical)
+                .lineLimit(1...6)
                 .textFieldStyle(.roundedBorder)
                 .focused($inputFocused)
-                .onSubmit(send)
                 .onKeyPress(.upArrow) { mentionMove(-1) }
                 .onKeyPress(.downArrow) { mentionMove(1) }
                 .onKeyPress(.tab) { mentionAccept() }
-                .onKeyPress(.return) { mentionAccept() }
+                // Enter sends (or accepts a mention); Shift+Enter inserts a
+                // newline via the field's default vertical-axis handling.
+                .onKeyPress(keys: [.return]) { press in
+                    if press.modifiers.contains(.shift) { return .ignored }
+                    if !mentionSuggestions.isEmpty { return mentionAccept() }
+                    send()
+                    return .handled
+                }
                 .onKeyPress(.escape) {
                     guard !mentionSuggestions.isEmpty else { return .ignored }
                     mentionDismissed = activeMentionToken
@@ -600,6 +608,10 @@ struct MeshRoomView: View {
             }
             .padding(.horizontal, 2)
         }
+        // A horizontal ScrollView otherwise grabs flexible vertical space and
+        // balloons the composer; pin it to the chip row height.
+        .frame(height: 28)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func mentionMove(_ delta: Int) -> KeyPress.Result {
