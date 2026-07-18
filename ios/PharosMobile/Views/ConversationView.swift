@@ -71,7 +71,10 @@ struct ConversationView: View {
 
     private var transcript: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+            // Eager VStack (not Lazy): a page is ~50 rows, and lazy layout made
+            // every scroll-to-bottom land short (rows below the fold weren't
+            // built yet), which is why chats kept opening at the oldest message.
+            VStack(alignment: .leading, spacing: 0) {
                 if store.hasMoreHistory {
                     historyLoader
                 } else {
@@ -335,7 +338,7 @@ struct ConversationView: View {
 
     private func replyComposerCard(_ message: MeshMessage) -> some View {
         HStack(spacing: 9) {
-            Capsule().fill(Color.accentColor).frame(width: 3)
+            Capsule().fill(Color.accentColor).frame(width: 3, height: 30)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Replying to \(message.from == "human" ? "yourself" : message.from)")
                     .font(.caption.weight(.semibold))
@@ -347,6 +350,9 @@ struct ConversationView: View {
                 .labelStyle(.iconOnly).buttonStyle(.plain).foregroundStyle(.secondary)
         }
         .padding(.horizontal, 8)
+        // Hug the content; a long quote (or a stray flexible child) must not
+        // stretch this bar to fill the composer.
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var pendingAttachmentStrip: some View {
@@ -370,6 +376,7 @@ struct ConversationView: View {
             .padding(.horizontal, 2)
         }
         .scrollIndicators(.hidden)
+        .frame(height: 34)   // a horizontal ScrollView otherwise grabs vertical space
     }
 
     private func uploadPhotos(_ items: [PhotosPickerItem]) async {
@@ -488,6 +495,7 @@ private struct RoomMentionStrip: View {
             .padding(.horizontal, 1)
         }
         .scrollIndicators(.hidden)
+        .frame(height: 34)   // a horizontal ScrollView otherwise grabs vertical space
     }
 }
 
