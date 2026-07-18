@@ -471,7 +471,7 @@ struct IssueSummaryView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes the issue from the project. This can't be undone from here.")
+            Text("The issue moves to Trash and can be restored from Pharos on Mac.")
         }
     }
 

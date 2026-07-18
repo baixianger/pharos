@@ -510,7 +510,7 @@ struct ProjectSummaryView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes the project and its issues from the registry. This can't be undone from here.")
+            Text("The project and its issues move to Trash and can be restored from Pharos on Mac.")
         }
     }
 

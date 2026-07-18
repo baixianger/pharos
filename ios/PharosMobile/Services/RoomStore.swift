@@ -360,11 +360,25 @@ final class RoomStore {
         }
     }
 
+    /// Soft-delete a project: move it to the shared Trash (recoverable from
+    /// Pharos on Mac), mirroring the desktop's "forget, don't destroy" model.
+    /// The removed dict is relocated verbatim so its payload can't corrupt the
+    /// StoreData decode.
     func deleteProject(_ project: RemoteProject) async -> Bool {
         await mutateRegistry { root in
             var projects = root["projects"] as? [[String: Any]] ?? []
-            projects.removeAll { ($0["name"] as? String)?.localizedCaseInsensitiveCompare(project.name) == .orderedSame }
+            guard let idx = projects.firstIndex(where: {
+                ($0["name"] as? String)?.localizedCaseInsensitiveCompare(project.name) == .orderedSame
+            }) else { throw RegistryMutationError.message("Project not found. Reload and try again.") }
+            let removed = projects.remove(at: idx)
             root["projects"] = projects
+            var trash = root["trash"] as? [[String: Any]] ?? []
+            trash.insert([
+                "id": UUID().uuidString,
+                "deletedAt": Date().timeIntervalSinceReferenceDate,
+                "payload": ["project": ["_0": removed]]
+            ], at: 0)
+            root["trash"] = trash
         }
     }
 
@@ -379,22 +393,46 @@ final class RoomStore {
                 ($0["name"] as? String)?.localizedCaseInsensitiveCompare(projectName) == .orderedSame
             }) else { throw RegistryMutationError.message("Project not found. Reload and try again.") }
             var updates = projects[index]["updates"] as? [[String: Any]] ?? []
-            updates.append(["id": UUID().uuidString, "body": trimmed, "kind": "note"])
+            // ProjectUpdate uses synthesized Codable on the desktop, so every
+            // non-optional field must be present or StoreData decode throws and
+            // the desktop silently drops the whole registry. createdAt is a
+            // .deferredToDate Double (timeIntervalSinceReferenceDate). Insert at
+            // the front to match the desktop's newest-first feed.
+            updates.insert([
+                "id": UUID().uuidString,
+                "createdAt": Date().timeIntervalSinceReferenceDate,
+                "body": trimmed,
+                "kind": "note"
+            ], at: 0)
             projects[index]["updates"] = updates
             root["projects"] = projects
         }
     }
 
+    /// Soft-delete an issue: relocate it to the shared Trash (recoverable from
+    /// Pharos on Mac). The removed dict is moved verbatim into the payload.
     func deleteIssue(_ issue: RemoteIssue) async -> Bool {
         await mutateRegistry { root in
             var projects = root["projects"] as? [[String: Any]] ?? []
-            guard let projectIndex = projects.firstIndex(where: {
+            guard let pi = projects.firstIndex(where: {
                 ($0["name"] as? String)?.localizedCaseInsensitiveCompare(issue.project) == .orderedSame
             }) else { throw RegistryMutationError.message("Project not found. Reload and try again.") }
-            var issues = projects[projectIndex]["issues"] as? [[String: Any]] ?? []
-            issues.removeAll { $0["number"] as? Int == issue.number }
-            projects[projectIndex]["issues"] = issues
+            var issues = projects[pi]["issues"] as? [[String: Any]] ?? []
+            guard let ii = issues.firstIndex(where: { $0["number"] as? Int == issue.number }) else {
+                throw RegistryMutationError.message("Issue not found. Reload and try again.")
+            }
+            let removed = issues.remove(at: ii)
+            projects[pi]["issues"] = issues
+            let projectID = (projects[pi]["id"] as? String) ?? UUID().uuidString
+            let projectName = (projects[pi]["name"] as? String) ?? issue.project
             root["projects"] = projects
+            var trash = root["trash"] as? [[String: Any]] ?? []
+            trash.insert([
+                "id": UUID().uuidString,
+                "deletedAt": Date().timeIntervalSinceReferenceDate,
+                "payload": ["issue": ["issue": removed, "projectID": projectID, "projectName": projectName]]
+            ], at: 0)
+            root["trash"] = trash
         }
     }
 
