@@ -378,7 +378,9 @@ private struct IPadIssuesIndex: View {
                             .listRowSeparator(.hidden)
                     }
                 } header: {
-                    PharosSectionTitle(title: group.status.displayName, count: group.issues.count)
+                    if grouped.count > 1 {
+                        PharosSectionTitle(title: group.status.displayName, count: group.issues.count)
+                    }
                 }
             }
         }

@@ -30,7 +30,11 @@ struct IssuesView: View {
                                 .listRowSeparator(.hidden)
                         }
                     } header: {
-                        PharosSectionTitle(title: group.status.displayName, count: group.issues.count)
+                        // Only label status sections when more than one is
+                        // visible; a single group would just echo the filter.
+                        if grouped.count > 1 {
+                            PharosSectionTitle(title: group.status.displayName, count: group.issues.count)
+                        }
                     }
                 }
             }
