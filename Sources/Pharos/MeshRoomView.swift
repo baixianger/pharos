@@ -25,6 +25,7 @@ struct MeshRoomView: View {
     @State private var uploadingAttachment = false
     @State private var mentionSel = 0
     @State private var mentionDismissed: String?
+    @State private var hoveredMessageID: String?
     @State private var notices: [Notice] = []
     @FocusState private var inputFocused: Bool
     @State private var issueRef: IssueRef?
@@ -38,6 +39,9 @@ struct MeshRoomView: View {
     var body: some View {
         chatPane
         .navigationTitle(PharosViewTitle.rooms)
+        // Drop image/PDF files anywhere on the room to attach them (like "+"),
+        // instead of the field's default of inserting the file path as text.
+        .dropDestination(for: URL.self) { urls, _ in acceptDroppedFiles(urls) }
         .task(id: brokerRouteID) { await resolveRemote() }   // resolve transport BEFORE first load
         .task(id: brokerRouteID + "|events") { await watchEvents() }
         .onReceive(recoveryTick) { _ in reload() }
@@ -218,7 +222,7 @@ struct MeshRoomView: View {
     private func row(_ m: MeshMsg) -> some View {
         let mine = m.from == "human"
         return HStack(alignment: .top, spacing: 8) {
-            if mine { Spacer(minLength: 60) } else { avatar(m.from) }
+            if mine { Spacer(minLength: 60); replyButton(for: m) } else { avatar(m.from) }
             VStack(alignment: mine ? .trailing : .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(m.from).font(.caption.weight(.semibold))
@@ -248,9 +252,13 @@ struct MeshRoomView: View {
                     }
                 }
             }
-            if mine { avatar(m.from) } else { Spacer(minLength: 60) }
+            if mine { avatar(m.from) } else { replyButton(for: m); Spacer(minLength: 60) }
         }
         .frame(maxWidth: .infinity, alignment: mine ? .trailing : .leading)
+        .onHover { hovering in
+            if hovering { hoveredMessageID = m.stableID }
+            else if hoveredMessageID == m.stableID { hoveredMessageID = nil }
+        }
         .contextMenu {
             Button("Reply", systemImage: "arrowshape.turn.up.left") {
                 replyingTo = m
@@ -258,6 +266,25 @@ struct MeshRoomView: View {
             }
             Button("Copy", systemImage: "doc.on.doc") { NSPasteboard.general.setString(m.text, forType: .string) }
         }
+    }
+
+    /// Hover-revealed reply affordance, so replying is discoverable without
+    /// right-clicking (the context-menu "Reply" stays as a secondary path).
+    private func replyButton(for m: MeshMsg) -> some View {
+        Button {
+            replyingTo = m
+            inputFocused = true
+        } label: {
+            Image(systemName: "arrowshape.turn.up.left")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(5)
+                .background(.quaternary.opacity(0.5), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .help("Reply")
+        .opacity(hoveredMessageID == m.stableID ? 1 : 0)
+        .animation(.easeOut(duration: 0.12), value: hoveredMessageID)
     }
 
     private func replyCard(_ reply: MeshReply) -> some View {
@@ -522,6 +549,13 @@ struct MeshRoomView: View {
         var pool = membersByRoom[room] ?? []
         for m in messages where !pool.contains(m.from) { pool.append(m.from) }
         pool.removeAll { $0 == "human" }
+        // Don't suggest agents the roster reports as gone — a dead member must
+        // not be @-mentionable. Guarded on a populated roster so a transient
+        // `who` failure doesn't hide every live member.
+        let info = membersInfo
+        if !info.isEmpty {
+            pool.removeAll { info[$0]?.state.flatMap(MeshSessionState.init(rawValue:)) == .gone }
+        }
         let hits = query.isEmpty ? pool : pool.filter { $0.lowercased().hasPrefix(query) }
         return Array(hits.prefix(8))
     }
@@ -589,6 +623,12 @@ struct MeshRoomView: View {
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.image, .pdf]
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        uploadFile(at: url)
+    }
+
+    /// Upload one file as a pending attachment — shared by the "+" button and
+    /// drag-and-drop, so a dropped file behaves exactly like a chosen one.
+    private func uploadFile(at url: URL) {
         uploadingAttachment = true
         Task {
             let result = await Task.detached { () -> Result<MeshAttachment, Error> in
@@ -605,6 +645,19 @@ struct MeshRoomView: View {
             case .failure(let error): addNotices([error.localizedDescription])
             }
         }
+    }
+
+    /// Accept files dropped anywhere on the room — image and PDF only, matching
+    /// the "+" picker. Each becomes a pending attachment (not path text).
+    private func acceptDroppedFiles(_ urls: [URL]) -> Bool {
+        let accepted = urls.filter { url in
+            guard let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType
+            else { return false }
+            return type.conforms(to: .image) || type.conforms(to: .pdf)
+        }
+        guard !accepted.isEmpty, !room.isEmpty else { return false }
+        for url in accepted { uploadFile(at: url) }
+        return true
     }
 
     private func openAttachment(_ attachment: MeshAttachment) {
