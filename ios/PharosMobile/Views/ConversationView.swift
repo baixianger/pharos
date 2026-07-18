@@ -101,36 +101,40 @@ struct ConversationView: View {
             .padding(.vertical, 8)
         }
         .scrollPosition($scrollPosition)
-        .defaultScrollAnchor(.bottom)
         .background(Color(uiColor: .systemBackground))
         .scrollDismissesKeyboard(.interactively)
-        // Open every room pinned to the newest message. scrollTo(edge:)
-        // targets the content's bottom edge, so it works even before the last
-        // row is laid out. History paging stays disarmed until this settles.
+        // Open every room pinned to the newest message. The eager VStack lays
+        // out the last row, so scrollTo(id:anchor:.bottom) reaches it exactly;
+        // repeat a few times to catch late layout / late-loading of the first
+        // page. History paging stays disarmed until this settles, so the top
+        // sentinel can't prepend older pages and push us back up.
         .task(id: store.selectedRoom) {
             allowsHistoryPaging = false
             for _ in 0..<80 {
                 if !store.messages.isEmpty { break }
                 try? await Task.sleep(for: .milliseconds(50))
             }
-            scrollPosition.scrollTo(edge: .bottom)
-            try? await Task.sleep(for: .milliseconds(120))
-            scrollPosition.scrollTo(edge: .bottom)
-            try? await Task.sleep(for: .milliseconds(300))
+            for _ in 0..<6 {
+                if let last = store.messages.last?.id {
+                    scrollPosition.scrollTo(id: last, anchor: .bottom)
+                }
+                try? await Task.sleep(for: .milliseconds(110))
+            }
             allowsHistoryPaging = true
         }
         // Follow new messages once the room has settled (not during initial
         // load or history prepends).
         .onChange(of: store.messages.last?.id) {
-            guard allowsHistoryPaging else { return }
+            guard allowsHistoryPaging, let last = store.messages.last?.id else { return }
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                scrollPosition.scrollTo(edge: .bottom)
+                scrollPosition.scrollTo(id: last, anchor: .bottom)
             }
         }
         // Deterministic scroll after a send.
         .onChange(of: scrollBottomTick) {
+            guard let last = store.messages.last?.id else { return }
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                scrollPosition.scrollTo(edge: .bottom)
+                scrollPosition.scrollTo(id: last, anchor: .bottom)
             }
         }
     }
