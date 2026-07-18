@@ -508,9 +508,14 @@ struct MeshRoomView: View {
                 .onKeyPress(.downArrow) { mentionMove(1) }
                 .onKeyPress(.tab) { mentionAccept() }
                 // Enter sends (or accepts a mention); Shift+Enter inserts a
-                // newline via the field's default vertical-axis handling.
+                // newline. Insert it explicitly — the macOS field editor does
+                // not treat Shift+Return as a newline, so passing it through
+                // (.ignored) did nothing useful (it read as select-all).
                 .onKeyPress(keys: [.return]) { press in
-                    if press.modifiers.contains(.shift) { return .ignored }
+                    if press.modifiers.contains(.shift) {
+                        draft += "\n"
+                        return .handled
+                    }
                     if !mentionSuggestions.isEmpty { return mentionAccept() }
                     send()
                     return .handled
