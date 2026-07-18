@@ -96,17 +96,31 @@ struct ConversationView: View {
             }
             .background(Color(uiColor: .systemBackground))
             .scrollDismissesKeyboard(.interactively)
-            // Follow the newest message only when the tail actually changes;
-            // prepending older pages must not yank the reader to the bottom.
+            // Open every room at the newest message. The LazyVStack lays out
+            // lazily, so a single jump on load lands short (at the oldest
+            // loaded row); wait for the first page, then jump twice with a
+            // settle in between. History paging stays disarmed until this
+            // completes so the top sentinel can't fire before we're at bottom.
+            .task(id: store.selectedRoom) {
+                allowsHistoryPaging = false
+                for _ in 0..<80 {
+                    if !store.messages.isEmpty { break }
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                if let last = store.messages.last?.id {
+                    proxy.scrollTo(last, anchor: .bottom)
+                    try? await Task.sleep(for: .milliseconds(150))
+                    proxy.scrollTo(last, anchor: .bottom)
+                    try? await Task.sleep(for: .milliseconds(300))
+                }
+                allowsHistoryPaging = true
+            }
+            // Follow new messages only after the room has settled at the bottom,
+            // so the initial load and history prepends don't fight this.
             .onChange(of: store.messages.last?.id) {
+                guard allowsHistoryPaging else { return }
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
                     proxy.scrollTo("bottom", anchor: .bottom)
-                }
-                if !allowsHistoryPaging, !store.messages.isEmpty {
-                    Task {
-                        try? await Task.sleep(for: .milliseconds(500))
-                        allowsHistoryPaging = true
-                    }
                 }
             }
             // Deterministic scroll after a send: the reload rebuilds the tail,
