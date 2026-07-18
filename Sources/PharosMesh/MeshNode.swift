@@ -100,7 +100,12 @@ enum MeshNode {
             update(command, state: .succeeded, result: "mailbox already consumed")
             return
         }
-        if let reason = poke(member) {
+        // All rooms this session belongs to, so the poke can name them — a
+        // post-compaction agent must never guess (and re-join) a room name.
+        let rooms = (roster.members ?? [])
+            .filter { $0.id == request.memberID }
+            .flatMap(\.rooms)
+        if let reason = poke(member, rooms: Array(Set(rooms)).sorted()) {
             if reason == "agent session is gone" {
                 update(command, state: .failed, result: reason)
             } else if reason.hasPrefix("hook owns delivery") {
@@ -431,7 +436,7 @@ enum MeshNode {
         return normalized(member.host) == normalized(hostName)
     }
 
-    static func poke(_ member: MeshMemberInfo) -> String? {
+    static func poke(_ member: MeshMemberInfo, rooms: [String] = []) -> String? {
         if member.state == MeshSessionState.gone.rawValue { return "agent session is gone" }
         // Blocked on an AskUserQuestion form: the unread @mention that caused
         // this poke is (by design) the human's answer from the room. Escape
@@ -458,7 +463,10 @@ enum MeshNode {
               MeshPaneSafety.processTreeContainsAgent(processList.output, rootPID: rootPID, kind: member.kind) else {
             return "pane no longer runs the registered agent"
         }
-        let message = "You have new mesh messages. Run: pharos mesh recv \(member.nick) --member \(member.id)"
+        // Name the room(s) so a post-compaction agent reads with `recv` instead
+        // of re-`join`ing a half-remembered name (which silently makes a new room).
+        let roomHint = rooms.isEmpty ? "" : " (in \(rooms.joined(separator: ", ")); you are already a member — do not re-join)"
+        let message = "You have new mesh messages\(roomHint). Run: pharos mesh recv \(member.nick) --member \(member.id)"
         guard run(tmux, prefix + ["send-keys", "-t", pane, "-l", "--", message]).ok else {
             return "tmux send-keys failed"
         }

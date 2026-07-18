@@ -511,9 +511,22 @@ enum MeshHooks {
         let cwd = obj["cwd"] as? String ?? FileManager.default.currentDirectoryPath
         recordSessionContext(sessionID: sid, cwd: cwd)
         if args.contains("--silent") { return 0 }
-        let ctx = "Pharos mesh: your session id is \(sid). When you join a mesh chat "
+        var ctx = "Pharos mesh: your session id is \(sid). When you join a mesh chat "
                 + "room, pass it so delivery targets this exact session — "
                 + "`pharos mesh join <room> <nick> --session \(sid)`."
+        // SessionStart also fires on compaction/resume (source=compact/resume).
+        // A compaction summary is lossy and can corrupt a remembered room name,
+        // leading the agent to re-`join` the wrong name — which silently makes a
+        // new room. Re-state the broker's authoritative membership so the agent
+        // never re-derives it from memory. (Membership survives compaction.)
+        let memberships = currentMemberships(sessionID: sid)
+        if !memberships.isEmpty {
+            let list = memberships.map { "\($0.room) (as \($0.nick))" }.joined(separator: ", ")
+            ctx += " You are ALREADY joined to: \(list) — this membership persists across "
+                 + "context compaction, so do NOT run `join` again for these rooms. "
+                 + "To catch up use `pharos mesh recv <nick>`; to reply use "
+                 + "`pharos mesh say <room> <nick> …`. Only `join` a brand-new room the human names."
+        }
         let payload: [String: Any] = [
             "hookSpecificOutput": [
                 "hookEventName": "SessionStart",
@@ -524,6 +537,22 @@ enum MeshHooks {
             print(String(decoding: d, as: UTF8.self))
         }
         return 0
+    }
+
+    /// Broker-authoritative rooms this session is currently joined to, as
+    /// (room, nick) pairs. Fail-open: an unreachable broker or a not-yet-joined
+    /// session returns empty, so a fresh startup adds no membership guidance.
+    /// Each `who` row is scoped to one room (rooms == [that room]).
+    static func currentMemberships(sessionID: String) -> [(room: String, nick: String)] {
+        guard let resp = MeshClient.sendIfUp(MeshRequest(cmd: "who")), resp.ok,
+              let members = resp.members else { return [] }
+        var pairs: [(room: String, nick: String)] = []
+        var seen = Set<String>()
+        for m in members where m.id == sessionID {
+            guard let room = m.rooms.first else { continue }
+            if seen.insert(room).inserted { pairs.append((room, m.nick)) }
+        }
+        return pairs.sorted { $0.room < $1.room }
     }
 
     private struct SessionContext: Codable {
