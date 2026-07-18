@@ -469,7 +469,8 @@ final class RoomStore {
                 error = "The agent's Host node is offline."
                 return false
             }
-            var enqueue = MeshRequest(cmd: "node-command-enqueue", memberID: member.id)
+            var enqueue = MeshRequest(cmd: "node-command-enqueue")
+            enqueue.memberID = member.id
             enqueue.nodeID = node.id
             enqueue.action = "stopSession"
             enqueue.payload = "{\"memberID\":\"\(member.id)\"}"
