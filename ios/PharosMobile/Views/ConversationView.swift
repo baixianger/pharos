@@ -36,20 +36,7 @@ struct ConversationView: View {
         .toolbar(.hidden, for: .tabBar)
         .toolbar { channelToolbar }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-        .onAppear {
-            draft = MobileRoomDraftCache.draft(for: store.selectedRoom)
-            // DEBUG-ONLY (removed after verification): force keyboard / reply
-            // state on launch so the reply+keyboard viewport change can be
-            // screenshot-verified on the headless simulator.
-            if PharosLaunchOptions.value(after: "--ui-focus") != nil { focused = true }
-            if PharosLaunchOptions.value(after: "--ui-reply-last") != nil {
-                Task {
-                    for _ in 0..<60 { if !store.messages.isEmpty { break }; try? await Task.sleep(for: .milliseconds(50)) }
-                    replyingTo = store.messages.last
-                    focused = true
-                }
-            }
-        }
+        .onAppear { draft = MobileRoomDraftCache.draft(for: store.selectedRoom) }
         .onChange(of: store.selectedRoom) { _, room in
             draft = MobileRoomDraftCache.draft(for: room)
             allowsHistoryPaging = false
