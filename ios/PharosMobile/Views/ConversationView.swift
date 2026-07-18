@@ -98,6 +98,7 @@ struct ConversationView: View {
                     .id(message.id)
                 }
             }
+            .scrollTargetLayout()   // required for ScrollPosition.scrollTo(id:)
             .padding(.vertical, 8)
         }
         .scrollPosition($scrollPosition)
