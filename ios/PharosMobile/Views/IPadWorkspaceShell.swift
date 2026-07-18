@@ -14,7 +14,7 @@ struct IPadWorkspaceShell: View {
     @State private var projects: [RemoteProject] = []
     @State private var issues: [RemoteIssue] = []
     @State private var projectFilter: ProjectFilter = .all
-    @State private var issueFilter: IssueFilter = .all
+    @State private var issueFilter: IssueFilter = .open
     @State private var agentFilter: AgentFilter = .live
     @State private var projectsLoading = false
     @State private var issuesLoading = false
@@ -356,7 +356,7 @@ private struct IPadIssuesIndex: View {
     var body: some View {
         List {
             Section {
-                PharosFilterStrip(options: [(.all, "All"), (.active, "Active"), (.backlog, "Backlog")],
+                PharosFilterStrip(options: IssueFilter.allCases.map { ($0, $0.title) },
                                   selection: $filter)
                     .padding(.vertical, 4)
                     .listRowInsets(.init())
@@ -390,34 +390,28 @@ private struct IPadIssuesIndex: View {
                     .padding(.top, 10)
                     .background(PharosDesign.pageBackground)
             } else if filteredIssues.isEmpty {
-                ContentUnavailableView("No open issues", systemImage: error == nil ? "checkmark.circle" : "exclamationmark.triangle",
+                ContentUnavailableView("No issues", systemImage: error == nil ? "checkmark.circle" : "exclamationmark.triangle",
                                        description: Text(error ?? "No issues match this filter."))
             }
         }
     }
 
     private var filteredIssues: [RemoteIssue] {
-        issues.filter { issue in
-            let state = IssueWorkflowState(issue.status)
-            return switch filter {
-            case .all: true
-            case .active: state == .inProgress || state == .blocked || state == .review
-            case .backlog: state == .backlog || state == .todo
-            }
-        }
+        issues.filter { filter.includes(IssueWorkflowState($0.status)) }
     }
 
     private var grouped: [(status: IssueWorkflowState, issues: [RemoteIssue])] {
         Dictionary(grouping: filteredIssues) { IssueWorkflowState($0.status) }
-            .map { status, values in
-                (status, values.sorted {
-                    if priorityRank($0.priority) != priorityRank($1.priority) {
-                        return priorityRank($0.priority) < priorityRank($1.priority)
-                    }
-                    return $0.number < $1.number
-                })
-            }
+            .map { status, values in (status, values.sorted(by: issueOrder)) }
             .sorted { $0.status.sortOrder < $1.status.sortOrder }
+    }
+
+    private func issueOrder(_ a: RemoteIssue, _ b: RemoteIssue) -> Bool {
+        if let sa = a.sortOrder, let sb = b.sortOrder, sa != sb { return sa < sb }
+        if priorityRank(a.priority) != priorityRank(b.priority) {
+            return priorityRank(a.priority) < priorityRank(b.priority)
+        }
+        return a.number < b.number
     }
 
     private func priorityRank(_ priority: String) -> Int {
