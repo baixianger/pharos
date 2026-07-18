@@ -24,9 +24,6 @@ struct ConversationView: View {
     /// Bumped after a successful send to force a scroll to the newest message,
     /// independent of whether the reloaded tail's last id changed.
     @State private var scrollBottomTick = 0
-    /// Bound to the message pinned at the bottom of the viewport via
-    /// .scrollPosition(id:anchor:.bottom). Setting it scrolls there.
-    @State private var scrolledID: String?
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -68,69 +65,101 @@ struct ConversationView: View {
         .quickLookPreview($previewURL)
     }
 
+    // Inverted transcript: the LazyVStack renders newest→oldest, and both the
+    // ScrollView and every cell are flipped upside down. The newest message
+    // therefore rests at scroll offset 0 (the visual bottom) — an offset the
+    // keyboard and the growing composer can't move, which is what made the old
+    // .scrollPosition(anchor:.bottom) approach jump to a blank region while
+    // typing. Prepended history lands off-screen at the visual top (no yank),
+    // and a new message inserts at offset 0 so it auto-appears when at rest.
     private var transcript: some View {
-        ScrollView {
-            // LazyVStack + scrollTargetLayout + the .scrollPosition(id:) binding
-            // is the reliable "open at newest" for chat: setting scrolledID to
-            // the last message (anchor .bottom) pins it at the bottom, works
-            // lazily, and preserves position automatically when older rows are
-            // prepended. (defaultScrollAnchor(.bottom) leaves LazyVStack blank.)
-            LazyVStack(alignment: .leading, spacing: 0) {
-                if store.hasMoreHistory {
-                    historyLoader
-                } else {
-                    channelWelcome
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(transcriptCells.reversed())) { cell in
+                        transcriptCellView(cell).flipUpsideDown()
+                    }
+                    Group {
+                        if store.hasMoreHistory { historyLoader } else { channelWelcome }
+                    }
+                    .flipUpsideDown()
                 }
+                .scrollTargetLayout()
+                .padding(.vertical, 8)
+            }
+            .flipUpsideDown()
+            .scrollIndicators(.hidden)
+            .background(Color(uiColor: .systemBackground))
+            .scrollDismissesKeyboard(.interactively)
+            // Arm history paging only after the first page has loaded and the
+            // view has settled at the bottom, so the top sentinel can't page
+            // during the opening layout.
+            .task(id: store.selectedRoom) {
+                allowsHistoryPaging = false
+                for _ in 0..<80 {
+                    if !store.messages.isEmpty { break }
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                try? await Task.sleep(for: .milliseconds(300))
+                allowsHistoryPaging = true
+            }
+            // On send, return to the newest message even if the user had
+            // scrolled up. ScrollViewReader works in untransformed layout space,
+            // where the newest cell is the layout-top (offset 0), so anchor .top.
+            .onChange(of: scrollBottomTick) {
+                guard let last = store.messages.last?.id else { return }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                    proxy.scrollTo(last, anchor: .top)
+                }
+            }
+        }
+    }
 
-                ForEach(Array(store.messages.enumerated()), id: \.element.id) { index, message in
-                    if startsNewDay(at: index) { dayDivider(for: message.date) }
-                    MessageRow(
-                        message: message,
-                        member: store.members[message.from],
-                        showsHeader: startsMessageGroup(at: index),
-                        onReply: {
-                            replyingTo = message
-                            focused = true
-                        },
-                        onOpenAttachment: { attachment in
-                            Task { previewURL = await store.downloadAttachment(attachment) }
-                        }
-                    )
-                    .id(message.id)
+    private enum TranscriptCell: Identifiable {
+        case divider(id: String, date: Date)
+        case message(id: String, message: MeshMessage, showsHeader: Bool)
+        var id: String {
+            switch self {
+            case .divider(let id, _): return id
+            case .message(let id, _, _): return id
+            }
+        }
+    }
+
+    /// Chronological (oldest→newest) cells; the transcript renders them reversed
+    /// under the upside-down flip. A day divider sits just before the first
+    /// message of its day, which after reversal appears directly above it.
+    private var transcriptCells: [TranscriptCell] {
+        var cells: [TranscriptCell] = []
+        for (index, message) in store.messages.enumerated() {
+            if startsNewDay(at: index) {
+                cells.append(.divider(id: "day-\(message.id)", date: message.date))
+            }
+            cells.append(.message(id: message.id, message: message,
+                                  showsHeader: startsMessageGroup(at: index)))
+        }
+        return cells
+    }
+
+    @ViewBuilder
+    private func transcriptCellView(_ cell: TranscriptCell) -> some View {
+        switch cell {
+        case .divider(_, let date):
+            dayDivider(for: date)
+        case .message(let id, let message, let showsHeader):
+            MessageRow(
+                message: message,
+                member: store.members[message.from],
+                showsHeader: showsHeader,
+                onReply: {
+                    replyingTo = message
+                    focused = true
+                },
+                onOpenAttachment: { attachment in
+                    Task { previewURL = await store.downloadAttachment(attachment) }
                 }
-            }
-            .scrollTargetLayout()
-            .padding(.vertical, 8)
-        }
-        .scrollPosition(id: $scrolledID, anchor: .bottom)
-        .background(Color(uiColor: .systemBackground))
-        .scrollDismissesKeyboard(.interactively)
-        // Pin to the newest message on open; repeat to catch late layout /
-        // late first-page load, then arm history paging.
-        .task(id: store.selectedRoom) {
-            allowsHistoryPaging = false
-            for _ in 0..<80 {
-                if !store.messages.isEmpty { break }
-                try? await Task.sleep(for: .milliseconds(50))
-            }
-            for _ in 0..<5 {
-                scrolledID = store.messages.last?.id
-                try? await Task.sleep(for: .milliseconds(120))
-            }
-            allowsHistoryPaging = true
-        }
-        // Follow new messages only when already at the bottom (scrolledID was
-        // the previous newest); never yank a user who scrolled up.
-        .onChange(of: store.messages.last?.id) { old, new in
-            guard allowsHistoryPaging, let new else { return }
-            if scrolledID == old || scrolledID == nil {
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { scrolledID = new }
-            }
-        }
-        .onChange(of: scrollBottomTick) {
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                scrolledID = store.messages.last?.id
-            }
+            )
+            .id(id)
         }
     }
 
@@ -593,6 +622,16 @@ private enum MobileRoomDraftCache {
         if draft.isEmpty { drafts.removeValue(forKey: room) }
         else { drafts[room] = draft }
         UserDefaults.standard.set(drafts, forKey: defaultsKey)
+    }
+}
+
+private extension View {
+    /// Vertical flip for the inverted chat transcript. Rotating 180° then
+    /// mirroring horizontally is a pure vertical reflection (crisper than a
+    /// negative-y scaleEffect); applied to both the ScrollView and each cell it
+    /// reverses the visual stacking order while keeping content upright.
+    func flipUpsideDown() -> some View {
+        rotationEffect(.radians(.pi)).scaleEffect(x: -1, y: 1, anchor: .center)
     }
 }
 
