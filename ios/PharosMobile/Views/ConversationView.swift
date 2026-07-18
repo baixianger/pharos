@@ -94,13 +94,18 @@ struct ConversationView: View {
                 }
                 .padding(.vertical, 8)
             }
+            // Apple's intended "open at newest" anchor; reliable here because
+            // the first page is only ~50 rows (the blank-window LazyVStack bug
+            // needs far more). The explicit post-load scroll below is a
+            // belt-and-suspenders backup.
+            .defaultScrollAnchor(.bottom)
             .background(Color(uiColor: .systemBackground))
             .scrollDismissesKeyboard(.interactively)
             // Open every room at the newest message. The LazyVStack lays out
-            // lazily, so a single jump on load lands short (at the oldest
-            // loaded row); wait for the first page, then jump twice with a
-            // settle in between. History paging stays disarmed until this
-            // completes so the top sentinel can't fire before we're at bottom.
+            // lazily, so a single jump on load can land short; wait for the
+            // first page, then jump to the last row twice with a settle in
+            // between. History paging stays disarmed until this completes so
+            // the top sentinel can't fire before we're at bottom.
             .task(id: store.selectedRoom) {
                 allowsHistoryPaging = false
                 for _ in 0..<80 {
