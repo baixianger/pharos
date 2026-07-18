@@ -44,6 +44,10 @@ final class PairingCoordinator {
     var pending: PairingLink?
     var errorMessage: String?
     var showsError = false
+    /// Drives the broker-setup wizard cover. Auto-shown on first run (no
+    /// broker) and re-openable from Settings; the wizard's close button and a
+    /// successful pairing both clear it.
+    var showsSetupGuide = false
 
     func receive(_ url: URL) {
         guard let invitation = PairingLink(url: url), !invitation.isExpired else {

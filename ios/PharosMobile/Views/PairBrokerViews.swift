@@ -48,7 +48,17 @@ struct BrokerSetupGuide: View {
             }
             .navigationTitle(horizontalSizeClass == .regular ? "" : "Set up Pharos")
             .toolbarTitleDisplayMode(.inlineLarge)
-            .toolbar(horizontalSizeClass == .regular ? .hidden : .visible, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        pairing.showsSetupGuide = false
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Close setup")
+                    }
+                }
+            }
             .sheet(isPresented: $showsScanner) {
                 PairingScannerSheet { value in
                     showsScanner = false
@@ -216,7 +226,7 @@ struct PairBrokerConfirmation: View {
         do {
             let response = try await client.send(MeshRequest(cmd: "capabilities"),
                                                  host: invitation.host, port: invitation.port)
-            guard response.capabilities?.contains("pairing-v1") == true else {
+            guard response.capabilities?.contains("pairing-v2") == true else {
                 state = .failed("Update the Broker before pairing this iPhone.")
                 return
             }

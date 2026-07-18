@@ -17,6 +17,9 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 Section {
+                    Button("Set up Mesh Broker…", systemImage: "wand.and.stars") {
+                        pairing.showsSetupGuide = true
+                    }
                     Button("Pair with another Broker", systemImage: "qrcode.viewfinder") {
                         showsPairingScanner = true
                     }

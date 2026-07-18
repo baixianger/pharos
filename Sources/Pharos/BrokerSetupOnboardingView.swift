@@ -271,7 +271,7 @@ struct BrokerSetupOnboardingView: View {
             errorMessage = "\(device.name) is on your tailnet but is not running a reachable Pharos Mesh Broker."
             return
         }
-        guard response.capabilities?.contains("pairing-v1") == true else {
+        guard response.capabilities?.contains("pairing-v2") == true else {
             errorMessage = "Update pharos-mesh on \(device.name) before using it as the Broker."
             return
         }

@@ -940,7 +940,7 @@ public final class MeshBroker: @unchecked Sendable {
             guard let link = pairing.url?.absoluteString else {
                 return .fail("couldn't encode pairing link")
             }
-            return MeshResponse(ok: true, payload: link, capabilities: ["pairing-v1"])
+            return MeshResponse(ok: true, payload: link, capabilities: ["pairing-v2"])
 
         case "pairing-redeem":
             guard let token = req.payload, !token.isEmpty,

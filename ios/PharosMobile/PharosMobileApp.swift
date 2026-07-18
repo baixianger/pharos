@@ -23,18 +23,22 @@ private struct AppContainer: View {
 
     var body: some View {
         @Bindable var pairing = pairing
-        Group {
-            if settings.mesh.host.isEmpty {
-                BrokerSetupGuide()
-            } else {
-                MainTabView()
-            }
-        }
+        // The main app is always the root; the setup wizard is a dismissible
+        // cover (auto-shown until a Broker is configured, re-openable from
+        // Settings) rather than an inescapable root screen.
+        MainTabView()
             .environment(settings)
             .environment(identities)
             .environment(rooms)
             .environment(pairing)
             .onOpenURL { pairing.receive($0) }
+            .fullScreenCover(isPresented: $pairing.showsSetupGuide) {
+                BrokerSetupGuide()
+                    .environment(settings)
+                    .environment(identities)
+                    .environment(rooms)
+                    .environment(pairing)
+            }
             .sheet(item: $pairing.pending) { invitation in
                 PairBrokerConfirmation(invitation: invitation)
                     .environment(settings)
@@ -43,6 +47,11 @@ private struct AppContainer: View {
                 Button("OK") {}
             } message: {
                 Text(pairing.errorMessage ?? "Use a new pairing code from Pharos on your desktop.")
+            }
+            // Open the wizard on first run; close it once a Broker is paired.
+            .task { if settings.mesh.host.isEmpty { pairing.showsSetupGuide = true } }
+            .onChange(of: settings.mesh.host) { _, host in
+                if !host.isEmpty { pairing.showsSetupGuide = false }
             }
     }
 }
