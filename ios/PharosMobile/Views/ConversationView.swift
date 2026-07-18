@@ -21,6 +21,9 @@ struct ConversationView: View {
     /// Armed only after the opening scroll-to-bottom has settled, so the
     /// top sentinel can't page (and re-anchor upward) while the room opens.
     @State private var allowsHistoryPaging = false
+    /// Bumped after a successful send to force a scroll to the newest message,
+    /// independent of whether the reloaded tail's last id changed.
+    @State private var scrollBottomTick = 0
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -104,6 +107,13 @@ struct ConversationView: View {
                         try? await Task.sleep(for: .milliseconds(500))
                         allowsHistoryPaging = true
                     }
+                }
+            }
+            // Deterministic scroll after a send: the reload rebuilds the tail,
+            // so pin to the newest message even if its id was already last.
+            .onChange(of: scrollBottomTick) {
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
         }
@@ -306,6 +316,7 @@ struct ConversationView: View {
                 draft = ""
                 replyingTo = nil
                 pendingAttachments = []
+                scrollBottomTick += 1      // pin to the message just sent
             }
         }
     }
