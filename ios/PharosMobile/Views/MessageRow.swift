@@ -10,6 +10,10 @@ struct MessageRow: View {
     var onReply: (() -> Void)?
     var onOpenAttachment: ((MeshAttachment) -> Void)?
 
+    @State private var swipeOffset: CGFloat = 0
+    @State private var didTrigger = false
+    private let replyThreshold: CGFloat = 60
+
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
             if showsHeader {
@@ -28,6 +32,21 @@ struct MessageRow: View {
         .padding(.top, showsHeader ? 8 : 1)
         .padding(.bottom, 2)
         .contentShape(.rect)
+        .offset(x: swipeOffset)
+        // Swipe-to-reply: a reply glyph trails the row as you drag right and
+        // fires once past the threshold — avoids the long-press full-screen
+        // preview for the common case.
+        .overlay(alignment: .leading) {
+            if onReply != nil, swipeOffset > 1 {
+                Image(systemName: "arrowshape.turn.up.left.fill")
+                    .font(.callout)
+                    .foregroundStyle(.tint)
+                    .opacity(Double(min(swipeOffset / replyThreshold, 1)))
+                    .scaleEffect(swipeOffset >= replyThreshold ? 1.15 : 0.9)
+                    .offset(x: max(4, swipeOffset - 34))
+            }
+        }
+        .gesture(replyDragGesture)
         .contextMenu {
             if let onReply {
                 Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
@@ -36,6 +55,26 @@ struct MessageRow: View {
                 UIPasteboard.general.string = message.text
             }
         }
+    }
+
+    private var replyDragGesture: some Gesture {
+        DragGesture(minimumDistance: 18)
+            .onChanged { value in
+                guard onReply != nil else { return }
+                // Horizontal-rightward only, so vertical scrolling is unaffected.
+                guard value.translation.width > abs(value.translation.height) else { return }
+                let dx = min(max(0, value.translation.width), 90)
+                swipeOffset = dx
+                if dx >= replyThreshold, !didTrigger {
+                    didTrigger = true
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                }
+            }
+            .onEnded { _ in
+                if didTrigger { onReply?() }
+                didTrigger = false
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.7)) { swipeOffset = 0 }
+            }
     }
 
     private var identityLine: some View {
