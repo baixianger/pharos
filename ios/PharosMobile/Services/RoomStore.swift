@@ -333,6 +333,161 @@ final class RoomStore {
         }
     }
 
+    // MARK: Edit / delete existing content
+
+    /// Edit an existing project's portable fields (name, notes, tags, GitHub
+    /// remote). Host-local paths remain device-local and are never touched here.
+    func updateProject(_ original: RemoteProject, name: String, githubRemote: String?,
+                       notes: String, tags: [String]) async -> Bool {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return false }
+        return await mutateRegistry { root in
+            var projects = root["projects"] as? [[String: Any]] ?? []
+            guard let index = projects.firstIndex(where: {
+                ($0["name"] as? String)?.localizedCaseInsensitiveCompare(original.name) == .orderedSame
+            }) else { throw RegistryMutationError.message("Project not found. Reload and try again.") }
+            if trimmedName.localizedCaseInsensitiveCompare(original.name) != .orderedSame,
+               projects.contains(where: { ($0["name"] as? String)?.localizedCaseInsensitiveCompare(trimmedName) == .orderedSame }) {
+                throw RegistryMutationError.message("A project named \(trimmedName) already exists.")
+            }
+            projects[index]["name"] = trimmedName
+            projects[index]["notes"] = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+            projects[index]["tags"] = tags
+            let remote = githubRemote?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if remote.isEmpty { projects[index].removeValue(forKey: "githubRemote") }
+            else { projects[index]["githubRemote"] = remote }
+            root["projects"] = projects
+        }
+    }
+
+    func deleteProject(_ project: RemoteProject) async -> Bool {
+        await mutateRegistry { root in
+            var projects = root["projects"] as? [[String: Any]] ?? []
+            projects.removeAll { ($0["name"] as? String)?.localizedCaseInsensitiveCompare(project.name) == .orderedSame }
+            root["projects"] = projects
+        }
+    }
+
+    /// Post a progress update (note) to a project — the core "record progress"
+    /// PM action, previously impossible from iOS.
+    func addProjectUpdate(to projectName: String, body: String) async -> Bool {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return await mutateRegistry { root in
+            var projects = root["projects"] as? [[String: Any]] ?? []
+            guard let index = projects.firstIndex(where: {
+                ($0["name"] as? String)?.localizedCaseInsensitiveCompare(projectName) == .orderedSame
+            }) else { throw RegistryMutationError.message("Project not found. Reload and try again.") }
+            var updates = projects[index]["updates"] as? [[String: Any]] ?? []
+            updates.append(["id": UUID().uuidString, "body": trimmed, "kind": "note"])
+            projects[index]["updates"] = updates
+            root["projects"] = projects
+        }
+    }
+
+    func deleteIssue(_ issue: RemoteIssue) async -> Bool {
+        await mutateRegistry { root in
+            var projects = root["projects"] as? [[String: Any]] ?? []
+            guard let projectIndex = projects.firstIndex(where: {
+                ($0["name"] as? String)?.localizedCaseInsensitiveCompare(issue.project) == .orderedSame
+            }) else { throw RegistryMutationError.message("Project not found. Reload and try again.") }
+            var issues = projects[projectIndex]["issues"] as? [[String: Any]] ?? []
+            issues.removeAll { $0["number"] as? Int == issue.number }
+            projects[projectIndex]["issues"] = issues
+            root["projects"] = projects
+        }
+    }
+
+    // MARK: Room administration (broker commands)
+
+    @discardableResult
+    func renameRoom(_ room: String, to newName: String) async -> Bool {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != room else { return false }
+        var req = MeshRequest(cmd: "rename", room: room)
+        req.text = trimmed
+        return await roomCommand(req) { if self.selectedRoom == room { self.selectedRoom = trimmed } }
+    }
+
+    @discardableResult
+    func deleteRoom(_ room: String) async -> Bool {
+        await roomCommand(MeshRequest(cmd: "delete", room: room)) {
+            if self.selectedRoom == room { self.selectedRoom = nil }
+        }
+    }
+
+    @discardableResult
+    func removeMember(_ nick: String, memberID: String, from room: String) async -> Bool {
+        var req = MeshRequest(cmd: "leave", room: room, nick: nick)
+        req.memberID = memberID
+        return await roomCommand(req) {}
+    }
+
+    @discardableResult
+    func renameMember(_ nick: String, to newNick: String, memberID: String, in room: String) async -> Bool {
+        let trimmed = newNick.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != nick else { return false }
+        var req = MeshRequest(cmd: "rename-member", room: room, nick: nick)
+        req.memberID = memberID
+        req.text = trimmed
+        return await roomCommand(req) {}
+    }
+
+    private func roomCommand(_ req: MeshRequest, onSuccess: @MainActor () -> Void) async -> Bool {
+        do {
+            let response = try await request(req)
+            guard response.ok else {
+                error = response.error ?? "The Broker rejected the change."
+                return false
+            }
+            onSuccess()
+            error = nil
+            await refresh()
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
+    // MARK: Agent lifecycle
+
+    /// Stop an agent by enqueuing a durable stopSession command on its Host
+    /// node (same path the desktop uses). Requires a paired Broker (control
+    /// token) and the member's Host node to be online.
+    @discardableResult
+    func stopAgent(_ member: MeshMember) async -> Bool {
+        do {
+            let nodes = try await request(MeshRequest(cmd: "node-list")).nodes ?? []
+            let target = nodes.first { node in
+                if let ip = member.tailscaleIP, !ip.isEmpty, let nip = node.tailscaleIP, !nip.isEmpty {
+                    return ip == nip
+                }
+                return node.host.lowercased() == (member.host ?? "").lowercased()
+            }
+            guard let node = target else {
+                error = "The agent's Host node is offline."
+                return false
+            }
+            var enqueue = MeshRequest(cmd: "node-command-enqueue", memberID: member.id)
+            enqueue.nodeID = node.id
+            enqueue.action = "stopSession"
+            enqueue.payload = "{\"memberID\":\"\(member.id)\"}"
+            enqueue.idempotencyKey = "ios-stop:\(node.id):\(member.id):\(UUID().uuidString)"
+            let response = try await request(enqueue)
+            guard response.ok else {
+                error = response.error ?? "Could not stop the agent."
+                return false
+            }
+            error = nil
+            await refresh()
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
     private func mutateRegistry(_ mutation: (inout [String: Any]) throws -> Void) async -> Bool {
         guard !settings.mesh.host.isEmpty else {
             error = "Connect to your Broker before changing project data."
