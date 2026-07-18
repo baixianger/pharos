@@ -500,26 +500,14 @@ struct MeshRoomView: View {
                 Button(action: chooseAttachment) { Image(systemName: "plus") }
                     .disabled(room.isEmpty || uploadingAttachment)
             TextField("Message the room — @nick to poke someone, plain text broadcasts",
-                      text: $draft, axis: .vertical)
-                .lineLimit(1...6)
+                      text: $draft)
                 .textFieldStyle(.roundedBorder)
                 .focused($inputFocused)
+                .onSubmit(send)
                 .onKeyPress(.upArrow) { mentionMove(-1) }
                 .onKeyPress(.downArrow) { mentionMove(1) }
                 .onKeyPress(.tab) { mentionAccept() }
-                // Enter sends (or accepts a mention); Shift+Enter inserts a
-                // newline. Insert it explicitly — the macOS field editor does
-                // not treat Shift+Return as a newline, so passing it through
-                // (.ignored) did nothing useful (it read as select-all).
-                .onKeyPress(keys: [.return]) { press in
-                    if press.modifiers.contains(.shift) {
-                        draft += "\n"
-                        return .handled
-                    }
-                    if !mentionSuggestions.isEmpty { return mentionAccept() }
-                    send()
-                    return .handled
-                }
+                .onKeyPress(.return) { mentionAccept() }
                 .onKeyPress(.escape) {
                     guard !mentionSuggestions.isEmpty else { return .ignored }
                     mentionDismissed = activeMentionToken
