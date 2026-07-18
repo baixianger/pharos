@@ -68,6 +68,9 @@ struct RemoteIssue: Identifiable, Sendable, Hashable {
     let labels: [String]
     var body: String = ""
     var activeSession: String? = nil
+    /// Manual board ordering set on the desktop; nil when unspecified. Carried
+    /// so the iOS list can honor the same ordering within a status group.
+    var sortOrder: Double? = nil
 }
 
 enum RemoteCommandBuilder {
@@ -265,7 +268,8 @@ actor RemoteAgentService {
                                priority: dict["priority"] as? String ?? "",
                                labels: (dict["labels"] as? [String]) ?? [],
                                body: dict["body"] as? String ?? "",
-                               activeSession: (dict["activeSession"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+                               activeSession: (dict["activeSession"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                               sortOrder: (dict["sortOrder"] as? Double) ?? (dict["sortOrder"] as? Int).map(Double.init))
         }
     }
 

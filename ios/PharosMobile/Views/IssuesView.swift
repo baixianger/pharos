@@ -8,7 +8,8 @@ struct IssuesView: View {
     @State private var issues: [RemoteIssue] = []
     @State private var loading = false
     @State private var loadError: String?
-    @State private var filter: IssueFilter = .all
+    @State private var filter: IssueFilter = .open
+    @State private var selectedLabel: String?
     @State private var showingNewIssue = false
 
     var body: some View {
@@ -47,6 +48,12 @@ struct IssuesView: View {
                         Picker("Filter", selection: $filter) {
                             ForEach(IssueFilter.allCases) { Text($0.title).tag($0) }
                         }
+                        if !allLabels.isEmpty {
+                            Picker("Label", selection: $selectedLabel) {
+                                Text("All labels").tag(String?.none)
+                                ForEach(allLabels, id: \.self) { Text($0).tag(String?.some($0)) }
+                            }
+                        }
                         Divider()
                         Button { Task { await load() } } label: {
                             Label("Refresh", systemImage: "arrow.clockwise")
@@ -76,7 +83,7 @@ struct IssuesView: View {
                 .background(PharosDesign.pageBackground)
         } else if filtered.isEmpty {
             ContentUnavailableView {
-                Label(loadError == nil ? "No open issues" : "Issues unavailable",
+                Label(loadError == nil ? "No issues" : "Issues unavailable",
                       systemImage: loadError == nil ? "checkmark.circle" : "exclamationmark.triangle")
             } description: {
                 Text(emptyDescription)
@@ -86,35 +93,39 @@ struct IssuesView: View {
         }
     }
 
+    private var allLabels: [String] {
+        Array(Set(issues.flatMap(\.labels))).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
     private var filtered: [RemoteIssue] {
         issues.filter { issue in
-            let state = IssueWorkflowState(issue.status)
-            let included = switch filter {
-            case .all: true
-            case .active: state == .inProgress || state == .blocked || state == .review
-            case .backlog: state == .backlog || state == .todo
-            }
-            return included
+            guard filter.includes(IssueWorkflowState(issue.status)) else { return false }
+            if let selectedLabel, !issue.labels.contains(selectedLabel) { return false }
+            return true
         }
     }
 
     private var grouped: [(status: IssueWorkflowState, issues: [RemoteIssue])] {
         Dictionary(grouping: filtered) { IssueWorkflowState($0.status) }
-            .map { status, values in
-                (status, values.sorted {
-                    if priorityRank($0.priority) != priorityRank($1.priority) {
-                        return priorityRank($0.priority) < priorityRank($1.priority)
-                    }
-                    return $0.number < $1.number
-                })
-            }
+            .map { status, values in (status, values.sorted(by: issueOrder)) }
             .sorted { $0.status.sortOrder < $1.status.sortOrder }
+    }
+
+    /// Honor the desktop's manual board order when both issues carry it, then
+    /// fall back to priority, then issue number.
+    private func issueOrder(_ a: RemoteIssue, _ b: RemoteIssue) -> Bool {
+        if let sa = a.sortOrder, let sb = b.sortOrder, sa != sb { return sa < sb }
+        if priorityRank(a.priority) != priorityRank(b.priority) {
+            return priorityRank(a.priority) < priorityRank(b.priority)
+        }
+        return a.number < b.number
     }
 
     private var emptyDescription: String {
         if let loadError { return loadError }
         if settings.mesh.host.isEmpty { return "Connect to your Broker in Settings to load issues." }
-        return filter == .all ? "Nothing is open across your projects." : "No issues match this workflow filter."
+        if selectedLabel != nil { return "No issues match this label and filter." }
+        return filter == .open ? "Nothing is open across your projects." : "No issues match this filter."
     }
 
     private func priorityRank(_ priority: String) -> Int {
@@ -221,60 +232,83 @@ private struct NewIssueView: View {
 }
 
 enum IssueFilter: String, CaseIterable, Identifiable {
-    case all, active, backlog
+    case open, inProgress, done, all
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .all: "All open"
-        case .active: "In progress"
-        case .backlog: "Todo & backlog"
+        case .open: "Open"
+        case .inProgress: "In progress"
+        case .done: "Done"
+        case .all: "All"
+        }
+    }
+
+    func includes(_ state: IssueWorkflowState) -> Bool {
+        switch self {
+        case .open: state.isOpen
+        case .inProgress: state == .inProgress
+        case .done: !state.isOpen          // done + canceled
+        case .all: true
         }
     }
 }
 
+/// Mirrors the desktop `IssueStatus` exactly — the only five statuses the model
+/// and CLI ever produce. Unknown raw values fall back to `.other` rather than
+/// inventing states the rest of the app can't set.
 enum IssueWorkflowState: Hashable {
-    case blocked, inProgress, review, todo, backlog, other(String)
+    case inProgress, todo, backlog, done, canceled, other(String)
 
     init(_ raw: String) {
         switch raw.lowercased().replacingOccurrences(of: "_", with: "-") {
-        case "blocked": self = .blocked
-        case "doing", "in-progress", "inprogress": self = .inProgress
-        case "review", "in-review": self = .review
-        case "todo", "open": self = .todo
+        case "in-progress", "inprogress": self = .inProgress
+        case "todo": self = .todo
         case "backlog": self = .backlog
+        case "done": self = .done
+        case "canceled", "cancelled": self = .canceled
         default: self = .other(raw)
+        }
+    }
+
+    /// Open work vs resolved (done/canceled). Unknown states are treated as open.
+    var isOpen: Bool {
+        switch self {
+        case .done, .canceled: false
+        default: true
         }
     }
 
     var displayName: String {
         switch self {
-        case .blocked: "Blocked"
         case .inProgress: "In progress"
-        case .review: "Review"
         case .todo: "Todo"
         case .backlog: "Backlog"
+        case .done: "Done"
+        case .canceled: "Canceled"
         case .other(let raw): raw.capitalized
         }
     }
 
+    /// Section order: active work first, resolved last.
     var sortOrder: Int {
         switch self {
-        case .blocked: 0
-        case .inProgress: 1
-        case .review: 2
-        case .todo: 3
-        case .backlog: 4
-        case .other: 5
+        case .inProgress: 0
+        case .todo: 1
+        case .backlog: 2
+        case .other: 3
+        case .done: 4
+        case .canceled: 5
         }
     }
 
     var glyph: PharosStatusGlyph.Kind {
         switch self {
-        case .blocked: .blocked
         case .inProgress: .active
-        case .review: .warning
         case .todo: .idle
-        case .backlog, .other: .offline
+        case .backlog: .offline
+        case .done: .done
+        case .canceled: .warning
+        case .other: .offline
         }
     }
 }
@@ -423,11 +457,11 @@ struct IssueSummaryView: View {
 private extension IssueWorkflowState {
     var symbol: String {
         switch self {
-        case .blocked: "exclamationmark.octagon"
         case .inProgress: "circle.lefthalf.filled"
-        case .review: "eye.circle"
         case .todo: "circle"
         case .backlog: "circle.dashed"
+        case .done: "checkmark.circle.fill"
+        case .canceled: "xmark.circle"
         case .other: "circle"
         }
     }

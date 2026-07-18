@@ -565,11 +565,3 @@ private struct NewProjectIssueView: View {
     }
 }
 
-private extension IssueWorkflowState {
-    var isOpen: Bool {
-        switch self {
-        case .other(let raw): !["done", "canceled", "cancelled"].contains(raw.lowercased())
-        default: true
-        }
-    }
-}
