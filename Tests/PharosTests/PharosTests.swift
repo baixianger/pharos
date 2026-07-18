@@ -2360,3 +2360,70 @@ final class RemoteLaunchTmuxIdentityTests: XCTestCase {
         ])
     }
 }
+
+// MARK: - ChatComposer key decision (Enter/Shift+Enter/IME/mention)
+
+final class ChatComposerActionTests: XCTestCase {
+    private func action(_ key: ChatComposerKey, shift: Bool = false,
+                        marked: Bool = false, mention: Bool = false) -> ChatComposerAction {
+        ChatComposer.action(for: key, shiftHeld: shift, hasMarkedText: marked, mentionActive: mention)
+    }
+
+    func testPlainEnterSends() {
+        XCTAssertEqual(action(.newline), .send)
+        XCTAssertTrue(ChatComposer.consumes(.send))
+    }
+
+    func testShiftEnterInsertsNewline() {
+        XCTAssertEqual(action(.newline, shift: true), .insertNewline)
+        // Not consumed → the text view performs its own newline insertion.
+        XCTAssertFalse(ChatComposer.consumes(.insertNewline))
+    }
+
+    /// The core IME-safety guarantee: while an input method is composing
+    /// (marked text), Enter must pass through so the IME confirms the candidate
+    /// — never send, never newline.
+    func testEnterDuringIMECompositionPassesThrough() {
+        XCTAssertEqual(action(.newline, marked: true), .passThrough)
+        XCTAssertFalse(ChatComposer.consumes(.passThrough))
+    }
+
+    /// IME composition wins even over an open @-mention popup.
+    func testIMECompositionBeatsMention() {
+        XCTAssertEqual(action(.newline, marked: true, mention: true), .passThrough)
+    }
+
+    /// Shift is irrelevant while composing — still pass through to the IME.
+    func testShiftEnterDuringIMEPassesThrough() {
+        XCTAssertEqual(action(.newline, shift: true, marked: true), .passThrough)
+    }
+
+    func testEnterCompletesActiveMention() {
+        XCTAssertEqual(action(.newline, mention: true), .acceptMention)
+        XCTAssertTrue(ChatComposer.consumes(.acceptMention))
+    }
+
+    func testTabCompletesActiveMentionButPassesThroughOtherwise() {
+        XCTAssertEqual(action(.tab, mention: true), .acceptMention)
+        XCTAssertEqual(action(.tab), .passThrough)
+    }
+
+    func testArrowsMoveMentionOnlyWhenActive() {
+        XCTAssertEqual(action(.up, mention: true), .moveMention(-1))
+        XCTAssertEqual(action(.down, mention: true), .moveMention(1))
+        XCTAssertEqual(action(.up), .passThrough)
+        XCTAssertEqual(action(.down), .passThrough)
+        // Arrows must stay usable for caret movement when no popup is up.
+        XCTAssertFalse(ChatComposer.consumes(action(.up)))
+    }
+
+    func testEscapeDismissesMentionOnlyWhenActive() {
+        XCTAssertEqual(action(.escape, mention: true), .dismissMention)
+        XCTAssertEqual(action(.escape), .passThrough)
+    }
+
+    func testUnrelatedKeysPassThrough() {
+        XCTAssertEqual(action(.other), .passThrough)
+        XCTAssertEqual(action(.other, shift: true, mention: true), .passThrough)
+    }
+}

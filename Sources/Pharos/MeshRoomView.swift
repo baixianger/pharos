@@ -27,7 +27,8 @@ struct MeshRoomView: View {
     @State private var mentionDismissed: String?
     @State private var hoveredMessageID: String?
     @State private var notices: [Notice] = []
-    @FocusState private var inputFocused: Bool
+    @State private var requestComposerFocus = false
+    @State private var composerHeight: CGFloat = 24
     @State private var issueRef: IssueRef?
     @State private var loading = false
     private var membersInfo: [String: MeshMemberInfo] { membersInfoByRoom[room] ?? [:] }
@@ -261,7 +262,7 @@ struct MeshRoomView: View {
         .contextMenu {
             Button("Reply", systemImage: "arrowshape.turn.up.left") {
                 replyingTo = m
-                inputFocused = true
+                requestComposerFocus = true
             }
             Button("Copy", systemImage: "doc.on.doc") { NSPasteboard.general.setString(m.text, forType: .string) }
         }
@@ -272,7 +273,7 @@ struct MeshRoomView: View {
     private func replyButton(for m: MeshMsg) -> some View {
         Button {
             replyingTo = m
-            inputFocused = true
+            requestComposerFocus = true
         } label: {
             Image(systemName: "arrowshape.turn.up.left")
                 .font(.caption2)
@@ -496,29 +497,40 @@ struct MeshRoomView: View {
                     Spacer()
                 }
             }
-            HStack(spacing: 8) {
+            HStack(alignment: .bottom, spacing: 8) {
                 Button(action: chooseAttachment) { Image(systemName: "plus") }
                     .disabled(room.isEmpty || uploadingAttachment)
-            TextField("Message the room — @nick to poke someone, plain text broadcasts",
-                      text: $draft)
-                .textFieldStyle(.roundedBorder)
-                .focused($inputFocused)
-                .onSubmit(send)
-                .onKeyPress(.upArrow) { mentionMove(-1) }
-                .onKeyPress(.downArrow) { mentionMove(1) }
-                .onKeyPress(.tab) { mentionAccept() }
-                .onKeyPress(.return) { mentionAccept() }
-                .onKeyPress(.escape) {
-                    guard !mentionSuggestions.isEmpty else { return .ignored }
-                    mentionDismissed = activeMentionToken
-                    return .handled
+                    .padding(.bottom, 2)
+            ChatComposerTextView(
+                text: $draft,
+                height: $composerHeight,
+                requestFocus: $requestComposerFocus,
+                isEnabled: !room.isEmpty,
+                onSend: send,
+                mentionActive: { !mentionSuggestions.isEmpty },
+                onMentionMove: { d in _ = mentionMove(d) },
+                onMentionAccept: { _ = mentionAccept() },
+                onMentionDismiss: { mentionDismissed = activeMentionToken }
+            )
+            .frame(height: composerHeight)
+            .padding(.horizontal, 4)
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.6),
+                        in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(.tertiary.opacity(0.7)))
+            .overlay(alignment: .topLeading) {
+                if draft.isEmpty {
+                    Text("Message the room — @nick to poke someone, plain text broadcasts")
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 9).padding(.vertical, 7)
+                        .allowsHitTesting(false)
                 }
-                .onChange(of: draft) { _, _ in
-                    mentionSel = 0
-                    // An esc-dismissed popup stays hidden only for that token.
-                    if let d = mentionDismissed, d != activeMentionToken { mentionDismissed = nil }
-                }
-                .disabled(room.isEmpty)
+            }
+            .onChange(of: draft) { _, _ in
+                mentionSel = 0
+                // An esc-dismissed popup stays hidden only for that token.
+                if let d = mentionDismissed, d != activeMentionToken { mentionDismissed = nil }
+            }
             Button(action: send) {
                 Image(systemName: "paperplane.fill")
             }
@@ -578,7 +590,7 @@ struct MeshRoomView: View {
     private func insertMentionChip(_ nick: String) {
         let separator = draft.isEmpty || draft.last == " " ? "" : " "
         draft += "\(separator)@\(nick) "
-        inputFocused = true
+        requestComposerFocus = true
     }
 
     private var memberMentionStrip: some View {
@@ -626,7 +638,7 @@ struct MeshRoomView: View {
     private func completeMention(_ nick: String) {
         guard let tok = activeMentionToken else { return }
         draft = String(draft.dropLast(tok.count)) + "@\(nick) "
-        inputFocused = true               // a mouse pick must not strand focus
+        requestComposerFocus = true               // a mouse pick must not strand focus
     }
 
     /// Floating member picker, anchored just above the input bar.
