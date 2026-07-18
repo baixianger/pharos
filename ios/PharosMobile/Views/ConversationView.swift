@@ -24,11 +24,6 @@ struct ConversationView: View {
     /// Bumped after a successful send to force a scroll to the newest message,
     /// independent of whether the reloaded tail's last id changed.
     @State private var scrollBottomTick = 0
-    /// iOS 18 scroll driver. `scrollTo(edge: .bottom)` targets the content
-    /// edge, so it pins to the newest message without depending on a lazily
-    /// rendered row being laid out (which made the old proxy.scrollTo(id:)
-    /// land short and open chats at the oldest message).
-    @State private var scrollPosition = ScrollPosition(edge: .bottom)
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -70,72 +65,58 @@ struct ConversationView: View {
     }
 
     private var transcript: some View {
-        ScrollView {
-            // Eager VStack (not Lazy): a page is ~50 rows, and lazy layout made
-            // every scroll-to-bottom land short (rows below the fold weren't
-            // built yet), which is why chats kept opening at the oldest message.
-            VStack(alignment: .leading, spacing: 0) {
-                if store.hasMoreHistory {
-                    historyLoader
-                } else {
-                    channelWelcome
-                }
+        ScrollViewReader { proxy in
+            ScrollView {
+                // LazyVStack + defaultScrollAnchor(.bottom) is Apple's intended
+                // "open at newest" for chat: the view rests at the bottom on
+                // load and stays anchored as new rows arrive. The top history
+                // sentinel is lazy, so it only fires once the user scrolls up to
+                // it — it can't runaway-load older pages the way an eager VStack
+                // did (all onAppears firing at once pulled the view up).
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if store.hasMoreHistory {
+                        historyLoader(proxy: proxy)
+                    } else {
+                        channelWelcome
+                    }
 
-                ForEach(Array(store.messages.enumerated()), id: \.element.id) { index, message in
-                    if startsNewDay(at: index) { dayDivider(for: message.date) }
-                    MessageRow(
-                        message: message,
-                        member: store.members[message.from],
-                        showsHeader: startsMessageGroup(at: index),
-                        onReply: {
-                            replyingTo = message
-                            focused = true
-                        },
-                        onOpenAttachment: { attachment in
-                            Task { previewURL = await store.downloadAttachment(attachment) }
-                        }
-                    )
-                    .id(message.id)
+                    ForEach(Array(store.messages.enumerated()), id: \.element.id) { index, message in
+                        if startsNewDay(at: index) { dayDivider(for: message.date) }
+                        MessageRow(
+                            message: message,
+                            member: store.members[message.from],
+                            showsHeader: startsMessageGroup(at: index),
+                            onReply: {
+                                replyingTo = message
+                                focused = true
+                            },
+                            onOpenAttachment: { attachment in
+                                Task { previewURL = await store.downloadAttachment(attachment) }
+                            }
+                        )
+                        .id(message.id)
+                    }
+
+                    Color.clear.frame(height: 1).id("bottom")
                 }
+                .padding(.vertical, 8)
             }
-            .scrollTargetLayout()   // required for ScrollPosition.scrollTo(id:)
-            .padding(.vertical, 8)
-        }
-        .scrollPosition($scrollPosition)
-        .background(Color(uiColor: .systemBackground))
-        .scrollDismissesKeyboard(.interactively)
-        // Open every room pinned to the newest message. The eager VStack lays
-        // out the last row, so scrollTo(id:anchor:.bottom) reaches it exactly;
-        // repeat a few times to catch late layout / late-loading of the first
-        // page. History paging stays disarmed until this settles, so the top
-        // sentinel can't prepend older pages and push us back up.
-        .task(id: store.selectedRoom) {
-            allowsHistoryPaging = false
-            for _ in 0..<80 {
-                if !store.messages.isEmpty { break }
-                try? await Task.sleep(for: .milliseconds(50))
+            .defaultScrollAnchor(.bottom)
+            .background(Color(uiColor: .systemBackground))
+            .scrollDismissesKeyboard(.interactively)
+            // Arm history paging only after the room settles at the bottom, so
+            // a first-frame sentinel render can't prepend older pages.
+            .task(id: store.selectedRoom) {
+                allowsHistoryPaging = false
+                try? await Task.sleep(for: .milliseconds(600))
+                allowsHistoryPaging = true
             }
-            for _ in 0..<6 {
-                if let last = store.messages.last?.id {
-                    scrollPosition.scrollTo(id: last, anchor: .bottom)
+            // Deterministic jump to newest after a send (defaultScrollAnchor
+            // handles incoming, but a send rebuilds the tail).
+            .onChange(of: scrollBottomTick) {
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
                 }
-                try? await Task.sleep(for: .milliseconds(110))
-            }
-            allowsHistoryPaging = true
-        }
-        // Follow new messages once the room has settled (not during initial
-        // load or history prepends).
-        .onChange(of: store.messages.last?.id) {
-            guard allowsHistoryPaging, let last = store.messages.last?.id else { return }
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                scrollPosition.scrollTo(id: last, anchor: .bottom)
-            }
-        }
-        // Deterministic scroll after a send.
-        .onChange(of: scrollBottomTick) {
-            guard let last = store.messages.last?.id else { return }
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                scrollPosition.scrollTo(id: last, anchor: .bottom)
             }
         }
     }
@@ -143,22 +124,21 @@ struct ConversationView: View {
     /// Top-of-transcript sentinel: becoming visible pulls one older page,
     /// then re-anchors the previous first message so the reading position
     /// doesn't jump when rows are prepended above it.
-    private var historyLoader: some View {
+    private func historyLoader(proxy: ScrollViewProxy) -> some View {
         ProgressView()
             .controlSize(.small)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
-            .onAppear { requestOlderPage() }
-            .onChange(of: allowsHistoryPaging) { requestOlderPage() }
+            .onAppear { requestOlderPage(proxy: proxy) }
     }
 
-    private func requestOlderPage() {
+    private func requestOlderPage(proxy: ScrollViewProxy) {
         guard allowsHistoryPaging, !store.isLoadingOlder else { return }
         let anchorID = store.messages.first?.id
         Task {
             await store.loadOlderMessages()
             // Keep the reading position stable when older rows prepend above.
-            if let anchorID { scrollPosition.scrollTo(id: anchorID, anchor: .top) }
+            if let anchorID { proxy.scrollTo(anchorID, anchor: .top) }
         }
     }
 
