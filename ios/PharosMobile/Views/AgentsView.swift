@@ -184,6 +184,8 @@ struct AgentDetailView: View {
     @Environment(AppSettings.self) private var settings
     let member: MeshMember
     @State private var terminal: TerminalTarget?
+    @State private var showingStopConfirm = false
+    @State private var isStopping = false
 
     var body: some View {
         List {
@@ -225,12 +227,40 @@ struct AgentDetailView: View {
                           systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
                 }
             }
+
+            if (member.state ?? "").lowercased() != "gone" {
+                Section {
+                    Button(role: .destructive) {
+                        showingStopConfirm = true
+                    } label: {
+                        HStack {
+                            Label("Stop agent", systemImage: "stop.circle")
+                            if isStopping { Spacer(); ProgressView() }
+                        }
+                    }
+                    .disabled(isStopping)
+                } footer: {
+                    Text("Enqueues a stop command on \(member.host ?? "the agent's host"). Requires the host node to be online and a paired Broker.")
+                }
+            }
         }
         .pharosPlainList()
         .navigationTitle("@\(member.nick)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .fullScreenCover(item: $terminal) { RemoteTerminalView(target: $0) }
+        .confirmationDialog("Stop @\(member.nick)?", isPresented: $showingStopConfirm, titleVisibility: .visible) {
+            Button("Stop agent", role: .destructive) {
+                isStopping = true
+                Task {
+                    _ = await store.stopAgent(member)
+                    isStopping = false
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This ends the agent's tmux session on its host.")
+        }
     }
 
     private var sshProfile: SSHHostProfile? {

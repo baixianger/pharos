@@ -11,6 +11,7 @@ struct SpawnAgentView: View {
     @State private var kind = MobileAgentKind.claude
     @State private var hostID: UUID?
     @State private var isSpawning = false
+    @State private var succeeded = false
     @State private var result: String?
     @State private var error: String?
     @State private var dirChoice: SpawnDirChoice = .scratch
@@ -74,7 +75,15 @@ struct SpawnAgentView: View {
                 } header: { Text("Before spawning") }
                 footer: { Text("This is a live remote action. Pharos waits for the agent to announce that it joined before reporting success.") }
 
-                if let result {
+                if succeeded {
+                    Section {
+                        Label("@\(nick.trimmingCharacters(in: .whitespacesAndNewlines)) joined #\(room)",
+                              systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    } footer: {
+                        Text("Closing…")
+                    }
+                } else if let result {
                     Section("Result") { Text(result).font(.caption.monospaced()).textSelection(.enabled) }
                 }
                 if let error {
@@ -88,7 +97,7 @@ struct SpawnAgentView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(isSpawning) }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(isSpawning ? "Spawning…" : "Spawn") { Task { await spawn() } }
-                        .disabled(!canSpawn || isSpawning)
+                        .disabled(!canSpawn || isSpawning || succeeded)
                 }
             }
             .interactiveDismissDisabled(isSpawning)
@@ -137,12 +146,19 @@ struct SpawnAgentView: View {
         isSpawning = true
         error = nil
         result = nil
-        defer { isSpawning = false }
         do {
             let key = try identities.privateKey(for: identityID)
             result = try await service.spawn(room: room, nick: nick.trimmingCharacters(in: .whitespacesAndNewlines),
                                              kind: kind, profile: profile, privateKey: key, workDir: workDir)
             await store.refreshAfterRemoteAction()
-        } catch { self.error = error.localizedDescription }
+            isSpawning = false
+            succeeded = true
+            // Give the confirmation a beat to register, then close automatically.
+            try? await Task.sleep(for: .seconds(1.3))
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
+            isSpawning = false
+        }
     }
 }

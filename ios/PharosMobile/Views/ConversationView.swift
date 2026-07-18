@@ -51,6 +51,7 @@ struct ConversationView: View {
             if let room = store.selectedRoom {
                 switch destination {
                 case .spawn: SpawnAgentView(room: room)
+                case .manage: ManageRoomSheet(roomName: room)
                 }
             }
         }
@@ -171,6 +172,15 @@ struct ConversationView: View {
         ToolbarItem(placement: .topBarTrailing) {
             Button("Add agent", systemImage: "person.badge.plus") { destination = .spawn }
                 .labelStyle(.iconOnly)
+        }
+
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Button("Manage room", systemImage: "slider.horizontal.3") { destination = .manage }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .accessibilityLabel("Room settings")
         }
     }
 
@@ -294,21 +304,20 @@ struct ConversationView: View {
         .padding(.vertical, 6)
     }
 
+    /// Room members eligible to @mention: live agents only. A gone agent can't
+    /// be poked, so surfacing it in the mention strip is misleading.
     private var availableMembers: [MeshMember] {
         guard let room = store.rooms.first(where: { $0.name == store.selectedRoom }) else { return [] }
         return room.members
             .filter { $0 != "human" }
             .compactMap { store.members[$0] }
+            .filter { ($0.state.flatMap(MeshSessionState.init(rawValue:))) != .gone }
             .sorted { $0.nick.localizedCaseInsensitiveCompare($1.nick) == .orderedAscending }
     }
 
     private var channelSubtitle: String {
         let total = availableMembers.count
-        let active = availableMembers.filter { member in
-            guard let state = member.state.flatMap(MeshSessionState.init(rawValue:)) else { return false }
-            return state != .gone
-        }.count
-        return total == 0 ? "No agents" : "\(active) active · \(total) agents"
+        return total == 0 ? "No active agents" : (total == 1 ? "1 agent" : "\(total) agents")
     }
 
     private var trimmedDraft: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -589,5 +598,135 @@ private enum MobileRoomDraftCache {
 
 private enum ConversationSheet: String, Identifiable {
     case spawn
+    case manage
     var id: String { rawValue }
+}
+
+struct ManageRoomSheet: View {
+    @Environment(RoomStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let roomName: String
+
+    @State private var newRoomName: String
+    @State private var busy = false
+    @State private var showingDeleteRoom = false
+    @State private var memberToRemove: MeshMember?
+    @State private var memberToRename: MeshMember?
+    @State private var renameMemberText = ""
+
+    init(roomName: String) {
+        self.roomName = roomName
+        _newRoomName = State(initialValue: roomName)
+    }
+
+    private var members: [MeshMember] {
+        guard let room = store.rooms.first(where: { $0.name == roomName }) else { return [] }
+        return room.members.compactMap { store.members[$0] }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Room name") {
+                    TextField("Room name", text: $newRoomName)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    Button("Rename room") {
+                        busy = true
+                        Task {
+                            _ = await store.renameRoom(roomName, to: newRoomName)
+                            busy = false
+                            dismiss()
+                        }
+                    }
+                    .disabled(busy || newRoomName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              || newRoomName == roomName)
+                }
+
+                Section("Members") {
+                    if members.isEmpty {
+                        Text("No members to manage.").foregroundStyle(.secondary)
+                    }
+                    ForEach(members) { member in
+                        HStack(spacing: 10) {
+                            Circle().fill(AgentStatus.color(member.state)).frame(width: 9, height: 9)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("@\(member.nick)")
+                                if let host = member.host {
+                                    Text(host).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) { memberToRemove = member } label: {
+                                Label("Remove", systemImage: "person.badge.minus")
+                            }
+                            Button {
+                                renameMemberText = member.nick
+                                memberToRename = member
+                            } label: {
+                                Label("Rename", systemImage: "pencil")
+                            }.tint(.indigo)
+                        }
+                    }
+                }
+
+                Section {
+                    Button(role: .destructive) { showingDeleteRoom = true } label: {
+                        Label("Delete room", systemImage: "trash")
+                    }
+                    .disabled(busy)
+                } footer: {
+                    Text("Deleting removes the room and its membership for everyone. Message history is retained by the Broker.")
+                }
+
+                if let error = store.error {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
+                    }
+                }
+            }
+            .pharosPlainList()
+            .navigationTitle("Manage room")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+            .interactiveDismissDisabled(busy)
+            .confirmationDialog("Delete #\(roomName)?", isPresented: $showingDeleteRoom,
+                                titleVisibility: .visible) {
+                Button("Delete room", role: .destructive) {
+                    busy = true
+                    Task {
+                        _ = await store.deleteRoom(roomName)
+                        busy = false
+                        dismiss()
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            .confirmationDialog(memberToRemove.map { "Remove @\($0.nick)?" } ?? "",
+                                isPresented: Binding(get: { memberToRemove != nil },
+                                                     set: { if !$0 { memberToRemove = nil } }),
+                                titleVisibility: .visible) {
+                Button("Remove member", role: .destructive) {
+                    guard let m = memberToRemove else { return }
+                    memberToRemove = nil
+                    Task { _ = await store.removeMember(m.nick, memberID: m.id, from: roomName) }
+                }
+                Button("Cancel", role: .cancel) { memberToRemove = nil }
+            }
+            .alert("Rename member", isPresented: Binding(get: { memberToRename != nil },
+                                                          set: { if !$0 { memberToRename = nil } })) {
+                TextField("New nickname", text: $renameMemberText)
+                Button("Rename") {
+                    guard let m = memberToRename else { return }
+                    memberToRename = nil
+                    Task { _ = await store.renameMember(m.nick, to: renameMemberText, memberID: m.id, in: roomName) }
+                }
+                Button("Cancel", role: .cancel) { memberToRename = nil }
+            }
+        }
+    }
 }

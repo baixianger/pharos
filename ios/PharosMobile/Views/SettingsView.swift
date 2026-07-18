@@ -67,6 +67,13 @@ struct SettingsView: View {
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                settings.removeSSHHost(id: profile.id)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
                     }
                     Button("Add Host", systemImage: "plus") { showHostEditor = true }
                 }
@@ -81,6 +88,13 @@ struct SettingsView: View {
                             Text(identity.publicKeyOpenSSH).font(.caption.monospaced()).textSelection(.enabled)
                             Button("Copy public key") { UIPasteboard.general.string = identity.publicKeyOpenSSH }
                                 .font(.caption)
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                try? identities.delete(identity)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
                         }
                     }
                 } header: {

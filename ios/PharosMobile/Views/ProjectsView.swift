@@ -218,6 +218,136 @@ private struct NewProjectView: View {
     }
 }
 
+private struct EditProjectView: View {
+    @Environment(RoomStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let project: RemoteProject
+    let onSaved: () -> Void
+
+    @State private var name: String
+    @State private var githubRemote: String
+    @State private var notes: String
+    @State private var tags: String
+    @State private var saving = false
+
+    init(project: RemoteProject, onSaved: @escaping () -> Void) {
+        self.project = project
+        self.onSaved = onSaved
+        _name = State(initialValue: project.name)
+        _githubRemote = State(initialValue: project.githubRemote ?? "")
+        _notes = State(initialValue: project.notes)
+        _tags = State(initialValue: project.tags.joined(separator: ", "))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Project") {
+                    TextField("Name", text: $name)
+                    TextField("Git remote (optional)", text: $githubRemote)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                Section("Description") {
+                    TextField("What is this project for?", text: $notes, axis: .vertical)
+                        .lineLimit(3...8)
+                }
+                Section {
+                    TextField("personal, ios, tools", text: $tags)
+                        .textInputAutocapitalization(.never)
+                } header: {
+                    Text("Tags")
+                } footer: {
+                    Text("Separate tags with commas.")
+                }
+                if let error = store.error {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .pharosPlainList()
+            .navigationTitle("Edit project")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.disabled(saving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(saving ? "Saving…" : "Save") { Task { await save() } }
+                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
+                }
+            }
+            .interactiveDismissDisabled(saving)
+        }
+    }
+
+    private func save() async {
+        saving = true
+        let parsedTags = tags.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let succeeded = await store.updateProject(project, name: name, githubRemote: githubRemote,
+                                                  notes: notes, tags: parsedTags)
+        saving = false
+        if succeeded {
+            onSaved()
+            dismiss()
+        }
+    }
+}
+
+private struct ProjectUpdateComposer: View {
+    @Environment(RoomStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let projectName: String
+    let onPosted: () -> Void
+
+    @State private var body_ = ""
+    @State private var saving = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Update") {
+                    TextField("What changed?", text: $body_, axis: .vertical)
+                        .lineLimit(4...12)
+                }
+                if let error = store.error {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .pharosPlainList()
+            .navigationTitle("Post update")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.disabled(saving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(saving ? "Posting…" : "Post") { Task { await post() } }
+                        .disabled(body_.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
+                }
+            }
+            .interactiveDismissDisabled(saving)
+        }
+    }
+
+    private func post() async {
+        saving = true
+        let succeeded = await store.addProjectUpdate(to: projectName, body: body_)
+        saving = false
+        if succeeded {
+            onPosted()
+            dismiss()
+        }
+    }
+}
+
 enum ProjectFilter: String, CaseIterable, Identifiable {
     case all, active, local
     var id: String { rawValue }
@@ -271,10 +401,15 @@ struct ProjectRow: View {
 
 struct ProjectSummaryView: View {
     @Environment(RoomStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
     @State private var project: RemoteProject
     let agents: [MeshMember]
     @State private var tab: ProjectDetailTab = .overview
     @State private var showingNewIssue = false
+    @State private var showingEditor = false
+    @State private var showingUpdateComposer = false
+    @State private var showingDeleteConfirm = false
+    @State private var isDeleting = false
 
     init(project: RemoteProject, agents: [MeshMember]) {
         _project = State(initialValue: project)
@@ -313,6 +448,13 @@ struct ProjectSummaryView: View {
                 }
                 .accessibilityLabel("Add issue")
                 Menu {
+                    Button { showingUpdateComposer = true } label: {
+                        Label("Post update", systemImage: "text.bubble")
+                    }
+                    Button { showingEditor = true } label: {
+                        Label("Edit project", systemImage: "square.and.pencil")
+                    }
+                    Divider()
                     Button { Task { await reload() } } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
@@ -328,16 +470,47 @@ struct ProjectSummaryView: View {
                             Label("Copy Git remote", systemImage: "link")
                         }
                     }
+                    Divider()
+                    Button(role: .destructive) {
+                        showingDeleteConfirm = true
+                    } label: {
+                        Label("Delete project", systemImage: "trash")
+                    }
                 } label: {
                     Image(systemName: "ellipsis")
                 }
                 .accessibilityLabel("More project actions")
+                .disabled(isDeleting)
             }
         }
         .sheet(isPresented: $showingNewIssue) {
             NewProjectIssueView(projectName: project.name) {
                 Task { await reload() }
             }
+        }
+        .sheet(isPresented: $showingEditor) {
+            EditProjectView(project: project) {
+                Task { await reload() }
+            }
+        }
+        .sheet(isPresented: $showingUpdateComposer) {
+            ProjectUpdateComposer(projectName: project.name) {
+                Task { await reload() }
+            }
+        }
+        .confirmationDialog("Delete \(project.name)?", isPresented: $showingDeleteConfirm,
+                            titleVisibility: .visible) {
+            Button("Delete project", role: .destructive) {
+                isDeleting = true
+                Task {
+                    let ok = await store.deleteProject(project)
+                    isDeleting = false
+                    if ok { dismiss() }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the project and its issues from the registry. This can't be undone from here.")
         }
     }
 

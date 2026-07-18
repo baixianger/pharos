@@ -358,8 +358,11 @@ struct IssueIndexRow: View {
 
 struct IssueSummaryView: View {
     @Environment(RoomStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
     @State private var issue: RemoteIssue
     @State private var showingEditor = false
+    @State private var showingDeleteConfirm = false
+    @State private var isDeleting = false
 
     init(issue: RemoteIssue) {
         _issue = State(initialValue: issue)
@@ -438,16 +441,37 @@ struct IssueSummaryView: View {
                     } label: {
                         Label("Copy title", systemImage: "text.quote")
                     }
+                    Divider()
+                    Button(role: .destructive) {
+                        showingDeleteConfirm = true
+                    } label: {
+                        Label("Delete issue", systemImage: "trash")
+                    }
                 } label: {
                     Image(systemName: "ellipsis")
                 }
                 .accessibilityLabel("More issue actions")
+                .disabled(isDeleting)
             }
         }
         .sheet(isPresented: $showingEditor) {
             IssueEditorView(issue: issue) { updated in
                 issue = updated
             }
+        }
+        .confirmationDialog("Delete \(issue.project.uppercased())-\(issue.number)?",
+                            isPresented: $showingDeleteConfirm, titleVisibility: .visible) {
+            Button("Delete issue", role: .destructive) {
+                isDeleting = true
+                Task {
+                    let ok = await store.deleteIssue(issue)
+                    isDeleting = false
+                    if ok { dismiss() }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the issue from the project. This can't be undone from here.")
         }
     }
 
