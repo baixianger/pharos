@@ -117,11 +117,6 @@ struct ConversationView: View {
                 try? await Task.sleep(for: .milliseconds(120))
             }
             allowsHistoryPaging = true
-            // Test hook: open a reply on the newest message so the reply
-            // composer can be screenshotted in the simulator.
-            if ProcessInfo.processInfo.arguments.contains("--ui-reply") {
-                replyingTo = store.messages.last
-            }
         }
         // Follow new messages only when already at the bottom (scrolledID was
         // the previous newest); never yank a user who scrolled up.
