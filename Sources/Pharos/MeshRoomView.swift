@@ -222,7 +222,7 @@ struct MeshRoomView: View {
     private func row(_ m: MeshMsg) -> some View {
         let mine = m.from == "human"
         return HStack(alignment: .top, spacing: 8) {
-            if mine { Spacer(minLength: 60); replyButton(for: m) } else { avatar(m.from) }
+            if mine { Spacer(minLength: 60) } else { avatar(m.from) }
             VStack(alignment: mine ? .trailing : .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(m.from).font(.caption.weight(.semibold))
@@ -251,14 +251,16 @@ struct MeshRoomView: View {
                             .buttonStyle(.plain)
                     }
                 }
+                // Persistent reply affordance hugging the bubble's bottom corner,
+                // so it's always clickable (a hover-reveal vanished when the
+                // cursor left the row to reach it).
+                .overlay(alignment: mine ? .bottomLeading : .bottomTrailing) {
+                    replyButton(for: m).offset(x: mine ? -18 : 18, y: 6)
+                }
             }
-            if mine { avatar(m.from) } else { replyButton(for: m); Spacer(minLength: 60) }
+            if mine { avatar(m.from) } else { Spacer(minLength: 60) }
         }
         .frame(maxWidth: .infinity, alignment: mine ? .trailing : .leading)
-        .onHover { hovering in
-            if hovering { hoveredMessageID = m.stableID }
-            else if hoveredMessageID == m.stableID { hoveredMessageID = nil }
-        }
         .contextMenu {
             Button("Reply", systemImage: "arrowshape.turn.up.left") {
                 replyingTo = m
@@ -268,23 +270,21 @@ struct MeshRoomView: View {
         }
     }
 
-    /// Hover-revealed reply affordance, so replying is discoverable without
-    /// right-clicking (the context-menu "Reply" stays as a secondary path).
+    /// Small always-present reply icon aligned to the bubble corner.
     private func replyButton(for m: MeshMsg) -> some View {
         Button {
             replyingTo = m
             inputFocused = true
         } label: {
             Image(systemName: "arrowshape.turn.up.left")
-                .font(.caption)
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .padding(5)
-                .background(.quaternary.opacity(0.5), in: Circle())
+                .padding(4)
+                .background(.quaternary.opacity(0.45), in: Circle())
         }
         .buttonStyle(.plain)
         .help("Reply")
-        .opacity(hoveredMessageID == m.stableID ? 1 : 0)
-        .animation(.easeOut(duration: 0.12), value: hoveredMessageID)
+        .opacity(0.55)
     }
 
     private func replyCard(_ reply: MeshReply) -> some View {
@@ -463,6 +463,7 @@ struct MeshRoomView: View {
     /// keys drive the member autocomplete popup instead of the field.
     private var inputBar: some View {
         VStack(spacing: 7) {
+            if !mentionableMembers.isEmpty { memberMentionStrip }
             if let replyingTo {
                 HStack(spacing: 7) {
                     Capsule().fill(Color.accentColor).frame(width: 3)
@@ -549,15 +550,56 @@ struct MeshRoomView: View {
         var pool = membersByRoom[room] ?? []
         for m in messages where !pool.contains(m.from) { pool.append(m.from) }
         pool.removeAll { $0 == "human" }
-        // Don't suggest agents the roster reports as gone — a dead member must
-        // not be @-mentionable. Guarded on a populated roster so a transient
-        // `who` failure doesn't hide every live member.
-        let info = membersInfo
-        if !info.isEmpty {
-            pool.removeAll { info[$0]?.state.flatMap(MeshSessionState.init(rawValue:)) == .gone }
-        }
+        pool.removeAll { !isLiveMember($0) }
         let hits = query.isEmpty ? pool : pool.filter { $0.lowercased().hasPrefix(query) }
         return Array(hits.prefix(8))
+    }
+
+    /// A member worth @-mentioning: present in the live roster and not gone.
+    /// This excludes both explicitly-gone members AND historical senders who
+    /// have fully left the room (no roster entry). Guarded so a transient
+    /// empty roster doesn't hide everyone.
+    private func isLiveMember(_ nick: String) -> Bool {
+        let info = membersInfo
+        guard !info.isEmpty else { return true }
+        guard let member = info[nick] else { return false }
+        return MeshSessionState(rawValue: member.state ?? "") != .gone
+    }
+
+    /// Live, non-human room members shown as one-tap @-mention chips above the
+    /// input (mirrors the iOS member strip).
+    private var mentionableMembers: [String] {
+        var pool = membersByRoom[room] ?? []
+        pool.removeAll { $0 == "human" || !isLiveMember($0) }
+        return pool.sorted()
+    }
+
+    private func insertMentionChip(_ nick: String) {
+        let separator = draft.isEmpty || draft.last == " " ? "" : " "
+        draft += "\(separator)@\(nick) "
+        inputFocused = true
+    }
+
+    private var memberMentionStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(mentionableMembers, id: \.self) { nick in
+                    Button { insertMentionChip(nick) } label: {
+                        HStack(spacing: 5) {
+                            if let dot = Self.statusDot(membersInfo[nick]?.state) {
+                                Circle().fill(dot).frame(width: 6, height: 6)
+                            }
+                            Text("@\(nick)").font(.caption)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(.quaternary.opacity(0.5), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Mention @\(nick)")
+                }
+            }
+            .padding(.horizontal, 2)
+        }
     }
 
     private func mentionMove(_ delta: Int) -> KeyPress.Result {
