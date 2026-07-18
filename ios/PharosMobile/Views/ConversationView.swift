@@ -36,7 +36,22 @@ struct ConversationView: View {
         .toolbar(.hidden, for: .tabBar)
         .toolbar { channelToolbar }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-        .onAppear { draft = MobileRoomDraftCache.draft(for: store.selectedRoom) }
+        .onAppear {
+            draft = MobileRoomDraftCache.draft(for: store.selectedRoom)
+            // DEBUG-ONLY (removed after verification): repeatedly leave and
+            // re-enter pharos-dev to stress the warm room-switch/re-render path.
+            if PharosLaunchOptions.value(after: "--ui-reenter") != nil {
+                Task {
+                    for _ in 0..<60 { if !store.messages.isEmpty { break }; try? await Task.sleep(for: .milliseconds(50)) }
+                    for _ in 0..<6 {
+                        await store.select(room: "lelantos-dev")
+                        try? await Task.sleep(for: .milliseconds(600))
+                        await store.select(room: "pharos-dev")
+                        try? await Task.sleep(for: .milliseconds(1400))
+                    }
+                }
+            }
+        }
         .onChange(of: store.selectedRoom) { _, room in
             draft = MobileRoomDraftCache.draft(for: room)
             allowsHistoryPaging = false
