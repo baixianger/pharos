@@ -1744,6 +1744,49 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         XCTAssertEqual(inbox.messages?.map(\.text), ["@agent ping"])
     }
 
+    /// A predecessor marked `.gone` is a genuinely-exited agent (logout /
+    /// prompt_input_exit), NOT a `/clear` reconnect. A brand-new agent that later
+    /// reuses the same seat+cwd must NOT inherit its rooms — the `!= .gone`
+    /// semantic gate refuses it without guessing on a timer.
+    func testRebindRefusesGonePredecessor() {
+        let broker = MeshBroker()
+        let host = "mac", pane = "%3", socket = "/tmp/s"
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "room", nick: "agent",
+                                                 project: "/proj", session: "sid-old",
+                                                 host: host, tmuxPane: pane,
+                                                 tmuxSocket: socket, kind: "claude")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "mark", session: "sid-old",
+                                                 state: MeshSessionState.gone.rawValue)).ok)
+        // A fresh agent on the same seat+cwd reports busy — must not reclaim.
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "mark", project: "/proj", session: "sid-new",
+                                                 host: host, tmuxPane: pane, tmuxSocket: socket,
+                                                 state: MeshSessionState.busy.rawValue)).ok)
+        let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
+        XCTAssertEqual(roster.map(\.id), ["sid-old"])                       // no reclaim
+        XCTAssertEqual(roster.first?.state, MeshSessionState.gone.rawValue)
+    }
+
+    /// Merge edge (lazy-path only): if the successor already sits in a room under
+    /// its OWN nick, the predecessor's nick in that room must be dropped, not
+    /// re-pointed — otherwise two nicks map to one member and it doubles in `who`.
+    func testRebindDropsRedundantNickWhenSuccessorAlreadyInRoom() {
+        let broker = MeshBroker()
+        let host = "mac", pane = "%4", socket = "/tmp/s"
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "R", nick: "old-nick",
+                                                 project: "/proj", session: "sid-old",
+                                                 host: host, tmuxPane: pane,
+                                                 tmuxSocket: socket, kind: "claude")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "R", nick: "new-nick",
+                                                 project: "/proj", session: "sid-new",
+                                                 host: host, tmuxPane: pane,
+                                                 tmuxSocket: socket, kind: "claude")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "rebind", project: "/proj", session: "sid-new",
+                                                 host: host, tmuxPane: pane, tmuxSocket: socket)).ok)
+        let inR = (broker.process(MeshRequest(cmd: "who")).members ?? []).filter { $0.rooms.first == "R" }
+        XCTAssertEqual(inR.map(\.id), ["sid-new"])                          // exactly once
+        XCTAssertEqual(inR.map(\.nick), ["new-nick"])                       // redundant nick dropped
+    }
+
     func testSayDerivesSenderAliasFromMemberSession() {
         let broker = MeshBroker()
         XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "dev", nick: "real-agent",

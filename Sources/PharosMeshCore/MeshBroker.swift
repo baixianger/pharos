@@ -1164,7 +1164,7 @@ public final class MeshBroker: @unchecked Sendable {
             // this report proves the same physical seat, lazily reclaim the
             // orphaned predecessor now — the report carries (host, pane, socket).
             if memberID == nil, let newID = req.session, !newID.isEmpty,
-               rebindLocked(to: newID, request: req) {
+               rebindLocked(to: newID, request: req, recencySeconds: Self.lazyRebindRecencySeconds) {
                 memberID = newID
             }
             if let memberID, presence[memberID] != nil,
@@ -1198,7 +1198,7 @@ public final class MeshBroker: @unchecked Sendable {
             // (a genuinely first-time session has nothing to reclaim).
             guard let newID = req.session, !newID.isEmpty else { return .fail("session required") }
             lock.lock()
-            let moved = rebindLocked(to: newID, request: req)
+            let moved = rebindLocked(to: newID, request: req, recencySeconds: Self.rebindRecencySeconds)
             lock.unlock()
             if moved { publish(kind: .roster) }
             return .okay()
@@ -1877,6 +1877,13 @@ public final class MeshBroker: @unchecked Sendable {
     /// onto an unrelated agent that happens to share the same cwd.
     private static let rebindRecencySeconds: Double = 1800
 
+    /// Tighter recency for the source-blind lazy `mark` path (P1 gates on
+    /// SessionStart.source; the lazy path can't see it). A real reconnect whose
+    /// proactive rebind was lost re-marks within seconds; a genuinely new agent
+    /// reusing a seat for a different task is typically minutes later. Paired
+    /// with the `state != .gone` gate below, not a substitute for it.
+    private static let lazyRebindRecencySeconds: Double = 90
+
     /// Reclaim an orphaned prior session's rooms, mailbox and presence onto a
     /// `newID` that occupies the same physical tmux seat. This is what rescues a
     /// member after `/clear` (or an in-place restart): the agent mints a fresh
@@ -1885,11 +1892,16 @@ public final class MeshBroker: @unchecked Sendable {
     ///
     /// The predecessor is matched by physical seat `(host, tmuxSocket, tmuxPane)`
     /// — NEVER by cwd alone, since co-located agents share a directory. cwd is a
-    /// SECONDARY confirmation, and `rebindRecencySeconds` rejects a recycled pane
-    /// id. The transfer MERGES (never overwrites): a `newID` that already joined
-    /// rooms of its own keeps them. Returns whether a rebind happened. Call with
-    /// `lock` held.
-    private func rebindLocked(to newID: String, request req: MeshRequest) -> Bool {
+    /// SECONDARY confirmation; `recencySeconds` rejects a recycled pane id; and a
+    /// predecessor already marked `.gone` is a genuinely-exited agent whose seat
+    /// a fresh one must not inherit (the gate is `!= .gone`, NOT `== .stopped`:
+    /// if the broker was also down at the predecessor's SessionEnd — the very
+    /// case the lazy path exists for — its state never advanced past busy/idle,
+    /// and `== .stopped` would wrongly block the reclaim we most need). The
+    /// transfer MERGES (never overwrites): a `newID` that already joined rooms of
+    /// its own keeps them. Returns whether a rebind happened. Call with `lock` held.
+    private func rebindLocked(to newID: String, request req: MeshRequest,
+                             recencySeconds: Double) -> Bool {
         guard !newID.isEmpty, let pane = req.tmuxPane, !pane.isEmpty else { return false }
         let now = Date().timeIntervalSince1970
         // The most-recently-seen eligible predecessor on this exact seat.
@@ -1902,17 +1914,27 @@ public final class MeshBroker: @unchecked Sendable {
                     // cwd: reject a different project reusing the seat, but never
                     // key on cwd alone (co-located agents share a directory).
                     && (req.project == nil || e.project == nil || e.project == req.project)
-                    && now - e.lastSeen <= Self.rebindRecencySeconds
+                    // a genuinely-exited agent is `.gone`; never inherit its seat.
+                    && e.state != MeshSessionState.gone.rawValue
+                    && now - e.lastSeen <= recencySeconds
             }
             .max { $0.value.lastSeen < $1.value.lastSeen }
         guard let (oldID, old) = predecessor else { return false }
 
-        // Move every room membership + mailbox old → new. MERGE, don't clobber.
+        // Move every room membership + mailbox old → new. MERGE, don't clobber:
+        // if the successor already sits in a room under its OWN nick (lazy path,
+        // where it self-joined before rebinding), don't add a second nick for the
+        // same member — that would double it in `who`; just fold the mailbox in
+        // and drop the predecessor's now-redundant nick so its ghost can clear.
         for name in rooms.keys {
             guard let nick = rooms[name]!.members.first(where: { $0.value == oldID })?.key
             else { continue }
-            rooms[name]!.members[nick] = newID
             let mail = rooms[name]!.mailboxes.removeValue(forKey: oldID) ?? []
+            if rooms[name]!.members.values.contains(newID) {
+                rooms[name]!.members.removeValue(forKey: nick)
+            } else {
+                rooms[name]!.members[nick] = newID
+            }
             if !mail.isEmpty { rooms[name]!.mailboxes[newID, default: []].append(contentsOf: mail) }
         }
         // Carry the predecessor's durable identity onto the new entry (keeping
