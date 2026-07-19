@@ -33,18 +33,23 @@ enum PharosTabTitle {
 /// tabs. The title-bar text stays hidden, so this doesn't reintroduce a title
 /// strip — the tab reads `window.title` regardless of title-bar visibility.
 struct WindowTabBar: NSViewRepresentable {
+    /// The native tab label (identifies the concrete thing open in the tab).
     var title: String
+    /// The window title, set directly via AppKit so it lands the instant the
+    /// window exists — instead of waiting for SwiftUI's `navigationTitle` to
+    /// propagate, which on a fresh tab can lag behind the first mesh load.
+    var windowTitle: String
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
-        context.coordinator.update(title: title, from: view)
+        context.coordinator.update(title: title, windowTitle: windowTitle, from: view)
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.update(title: title, from: nsView)
+        context.coordinator.update(title: title, windowTitle: windowTitle, from: nsView)
     }
 
     @MainActor
@@ -55,22 +60,36 @@ struct WindowTabBar: NSViewRepresentable {
         /// can receive several SwiftUI updates before `view.window` exists; an
         /// older captured value must never win later.
         private var desiredTitle = PharosTabTitle.dashboard
+        private var desiredWindowTitle = PharosViewTitle.dashboard
 
-        func update(title: String, from view: NSView) {
+        func update(title: String, windowTitle: String, from view: NSView) {
             desiredTitle = title
+            desiredWindowTitle = windowTitle
+            applyWhenReady(from: view, attempt: 0)
+        }
+
+        /// A fresh native tab can receive several SwiftUI updates before
+        /// `view.window` exists. Retry on the runloop until it does (bounded)
+        /// instead of giving up after a single deferred tick — otherwise the
+        /// title only lands on the next unrelated state change (e.g. the mesh
+        /// load seconds later).
+        private func applyWhenReady(from view: NSView, attempt: Int) {
             if let window = view.window {
                 attach(to: window)
-                apply(title: desiredTitle, to: window)
+                apply(title: desiredTitle, windowTitle: desiredWindowTitle, to: window)
                 return
             }
+            guard attempt < 30 else { return }
             DispatchQueue.main.async { [weak self, weak view] in
-                guard let self, let window = view?.window else { return }
-                self.attach(to: window)
-                self.apply(title: self.desiredTitle, to: window)
+                guard let self, let view else { return }
+                self.applyWhenReady(from: view, attempt: attempt + 1)
             }
         }
 
-        func apply(title: String, to window: NSWindow) {
+        func apply(title: String, windowTitle: String, to window: NSWindow) {
+            // Set the window title eagerly (used by the tab when no tab title is
+            // set, plus Mission Control / the Window menu) so it's never empty.
+            if window.title != windowTitle { window.title = windowTitle }
             window.titleVisibility = .hidden
             if window.tab.title != title { window.tab.title = title }
         }

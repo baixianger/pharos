@@ -74,6 +74,15 @@ struct ContentView: View {
         return PharosTabTitle.dashboard
     }
 
+    /// The window title, mirroring each screen's `navigationTitle`, so
+    /// WindowTabBar can set it via AppKit the instant the window exists
+    /// (default: "Pharos" for the dashboard) rather than waiting for SwiftUI.
+    private var contentTitle: String {
+        if openRoom != nil { return PharosViewTitle.rooms }
+        if let id = selectedProject, store.project(id) != nil { return PharosViewTitle.project }
+        return PharosViewTitle.dashboard
+    }
+
     @ViewBuilder
     private var detailView: some View {
         if let t = snapSettingsTab {
@@ -143,7 +152,7 @@ struct ContentView: View {
             }
         }
         .toolbarBackground(.visible, for: .windowToolbar)
-        .background(WindowTabBar(title: tabTitle))
+        .background(WindowTabBar(title: tabTitle, windowTitle: contentTitle))
         .sheet(isPresented: $showAdd) { AddProjectSheet() }
         .sheet(isPresented: $showImport) { GitHubImportSheet() }
         .sheet(isPresented: $showPalette) {
