@@ -432,6 +432,22 @@ final class RemoteAttachCommandTests: XCTestCase {
         XCTAssertFalse(command.contains("ssh -t"))
         XCTAssertTrue(command.contains("tmux attach"))
     }
+
+    /// A pane can't be resolved to its session without the member's tmux socket.
+    /// A host may run two tmux servers whose pane ids collide (%1 on each is a
+    /// DIFFERENT session), so a socketless query would fall to the default server
+    /// and misassign. sessionName must refuse a nil/invalid socket for local AND
+    /// remote — returning nil (member visibly unresolved) not a wrong session.
+    /// These inputs all fail the guard before any tmux call, so they're
+    /// deterministic. (Pharos#8 — the guard used to let local + nil socket
+    /// through to the default server.)
+    func testSessionNameRequiresSocket() {
+        XCTAssertNil(RemoteLaunch.sessionName(pane: "%1", host: nil, socket: nil))          // local, no socket
+        XCTAssertNil(RemoteLaunch.sessionName(pane: "%1", host: "home-ts", socket: nil))    // remote, no socket
+        XCTAssertNil(RemoteLaunch.sessionName(pane: "%1", host: nil, socket: "relative.sock")) // invalid socket
+        XCTAssertNil(RemoteLaunch.sessionName(pane: "notapane", host: nil,
+                                              socket: "/private/tmp/tmux-501/default"))     // bad pane
+    }
 }
 
 // MARK: - StoreData soft-delete / Trash

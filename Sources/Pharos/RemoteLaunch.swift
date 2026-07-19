@@ -603,10 +603,18 @@ enum RemoteLaunch {
     /// Resolve a registered pane to its owning tmux session without mutating
     /// it. Dashboard uses this to merge a Mesh registration with the raw tmux
     /// discovery row instead of showing the same agent twice.
+    ///
+    /// The member's tmux SOCKET is required — local and remote alike. A host can
+    /// run two tmux servers (e.g. the default and ~/.pharos/tmux/node.sock) whose
+    /// pane ids collide: %1 on each points at a DIFFERENT session. A query with
+    /// no socket would fall to the DEFAULT server and return a plausible WRONG
+    /// session instead of nil. Refusing a nil socket keeps a socket-less member
+    /// correctly unresolved rather than silently misassigned. The guard used to
+    /// be asymmetric (it caught remote-without-socket but let local through to
+    /// the default server). (Pharos#8)
     static func sessionName(pane: String, host: String?, socket: String?) -> String? {
         guard pane.first == "%", pane.dropFirst().allSatisfy(\.isNumber),
-              socket == nil || validTmuxSocket(socket!) else { return nil }
-        if host?.isEmpty == false, socket == nil { return nil }
+              let socket, validTmuxSocket(socket) else { return nil }
         let result = tmuxAny(host, ["display-message", "-p", "-t", pane, "#{session_name}"],
                              socket: socket)
         let session = result.out.trimmingCharacters(in: .whitespacesAndNewlines)
