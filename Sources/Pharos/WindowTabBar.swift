@@ -42,56 +42,59 @@ struct WindowTabBar: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        context.coordinator.update(title: title, windowTitle: windowTitle, from: view)
+    func makeNSView(context: Context) -> WindowBridgeView {
+        NSLog("PHAROS-TITLE makeNSView windowTitle=%@ tab=%@", windowTitle, title)
+        let view = WindowBridgeView()
+        view.coordinator = context.coordinator
+        context.coordinator.set(title: title, windowTitle: windowTitle)
+        context.coordinator.applyIfPossible(from: view)
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.update(title: title, windowTitle: windowTitle, from: nsView)
+    func updateNSView(_ nsView: WindowBridgeView, context: Context) {
+        nsView.coordinator = context.coordinator
+        context.coordinator.set(title: title, windowTitle: windowTitle)
+        context.coordinator.applyIfPossible(from: nsView)
+    }
+
+    /// A zero-size NSView that reports the exact moment SwiftUI attaches it to a
+    /// window (`viewDidMoveToWindow`), so the coordinator titles the window then
+    /// — event-driven, not polling. Runloop-async retries all fire within a
+    /// fraction of a second, so they can't span a window that materializes
+    /// several seconds later; this can.
+    final class WindowBridgeView: NSView {
+        weak var coordinator: Coordinator?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            NSLog("PHAROS-TITLE viewDidMoveToWindow hasWindow=%@", window == nil ? "no" : "yes")
+            if let window { coordinator?.apply(to: window) }
+        }
     }
 
     @MainActor
     final class Coordinator {
         private weak var bound: NSWindow?
         private var observation: NSKeyValueObservation?
-        /// Read when deferred window adoption runs. A newly created native tab
-        /// can receive several SwiftUI updates before `view.window` exists; an
-        /// older captured value must never win later.
         private var desiredTitle = PharosTabTitle.dashboard
         private var desiredWindowTitle = PharosViewTitle.dashboard
 
-        func update(title: String, windowTitle: String, from view: NSView) {
+        func set(title: String, windowTitle: String) {
             desiredTitle = title
             desiredWindowTitle = windowTitle
-            applyWhenReady(from: view, attempt: 0)
         }
 
-        /// A fresh native tab can receive several SwiftUI updates before
-        /// `view.window` exists. Retry on the runloop until it does (bounded)
-        /// instead of giving up after a single deferred tick — otherwise the
-        /// title only lands on the next unrelated state change (e.g. the mesh
-        /// load seconds later).
-        private func applyWhenReady(from view: NSView, attempt: Int) {
-            if let window = view.window {
-                attach(to: window)
-                apply(title: desiredTitle, windowTitle: desiredWindowTitle, to: window)
-                return
-            }
-            guard attempt < 30 else { return }
-            DispatchQueue.main.async { [weak self, weak view] in
-                guard let self, let view else { return }
-                self.applyWhenReady(from: view, attempt: attempt + 1)
-            }
+        func applyIfPossible(from view: NSView) {
+            if let window = view.window { apply(to: window) }
         }
 
-        func apply(title: String, windowTitle: String, to window: NSWindow) {
+        func apply(to window: NSWindow) {
+            attach(to: window)
             // Set the window title eagerly (used by the tab when no tab title is
             // set, plus Mission Control / the Window menu) so it's never empty.
-            if window.title != windowTitle { window.title = windowTitle }
+            if window.title != desiredWindowTitle { window.title = desiredWindowTitle }
             window.titleVisibility = .hidden
-            if window.tab.title != title { window.tab.title = title }
+            if window.tab.title != desiredTitle { window.tab.title = desiredTitle }
+            NSLog("PHAROS-TITLE apply window.title=%@ tab.title=%@", desiredWindowTitle, desiredTitle)
         }
 
         func attach(to window: NSWindow) {
