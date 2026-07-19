@@ -152,7 +152,10 @@ struct ContentView: View {
             }
         }
         .toolbarBackground(.visible, for: .windowToolbar)
-        .background(WindowTabBar(title: tabTitle, windowTitle: contentTitle))
+        // macOS shows window.title in the tab, so feed it the specific tab name
+        // (Dashboard / room / project) — the tab.title override alone is
+        // unreliable and some tabs fell back to window.title.
+        .background(WindowTabBar(title: tabTitle, windowTitle: tabTitle))
         .sheet(isPresented: $showAdd) { AddProjectSheet() }
         .sheet(isPresented: $showImport) { GitHubImportSheet() }
         .sheet(isPresented: $showPalette) {
