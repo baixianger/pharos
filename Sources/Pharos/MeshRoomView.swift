@@ -203,19 +203,30 @@ struct MeshRoomView: View {
     }
 
     private var transcript: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(Array(messages.enumerated()), id: \.offset) { _, m in row(m) }
-                    Color.clear.frame(height: 1).id("bottom")
+        // An INVERTED scroll view: the ScrollView and every row are each flipped
+        // vertically (a double reflection that cancels, so content reads upright),
+        // and messages are laid out newest-first. The newest message therefore
+        // rests at the scroll view's natural top offset (0) — the visual BOTTOM —
+        // so a room opens pinned to the newest message BY CONSTRUCTION, with no
+        // bottom position to compute. That immunity is the whole point: rows are
+        // LazyVStack + Markdown whose real heights are only known AFTER render, so
+        // any "scroll to the computed bottom" (defaultScrollAnchor /
+        // scrollPosition(anchor:)) races that late layout and lands short —
+        // measured landing at 0.95–0.99 and sometimes never reaching the bottom.
+        // iOS hit and documented the same race (see ConversationView); the
+        // inverted layout is its cure. A new message inserts at offset 0, so it
+        // appears automatically while resting at the newest and never yanks the
+        // view when scrolled up reading history.
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 10) {
+                ForEach(Array(messages.enumerated().reversed()), id: \.offset) { _, m in
+                    row(m).flipUpsideDown()
                 }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .onChange(of: messages.count) { _, _ in
-                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
-            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .flipUpsideDown()
     }
 
     /// Messenger-style row: avatar beside a bubble, the human's own messages
@@ -915,5 +926,15 @@ private enum MeshRoomDraftCache {
         if draft.isEmpty { drafts.removeValue(forKey: room) }
         else { drafts[room] = draft }
         UserDefaults.standard.set(drafts, forKey: defaultsKey)
+    }
+}
+
+private extension View {
+    /// Vertical flip for the inverted chat transcript: rotate 180° then mirror
+    /// horizontally is a pure vertical reflection (crisper than a negative-y
+    /// scaleEffect). Applied to both the ScrollView and each row, it reverses the
+    /// visual stacking order while keeping content upright — see `transcript`.
+    func flipUpsideDown() -> some View {
+        rotationEffect(.radians(.pi)).scaleEffect(x: -1, y: 1, anchor: .center)
     }
 }
