@@ -1,6 +1,16 @@
 import AppKit
 import SwiftUI
 
+// DIAGNOSTIC (temporary): trace tab-title updates on navigation.
+func titleLog(_ msg: String) {
+    let line = "\(String(format: "%.3f", Date().timeIntervalSince1970)) \(msg)\n"
+    guard let data = line.data(using: .utf8) else { return }
+    let url = URL(fileURLWithPath: "/tmp/pharos-title.log")
+    if let fh = try? FileHandle(forWritingTo: url) {
+        fh.seekToEndOfFile(); fh.write(data); try? fh.close()
+    } else { try? data.write(to: url) }
+}
+
 /// Content titles describe the kind of screen. Native tab labels identify the
 /// concrete thing open in that tab. They are deliberately different channels.
 enum PharosViewTitle {
@@ -46,6 +56,7 @@ struct WindowTabBar: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+        titleLog("updateNSView tab=\(title) window=\(windowTitle) hasWindow=\(nsView.window == nil ? "no" : "yes")")
         context.coordinator.update(title: title, windowTitle: windowTitle, from: nsView)
     }
 
@@ -90,6 +101,7 @@ struct WindowTabBar: NSViewRepresentable {
             // still carries it for Mission Control / the Window menu.
             window.titleVisibility = .hidden
             if window.title != windowTitle { window.title = windowTitle }
+            titleLog("apply tab.title '\(window.tab.title)' -> '\(title)'  window.title -> '\(windowTitle)'")
             if window.tab.title != title { window.tab.title = title }
         }
 
