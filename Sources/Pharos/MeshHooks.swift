@@ -121,10 +121,22 @@ enum MeshHooks {
 
     /// Fire-and-forget a state report for this session (broker resolves the
     /// nick by session/cwd when none is given). Never spawns a broker.
+    ///
+    /// Carries the physical tmux seat (host, pane, socket) — free to read from
+    /// the hook's own environment — so the broker can reclaim a session that a
+    /// `/clear` re-minted onto the same seat even if the SessionStart rebind
+    /// never landed (see `rebindLocked` in the broker). For a session the broker
+    /// already knows, these fields are inert.
     private static func report(_ state: MeshSessionState, nick: String? = nil,
                                cwd: String, session: String?, reason: String? = nil) {
+        let env = ProcessInfo.processInfo.environment
+        let pane = env["TMUX"] != nil ? env["TMUX_PANE"] : nil
+        let socket = RemoteLaunch.tmuxSocket(fromEnvironmentValue: env["TMUX"])
         MeshClient.sendIfUp(MeshRequest(cmd: "mark", nick: nick, project: cwd,
-                                        session: session, state: state.rawValue,
+                                        session: session,
+                                        host: HostIdentity.current,
+                                        tmuxPane: pane, tmuxSocket: socket,
+                                        state: state.rawValue,
                                         stateReason: reason))
     }
 
@@ -195,14 +207,27 @@ enum MeshHooks {
 
     /// Hook event → session state (probed mapping — see MeshSessionState docs).
     /// nil = an event we deliberately ignore.
-    static func stateFor(event: String, notificationType: String?) -> MeshSessionState? {
+    static func stateFor(event: String, notificationType: String?,
+                         reason: String? = nil) -> MeshSessionState? {
         switch event {
         case "UserPromptSubmit": .busy       // a turn begins (incl. our own nudge → self-debouncing)
         case "PermissionRequest": .blocked   // an approval dialog is about to be shown
         case "ElicitationResult", "PostToolUseFailure":
             .busy                            // human/form response returned to the active turn
         case "StopFailure":      .stopped    // API error ended the turn; composer is poke-safe
-        case "SessionEnd":       .gone       // never poke again
+        case "SessionEnd":
+            // `/clear` and `resume` end this session id but immediately start a
+            // NEW one on the SAME tmux pane (~0.2s later) — the agent is not
+            // gone, it is being replaced. Mark it `stopped` (pane alive,
+            // delivery continues) and let the successor's rebind carry the
+            // membership over; marking it `gone` here is what stranded a
+            // working agent off the roster after a plain `/clear`. Only a real
+            // teardown is `gone`. Unknown reasons stay `gone` (conservative):
+            // the Node's pane probe re-confirms a truly dead seat within ~40s.
+            switch reason {
+            case "clear", "resume": .stopped
+            default:                .gone
+            }
         case "Notification":
             switch notificationType {
             case "permission_prompt", "elicitation_dialog":
@@ -234,7 +259,8 @@ enum MeshHooks {
             forwardForm(toolInput: obj["tool_input"] as? [String: Any] ?? [:], session: session)
             return 0
         }
-        guard let state = stateFor(event: event, notificationType: obj["notification_type"] as? String)
+        guard let state = stateFor(event: event, notificationType: obj["notification_type"] as? String,
+                                   reason: obj["reason"] as? String)
         else { return 0 }
         report(state, cwd: cwd, session: session,
                reason: stateReason(event: event, notificationType: obj["notification_type"] as? String,
@@ -510,6 +536,18 @@ enum MeshHooks {
               let sid = obj["session_id"] as? String, !sid.isEmpty else { return 0 }
         let cwd = obj["cwd"] as? String ?? FileManager.default.currentDirectoryPath
         recordSessionContext(sessionID: sid, cwd: cwd)
+        // `/clear` and `resume` end the prior session id and start THIS one on
+        // the same tmux pane; `source` names exactly that transition. Only then
+        // do we reclaim the seat: a plain `startup` is a genuinely new agent and
+        // must NOT inherit a stale predecessor, and `compact` reuses the same
+        // session id (nothing to rebind). On clear/resume, ask the broker to
+        // move the same-seat predecessor's rooms, mailbox and presence onto us
+        // so the roster follows the live session instead of pinning to the dead
+        // one. Fail-open: if the broker is unreachable now, this session's first
+        // `mark` lazily does the same reclaim (see the broker's mark/rebind).
+        if let source = obj["source"] as? String, source == "clear" || source == "resume" {
+            rebindPriorSeat(sessionID: sid, cwd: cwd)
+        }
         if args.contains("--silent") { return 0 }
         var ctx = "Pharos mesh: your session id is \(sid). When you join a mesh chat "
                 + "room, pass it so delivery targets this exact session — "
@@ -584,6 +622,21 @@ enum MeshHooks {
         } catch {
             return false
         }
+    }
+
+    /// Fire-and-forget rebind for the current tmux seat: hand the broker this
+    /// session's physical identity (host, pane, socket) + cwd so it can move a
+    /// same-seat predecessor's mesh membership onto us. The broker owns all the
+    /// safety (seat match, cwd secondary-confirm, recency window); here we only
+    /// have to prove the seat. No seat (not under tmux) → nothing to reclaim.
+    static func rebindPriorSeat(sessionID: String, cwd: String,
+                                environment: [String: String] = ProcessInfo.processInfo.environment) {
+        guard !sessionID.isEmpty, let pane = environment["TMUX_PANE"], !pane.isEmpty,
+              environment["TMUX"] != nil else { return }
+        let socket = RemoteLaunch.tmuxSocket(fromEnvironmentValue: environment["TMUX"])
+        MeshClient.sendIfUp(MeshRequest(cmd: "rebind", project: cwd, session: sessionID,
+                                        host: HostIdentity.current,
+                                        tmuxPane: pane, tmuxSocket: socket))
     }
 
     static func currentSessionID(

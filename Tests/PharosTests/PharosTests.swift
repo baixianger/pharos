@@ -1263,12 +1263,29 @@ final class MeshStateMappingTests: XCTestCase {
         XCTAssertEqual(MeshHooks.stateFor(event: "ElicitationResult", notificationType: nil), .busy)
         XCTAssertEqual(MeshHooks.stateFor(event: "PostToolUseFailure", notificationType: nil), .busy)
         XCTAssertEqual(MeshHooks.stateFor(event: "StopFailure", notificationType: nil), .stopped)
-        XCTAssertEqual(MeshHooks.stateFor(event: "SessionEnd", notificationType: nil), .gone)
+        XCTAssertEqual(MeshHooks.stateFor(event: "SessionEnd", notificationType: nil), .gone)   // no reason → conservative gone
         XCTAssertEqual(MeshHooks.stateFor(event: "Notification", notificationType: "permission_prompt"), .blocked)
         XCTAssertEqual(MeshHooks.stateFor(event: "Notification", notificationType: "elicitation_dialog"), .blocked)
         XCTAssertEqual(MeshHooks.stateFor(event: "Notification", notificationType: "idle_prompt"), .idle)
         XCTAssertEqual(MeshHooks.stateFor(event: "Notification", notificationType: "elicitation_complete"), .busy)
         XCTAssertEqual(MeshHooks.stateFor(event: "Notification", notificationType: "elicitation_response"), .busy)
+    }
+
+    /// SessionEnd is NOT unconditionally `gone`. `/clear` and `resume` end this
+    /// session id but immediately start a new one on the same tmux pane, so they
+    /// map to `stopped` (pane alive, delivery continues) — the successor's rebind
+    /// then carries the membership over. Mapping these to `gone` is what
+    /// stranded a working agent off the roster after a plain `/clear`. A genuine
+    /// teardown (`logout`, `prompt_input_exit`) and any unknown/absent reason
+    /// stay `gone` — the Node's pane probe re-confirms a truly dead seat anyway.
+    func testSessionEndReasonGate() {
+        XCTAssertEqual(MeshHooks.stateFor(event: "SessionEnd", notificationType: nil, reason: "clear"), .stopped)
+        XCTAssertEqual(MeshHooks.stateFor(event: "SessionEnd", notificationType: nil, reason: "resume"), .stopped)
+        XCTAssertEqual(MeshHooks.stateFor(event: "SessionEnd", notificationType: nil, reason: "logout"), .gone)
+        XCTAssertEqual(MeshHooks.stateFor(event: "SessionEnd", notificationType: nil, reason: "prompt_input_exit"), .gone)
+        XCTAssertEqual(MeshHooks.stateFor(event: "SessionEnd", notificationType: nil, reason: "bypass_permissions_disabled"), .gone)
+        XCTAssertEqual(MeshHooks.stateFor(event: "SessionEnd", notificationType: nil, reason: "other"), .gone)
+        XCTAssertEqual(MeshHooks.stateFor(event: "SessionEnd", notificationType: nil, reason: nil), .gone)
     }
 
     /// Unknown events/notification types are deliberately ignored — a CC
@@ -1624,6 +1641,107 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
         XCTAssertEqual(Set(roster.filter { $0.nick == "codex" }.map(\.id)),
                        ["session-orbidash", "session-lelantos"])
+    }
+
+    /// The core `/clear` rescue: a working agent's session ends and a new session
+    /// id starts on the SAME physical tmux seat. `rebind` re-keys the membership,
+    /// mailbox and presence onto the live session so the roster follows it
+    /// instead of pinning to the dead id (the bug that stranded a busy agent).
+    func testRebindReclaimsSeatAfterClear() {
+        let broker = MeshBroker()
+        let host = "mac", pane = "%77", socket = "/tmp/tmux-501/node"
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "enetpulse", nick: "agent",
+                                                 project: "/proj/enet", session: "sid-old",
+                                                 host: host, tmuxPane: pane,
+                                                 tmuxSocket: socket, kind: "claude")).ok)
+        // A directed message queues to the (soon-to-be-dead) session's mailbox.
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "enetpulse", nick: "human",
+                                                 text: "@agent status?", to: ["agent"])).ok)
+        // /clear: the successor asks the broker to reclaim its seat.
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "rebind", project: "/proj/enet", session: "sid-new",
+                                                 host: host, tmuxPane: pane, tmuxSocket: socket)).ok)
+
+        let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
+        XCTAssertEqual(roster.map(\.id), ["sid-new"])                       // re-keyed, no ghost
+        XCTAssertEqual(roster.first?.state, MeshSessionState.busy.rawValue) // reset to busy
+        XCTAssertEqual(roster.first?.tmuxPane, pane)                        // seat kept
+        XCTAssertEqual(roster.first?.kind, "claude")                        // avatar kind kept
+        // The queued message moved with it — nothing lost.
+        let inbox = broker.process(MeshRequest(cmd: "recv", nick: "agent", memberID: "sid-new"))
+        XCTAssertEqual(inbox.messages?.map(\.text), ["@agent status?"])
+    }
+
+    /// The transfer MERGES: a successor that already joined a room of its own
+    /// keeps it, and gains the predecessor's rooms — nothing is silently dropped.
+    func testRebindMergesRoomsWhenNewSessionAlreadyJoined() {
+        let broker = MeshBroker()
+        let host = "mac", pane = "%5", socket = "/tmp/s"
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "roomA", nick: "old-nick",
+                                                 project: "/proj", session: "sid-old",
+                                                 host: host, tmuxPane: pane,
+                                                 tmuxSocket: socket, kind: "claude")).ok)
+        // The successor joined room B itself (same seat) before reclaiming A.
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "roomB", nick: "new-nick",
+                                                 project: "/proj", session: "sid-new",
+                                                 host: host, tmuxPane: pane,
+                                                 tmuxSocket: socket, kind: "claude")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "rebind", project: "/proj", session: "sid-new",
+                                                 host: host, tmuxPane: pane, tmuxSocket: socket)).ok)
+
+        let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
+        XCTAssertEqual(Set(roster.map(\.id)), ["sid-new"])                  // both rooms on the live id
+        XCTAssertEqual(Set(roster.compactMap { $0.rooms.first }), ["roomA", "roomB"])
+        XCTAssertEqual(Set(roster.map(\.nick)), ["old-nick", "new-nick"])
+    }
+
+    /// A DIFFERENT pane is a different physical seat — never reclaim across it.
+    func testRebindRejectedOnDifferentPane() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "room", nick: "agent",
+                                                 project: "/proj", session: "sid-old",
+                                                 host: "mac", tmuxPane: "%1",
+                                                 tmuxSocket: "/tmp/s", kind: "claude")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "rebind", project: "/proj", session: "sid-new",
+                                                 host: "mac", tmuxPane: "%2", tmuxSocket: "/tmp/s")).ok)
+        let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
+        XCTAssertEqual(roster.map(\.id), ["sid-old"])                       // untouched
+    }
+
+    /// Same seat but a different cwd = a recycled tmux `%N` (server restart),
+    /// not a reconnect. cwd is the secondary confirmation that refuses it.
+    func testRebindRejectedOnDifferentCwd() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "room", nick: "agent",
+                                                 project: "/proj/a", session: "sid-old",
+                                                 host: "mac", tmuxPane: "%1",
+                                                 tmuxSocket: "/tmp/s", kind: "claude")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "rebind", project: "/proj/b", session: "sid-new",
+                                                 host: "mac", tmuxPane: "%1", tmuxSocket: "/tmp/s")).ok)
+        let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
+        XCTAssertEqual(roster.map(\.id), ["sid-old"])                       // untouched
+    }
+
+    /// Backstop path: if the SessionStart rebind never landed (broker down at
+    /// that instant), the successor's first `mark` is an UNKNOWN session id that
+    /// still proves the seat — the broker lazily reclaims it so heartbeats stop
+    /// vanishing. This is why `report()` now carries the physical seat.
+    func testMarkLazilyReclaimsSeatWhenSessionUnknown() {
+        let broker = MeshBroker()
+        let host = "mac", pane = "%9", socket = "/tmp/s"
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "room", nick: "agent",
+                                                 project: "/proj", session: "sid-old",
+                                                 host: host, tmuxPane: pane,
+                                                 tmuxSocket: socket, kind: "claude")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "room", nick: "human",
+                                                 text: "@agent ping", to: ["agent"])).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "mark", project: "/proj", session: "sid-new",
+                                                 host: host, tmuxPane: pane, tmuxSocket: socket,
+                                                 state: MeshSessionState.busy.rawValue)).ok)
+        let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
+        XCTAssertEqual(roster.map(\.id), ["sid-new"])
+        XCTAssertEqual(roster.first?.state, MeshSessionState.busy.rawValue)
+        let inbox = broker.process(MeshRequest(cmd: "recv", nick: "agent", memberID: "sid-new"))
+        XCTAssertEqual(inbox.messages?.map(\.text), ["@agent ping"])
     }
 
     func testSayDerivesSenderAliasFromMemberSession() {

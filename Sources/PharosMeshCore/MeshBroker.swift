@@ -1157,8 +1157,17 @@ public final class MeshBroker: @unchecked Sendable {
             // a hook must never propagate an error back into a session.
             guard let s = req.state, MeshSessionState(rawValue: s) != nil else { return .fail("valid state required") }
             lock.lock()
-            if let memberID = resolveMemberIDLocked(request: req),
-               presence[memberID] != nil,
+            var memberID = resolveMemberIDLocked(request: req)
+            // Self-heal: a `/clear`-minted session whose SessionStart rebind never
+            // landed (e.g. the broker was down at that instant) resolves to
+            // nothing, so its heartbeats would vanish into a dropped mark. If
+            // this report proves the same physical seat, lazily reclaim the
+            // orphaned predecessor now — the report carries (host, pane, socket).
+            if memberID == nil, let newID = req.session, !newID.isEmpty,
+               rebindLocked(to: newID, request: req) {
+                memberID = newID
+            }
+            if let memberID, presence[memberID] != nil,
                Self.markMatchesSnapshot(presence[memberID]!, request: req) {
                 let prior = presence[memberID]!.stateReason
                 presence[memberID]!.state = s
@@ -1179,6 +1188,19 @@ public final class MeshBroker: @unchecked Sendable {
             }
             lock.unlock()
             publish(kind: .roster)
+            return .okay()
+
+        case "rebind":
+            // A new session on the same physical tmux seat reclaims a prior
+            // session's rooms/mailbox/presence (see rebindLocked). Fired
+            // proactively by the new session's SessionStart; the `mark` path is
+            // a lazy backstop. Fail-soft: no eligible predecessor = silently ok
+            // (a genuinely first-time session has nothing to reclaim).
+            guard let newID = req.session, !newID.isEmpty else { return .fail("session required") }
+            lock.lock()
+            let moved = rebindLocked(to: newID, request: req)
+            lock.unlock()
+            if moved { publish(kind: .roster) }
             return .okay()
 
         case "who":
@@ -1846,6 +1868,79 @@ public final class MeshBroker: @unchecked Sendable {
     }
 
     /// Recompute a nick's room list without bumping lastSeen (room deleted/renamed).
+    /// A same-seat predecessor whose `lastSeen` is older than this is treated as
+    /// a stale mapping, not a `/clear` reconnect, and is NOT rebound. A real
+    /// `/clear` re-mints the session and reconnects within ~0.2s (and the
+    /// predecessor's SessionEnd `mark` refreshes its `lastSeen` right before the
+    /// successor arrives), so a generous window never false-rejects one; it only
+    /// guards the rare case where a tmux server restart recycled a `%N` pane id
+    /// onto an unrelated agent that happens to share the same cwd.
+    private static let rebindRecencySeconds: Double = 1800
+
+    /// Reclaim an orphaned prior session's rooms, mailbox and presence onto a
+    /// `newID` that occupies the same physical tmux seat. This is what rescues a
+    /// member after `/clear` (or an in-place restart): the agent mints a fresh
+    /// session id while its pane/socket/host are unchanged, so the roster would
+    /// otherwise stay pinned to the dead session id and the live one go invisible.
+    ///
+    /// The predecessor is matched by physical seat `(host, tmuxSocket, tmuxPane)`
+    /// — NEVER by cwd alone, since co-located agents share a directory. cwd is a
+    /// SECONDARY confirmation, and `rebindRecencySeconds` rejects a recycled pane
+    /// id. The transfer MERGES (never overwrites): a `newID` that already joined
+    /// rooms of its own keeps them. Returns whether a rebind happened. Call with
+    /// `lock` held.
+    private func rebindLocked(to newID: String, request req: MeshRequest) -> Bool {
+        guard !newID.isEmpty, let pane = req.tmuxPane, !pane.isEmpty else { return false }
+        let now = Date().timeIntervalSince1970
+        // The most-recently-seen eligible predecessor on this exact seat.
+        let predecessor = presence
+            .filter { id, e in
+                id != newID
+                    && e.tmuxPane == pane
+                    && e.tmuxSocket == req.tmuxSocket
+                    && (req.host == nil || e.host == nil || e.host == req.host)
+                    // cwd: reject a different project reusing the seat, but never
+                    // key on cwd alone (co-located agents share a directory).
+                    && (req.project == nil || e.project == nil || e.project == req.project)
+                    && now - e.lastSeen <= Self.rebindRecencySeconds
+            }
+            .max { $0.value.lastSeen < $1.value.lastSeen }
+        guard let (oldID, old) = predecessor else { return false }
+
+        // Move every room membership + mailbox old → new. MERGE, don't clobber.
+        for name in rooms.keys {
+            guard let nick = rooms[name]!.members.first(where: { $0.value == oldID })?.key
+            else { continue }
+            rooms[name]!.members[nick] = newID
+            let mail = rooms[name]!.mailboxes.removeValue(forKey: oldID) ?? []
+            if !mail.isEmpty { rooms[name]!.mailboxes[newID, default: []].append(contentsOf: mail) }
+        }
+        // Carry the predecessor's durable identity onto the new entry (keeping
+        // anything the new session already set for itself), reset to busy, and
+        // let refreshPresenceRoomsLocked rebuild aliases/rooms from the map.
+        var e = presence[newID] ?? old
+        if e.kind == nil { e.kind = old.kind }
+        if e.host == nil { e.host = req.host ?? old.host }
+        if e.tailscaleIP == nil { e.tailscaleIP = old.tailscaleIP }
+        e.session = newID
+        e.tmuxPane = pane
+        e.tmuxSocket = req.tmuxSocket ?? old.tmuxSocket
+        if let cwd = req.project ?? old.project { e.project = cwd }
+        e.state = MeshSessionState.busy.rawValue
+        e.stateTs = now
+        e.stateReason = nil
+        e.online = true
+        e.lastSeen = now
+        presence[newID] = e
+        refreshPresenceRoomsLocked(newID)   // rebuild new aliases/rooms from map
+        refreshPresenceRoomsLocked(oldID)   // drops the old ghost once it's empty
+        syncUnreadLocked(newID)
+        syncUnreadLocked(oldID)
+        writeMailboxesLocked()
+        writePresenceLocked()
+        return true
+    }
+
     private func refreshPresenceRoomsLocked(_ memberID: String) {
         guard var e = presence[memberID] else { return }
         e.aliases = Dictionary(uniqueKeysWithValues: rooms.compactMap { room, value in
