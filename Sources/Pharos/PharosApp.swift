@@ -47,7 +47,7 @@ struct PharosApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("Pharos") {
             Group {
                 if showsBrokerSetup {
                     BrokerSetupOnboardingView {

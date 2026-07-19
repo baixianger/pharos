@@ -25,7 +25,11 @@ struct ProjectsView: View {
                     Section {
                         ForEach(activeProjects) { project in projectLink(project) }
                     } header: {
-                        PharosSectionTitle(title: "In progress", count: activeProjects.count)
+                        // Only label the split when both groups are present;
+                        // otherwise the filter strip already says what this is.
+                        if showsGroupHeaders {
+                            PharosSectionTitle(title: "In progress", count: activeProjects.count)
+                        }
                     }
                 }
 
@@ -33,8 +37,10 @@ struct ProjectsView: View {
                     Section {
                         ForEach(otherProjects) { project in projectLink(project) }
                     } header: {
-                        PharosSectionTitle(title: filter == .local ? "On this Mesh" : "Projects",
-                                           count: otherProjects.count)
+                        if showsGroupHeaders {
+                            PharosSectionTitle(title: filter == .local ? "On this Mesh" : "Projects",
+                                               count: otherProjects.count)
+                        }
                     }
                 }
             }
@@ -114,6 +120,9 @@ struct ProjectsView: View {
 
     private var activeProjects: [RemoteProject] { filtered.filter { !agents(for: $0).isEmpty } }
     private var otherProjects: [RemoteProject] { filtered.filter { agents(for: $0).isEmpty } }
+    /// The "In progress" / "Projects" split is only worth labeling when both
+    /// groups actually have rows; with one group the filter strip is enough.
+    private var showsGroupHeaders: Bool { !activeProjects.isEmpty && !otherProjects.isEmpty }
 
     private func agents(for project: RemoteProject) -> [MeshMember] {
         store.members.values.filter { member in

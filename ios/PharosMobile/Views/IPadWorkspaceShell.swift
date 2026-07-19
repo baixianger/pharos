@@ -283,14 +283,18 @@ private struct IPadProjectsIndex: View {
                 Section {
                     ForEach(activeProjects) { project in projectRow(project) }
                 } header: {
-                    PharosSectionTitle(title: "In progress", count: activeProjects.count)
+                    if !activeProjects.isEmpty && !otherProjects.isEmpty {
+                        PharosSectionTitle(title: "In progress", count: activeProjects.count)
+                    }
                 }
             }
             if !otherProjects.isEmpty {
                 Section {
                     ForEach(otherProjects) { project in projectRow(project) }
                 } header: {
-                    PharosSectionTitle(title: "Projects", count: otherProjects.count)
+                    if !activeProjects.isEmpty && !otherProjects.isEmpty {
+                        PharosSectionTitle(title: "Projects", count: otherProjects.count)
+                    }
                 }
             }
         }
@@ -456,7 +460,9 @@ private struct IPadAgentsIndex: View {
                             .listRowSeparator(.hidden)
                     }
                 } header: {
-                    PharosSectionTitle(title: group.host, count: group.members.count)
+                    if grouped.count > 1 {
+                        PharosSectionTitle(title: group.host, count: group.members.count)
+                    }
                 }
             }
         }

@@ -65,7 +65,11 @@ struct AgentsView: View {
                                 .listRowSeparator(.hidden)
                         }
                     } header: {
-                        PharosSectionTitle(title: group.host, count: group.members.count)
+                        // A lone host header just repeats itself; only label the
+                        // split when agents actually span more than one host.
+                        if grouped.count > 1 {
+                            PharosSectionTitle(title: group.host, count: group.members.count)
+                        }
                     }
                 }
             }
