@@ -336,22 +336,19 @@ struct DashboardView: View {
     }
 
     private func loadMesh() {
-        // ALL of this runs off-main: reading + JSON-decoding every transcript
-        // file scales with the full mesh history and was blocking the main
-        // thread on each tab's onAppear (a new tab froze ~10s before its title
-        // could paint). The roster socket round-trip is off-main for the same
-        // reason. Results are published back on the main actor at the end.
+        // Recent chatter comes from the BROKER (the source of truth for all
+        // messages) — NOT from reading the local iCloud transcript files. Those
+        // are legacy: reading them off the iCloud store is latency-bound (it
+        // stalled the dashboard's first paint by ~10s) and can serve stale data.
+        // Everything here is off-main; results publish on the main actor.
         let hostProfiles = store.executionHosts
         Task.detached {
-            let dir = MeshPaths.transcriptDir
-            let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-            let dec = JSONDecoder()
+            let rooms = (MeshClient.send(MeshRequest(cmd: "list")).rooms ?? []).map(\.name)
             var all: [MeshMsg] = []
-            for f in files where f.pathExtension == "jsonl" {
-                guard let s = try? String(contentsOf: f, encoding: .utf8) else { continue }
-                for line in s.split(separator: "\n") {
-                    if let m = try? dec.decode(MeshMsg.self, from: Data(line.utf8)) { all.append(m) }
-                }
+            for room in rooms {
+                var msgs = MeshClient.send(MeshRequest(cmd: "history", room: room, limit: 20)).messages ?? []
+                for i in msgs.indices where msgs[i].room.isEmpty { msgs[i].room = room }
+                all.append(contentsOf: msgs)
             }
             let sortedMessages = all.sorted { $0.ts > $1.ts }
 
