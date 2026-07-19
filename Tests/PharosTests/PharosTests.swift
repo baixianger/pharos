@@ -2227,10 +2227,10 @@ final class MeshPaneProbeTests: XCTestCase {
 final class WindowTabTitleTests: XCTestCase {
     func testContentAndTabTitlesAreDeliberatelyIndependent() {
         XCTAssertEqual(PharosViewTitle.dashboard, "Pharos")
-        XCTAssertEqual(PharosViewTitle.rooms, "Chat Rooms")
+        XCTAssertEqual(PharosViewTitle.rooms, "Chatroom")
         XCTAssertEqual(PharosViewTitle.project, "Project")
         XCTAssertEqual(PharosTabTitle.dashboard, "Dashboard")
-        XCTAssertEqual(PharosTabTitle.room(""), "Chat Rooms")
+        XCTAssertEqual(PharosTabTitle.room(""), "Chatroom")
         XCTAssertEqual(PharosTabTitle.room("team"), "team")
         XCTAssertEqual(PharosTabTitle.project("Lelantos"), "Lelantos")
     }
@@ -2244,12 +2244,12 @@ final class WindowTabTitleTests: XCTestCase {
         window.contentView = view
         let coordinator = WindowTabBar.Coordinator()
 
-        coordinator.update(title: PharosTabTitle.room(""), from: view)
-        coordinator.update(title: PharosTabTitle.room("team"), from: view)
+        coordinator.update(title: PharosTabTitle.room(""), windowTitle: PharosViewTitle.rooms, from: view)
+        coordinator.update(title: PharosTabTitle.room("team"), windowTitle: PharosViewTitle.rooms, from: view)
 
-        XCTAssertEqual(window.title, "Chat Rooms")
+        XCTAssertEqual(window.title, "Chatroom")
         XCTAssertEqual(window.tab.title, "team")
-        XCTAssertEqual(window.titleVisibility, .hidden)
+        XCTAssertEqual(window.titleVisibility, .visible)
     }
 }
 
