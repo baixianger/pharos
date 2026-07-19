@@ -122,6 +122,7 @@ expensive failure, and from the outside it looks like twice the progress.
   issue (see *Handing off*) so it outlives the message. Adding is not switching:
   finish or park the current item explicitly.
 - **Discussion / thinking out loud** → note it; don't reorganize around it.
+  Peers propose; the human prioritizes.
 
 **Reprioritize deliberately — in both directions.** Sometimes the room really
 does outrank what you're holding (a live bug, a peer blocked): then *consciously*
