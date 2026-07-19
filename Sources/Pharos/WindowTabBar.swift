@@ -13,16 +13,20 @@ func titleLog(_ msg: String) {
 
 /// Content titles describe the kind of screen. Native tab labels identify the
 /// concrete thing open in that tab. They are deliberately different channels.
+// The window title (generic screen type) vs the native tab label (the concrete
+// thing open). Per spec: Dashboard → title "Pharos" / tab "Dashboard";
+// project → title "Project" / tab <project name>; chatroom → title "Chatroom" /
+// tab <room name>.
 enum PharosViewTitle {
     static let dashboard = "Pharos"
-    static let rooms = "Chat Rooms"
+    static let rooms = "Chatroom"
     static let project = "Project"
 }
 
 enum PharosTabTitle {
-    static let dashboard = "Pharos"
+    static let dashboard = "Dashboard"
     static func room(_ room: String) -> String {
-        room.isEmpty ? "Chat Rooms" : room
+        room.isEmpty ? "Chatroom" : room
     }
     static func project(_ name: String) -> String { name }
 }
