@@ -1,6 +1,16 @@
 import AppKit
 import SwiftUI
 
+// DIAGNOSTIC (temporary): measure new-tab title timing.
+func titleLog(_ msg: String) {
+    let line = "\(String(format: "%.3f", Date().timeIntervalSince1970)) \(msg)\n"
+    guard let data = line.data(using: .utf8) else { return }
+    let url = URL(fileURLWithPath: "/tmp/pharos-title.log")
+    if let fh = try? FileHandle(forWritingTo: url) {
+        fh.seekToEndOfFile(); fh.write(data); try? fh.close()
+    } else { try? data.write(to: url) }
+}
+
 /// Content titles describe the kind of screen. Native tab labels identify the
 /// concrete thing open in that tab. They are deliberately different channels.
 // The window title (generic screen type) vs the native tab label (the concrete
@@ -44,6 +54,7 @@ struct WindowTabBar: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSView {
+        titleLog("makeNSView window=\(windowTitle) tab=\(title)")
         let view = NSView(frame: .zero)
         context.coordinator.update(title: title, windowTitle: windowTitle, from: view)
         return view
@@ -76,6 +87,7 @@ struct WindowTabBar: NSViewRepresentable {
         /// unrelated state change (the mesh load, seconds later).
         private func applyWhenReady(from view: NSView, attempt: Int) {
             if let window = view.window {
+                titleLog("apply(attempt=\(attempt)) window.title -> \(desiredWindowTitle)")
                 attach(to: window)
                 apply(title: desiredTitle, windowTitle: desiredWindowTitle, to: window)
                 return

@@ -116,7 +116,7 @@ struct DashboardView: View {
             }
         }
         .navigationTitle(PharosViewTitle.dashboard)   // "Pharos" — generic, shown top-left
-        .onAppear(perform: loadMesh)
+        .onAppear { titleLog("DashboardView.onAppear (navigationTitle applies)"); loadMesh() }
         .onReceive(meshTick) { _ in loadMesh() }
         .confirmationDialog("Stop agent on \(agentToStop?.label ?? "")?",
                             isPresented: Binding(get: { agentToStop != nil },
