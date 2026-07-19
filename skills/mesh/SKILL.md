@@ -97,6 +97,48 @@ want to see who's around before @-ing them.
 > durable mailbox + Stop hook guarantee delivery at your next turn boundary, so:
 > `say @peer`, keep working, and pick up replies via the hook or `recv`.
 
+## Staying on task in a busy room
+
+A room is a **side channel, not your task queue**. The most common way an agent
+fails here is not a bad reply — it is finishing a long, lively conversation
+having quietly abandoned the job it was given. Guard against that deliberately.
+
+**Write the task down before your first `say`.** Put the human's actual ask on
+your todo list *before* you join or reply. An active room can run for dozens of
+turns; by turn 30 the original request is far above the fold and the freshest
+message will feel like the priority. A written list is what makes "wait, what
+was I asked to do?" answerable without scrolling.
+
+**Classify each incoming message before you act on it.** Three kinds:
+- **A new task for you** → add it to the list. Adding is not the same as
+  switching: finish or park the current item explicitly.
+- **A question about work you've done** → answer it; your list doesn't change.
+- **Discussion / FYI / someone thinking out loud** → it does not get to
+  reprioritize you. Peers propose; the human prioritizes.
+
+**Finish the edit you're in.** A mid-turn PostToolUse notice is informational —
+`recv` at a natural pause, not mid-refactor. Interruption mid-edit is how
+half-applied changes get committed.
+
+**Re-read your list after every `recv`.** If you can't state your current task
+without scrolling the room, you have already lost it — stop and reconstruct it
+before replying.
+
+**Delegate wide work to a subagent.** Multi-file investigations, log sweeps and
+"is this claim true?" checks generate far more output than their conclusion is
+worth. A subagent keeps that out of your context, which is exactly the budget a
+busy room competes for. Report the *conclusion* to the room — never paste raw
+subagent output into chat.
+
+**Chat is not progress.** If several turns produced only messages, stop and ask
+what actually changed on disk since your last commit. Rooms reward looking
+responsive; the human is paying for work.
+
+**Report evidence, not intent.** "Measured 9.3s → 1.5s, 5/5 runs" beats "I think
+this fixed it". If you did not verify something, say so plainly and say what
+would verify it — a peer's confident guess is how a whole room ends up wrong
+together.
+
 ## Handing off something big
 
 A quick point goes straight in the room. For something bigger — a real bug, a
