@@ -33,8 +33,19 @@ final class AppSettings {
     private static let storageKey = "pharos.mobile.configuration.v1"
     private(set) var mesh = MeshProfile()
     private(set) var sshHosts: [SSHHostProfile] = []
+    private let isDemo: Bool
 
-    init() { load() }
+    init(demo: Bool = false) {
+        isDemo = demo
+        if demo {
+            // Non-routable placeholder. Demo RoomStore never performs a request,
+            // and skipping load() prevents saved personal settings from entering
+            // the screenshot process at all.
+            mesh = MeshProfile(host: "demo.invalid", port: 47_800, controlToken: "")
+        } else {
+            load()
+        }
+    }
 
     func updateMesh(host: String, port: UInt16, controlToken: String? = nil) {
         mesh = MeshProfile(host: host.trimmingCharacters(in: .whitespacesAndNewlines), port: port,
@@ -81,6 +92,7 @@ final class AppSettings {
     }
 
     private func save() {
+        guard !isDemo else { return }
         let value = SyncedConfiguration(mesh: mesh, sshHosts: sshHosts)
         guard let data = try? JSONEncoder().encode(value) else { return }
         UserDefaults.standard.set(data, forKey: Self.storageKey)

@@ -6,6 +6,9 @@ import Observation
 final class RoomStore {
     private let settings: AppSettings
     private let mesh = MeshTCPClient()
+    let isDemo: Bool
+    private let demoProjects: [RemoteProject]
+    private let demoIssues: [RemoteIssue]
 
     private(set) var rooms: [MeshRoom] = []
     var selectedRoom: String?
@@ -33,11 +36,21 @@ final class RoomStore {
     private static let projectsCacheKey = "pharos.mobile.registry.projects.v1"
     private static let issuesCacheKey = "pharos.mobile.registry.issues.v1"
 
-    init(settings: AppSettings, identities: SSHIdentityStore) {
+    init(settings: AppSettings, identities: SSHIdentityStore, demoData: PharosDemoData? = nil) {
         self.settings = settings
+        isDemo = demoData != nil
+        demoProjects = demoData?.projects ?? []
+        demoIssues = demoData?.issues ?? []
+        if let demoData {
+            rooms = demoData.rooms
+            selectedRoom = demoData.selectedRoom
+            messages = demoData.messages
+            members = demoData.members
+        }
     }
 
     func refresh() async {
+        guard !isDemo else { return }
         guard !settings.mesh.host.isEmpty, !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
@@ -74,6 +87,7 @@ final class RoomStore {
     /// change occurs, then the durable room/roster/history snapshot is reloaded.
     /// A timeout refresh is the reconnect safety net.
     func watchEvents() async {
+        guard !isDemo else { return }
         var cursor: UInt64?
         while !Task.isCancelled {
             do {
@@ -98,6 +112,7 @@ final class RoomStore {
             hasMoreHistory = false
         }
         selectedRoom = room
+        if isDemo { return }
         do {
             try await loadLatestPage(for: room)
             error = nil
@@ -230,6 +245,7 @@ final class RoomStore {
     /// Fetch Broker-owned project data. When temporarily offline, return the
     /// last successful payload; SSH Hosts are never used as registry replicas.
     func fetchProjectsOverMesh() async -> [RemoteProject]? {
+        if isDemo { return demoProjects }
         guard !settings.mesh.host.isEmpty else { return cachedProjects() }
         guard let payload = try? await request(MeshRequest(cmd: "projects")).payload else {
             return cachedProjects()
@@ -239,6 +255,7 @@ final class RoomStore {
     }
 
     func fetchIssuesOverMesh() async -> [RemoteIssue]? {
+        if isDemo { return demoIssues }
         guard !settings.mesh.host.isEmpty else { return cachedIssues() }
         guard let payload = try? await request(MeshRequest(cmd: "issues")).payload else {
             return cachedIssues()
@@ -574,6 +591,7 @@ final class RoomStore {
     }
 
     private func request(_ request: MeshRequest) async throws -> MeshResponse {
+        guard !isDemo else { throw DemoNetworkError.disabled }
         var authenticated = request
         if authenticated.authToken == nil, !settings.mesh.controlToken.isEmpty {
             authenticated.authToken = settings.mesh.controlToken
@@ -597,6 +615,11 @@ final class RoomStore {
         return values
     }
 
+}
+
+private enum DemoNetworkError: LocalizedError {
+    case disabled
+    var errorDescription: String? { "Network access is disabled in demo mode." }
 }
 
 private enum RegistryMutationError: LocalizedError {

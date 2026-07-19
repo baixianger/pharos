@@ -11,6 +11,7 @@ struct MainTabView: View {
 
     init() {
         let requested = PharosLaunchOptions.value(after: "--ui-tab")
+            ?? PharosDemoMode.scene
         _selection = State(initialValue: requested.flatMap(AppTab.init(rawValue:)) ?? .projects)
     }
 
@@ -26,6 +27,7 @@ struct MainTabView: View {
     }
 
     private func listenWhileVisible() async {
+        guard !store.isDemo else { return }
         let requestedRoom = PharosLaunchOptions.value(after: "--ui-room")
         await store.refresh()
         if let requestedRoom, store.selectedRoom != requestedRoom,

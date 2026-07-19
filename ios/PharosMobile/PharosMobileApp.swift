@@ -12,13 +12,20 @@ private struct AppContainer: View {
     @State private var identities: SSHIdentityStore
     @State private var rooms: RoomStore
     @State private var pairing = PairingCoordinator()
+    private let isDemo: Bool
 
     init() {
-        let settings = AppSettings()
+        let isDemo = PharosDemoMode.isEnabled
+        self.isDemo = isDemo
+        let settings = AppSettings(demo: isDemo)
         let identities = SSHIdentityStore()
         _settings = State(initialValue: settings)
         _identities = State(initialValue: identities)
-        _rooms = State(initialValue: RoomStore(settings: settings, identities: identities))
+        _rooms = State(initialValue: RoomStore(
+            settings: settings,
+            identities: identities,
+            demoData: isDemo ? .store : nil
+        ))
     }
 
     var body: some View {
@@ -49,7 +56,9 @@ private struct AppContainer: View {
                 Text(pairing.errorMessage ?? "Use a new pairing code from Pharos on your desktop.")
             }
             // Open the wizard on first run; close it once a Broker is paired.
-            .task { if settings.mesh.host.isEmpty { pairing.showsSetupGuide = true } }
+            .task {
+                if !isDemo, settings.mesh.host.isEmpty { pairing.showsSetupGuide = true }
+            }
             .onChange(of: settings.mesh.host) { _, host in
                 if !host.isEmpty { pairing.showsSetupGuide = false }
             }
