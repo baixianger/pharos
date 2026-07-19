@@ -25,7 +25,6 @@ struct MeshRoomView: View {
     @State private var uploadingAttachment = false
     @State private var mentionSel = 0
     @State private var mentionDismissed: String?
-    @State private var hoveredMessageID: String?
     @State private var notices: [Notice] = []
     @State private var requestComposerFocus = false
     @State private var composerHeight: CGFloat = 24
