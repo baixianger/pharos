@@ -152,10 +152,9 @@ struct ContentView: View {
             }
         }
         .toolbarBackground(.visible, for: .windowToolbar)
-        // macOS shows window.title in the tab, so feed it the specific tab name
-        // (Dashboard / room / project) — the tab.title override alone is
-        // unreliable and some tabs fell back to window.title.
-        .background(WindowTabBar(title: tabTitle, windowTitle: tabTitle))
+        // Native tab label = the specific name (tabTitle); the window title =
+        // the generic screen type (contentTitle, shown top-left in the toolbar).
+        .background(WindowTabBar(title: tabTitle, windowTitle: contentTitle))
         .sheet(isPresented: $showAdd) { AddProjectSheet() }
         .sheet(isPresented: $showImport) { GitHubImportSheet() }
         .sheet(isPresented: $showPalette) {

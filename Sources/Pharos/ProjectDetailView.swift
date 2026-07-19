@@ -71,7 +71,7 @@ struct ProjectDetailView: View {
                     .padding(22)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .navigationTitle("")   // rely on the tab name; no on-view title text
+                .navigationTitle(PharosViewTitle.project)   // "Project" — generic, shown top-left
                 .task(id: "\(projectID)|\(store.gitRefreshToken)") {
                     await loadGit(project)
                     await loadHeatmap(project)
