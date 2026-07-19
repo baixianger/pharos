@@ -1,6 +1,19 @@
 import AppKit
 import SwiftUI
 
+// DIAGNOSTIC (temporary): append timestamped title-timing events to a file so
+// the new-tab title delay can be measured without the unified log.
+func titleLog(_ msg: String) {
+    let line = "\(String(format: "%.3f", Date().timeIntervalSince1970)) \(msg)\n"
+    guard let data = line.data(using: .utf8) else { return }
+    let url = URL(fileURLWithPath: "/tmp/pharos-title.log")
+    if let fh = try? FileHandle(forWritingTo: url) {
+        fh.seekToEndOfFile(); fh.write(data); try? fh.close()
+    } else {
+        try? data.write(to: url)
+    }
+}
+
 /// Content titles describe the kind of screen. Native tab labels identify the
 /// concrete thing open in that tab. They are deliberately different channels.
 enum PharosViewTitle {
@@ -43,7 +56,7 @@ struct WindowTabBar: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> WindowBridgeView {
-        NSLog("PHAROS-TITLE makeNSView windowTitle=%@ tab=%@", windowTitle, title)
+        titleLog("makeNSView windowTitle=\(windowTitle) tab=\(title)")
         let view = WindowBridgeView()
         view.coordinator = context.coordinator
         context.coordinator.set(title: title, windowTitle: windowTitle)
@@ -66,7 +79,7 @@ struct WindowTabBar: NSViewRepresentable {
         weak var coordinator: Coordinator?
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            NSLog("PHAROS-TITLE viewDidMoveToWindow hasWindow=%@", window == nil ? "no" : "yes")
+            titleLog("viewDidMoveToWindow hasWindow=\(window == nil ? "no" : "yes")")
             if let window { coordinator?.apply(to: window) }
         }
     }
@@ -94,7 +107,7 @@ struct WindowTabBar: NSViewRepresentable {
             if window.title != desiredWindowTitle { window.title = desiredWindowTitle }
             window.titleVisibility = .hidden
             if window.tab.title != desiredTitle { window.tab.title = desiredTitle }
-            NSLog("PHAROS-TITLE apply window.title=%@ tab.title=%@", desiredWindowTitle, desiredTitle)
+            titleLog("apply window.title=\(desiredWindowTitle) tab.title=\(desiredTitle)")
         }
 
         func attach(to window: NSWindow) {
