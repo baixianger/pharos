@@ -511,11 +511,16 @@ private struct RoomMentionStrip: View {
             HStack(spacing: 7) {
                 ForEach(members) { member in
                     Button { onMention(member) } label: {
-                        Text("@\(member.nick)")
-                            .font(.caption.weight(.medium))
-                            .lineLimit(1)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
+                        HStack(spacing: 5) {
+                            // Live status dot (busy/idle/blocked), matching the
+                            // macOS mention strip and this view's member list.
+                            Circle().fill(AgentStatus.color(member.state)).frame(width: 6, height: 6)
+                            Text("@\(member.nick)")
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
                         .background(.secondary.opacity(0.1), in: Capsule())
                     }
                     .buttonStyle(.plain)
