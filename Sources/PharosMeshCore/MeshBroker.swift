@@ -1914,7 +1914,13 @@ public final class MeshBroker: @unchecked Sendable {
                     // cwd: reject a different project reusing the seat, but never
                     // key on cwd alone (co-located agents share a directory).
                     && (req.project == nil || e.project == nil || e.project == req.project)
-                    // a genuinely-exited agent is `.gone`; never inherit its seat.
+                    // A genuinely-exited agent is `.gone`; never inherit its seat.
+                    // Deliberate corner (not a bug): a real exit
+                    // (prompt_input_exit/logout → .gone) THEN a `resume` on the
+                    // same pane is refused too — it did fully leave, so a
+                    // conservative refuse beats mis-moving rooms, and the human
+                    // re-joins explicitly. Normal resume is unaffected: its
+                    // predecessor ended reason=resume → .stopped, so the gate passes.
                     && e.state != MeshSessionState.gone.rawValue
                     && now - e.lastSeen <= recencySeconds
             }
