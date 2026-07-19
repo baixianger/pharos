@@ -336,21 +336,25 @@ struct DashboardView: View {
     }
 
     private func loadMesh() {
-        let dir = MeshPaths.transcriptDir
-        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-        let dec = JSONDecoder()
-        var all: [MeshMsg] = []
-        for f in files where f.pathExtension == "jsonl" {
-            guard let s = try? String(contentsOf: f, encoding: .utf8) else { continue }
-            for line in s.split(separator: "\n") {
-                if let m = try? dec.decode(MeshMsg.self, from: Data(line.utf8)) { all.append(m) }
-            }
-        }
-        meshMessages = all.sorted { $0.ts > $1.ts }
-        // Live roster across every machine — fetched off-main so the socket
-        // round-trip never stutters the dashboard.
+        // ALL of this runs off-main: reading + JSON-decoding every transcript
+        // file scales with the full mesh history and was blocking the main
+        // thread on each tab's onAppear (a new tab froze ~10s before its title
+        // could paint). The roster socket round-trip is off-main for the same
+        // reason. Results are published back on the main actor at the end.
         let hostProfiles = store.executionHosts
         Task.detached {
+            let dir = MeshPaths.transcriptDir
+            let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+            let dec = JSONDecoder()
+            var all: [MeshMsg] = []
+            for f in files where f.pathExtension == "jsonl" {
+                guard let s = try? String(contentsOf: f, encoding: .utf8) else { continue }
+                for line in s.split(separator: "\n") {
+                    if let m = try? dec.decode(MeshMsg.self, from: Data(line.utf8)) { all.append(m) }
+                }
+            }
+            let sortedMessages = all.sorted { $0.ts > $1.ts }
+
             let roster = MeshClient.send(MeshRequest(cmd: "who")).members ?? []
             var resolved: [String: DashboardAgentSession] = [:]
             for member in roster {
@@ -370,6 +374,7 @@ struct DashboardView: View {
             }
             let resolvedSessions = resolved
             await MainActor.run {
+                meshMessages = sortedMessages
                 meshAgents = roster
                 meshAgentSessions = resolvedSessions
             }
