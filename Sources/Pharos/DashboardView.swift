@@ -115,8 +115,10 @@ struct DashboardView: View {
                 focus = nil            // one-shot: don't fight a later manual scroll
             }
         }
-        .navigationTitle(PharosViewTitle.dashboard)   // "Pharos" — generic, shown top-left
-        .onAppear { titleLog("DashboardView.onAppear (navigationTitle applies)"); loadMesh() }
+        // No `navigationTitle` here: on a freshly created window tab SwiftUI
+        // painted it ~7s late. WindowTabBar sets `window.title` via AppKit
+        // instead, which draws with the window's first frame.
+        .onAppear { loadMesh() }
         .onReceive(meshTick) { _ in loadMesh() }
         .confirmationDialog("Stop agent on \(agentToStop?.label ?? "")?",
                             isPresented: Binding(get: { agentToStop != nil },

@@ -71,7 +71,8 @@ struct ProjectDetailView: View {
                     .padding(22)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .navigationTitle(PharosViewTitle.project)   // "Project" — generic, shown top-left
+                // Title: set by WindowTabBar via AppKit `window.title` (SwiftUI's
+                // navigationTitle painted ~7s late on a freshly created tab).
                 .task(id: "\(projectID)|\(store.gitRefreshToken)") {
                     await loadGit(project)
                     await loadHeatmap(project)
