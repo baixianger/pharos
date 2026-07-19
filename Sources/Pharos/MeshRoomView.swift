@@ -39,7 +39,7 @@ struct MeshRoomView: View {
 
     var body: some View {
         chatPane
-        .navigationTitle(PharosViewTitle.rooms)
+        .navigationTitle("")   // rely on the tab name; no on-view title text
         // Drop image/PDF files anywhere on the room to attach them (like "+"),
         // instead of the field's default of inserting the file path as text.
         .dropDestination(for: URL.self) { urls, _ in acceptDroppedFiles(urls) }

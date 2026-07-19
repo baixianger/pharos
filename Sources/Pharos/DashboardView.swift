@@ -115,7 +115,7 @@ struct DashboardView: View {
                 focus = nil            // one-shot: don't fight a later manual scroll
             }
         }
-        .navigationTitle(PharosViewTitle.dashboard)
+        .navigationTitle("")   // rely on the tab name; no on-view title text
         .onAppear(perform: loadMesh)
         .onReceive(meshTick) { _ in loadMesh() }
         .confirmationDialog("Stop agent on \(agentToStop?.label ?? "")?",
