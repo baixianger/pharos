@@ -1,19 +1,6 @@
 import AppKit
 import SwiftUI
 
-// DIAGNOSTIC (temporary): append timestamped title-timing events to a file so
-// the new-tab title delay can be measured without the unified log.
-func titleLog(_ msg: String) {
-    let line = "\(String(format: "%.3f", Date().timeIntervalSince1970)) \(msg)\n"
-    guard let data = line.data(using: .utf8) else { return }
-    let url = URL(fileURLWithPath: "/tmp/pharos-title.log")
-    if let fh = try? FileHandle(forWritingTo: url) {
-        fh.seekToEndOfFile(); fh.write(data); try? fh.close()
-    } else {
-        try? data.write(to: url)
-    }
-}
-
 /// Content titles describe the kind of screen. Native tab labels identify the
 /// concrete thing open in that tab. They are deliberately different channels.
 enum PharosViewTitle {
@@ -30,10 +17,13 @@ enum PharosTabTitle {
     static func project(_ name: String) -> String { name }
 }
 
-/// Pins the native macOS window tab bar visible (even at a single tab) and
-/// writes `title` to `NSWindow.tab.title`, so SwiftUI remains free to manage the
-/// visible content title through `navigationTitle` without competing for the
-/// native tab label.
+/// Pins the native macOS window tab bar visible (even at a single tab) and sets
+/// the window title. The window title (e.g. "Pharos" on the dashboard) is shown
+/// in the title bar and is set directly via AppKit the instant the window
+/// exists — so a fresh tab shows "Pharos" immediately instead of waiting for
+/// SwiftUI's `navigationTitle` to propagate (which lagged behind the first mesh
+/// load by several seconds). The native tab label carries the concrete screen
+/// name via `NSWindow.tab.title`.
 ///
 /// AppKit auto-hides the tab bar when a window group drops to one tab, and there
 /// is no public "always show" flag — only `toggleTabBar(_:)`. So we show it on
@@ -41,73 +31,64 @@ enum PharosTabTitle {
 /// flips it back off. `ensureVisible` is idempotent so we never hide an
 /// already-visible bar. Drop it as a zero-size `.background(...)` on the window
 /// root; it reaches the hosting `NSWindow` through the view hierarchy.
-///
-/// New windows (the tab bar's "+", or ⌘N if unbound) join the same group as
-/// tabs. The title-bar text stays hidden, so this doesn't reintroduce a title
-/// strip — the tab reads `window.title` regardless of title-bar visibility.
 struct WindowTabBar: NSViewRepresentable {
     /// The native tab label (identifies the concrete thing open in the tab).
     var title: String
-    /// The window title, set directly via AppKit so it lands the instant the
-    /// window exists — instead of waiting for SwiftUI's `navigationTitle` to
-    /// propagate, which on a fresh tab can lag behind the first mesh load.
+    /// The window title shown in the title bar (e.g. "Pharos" on the dashboard).
     var windowTitle: String
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> WindowBridgeView {
-        titleLog("makeNSView windowTitle=\(windowTitle) tab=\(title)")
-        let view = WindowBridgeView()
-        view.coordinator = context.coordinator
-        context.coordinator.set(title: title, windowTitle: windowTitle)
-        context.coordinator.applyIfPossible(from: view)
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.update(title: title, windowTitle: windowTitle, from: view)
         return view
     }
 
-    func updateNSView(_ nsView: WindowBridgeView, context: Context) {
-        nsView.coordinator = context.coordinator
-        context.coordinator.set(title: title, windowTitle: windowTitle)
-        context.coordinator.applyIfPossible(from: nsView)
-    }
-
-    /// A zero-size NSView that reports the exact moment SwiftUI attaches it to a
-    /// window (`viewDidMoveToWindow`), so the coordinator titles the window then
-    /// — event-driven, not polling. Runloop-async retries all fire within a
-    /// fraction of a second, so they can't span a window that materializes
-    /// several seconds later; this can.
-    final class WindowBridgeView: NSView {
-        weak var coordinator: Coordinator?
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            titleLog("viewDidMoveToWindow hasWindow=\(window == nil ? "no" : "yes")")
-            if let window { coordinator?.apply(to: window) }
-        }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.update(title: title, windowTitle: windowTitle, from: nsView)
     }
 
     @MainActor
     final class Coordinator {
         private weak var bound: NSWindow?
         private var observation: NSKeyValueObservation?
+        /// Read when deferred window adoption runs. A newly created native tab
+        /// can receive several SwiftUI updates before `view.window` exists; an
+        /// older captured value must never win later.
         private var desiredTitle = PharosTabTitle.dashboard
         private var desiredWindowTitle = PharosViewTitle.dashboard
 
-        func set(title: String, windowTitle: String) {
+        func update(title: String, windowTitle: String, from view: NSView) {
             desiredTitle = title
             desiredWindowTitle = windowTitle
+            applyWhenReady(from: view, attempt: 0)
         }
 
-        func applyIfPossible(from view: NSView) {
-            if let window = view.window { apply(to: window) }
+        /// A fresh native tab can take a few dozen milliseconds to gain its
+        /// window. Poll with a short delay until it does (bounded) so the title
+        /// lands promptly — a single deferred tick can fire before the window
+        /// exists and then never retry, leaving the title unset until the next
+        /// unrelated state change (the mesh load, seconds later).
+        private func applyWhenReady(from view: NSView, attempt: Int) {
+            if let window = view.window {
+                attach(to: window)
+                apply(title: desiredTitle, windowTitle: desiredWindowTitle, to: window)
+                return
+            }
+            guard attempt < 300 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self, weak view] in
+                guard let self, let view else { return }
+                self.applyWhenReady(from: view, attempt: attempt + 1)
+            }
         }
 
-        func apply(to window: NSWindow) {
-            attach(to: window)
-            // Set the window title eagerly (used by the tab when no tab title is
-            // set, plus Mission Control / the Window menu) so it's never empty.
-            if window.title != desiredWindowTitle { window.title = desiredWindowTitle }
-            window.titleVisibility = .hidden
-            if window.tab.title != desiredTitle { window.tab.title = desiredTitle }
-            titleLog("apply window.title=\(desiredWindowTitle) tab.title=\(desiredTitle)")
+        func apply(title: String, windowTitle: String, to window: NSWindow) {
+            // Show the window title (the screen's content title) in the title
+            // bar, set eagerly via AppKit so it never flashes empty.
+            window.titleVisibility = .visible
+            if window.title != windowTitle { window.title = windowTitle }
+            if window.tab.title != title { window.tab.title = title }
         }
 
         func attach(to window: NSWindow) {
