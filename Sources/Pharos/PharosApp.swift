@@ -60,6 +60,12 @@ struct PharosApp: App {
                 .environment(store)
                 .preferredColorScheme(store.appearance.colorScheme)
                 .task {
+                    // This mesh bootstrap is app-global state — run it once, not
+                    // for every window/tab. Re-running it per tab re-dialed the
+                    // broker and blocked the main thread, so a new tab's title
+                    // took ~8-10s to paint.
+                    guard !store.didBootstrapMesh else { return }
+                    store.didBootstrapMesh = true
                     // Keep the menu-bar Agents/Chat-Rooms submenus warm.
                     store.startMeshSnapshotPolling()
                     // Upgrade bridge: restore a reachable legacy Mac pairing

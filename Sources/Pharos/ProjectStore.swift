@@ -451,6 +451,10 @@ enum RegistrySyncStatus: Equatable {
 @MainActor
 @Observable
 final class ProjectStore {
+    /// App-global mesh bootstrap runs once, not per WindowGroup instance — each
+    /// new tab re-ran the whole broker-dial/node-reconcile task and blocked the
+    /// main thread (the new-tab title took ~8-10s to paint).
+    @ObservationIgnored var didBootstrapMesh = false
     var projects: [Project] = []
     var groups: [String] = []
     /// Soft-deleted items awaiting restore or auto-purge (the Trash).
