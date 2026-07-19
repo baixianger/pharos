@@ -44,6 +44,11 @@ targets:
       path: PharosMobile/Info.plist
       properties:
         CFBundleDisplayName: Pharos
+        # Reference the build settings so version lives in one place (settings
+        # → MARKETING_VERSION / CURRENT_PROJECT_VERSION). Without these keys,
+        # xcodegen 2.45.x hardcodes CFBundleShortVersionString to "1.0" instead.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSHumanReadableCopyright: "© 2026 Pai"
         LSApplicationCategoryType: public.app-category.developer-tools
         ITSAppUsesNonExemptEncryption: false

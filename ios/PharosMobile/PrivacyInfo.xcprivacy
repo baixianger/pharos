@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Pharos is a personal tool: it transmits only to the user's own
+	     infrastructure (their Mesh broker, their SSH hosts, their iCloud KVS),
+	     none of which is data "collected" by the developer. No analytics/ad
+	     SDKs, no tracking. -->
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<!-- Required-reason APIs (audited both directions across PharosMobile,
+	     2026-07-19): UserDefaults is the ONLY required-reason family used
+	     (UserDefaults.standard in AppSettings/RoomStore/SSHIdentityStore/
+	     ConversationView — all app-local reads/writes). No App Group suite
+	     (no UserDefaults(suiteName:), no application-groups entitlement), so
+	     CA92.1 alone is correct, NOT 1C8F.1. No file-timestamp, disk-space,
+	     system-boot-time, or active-keyboard API usage. SPM dependencies ship
+	     their own per-bundle manifests. -->
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
