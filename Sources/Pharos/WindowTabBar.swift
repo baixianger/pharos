@@ -10,7 +10,7 @@ enum PharosViewTitle {
 }
 
 enum PharosTabTitle {
-    static let dashboard = "Dashboard"
+    static let dashboard = "Pharos"
     static func room(_ room: String) -> String {
         room.isEmpty ? "Chat Rooms" : room
     }
@@ -84,9 +84,11 @@ struct WindowTabBar: NSViewRepresentable {
         }
 
         func apply(title: String, windowTitle: String, to window: NSWindow) {
-            // Show the window title (the screen's content title) in the title
-            // bar, set eagerly via AppKit so it never flashes empty.
-            window.titleVisibility = .visible
+            // Keep the title bar hidden so the sidebar stays full-height under
+            // the traffic lights (a visible title strip pushes it down). The
+            // screen name lives in the native tab label instead; window.title
+            // still carries it for Mission Control / the Window menu.
+            window.titleVisibility = .hidden
             if window.title != windowTitle { window.title = windowTitle }
             if window.tab.title != title { window.tab.title = title }
         }

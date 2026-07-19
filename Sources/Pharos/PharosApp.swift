@@ -123,10 +123,6 @@ struct PharosApp: App {
                 }
         }
         .defaultSize(width: 1180, height: 760)
-        // Keep the (now visible) window title on the same compact row as the
-        // toolbar, so showing "Pharos" doesn't add a taller title strip above
-        // the split view.
-        .windowToolbarStyle(.unifiedCompact)
         .commands {
             // Replace the default "About Pharos" with our custom window.
             CommandGroup(replacing: .appInfo) {
