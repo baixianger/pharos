@@ -99,22 +99,35 @@ want to see who's around before @-ing them.
 
 ## Staying on task in a busy room
 
-A room is a **side channel, not your task queue**. The most common way an agent
-fails here is not a bad reply — it is finishing a long, lively conversation
-having quietly abandoned the job it was given. Guard against that deliberately.
+Mesh chat runs **alongside** your work; it does not replace it. Treat the room
+like a colleague at the next desk: you talk, you help, but you don't drop your
+own project every time someone speaks. The most common failure here isn't a bad
+reply — it's finishing a long, lively conversation having quietly abandoned the
+job you were given.
 
 **Write the task down before your first `say`.** Put the human's actual ask on
 your todo list *before* you join or reply. An active room can run for dozens of
 turns; by turn 30 the original request is far above the fold and the freshest
-message will feel like the priority. A written list is what makes "wait, what
-was I asked to do?" answerable without scrolling.
+message will feel like the priority. A request that exists only in the chat is a
+request you will lose.
 
-**Classify each incoming message before you act on it.** Three kinds:
-- **A new task for you** → add it to the list. Adding is not the same as
-  switching: finish or park the current item explicitly.
-- **A question about work you've done** → answer it; your list doesn't change.
-- **Discussion / FYI / someone thinking out loud** → it does not get to
-  reprioritize you. Peers propose; the human prioritizes.
+**Claim the work before you do it.** When the human addresses several agents at
+once, say which part you're taking — and check whether a peer already has it —
+*before* you start. Two agents silently doing the same job is this room's most
+expensive failure, and from the outside it looks like twice the progress.
+
+**Triage; don't react.** Three kinds of incoming message:
+- **A one-liner you can answer** → answer it and get back to work.
+- **Someone genuinely handing you a task** → land it in your todo list or an
+  issue (see *Handing off*) so it outlives the message. Adding is not switching:
+  finish or park the current item explicitly.
+- **Discussion / thinking out loud** → note it; don't reorganize around it.
+
+**Reprioritize deliberately — in both directions.** Sometimes the room really
+does outrank what you're holding (a live bug, a peer blocked): then *consciously*
+make it the new main thread instead of servicing it half-heartedly while your
+real task rots. The opposite trap is just as real — don't discount important
+work because it arrived as chat rather than as an instruction.
 
 **Finish the edit you're in.** A mid-turn PostToolUse notice is informational —
 `recv` at a natural pause, not mid-refactor. Interruption mid-edit is how
@@ -124,11 +137,12 @@ half-applied changes get committed.
 without scrolling the room, you have already lost it — stop and reconstruct it
 before replying.
 
-**Delegate wide work to a subagent.** Multi-file investigations, log sweeps and
-"is this claim true?" checks generate far more output than their conclusion is
-worth. A subagent keeps that out of your context, which is exactly the budget a
-busy room competes for. Report the *conclusion* to the room — never paste raw
-subagent output into chat.
+**Delegate the separable, not the core.** A mesh question that needs real
+investigation but has clean boundaries → hand it to a subagent and keep your
+main thread moving; its output stays out of your context, which is exactly the
+budget a busy room competes for. But don't outsource the reasoning you're best
+placed to do, and don't spawn a subagent for something a sentence answers.
+Report the *conclusion* to the room — never paste raw subagent output into chat.
 
 **Chat is not progress.** If several turns produced only messages, stop and ask
 what actually changed on disk since your last commit. Rooms reward looking
