@@ -5,10 +5,12 @@ let package = Package(
     name: "Pharos",
     platforms: [
         .macOS(.v26), // Liquid Glass requires macOS 26 (Tahoe)
+        .iOS(.v26),
     ],
     products: [
         .executable(name: "Pharos", targets: ["Pharos"]),
         .executable(name: "pharos-mesh", targets: ["PharosMesh"]),
+        .library(name: "PharosMeshProtocol", targets: ["PharosMeshProtocol"]),
         .library(name: "PharosMeshCore", targets: ["PharosMeshCore"]),
     ],
     dependencies: [
@@ -17,8 +19,13 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "PharosMeshProtocol",
+            path: "Sources/PharosMeshProtocol"
+        ),
+        .target(
             name: "PharosMeshCore",
             dependencies: [
+                "PharosMeshProtocol",
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Sources/PharosMeshCore"
@@ -52,6 +59,11 @@ let package = Package(
             dependencies: ["Pharos"],
             path: "Tests/PharosTests",
             resources: [.copy("Fixtures")]
+        ),
+        .testTarget(
+            name: "PharosMeshProtocolTests",
+            dependencies: ["PharosMeshProtocol"],
+            path: "Tests/PharosMeshProtocolTests"
         ),
     ]
 )

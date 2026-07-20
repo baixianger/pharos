@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import CryptoKit
+import PharosMeshProtocol
 
 enum MeshTransportError: LocalizedError {
     case invalidEndpoint
@@ -40,7 +41,7 @@ actor MeshTCPClient {
 
     func uploadAttachment(data: Data, name: String, mimeType: String,
                           host: String, port: UInt16) async throws -> MeshAttachment {
-        guard !data.isEmpty, data.count <= 25 * 1024 * 1024 else {
+        guard !data.isEmpty, data.count <= DistributedMeshProtocol.maximumBlobBytes else {
             throw MeshTransportError.broker("Attachments must be between 1 byte and 25 MiB.")
         }
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
@@ -145,7 +146,7 @@ private final class MeshExchange: @unchecked Sendable {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, complete, error in
             guard let self else { return }
             if let data { self.buffer.append(data) }
-            if self.buffer.count > 4 * 1024 * 1024 {
+            if self.buffer.count > DistributedMeshProtocol.maximumHeaderBytes {
                 self.finish(.failure(MeshTransportError.oversizedResponse)); return
             }
             if let newline = self.buffer.firstIndex(of: 0x0A) {
@@ -232,7 +233,9 @@ private final class MeshDownloadExchange: @unchecked Sendable {
                     guard response.ok, let attachment = response.attachment else {
                         throw MeshTransportError.broker(response.error ?? "Attachment download failed.")
                     }
-                    guard attachment.byteSize <= 25 * 1024 * 1024 else { throw MeshTransportError.oversizedResponse }
+                    guard attachment.byteSize <= DistributedMeshProtocol.maximumBlobBytes else {
+                        throw MeshTransportError.oversizedResponse
+                    }
                     self.attachment = attachment
                 } catch {
                     self.finish(.failure(error)); return
@@ -241,7 +244,8 @@ private final class MeshDownloadExchange: @unchecked Sendable {
 
             if let attachment = self.attachment, self.buffer.count >= attachment.byteSize {
                 self.finish(.success((attachment, Data(self.buffer.prefix(attachment.byteSize)))))
-            } else if self.attachment == nil, self.buffer.count > 4 * 1024 * 1024 {
+            } else if self.attachment == nil,
+                      self.buffer.count > DistributedMeshProtocol.maximumHeaderBytes {
                 self.finish(.failure(MeshTransportError.oversizedResponse))
             } else if let error {
                 self.finish(.failure(MeshTransportError.connection(error.localizedDescription)))

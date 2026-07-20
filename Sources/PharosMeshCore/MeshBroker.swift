@@ -1,5 +1,6 @@
 import Foundation
 import Crypto
+import PharosMeshProtocol
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -1990,7 +1991,7 @@ public final class MeshBroker: @unchecked Sendable {
         if let d = try? JSONEncoder().encode(snap) { try? d.write(to: MeshPaths.presenceFile, options: .atomic) }
     }
 
-    private static let maximumAttachmentBytes = 25 * 1024 * 1024
+    private static let maximumAttachmentBytes = DistributedMeshProtocol.maximumBlobBytes
 
     private func handleAttachmentUpload(_ fd: Int32, request: MeshRequest) {
         guard let attachment = request.attachment,

@@ -1,5 +1,6 @@
 import Foundation
 import Crypto
+import PharosMeshProtocol
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -181,7 +182,7 @@ public enum MeshClient {
         let data: Data
         do { data = try Data(contentsOf: url, options: .mappedIfSafe) }
         catch { throw MeshClientError.file("Cannot read attachment: \(error.localizedDescription)") }
-        guard !data.isEmpty, data.count <= 25 * 1024 * 1024 else {
+        guard !data.isEmpty, data.count <= DistributedMeshProtocol.maximumBlobBytes else {
             throw MeshClientError.file("Attachments must be between 1 byte and 25 MiB.")
         }
         let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
