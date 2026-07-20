@@ -130,8 +130,12 @@ public struct MeshReplicatedEvent: Codable, Equatable, Identifiable, Sendable {
     }
 
     public func validateStructure(requireSignature: Bool = true) throws {
-        guard authorSequence > 0 else { throw MeshSchemaValidationError.invalidAuthorSequence }
-        guard membershipEpoch > 0 else { throw MeshSchemaValidationError.invalidMembershipEpoch }
+        guard authorSequence > 0, authorSequence <= UInt64(Int64.max) else {
+            throw MeshSchemaValidationError.invalidAuthorSequence
+        }
+        guard membershipEpoch > 0, membershipEpoch <= UInt64(Int64.max) else {
+            throw MeshSchemaValidationError.invalidMembershipEpoch
+        }
         guard payload.count <= DistributedMeshProtocol.maximumHeaderBytes else {
             throw MeshSchemaValidationError.payloadTooLarge
         }

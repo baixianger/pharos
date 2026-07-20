@@ -169,7 +169,7 @@ new connection; legacy mode still works.
 
 ## Phase 3 — local event store and anti-entropy sync
 
-**State:** started (storage foundation only; no production runtime wiring)
+**State:** started (durable sync/materialization foundation; no production runtime wiring)
 
 The isolated `DistributedMeshStore` now creates a caller-selected SQLite WAL
 replica with the Phase 3 tables. It verifies signatures, membership epoch,
@@ -181,12 +181,26 @@ temporary directory and never open the live Broker or Mesh data locations.
 
 Schema v2 is a transactional migration over v1, preserves existing rows,
 rejects ambiguous/future metadata, and adds atomic pairing-use/trusted-device
-tables. SQLite is exposed through the explicit `CSQLite` SwiftPM system-library
-target instead of an Apple-only implicit module. With `libsqlite3-dev` installed,
-`PharosMeshCore` compiles in the official `swift:6.2-jammy` Linux arm64 image.
+tables. Schema v3 adds field registers and a durable derived-state version. A
+v2 upgrade, or a process death between schema creation and replay, rebuilds
+materialized state from the retained event log on first use. SQLite is exposed
+through the explicit `CSQLite` SwiftPM system-library target instead of an
+Apple-only implicit module. With `libsqlite3-dev` installed, `PharosMeshCore`
+compiles in the official `swift:6.2-jammy` Linux arm64 image.
 
-Anti-entropy streams, materializers, blob transfer, acknowledgements, snapshots,
-quarantine ingestion, and compaction remain pending.
+The transport-neutral sync foundation now includes canonical per-author vectors,
+bounded missing-range requests, bounded event batches, and monotonic durable peer
+acknowledgements that cannot advance beyond the local head. A hybrid logical
+clock handles wall-clock regression, remote observations, logical overflow, and
+terminal overflow without trapping. Project/issue fields materialize as LWW
+registers ordered by HLC, Endpoint ID, and a final event-ID tie-break; explicit
+tombstones remain visible. Immutable values resolve ID collisions deterministically.
+Malformed payloads for known operations remain in the signed event chain for
+forward compatibility but enter semantic quarantine and never reach derived
+state. Tests exercise three replicas with different inter-author arrival orders.
+
+Iroh stream routing for the sync messages, richer room/message/project/issue
+operation adapters, blob transfer, signed snapshots, and compaction remain pending.
 
 1. Add SQLite/WAL schema for events, author heads, materialized entities, blob
    manifests, peer acknowledgements, membership epochs, and snapshots.

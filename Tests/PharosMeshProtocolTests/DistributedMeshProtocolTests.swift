@@ -133,6 +133,108 @@ final class DistributedMeshProtocolTests: XCTestCase {
         try event.validateStructure(requireSignature: false)
     }
 
+    func testSyncVectorCanonicalizesAuthorsAndRejectsDuplicateOrUnboundedRanges() throws {
+        let group = MeshTrustGroupID()
+        let first = MeshEndpointID(rawValue: "author-a")!
+        let second = MeshEndpointID(rawValue: "author-b")!
+        let vector = try MeshSyncVector(
+            trustGroupID: group, membershipEpoch: 1,
+            authors: [
+                MeshAuthorSequence(endpointID: second, sequence: 4),
+                MeshAuthorSequence(endpointID: first, sequence: 2),
+            ]
+        )
+        XCTAssertEqual(vector.authors.map(\.endpointID), [first, second])
+        XCTAssertEqual(vector.sequence(for: second), 4)
+
+        XCTAssertThrowsError(try MeshSyncVector(
+            trustGroupID: group, membershipEpoch: 1,
+            authors: [
+                MeshAuthorSequence(endpointID: first, sequence: 1),
+                MeshAuthorSequence(endpointID: first, sequence: 2),
+            ]
+        )) {
+            XCTAssertEqual($0 as? MeshReplicationValidationError, .duplicateAuthor)
+        }
+
+        var decodedUnsorted = vector
+        decodedUnsorted.authors.reverse()
+        XCTAssertThrowsError(try decodedUnsorted.validate()) {
+            XCTAssertEqual($0 as? MeshReplicationValidationError, .authorsNotCanonical)
+        }
+
+        let unbounded = MeshEventRangeRequest(
+            trustGroupID: group, membershipEpoch: 1, authorEndpointID: first,
+            afterSequence: 0, limit: MeshEventRangeRequest.maximumLimit + 1
+        )
+        XCTAssertThrowsError(try unbounded.validate()) {
+            XCTAssertEqual($0 as? MeshReplicationValidationError, .invalidRangeLimit)
+        }
+    }
+
+    func testFieldMutationRequiresExplicitCanonicalTombstone() throws {
+        let value = MeshFieldMutation(field: "title", value: Data("Hello".utf8))
+        try value.validate()
+        XCTAssertEqual(
+            try JSONDecoder().decode(MeshFieldMutation.self, from: value.canonicalBytes()), value
+        )
+
+        XCTAssertThrowsError(try MeshFieldMutation(
+            field: "title", value: nil, isDeleted: false
+        ).validate()) {
+            XCTAssertEqual($0 as? MeshReplicationValidationError, .invalidTombstone)
+        }
+        XCTAssertThrowsError(try MeshFieldMutation(
+            field: "bad\nfield", value: Data()
+        ).validate()) {
+            XCTAssertEqual($0 as? MeshReplicationValidationError, .invalidField)
+        }
+    }
+
+    func testEventRejectsSQLiteUnsafeUnsignedBounds() throws {
+        var event = makeEvent(sequence: UInt64(Int64.max) + 1)
+        event.previousEventHash = Data(repeating: 1, count: 32)
+        XCTAssertThrowsError(try event.validateStructure(requireSignature: false)) {
+            XCTAssertEqual($0 as? MeshSchemaValidationError, .invalidAuthorSequence)
+        }
+        event = makeEvent(sequence: 1)
+        event.membershipEpoch = UInt64(Int64.max) + 1
+        XCTAssertThrowsError(try event.validateStructure(requireSignature: false)) {
+            XCTAssertEqual($0 as? MeshSchemaValidationError, .invalidMembershipEpoch)
+        }
+    }
+
+    func testHybridClockSurvivesClockRegressionRemoteObservationAndLogicalOverflow() throws {
+        var clock = MeshHybridClock(
+            last: MeshHybridTimestamp(wallTimeMilliseconds: 1_000, logical: 4)
+        )
+        XCTAssertEqual(
+            try clock.tick(nowMilliseconds: 900),
+            MeshHybridTimestamp(wallTimeMilliseconds: 1_000, logical: 5)
+        )
+        XCTAssertEqual(
+            try clock.observe(
+                MeshHybridTimestamp(wallTimeMilliseconds: 2_000, logical: 8),
+                nowMilliseconds: 1_500
+            ),
+            MeshHybridTimestamp(wallTimeMilliseconds: 2_000, logical: 9)
+        )
+
+        clock = MeshHybridClock(
+            last: MeshHybridTimestamp(wallTimeMilliseconds: 2_000, logical: .max)
+        )
+        XCTAssertEqual(
+            try clock.tick(nowMilliseconds: 1_000),
+            MeshHybridTimestamp(wallTimeMilliseconds: 2_001, logical: 0)
+        )
+        clock = MeshHybridClock(
+            last: MeshHybridTimestamp(wallTimeMilliseconds: .max, logical: .max)
+        )
+        XCTAssertThrowsError(try clock.tick(nowMilliseconds: .max)) {
+            XCTAssertEqual($0 as? MeshHybridClockError, .overflow)
+        }
+    }
+
     func testCanonicalSigningBytesAreStableAndExcludeSignature() throws {
         var event = makeEvent(sequence: 1)
         let unsigned = try event.canonicalSigningBytes()
