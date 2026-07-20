@@ -107,6 +107,26 @@ final class DistributedMeshStoreTests: XCTestCase {
         _ = try await hostStore.insert(
             event, authorPublicKey: try host.signingPublicKeyBytes()
         )
+        let controllerEntity = MeshEntityReference(
+            type: .issue, id: "offline-controller-issue"
+        )!
+        let controllerEvent = try signedFieldEvent(
+            group: fixture.group, device: controller.deviceID,
+            endpoint: try controller.endpointID(),
+            key: try Curve25519.Signing.PrivateKey(
+                rawRepresentation: controller.irohSecretKeyBytes()
+            ),
+            sequence: 1,
+            timestamp: .init(wallTimeMilliseconds: 1_100),
+            entity: controllerEntity,
+            mutation: MeshFieldMutation(
+                field: "title", value: Data("Offline Controller".utf8)
+            )
+        )
+        _ = try await clientStore.insert(
+            controllerEvent,
+            authorPublicKey: try controller.signingPublicKeyBytes()
+        )
 
         let blobData = Data("bounded-rpc-blob-payload".utf8)
         let manifest = blobManifest(for: blobData, chunkSize: 7)
@@ -141,7 +161,11 @@ final class DistributedMeshStoreTests: XCTestCase {
         XCTAssertEqual(fields.first?.value, mutation.value)
         let clientVector = try await clientStore.syncVector(for: fixture.group)
         let hostVector = try await hostStore.syncVector(for: fixture.group)
-        XCTAssertEqual(clientVector, hostVector)
+        XCTAssertNotEqual(clientVector, hostVector)
+        let acknowledged = try await hostStore.acknowledgementVector(
+            for: fixture.group, peer: controller.deviceID
+        )
+        XCTAssertEqual(acknowledged, hostVector)
 
         let fetchedManifest = try await client.blobManifest(
             manifest.digest, group: fixture.group, membershipEpoch: 1

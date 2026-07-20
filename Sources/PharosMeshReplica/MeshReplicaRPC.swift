@@ -414,7 +414,11 @@ public struct MeshReplicaSyncSession: Sendable {
                 advertisedBy: remote, limit: rangeLimit
             )
             if requests.isEmpty {
-                try await client.acknowledge(try await store.syncVector(for: group))
+                // ACK only the vector this peer advertised. Our local vector
+                // can contain offline authors the remote has never received;
+                // claiming those here would correctly fail its monotonic
+                // acknowledgement validation.
+                try await client.acknowledge(remote)
                 return report
             }
             for request in requests {
