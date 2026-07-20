@@ -699,7 +699,6 @@ final class ProjectStore {
             setMeshHub(true)
         }
         lastFileMtime = fileModificationDate()
-        refreshRunningAgents()
         if ProcessInfo.processInfo.environment[
             "PHAROS_DISABLE_NOTIFICATIONS"
         ] != "1" {
@@ -708,6 +707,7 @@ final class ProjectStore {
         if ProcessInfo.processInfo.environment[
             "PHAROS_DISABLE_BACKGROUND_TASKS"
         ] != "1" {
+            refreshRunningAgents()
             startPolling()
         }
         if registrySync != nil { startFileWatch() }
