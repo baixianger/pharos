@@ -8,6 +8,7 @@ import SwiftUI
 /// does not reveal whether that Broker is local, another Mac, or Linux.
 struct PairDeviceSheet: View {
     let endpoint: String
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @Environment(\.dismiss) private var dismiss
     @State private var pairingLink: String?
     @State private var errorMessage: String?
@@ -17,8 +18,8 @@ struct PairDeviceSheet: View {
         VStack(spacing: 18) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Pair iPhone").font(.title2.weight(.semibold))
-                    Text("Scan with Pharos on your iPhone")
+                    Text("Pair a device").font(.title2.weight(.semibold))
+                    Text("Scan with Pharos on your other device")
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -35,9 +36,11 @@ struct PairDeviceSheet: View {
                     .scaledToFit()
                     .frame(width: 260, height: 260)
                     .accessibilityLabel("Pharos Broker pairing QR code")
-                Text(endpoint)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+                if !distributedMesh.isProductModeEnabled {
+                    Text(endpoint)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
                 Text("This code expires in 5 minutes and works once.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -62,6 +65,19 @@ struct PairDeviceSheet: View {
     private func createPairingLink() async {
         loading = true
         errorMessage = nil
+        if distributedMesh.isProductModeEnabled {
+            do {
+                pairingLink = try await distributedMesh.issueInvitation()
+                    .absoluteString
+                loading = false
+                return
+            } catch {
+                pairingLink = nil
+                errorMessage = "The distributed Mesh endpoint is not ready: \(error)"
+                loading = false
+                return
+            }
+        }
         let response = await Task.detached {
             MeshClient.send(MeshRequest(cmd: "pairing-create", timeoutMs: 300_000,
                                         host: endpoint))

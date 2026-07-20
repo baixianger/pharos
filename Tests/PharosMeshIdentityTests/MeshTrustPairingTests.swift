@@ -19,6 +19,8 @@ final class MeshTrustPairingTests: XCTestCase {
         let ticket = try MeshTrustInvitationTicket.encode(invitation)
         let decoded = try MeshTrustInvitationTicket.decode(ticket)
         XCTAssertEqual(decoded, invitation)
+        let link = try MeshTrustInvitationLink.encode(invitation)
+        XCTAssertEqual(try MeshTrustInvitationLink.decode(link), invitation)
         XCTAssertTrue(ticket.hasPrefix(MeshTrustInvitationTicket.prefix))
         XCTAssertTrue(invitation.description.contains("<redacted>"))
         XCTAssertTrue(String(reflecting: invitation).contains("<redacted>"))
@@ -39,6 +41,22 @@ final class MeshTrustPairingTests: XCTestCase {
             try MeshTrustAcceptanceTicket.decode(acceptanceTicket), acceptance
         )
         XCTAssertTrue(acceptanceTicket.hasPrefix(MeshTrustAcceptanceTicket.prefix))
+        let request = MeshTrustPairingRPCRequest(
+            invitation: invitation, acceptance: acceptance
+        )
+        let decodedRequest = try MeshTrustPairingRPCRequest.decode(
+            request.encoded()
+        )
+        XCTAssertEqual(decodedRequest.invitation, invitation)
+        XCTAssertEqual(decodedRequest.acceptance, acceptance)
+        let response = MeshTrustPairingRPCResponse(
+            acceptedDeviceID: acceptance.acceptingDeviceID
+        )
+        XCTAssertEqual(
+            try MeshTrustPairingRPCResponse.decode(response.encoded())
+                .acceptedDeviceID,
+            acceptance.acceptingDeviceID
+        )
     }
 
     func testAcceptanceInstallsReciprocalInviterTrust() async throws {

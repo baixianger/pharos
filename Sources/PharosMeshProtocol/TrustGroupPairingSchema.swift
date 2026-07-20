@@ -304,6 +304,45 @@ public enum MeshTrustInvitationTicket {
     }
 }
 
+public enum MeshTrustInvitationLink {
+    public static func encode(_ invitation: MeshTrustInvitation) throws -> URL {
+        var components = URLComponents()
+        components.scheme = "pharos"
+        components.host = "device"
+        components.queryItems = [
+            URLQueryItem(name: "v", value: "1"),
+            URLQueryItem(
+                name: "ticket",
+                value: try MeshTrustInvitationTicket.encode(invitation)
+            ),
+        ]
+        guard let url = components.url else {
+            throw MeshTrustInvitationValidationError.invalidTicketEncoding
+        }
+        return url
+    }
+
+    public static func decode(_ url: URL) throws -> MeshTrustInvitation {
+        guard let components = URLComponents(
+            url: url, resolvingAgainstBaseURL: false
+        ), components.scheme?.lowercased() == "pharos",
+           components.host?.lowercased() == "device" else {
+            throw MeshTrustInvitationValidationError.invalidTicketEncoding
+        }
+        var values: [String: String] = [:]
+        for item in components.queryItems ?? [] {
+            guard values[item.name] == nil, let value = item.value else {
+                throw MeshTrustInvitationValidationError.invalidTicketEncoding
+            }
+            values[item.name] = value
+        }
+        guard values["v"] == "1", let ticket = values["ticket"] else {
+            throw MeshTrustInvitationValidationError.invalidTicketEncoding
+        }
+        return try MeshTrustInvitationTicket.decode(ticket)
+    }
+}
+
 public enum MeshTrustAcceptanceTicket {
     public static let prefix = "pharos-device-acceptance-v1:"
     public static let maximumBytes = 64 * 1024
@@ -348,5 +387,64 @@ public enum MeshTrustAcceptanceTicket {
             base64 += String(repeating: "=", count: 4 - remainder)
         }
         return Data(base64Encoded: base64)
+    }
+}
+
+/// One unauthenticated-at-membership but identity-bound pairing exchange. The
+/// Iroh connection authenticates the inviter Endpoint ID from the signed
+/// invitation; the inviter redeems the single-use nonce before trusting the
+/// acceptance. Replica RPC remains unavailable until this succeeds.
+public struct MeshTrustPairingRPCRequest: Codable, Sendable {
+    public static let kind = "pharos-trust-pairing-v1"
+    public var requestKind: String
+    public var invitation: MeshTrustInvitation
+    public var acceptance: MeshTrustAcceptance
+
+    public init(invitation: MeshTrustInvitation, acceptance: MeshTrustAcceptance) {
+        requestKind = Self.kind
+        self.invitation = invitation
+        self.acceptance = acceptance
+    }
+
+    public func encoded() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        encoder.dataEncodingStrategy = .base64
+        return try encoder.encode(self)
+    }
+
+    public static func decode(_ data: Data) throws -> Self {
+        let decoder = JSONDecoder()
+        decoder.dataDecodingStrategy = .base64
+        let value = try decoder.decode(Self.self, from: data)
+        guard value.requestKind == kind else {
+            throw MeshTrustInvitationValidationError.invalidTicketEncoding
+        }
+        return value
+    }
+}
+
+public struct MeshTrustPairingRPCResponse: Codable, Sendable {
+    public static let kind = "pharos-trust-pairing-response-v1"
+    public var responseKind: String
+    public var acceptedDeviceID: MeshDeviceID
+
+    public init(acceptedDeviceID: MeshDeviceID) {
+        responseKind = Self.kind
+        self.acceptedDeviceID = acceptedDeviceID
+    }
+
+    public func encoded() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(self)
+    }
+
+    public static func decode(_ data: Data) throws -> Self {
+        let value = try JSONDecoder().decode(Self.self, from: data)
+        guard value.responseKind == kind else {
+            throw MeshTrustInvitationValidationError.invalidTicketEncoding
+        }
+        return value
     }
 }

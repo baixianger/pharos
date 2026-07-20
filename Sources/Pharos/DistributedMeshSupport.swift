@@ -58,7 +58,25 @@ final class DistributedMeshSupport {
                 store: replica.store, hostIdentity: replica.identity
             )
             await endpoint.startServing { request, remoteEndpointID in
-                try await router.handle(
+                if let pairing = try? MeshTrustPairingRPCRequest.decode(
+                    request.header
+                ) {
+                    guard pairing.acceptance.acceptingEndpointID == remoteEndpointID else {
+                        throw MeshTrustPairingError.endpointKeyMismatch
+                    }
+                    let paired = try await MeshTrustPairingService(
+                        identity: replica.identity,
+                        invitationStore: replica.store
+                    ).redeem(
+                        pairing.acceptance, for: pairing.invitation
+                    )
+                    return MeshTransportResponse(
+                        header: try MeshTrustPairingRPCResponse(
+                            acceptedDeviceID: paired.descriptor.id
+                        ).encoded()
+                    )
+                }
+                return try await router.handle(
                     request, remoteEndpointID: remoteEndpointID
                 )
             }
@@ -68,6 +86,21 @@ final class DistributedMeshSupport {
         } catch {
             lastSyncError = "Could not start distributed Mesh: \(error)"
         }
+    }
+
+    func issueInvitation() async throws -> URL {
+        guard let replica = localReplica, let group = activeTrustGroupID,
+              let address = localAddress,
+              let epoch = try await replica.store.membershipEpoch(for: group)
+        else { throw DistributedMeshSupportError.networkNotReady }
+        let invitation = try await MeshTrustPairingService(
+            identity: replica.identity, invitationStore: replica.store
+        ).issueInvitation(
+            trustGroupID: group, membershipEpoch: epoch,
+            inviterAddressTicket: address.ticket,
+            requestedRoles: [.controller, .replica]
+        )
+        return try MeshTrustInvitationLink.encode(invitation)
     }
 
     /// One bounded pull from every trusted current-epoch peer. Every device
@@ -118,4 +151,8 @@ final class DistributedMeshSupport {
             return 0
         }
     }
+}
+
+private enum DistributedMeshSupportError: Error {
+    case networkNotReady
 }

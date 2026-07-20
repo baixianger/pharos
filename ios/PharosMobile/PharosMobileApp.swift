@@ -53,6 +53,10 @@ private struct AppContainer: View {
                 PairBrokerConfirmation(invitation: invitation)
                     .environment(settings)
             }
+            .sheet(item: $pairing.pendingDevice) { pending in
+                PairDeviceConfirmation(invitation: pending.invitation)
+                    .environment(distributedMesh)
+            }
             .alert("Pairing link unavailable", isPresented: $pairing.showsError) {
                 Button("OK") {}
             } message: {
@@ -61,7 +65,16 @@ private struct AppContainer: View {
             // Open the wizard on first run; close it once a Broker is paired.
             .task {
                 await distributedMesh.start()
-                if !isDemo, settings.mesh.host.isEmpty { pairing.showsSetupGuide = true }
+                let distributed = ProcessInfo.processInfo.environment[
+                    "PHAROS_DISTRIBUTED"
+                ] == "1"
+                if !isDemo, !distributed, settings.mesh.host.isEmpty {
+                    pairing.showsSetupGuide = true
+                }
+                while !Task.isCancelled, !isDemo {
+                    _ = await distributedMesh.synchronizeOnce()
+                    try? await Task.sleep(for: .seconds(5))
+                }
             }
             .onChange(of: settings.mesh.host) { _, host in
                 if !host.isEmpty { pairing.showsSetupGuide = false }

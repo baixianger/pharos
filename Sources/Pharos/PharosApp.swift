@@ -185,6 +185,7 @@ struct PharosApp: App {
         Settings {
             SettingsView()
                 .environment(store)
+                .environment(distributedMesh)
         }
 
         MenuBarExtra {

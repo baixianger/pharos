@@ -1,5 +1,7 @@
 import SwiftUI
 import VisionKit
+import PharosMeshProtocol
+import UIKit
 
 struct BrokerSetupGuide: View {
     @Environment(PairingCoordinator.self) private var pairing
@@ -260,6 +262,93 @@ struct PairBrokerConfirmation: View {
         } catch {
             state = .failed(error.localizedDescription)
         }
+    }
+}
+
+struct PairDeviceConfirmation: View {
+    let invitation: MeshTrustInvitation
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
+    @Environment(\.dismiss) private var dismiss
+    @State private var isConnecting = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Trusted device") {
+                    LabeledContent(
+                        "Identity",
+                        value: abbreviated(invitation.inviterEndpointID.rawValue)
+                    )
+                    LabeledContent(
+                        "Expires",
+                        value: Date(
+                            timeIntervalSince1970:
+                                Double(invitation.expiresAtMilliseconds) / 1_000
+                        ),
+                        format: .dateTime.hour().minute().second()
+                    )
+                    Label(
+                        "Endpoint identity verified by signature",
+                        systemImage: "checkmark.shield.fill"
+                    )
+                    .foregroundStyle(.green)
+                }
+                if let errorMessage {
+                    Section {
+                        Text(errorMessage).foregroundStyle(.red)
+                    }
+                }
+                Section {
+                    Button {
+                        Task { await connect() }
+                    } label: {
+                        if isConnecting {
+                            HStack { ProgressView(); Text("Pairing…") }
+                        } else {
+                            Text("Trust and connect")
+                        }
+                    }
+                    .disabled(isConnecting || isExpired)
+                } footer: {
+                    Text(
+                        "The code is single-use. No IP address, password, " +
+                        "SSH key, or central Broker becomes device identity."
+                    )
+                }
+            }
+            .navigationTitle("Pair device")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private var isExpired: Bool {
+        invitation.expiresAtMilliseconds <=
+            Int64(Date().timeIntervalSince1970 * 1_000)
+    }
+
+    private func abbreviated(_ value: String) -> String {
+        value.count > 16 ? "\(value.prefix(8))…\(value.suffix(8))" : value
+    }
+
+    @MainActor
+    private func connect() async {
+        isConnecting = true
+        errorMessage = nil
+        do {
+            try await distributedMesh.accept(
+                invitation, displayName: UIDevice.current.name
+            )
+            dismiss()
+        } catch {
+            errorMessage = "Pairing failed: \(error)"
+        }
+        isConnecting = false
     }
 }
 

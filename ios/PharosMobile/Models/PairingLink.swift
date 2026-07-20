@@ -1,5 +1,14 @@
 import Foundation
 import Observation
+import PharosMeshProtocol
+
+struct PendingDeviceInvitation: Identifiable {
+    let invitation: MeshTrustInvitation
+    var id: String {
+        invitation.trustGroupID.rawValue.uuidString + ":" +
+            invitation.inviterDeviceID.rawValue.uuidString
+    }
+}
 
 struct PairingLink: Sendable, Equatable, Identifiable {
     var version: Int
@@ -42,6 +51,7 @@ struct PairingLink: Sendable, Equatable, Identifiable {
 @MainActor
 final class PairingCoordinator {
     var pending: PairingLink?
+    var pendingDevice: PendingDeviceInvitation?
     var errorMessage: String?
     var showsError = false
     /// Drives the broker-setup wizard cover. Auto-shown on first run (no
@@ -50,6 +60,11 @@ final class PairingCoordinator {
     var showsSetupGuide = false
 
     func receive(_ url: URL) {
+        if let invitation = try? MeshTrustInvitationLink.decode(url) {
+            errorMessage = nil
+            pendingDevice = PendingDeviceInvitation(invitation: invitation)
+            return
+        }
         guard let invitation = PairingLink(url: url), !invitation.isExpired else {
             errorMessage = "This pairing code is invalid or has expired."
             showsError = true
@@ -60,7 +75,13 @@ final class PairingCoordinator {
     }
 
     func receive(_ value: String) {
-        guard let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let invitation = try? MeshTrustInvitationTicket.decode(trimmed) {
+            errorMessage = nil
+            pendingDevice = PendingDeviceInvitation(invitation: invitation)
+            return
+        }
+        guard let url = URL(string: trimmed) else {
             errorMessage = "The scanned QR code is not a Pharos pairing link."
             showsError = true
             return

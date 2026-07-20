@@ -153,6 +153,7 @@ private struct ProjectsSettingsTab: View {
 
 private struct MachinesSettingsTab: View {
     @Environment(ProjectStore.self) private var store
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @State private var brokerStatus: BrokerConnectionStatus = .unchecked
     @State private var advertisedEndpoint: String?
     @State private var showsPairingAssistant = false
@@ -204,7 +205,11 @@ private struct MachinesSettingsTab: View {
                 Button("Pair iPhone…", systemImage: "qrcode") {
                     showsPairingAssistant = true
                 }
-                .disabled(advertisedEndpoint == nil || brokerStatus.isChecking)
+                .disabled(
+                    distributedMesh.isProductModeEnabled
+                        ? distributedMesh.localAddress == nil
+                        : advertisedEndpoint == nil || brokerStatus.isChecking
+                )
                 Text("The Broker coordinates rooms, messages, presence, replies, and attachments. It does not execute agent commands; execution machines are configured under Hosts.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -213,6 +218,10 @@ private struct MachinesSettingsTab: View {
         }
         .formStyle(.grouped)
         .task(id: store.meshServerEndpoint) {
+            if distributedMesh.isProductModeEnabled {
+                store.syncRegistryNow()
+                return
+            }
             let configuredEndpoint = store.validMeshServerEndpoint
             advertisedEndpoint = await Task.detached {
                 if let configuredEndpoint { return configuredEndpoint }
@@ -223,7 +232,9 @@ private struct MachinesSettingsTab: View {
             if !brokerTargetIsInvalid { store.syncRegistryNow() }
         }
         .sheet(isPresented: $showsPairingAssistant) {
-            if let advertisedEndpoint {
+            if distributedMesh.isProductModeEnabled {
+                PairDeviceSheet(endpoint: "")
+            } else if let advertisedEndpoint {
                 PairDeviceSheet(endpoint: advertisedEndpoint)
             }
         }
