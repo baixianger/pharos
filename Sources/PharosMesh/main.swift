@@ -328,8 +328,9 @@ private enum MeshHeadlessCLI {
             ticket: address.ticket,
             networkState: "serving"
         )
-        print(String(decoding: try sortedJSON(status), as: UTF8.self))
-        FileHandle.standardOutput.synchronizeFile()
+        var statusLine = try sortedJSON(status)
+        statusLine.append(0x0A)
+        try FileHandle.standardOutput.write(contentsOf: statusLine)
         while !Task.isCancelled {
             try await Task.sleep(for: .seconds(60))
         }
