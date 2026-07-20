@@ -100,6 +100,47 @@ final class DistributedChatRegistryTests: XCTestCase {
         XCTAssertEqual(secondMessages, firstMessages)
     }
 
+    func testAttachmentMetadataReplicatesAndBlobFetchVerifiesBytes() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let source = try fixture.replica(named: "blob-source")
+        let destination = try fixture.replica(named: "blob-destination")
+        try await pair(source, destination, group: fixture.group)
+        let sourceAttachments = DistributedAttachmentRegistry(
+            replica: source, group: fixture.group
+        )
+        let destinationAttachments = DistributedAttachmentRegistry(
+            replica: destination, group: fixture.group
+        )
+        let bytes = Data(repeating: 0x5a, count: MeshBlobManifest.defaultChunkSize + 137)
+
+        let authored = try await sourceAttachments.put(
+            data: bytes, name: "proof.bin", mediaType: "application/octet-stream"
+        )
+        try await copyEvents(from: source, to: destination, group: fixture.group)
+        let replicatedValue = try await destinationAttachments.metadata(id: authored.id)
+        let replicated = try XCTUnwrap(replicatedValue)
+        XCTAssertEqual(replicated, authored)
+        let beforeFetch = try await destinationAttachments.localData(for: replicated)
+        XCTAssertNil(beforeFetch)
+
+        let transport = AttachmentRPCTransport(
+            server: MeshReplicaRPCServer(store: source.store),
+            remoteEndpointID: try destination.identity.endpointID()
+        )
+        let fetched = try await MeshBlobFetchSession(
+            store: destination.store,
+            client: MeshReplicaRPCClient(transport: transport)
+        ).fetch(
+            try DistributedAttachmentRegistry.digest(for: replicated),
+            group: fixture.group, membershipEpoch: 1
+        )
+
+        XCTAssertEqual(fetched, bytes)
+        let cached = try await destinationAttachments.localData(for: replicated)
+        XCTAssertEqual(cached, bytes)
+    }
+
     private func pair(
         _ first: MeshLocalReplica, _ second: MeshLocalReplica,
         group: MeshTrustGroupID
@@ -196,5 +237,18 @@ private final class TestClock: @unchecked Sendable {
             defer { value += 1 }
             return value
         }
+    }
+}
+
+private struct AttachmentRPCTransport: MeshTransport, Sendable {
+    let server: MeshReplicaRPCServer
+    let remoteEndpointID: MeshEndpointID
+
+    var path: MeshTransportPath { get async { .local } }
+
+    func exchange(
+        _ request: MeshTransportRequest
+    ) async throws -> MeshTransportResponse {
+        try await server.handle(request, remoteEndpointID: remoteEndpointID)
     }
 }

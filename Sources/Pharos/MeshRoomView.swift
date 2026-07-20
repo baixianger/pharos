@@ -43,7 +43,9 @@ struct MeshRoomView: View {
         // navigationTitle painted ~7s late on a freshly created window tab).
         // Drop image/PDF files anywhere on the room to attach them (like "+"),
         // instead of the field's default of inserting the file path as text.
-        .dropDestination(for: URL.self) { urls, _ in acceptDroppedFiles(urls) }
+        .dropDestination(for: URL.self) { urls, _ in
+            _ = acceptDroppedFiles(urls)
+        }
         .task(id: brokerRouteID) { await resolveRemote() }   // resolve transport BEFORE first load
         .task(id: brokerRouteID + "|events") { await watchEvents() }
         .onReceive(recoveryTick) { _ in reload() }
@@ -705,10 +707,27 @@ struct MeshRoomView: View {
     /// Upload one file as a pending attachment — shared by the "+" button and
     /// drag-and-drop, so a dropped file behaves exactly like a chosen one.
     private func uploadFile(at url: URL) {
-        guard !distributedMesh.isProductModeEnabled else {
-            addNotices([
-                "Attachments are moving to content-addressed device Mesh storage; the retired Broker was not contacted."
-            ])
+        if distributedMesh.isProductModeEnabled {
+            uploadingAttachment = true
+            Task {
+                do {
+                    let (data, mediaType) = try await Task.detached {
+                        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+                        let type = try? url.resourceValues(
+                            forKeys: [.contentTypeKey]
+                        ).contentType
+                        return (data, type?.preferredMIMEType ?? "application/octet-stream")
+                    }.value
+                    let attachment = try await distributedMesh.uploadChatAttachment(
+                        data: data, name: url.lastPathComponent, mediaType: mediaType
+                    )
+                    _ = await distributedMesh.synchronizeOnce()
+                    pendingAttachments.append(attachment)
+                } catch {
+                    addNotices([error.localizedDescription])
+                }
+                uploadingAttachment = false
+            }
             return
         }
         uploadingAttachment = true
@@ -743,10 +762,30 @@ struct MeshRoomView: View {
     }
 
     private func openAttachment(_ attachment: MeshAttachment) {
-        guard !distributedMesh.isProductModeEnabled else {
-            addNotices([
-                "This attachment has not been fetched into the distributed blob cache yet."
-            ])
+        if distributedMesh.isProductModeEnabled {
+            Task {
+                do {
+                    let data = try await distributedMesh.chatAttachmentData(attachment)
+                    let url = try await Task.detached { () throws -> URL in
+                        let directory = FileManager.default.temporaryDirectory
+                            .appendingPathComponent(
+                                "PharosMeshAttachments", isDirectory: true
+                            )
+                            .appendingPathComponent(attachment.id, isDirectory: true)
+                        try FileManager.default.createDirectory(
+                            at: directory, withIntermediateDirectories: true
+                        )
+                        let destination = directory.appendingPathComponent(
+                            attachment.name
+                        )
+                        try data.write(to: destination, options: .atomic)
+                        return destination
+                    }.value
+                    NSWorkspace.shared.open(url)
+                } catch {
+                    addNotices([error.localizedDescription])
+                }
+            }
             return
         }
         Task {
@@ -782,9 +821,6 @@ struct MeshRoomView: View {
         Task {
             if distributedMesh.isProductModeEnabled {
                 do {
-                    guard attachments.isEmpty else {
-                        throw DistributedChatViewError.attachmentsPending
-                    }
                     let target = try await distributedRoom(named: r)
                     _ = try await distributedMesh.sendChatMessage(
                         text, in: target, to: mentions,
@@ -793,7 +829,7 @@ struct MeshRoomView: View {
                                 messageID: $0.stableID, from: $0.from,
                                 preview: String($0.text.prefix(160)), ts: $0.ts
                             )
-                        }
+                        }, attachments: attachments
                     )
                     _ = await distributedMesh.synchronizeOnce()
                     messages = try await distributedMesh.chatMessages(
@@ -1023,14 +1059,11 @@ struct MeshRoomView: View {
 
 private enum DistributedChatViewError: LocalizedError {
     case roomNotFound
-    case attachmentsPending
 
     var errorDescription: String? {
         switch self {
         case .roomNotFound:
             "Room not found in the local replica. Sync and try again."
-        case .attachmentsPending:
-            "Attachments are not migrated to distributed blob transfer yet."
         }
     }
 }

@@ -456,6 +456,44 @@ public struct MeshReplicaSyncSession: Sendable {
     }
 }
 
+/// Lazily reconstructs one content-addressed blob from a trusted peer. Every
+/// chunk and the final digest are verified by the store before bytes become
+/// visible to the product.
+public struct MeshBlobFetchSession: Sendable {
+    private let store: DistributedMeshStore
+    private let client: MeshReplicaRPCClient
+
+    public init(store: DistributedMeshStore, client: MeshReplicaRPCClient) {
+        self.store = store
+        self.client = client
+    }
+
+    public func fetch(
+        _ digest: MeshBlobDigest, group: MeshTrustGroupID,
+        membershipEpoch: UInt64
+    ) async throws -> Data {
+        if let existing = try await store.blobData(for: digest) {
+            return existing
+        }
+        let manifest = try await client.blobManifest(
+            digest, group: group, membershipEpoch: membershipEpoch
+        )
+        try await store.registerBlobManifest(manifest)
+        for index in try await store.missingBlobChunkIndices(for: digest) {
+            let chunk = try await client.blobChunk(
+                digest, index: index, group: group,
+                membershipEpoch: membershipEpoch
+            )
+            _ = try await store.receiveBlobChunk(chunk)
+        }
+        try await store.finalizeBlob(digest)
+        guard let data = try await store.blobData(for: digest) else {
+            throw MeshReplicaRPCError.invalidBody
+        }
+        return data
+    }
+}
+
 private enum MeshReplicaRPCJSON {
     static func encode<T: Encodable>(_ value: T) throws -> Data {
         let encoder = JSONEncoder()

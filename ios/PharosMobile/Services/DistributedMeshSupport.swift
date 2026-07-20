@@ -31,6 +31,7 @@ final class DistributedMeshSupport {
     @ObservationIgnored private var runtime: IrohEndpointRuntime?
     @ObservationIgnored private var registry: MobileDistributedRegistry?
     @ObservationIgnored private var chatRegistry: DistributedChatRegistry?
+    @ObservationIgnored private var attachmentRegistry: DistributedAttachmentRegistry?
     private let isDemo: Bool
 
     init(demo: Bool = false) {
@@ -50,6 +51,9 @@ final class DistributedMeshSupport {
             if let group = activeTrustGroupID {
                 registry = MobileDistributedRegistry(replica: replica, group: group)
                 chatRegistry = DistributedChatRegistry(replica: replica, group: group)
+                attachmentRegistry = DistributedAttachmentRegistry(
+                    replica: replica, group: group
+                )
             }
             try await startNetwork(replica: replica)
             state = .ready(
@@ -83,6 +87,9 @@ final class DistributedMeshSupport {
             replica: replica, group: invitation.trustGroupID
         )
         chatRegistry = DistributedChatRegistry(
+            replica: replica, group: invitation.trustGroupID
+        )
+        attachmentRegistry = DistributedAttachmentRegistry(
             replica: replica, group: invitation.trustGroupID
         )
         let transport = IrohMeshTransport(
@@ -207,6 +214,46 @@ final class DistributedMeshSupport {
         )
     }
 
+    func uploadAttachment(
+        data: Data, name: String, mediaType: String
+    ) async throws -> MeshAttachment {
+        try await requireAttachmentRegistry().put(
+            data: data, name: name, mediaType: mediaType
+        )
+    }
+
+    func attachmentData(_ attachment: MeshAttachment) async throws -> Data {
+        let registry = try requireAttachmentRegistry()
+        guard try await registry.metadata(id: attachment.id) != nil else {
+            throw MobileDistributedMeshError.attachmentNotFound
+        }
+        if let data = try await registry.localData(for: attachment) { return data }
+        guard let runtime, let replica = localReplica,
+              let group = activeTrustGroupID,
+              let epoch = try await replica.store.membershipEpoch(for: group)
+        else { throw MobileDistributedMeshError.networkNotReady }
+        let digest = try DistributedAttachmentRegistry.digest(for: attachment)
+        let peers = try await replica.store.trustedDevices(
+            in: group, membershipEpoch: epoch
+        )
+        for peer in peers {
+            do {
+                let transport = IrohMeshTransport(
+                    runtime: runtime,
+                    remote: MeshIrohEndpointAddress(
+                        endpointID: peer.descriptor.endpointID,
+                        ticket: peer.addressTicket
+                    )
+                )
+                return try await MeshBlobFetchSession(
+                    store: replica.store,
+                    client: MeshReplicaRPCClient(transport: transport)
+                ).fetch(digest, group: group, membershipEpoch: epoch)
+            } catch { continue }
+        }
+        throw MobileDistributedMeshError.attachmentUnavailable
+    }
+
     @discardableResult
     func synchronizeOnce() async -> Int {
         guard let runtime, let replica = localReplica,
@@ -295,12 +342,21 @@ final class DistributedMeshSupport {
         }
         return chatRegistry
     }
+
+    private func requireAttachmentRegistry() throws -> DistributedAttachmentRegistry {
+        guard let attachmentRegistry else {
+            throw MobileDistributedMeshError.noActiveTrustGroup
+        }
+        return attachmentRegistry
+    }
 }
 
 private enum MobileDistributedMeshError: LocalizedError {
     case networkNotReady
     case acceptanceMismatch
     case noActiveTrustGroup
+    case attachmentNotFound
+    case attachmentUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -310,6 +366,10 @@ private enum MobileDistributedMeshError: LocalizedError {
             "The pairing response did not match this device."
         case .noActiveTrustGroup:
             "Pair this device with a trusted Pharos device first."
+        case .attachmentNotFound:
+            "Attachment metadata is missing from this replica."
+        case .attachmentUnavailable:
+            "No trusted online device currently has this attachment."
         }
     }
 }

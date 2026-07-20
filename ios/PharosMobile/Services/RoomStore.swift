@@ -257,9 +257,6 @@ final class RoomStore {
         let targets = MentionParser.targets(in: trimmed)
         do {
             if usesDistributedRegistry {
-                guard attachments.isEmpty else {
-                    throw DistributedRoomStoreError.attachmentsPending
-                }
                 guard let target = roomInfo(named: room) else {
                     throw DistributedRoomStoreError.roomNotFound
                 }
@@ -270,7 +267,7 @@ final class RoomStore {
                             messageID: $0.stableID, from: $0.from,
                             preview: String($0.text.prefix(160)), ts: $0.ts
                         )
-                    }
+                    }, attachments: attachments
                 )
                 _ = await distributedMesh.synchronizeOnce()
                 try await loadLatestPage(for: room)
@@ -300,9 +297,18 @@ final class RoomStore {
     func dismissNotice() { notice = nil }
 
     func uploadAttachment(data: Data, name: String, mimeType: String) async -> MeshAttachment? {
-        guard !usesDistributedRegistry else {
-            error = DistributedRoomStoreError.attachmentsPending.localizedDescription
-            return nil
+        if usesDistributedRegistry {
+            do {
+                let attachment = try await distributedMesh.uploadAttachment(
+                    data: data, name: name, mediaType: mimeType
+                )
+                _ = await distributedMesh.synchronizeOnce()
+                error = nil
+                return attachment
+            } catch {
+                self.error = error.localizedDescription
+                return nil
+            }
         }
         guard await supportsAdvancedMessages() else {
             error = "Update the Mesh broker before uploading attachments."
@@ -321,12 +327,17 @@ final class RoomStore {
 
     func downloadAttachment(_ attachment: MeshAttachment) async -> URL? {
         do {
-            guard !usesDistributedRegistry else {
-                throw DistributedRoomStoreError.attachmentsPending
+            let metadata: MeshAttachment
+            let data: Data
+            if usesDistributedRegistry {
+                metadata = attachment
+                data = try await distributedMesh.attachmentData(attachment)
+            } else {
+                (metadata, data) = try await mesh.downloadAttachment(
+                    id: attachment.id, host: settings.mesh.host,
+                    port: settings.mesh.port
+                )
             }
-            let (metadata, data) = try await mesh.downloadAttachment(id: attachment.id,
-                                                                     host: settings.mesh.host,
-                                                                     port: settings.mesh.port)
             let directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("PharosMeshAttachments", isDirectory: true)
                 .appendingPathComponent(metadata.id, isDirectory: true)
@@ -893,14 +904,11 @@ private enum LegacyBrokerDisabledError: LocalizedError {
 
 private enum DistributedRoomStoreError: LocalizedError {
     case roomNotFound
-    case attachmentsPending
 
     var errorDescription: String? {
         switch self {
         case .roomNotFound:
             "Room not found in the local replica. Sync and try again."
-        case .attachmentsPending:
-            "Attachments are still moving to content-addressed device Mesh storage. No retired Broker connection was attempted."
         }
     }
 }

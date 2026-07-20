@@ -21,6 +21,7 @@ final class DistributedMeshSupport {
     private(set) var lastSyncError: String?
     @ObservationIgnored private var runtime: IrohEndpointRuntime?
     @ObservationIgnored private var chatRegistry: DistributedChatRegistry?
+    @ObservationIgnored private var attachmentRegistry: DistributedAttachmentRegistry?
 
     var isProductModeEnabled: Bool {
         ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1"
@@ -38,6 +39,9 @@ final class DistributedMeshSupport {
                 activeTrustGroupID = try await replica.ensureActiveTrustGroup()
                 if let group = activeTrustGroupID {
                     chatRegistry = DistributedChatRegistry(
+                        replica: replica, group: group
+                    )
+                    attachmentRegistry = DistributedAttachmentRegistry(
                         replica: replica, group: group
                     )
                 }
@@ -155,6 +159,46 @@ final class DistributedMeshSupport {
         try await requireChatRegistry().leave(room: room, memberID: memberID)
     }
 
+    func uploadChatAttachment(
+        data: Data, name: String, mediaType: String
+    ) async throws -> MeshAttachment {
+        try await requireAttachmentRegistry().put(
+            data: data, name: name, mediaType: mediaType
+        )
+    }
+
+    func chatAttachmentData(_ attachment: MeshAttachment) async throws -> Data {
+        let registry = try requireAttachmentRegistry()
+        guard try await registry.metadata(id: attachment.id) != nil else {
+            throw DistributedMeshSupportError.attachmentNotFound
+        }
+        if let data = try await registry.localData(for: attachment) { return data }
+        guard let runtime, let replica = localReplica,
+              let group = activeTrustGroupID,
+              let epoch = try await replica.store.membershipEpoch(for: group)
+        else { throw DistributedMeshSupportError.networkNotReady }
+        let digest = try DistributedAttachmentRegistry.digest(for: attachment)
+        let peers = try await replica.store.trustedDevices(
+            in: group, membershipEpoch: epoch
+        )
+        for peer in peers {
+            do {
+                let transport = IrohMeshTransport(
+                    runtime: runtime,
+                    remote: MeshIrohEndpointAddress(
+                        endpointID: peer.descriptor.endpointID,
+                        ticket: peer.addressTicket
+                    )
+                )
+                return try await MeshBlobFetchSession(
+                    store: replica.store,
+                    client: MeshReplicaRPCClient(transport: transport)
+                ).fetch(digest, group: group, membershipEpoch: epoch)
+            } catch { continue }
+        }
+        throw DistributedMeshSupportError.attachmentUnavailable
+    }
+
     /// One bounded pull from every trusted current-epoch peer. Every device
     /// runs the same loop, so synchronization stays decentralized and offline
     /// writers converge after either side reconnects.
@@ -210,9 +254,27 @@ final class DistributedMeshSupport {
         }
         return chatRegistry
     }
+
+    private func requireAttachmentRegistry() throws -> DistributedAttachmentRegistry {
+        guard let attachmentRegistry else {
+            throw DistributedMeshSupportError.noActiveTrustGroup
+        }
+        return attachmentRegistry
+    }
 }
 
-private enum DistributedMeshSupportError: Error {
+private enum DistributedMeshSupportError: LocalizedError {
     case networkNotReady
     case noActiveTrustGroup
+    case attachmentNotFound
+    case attachmentUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .networkNotReady: "The private Mesh endpoint is still starting."
+        case .noActiveTrustGroup: "Pair this device with a trusted Pharos device first."
+        case .attachmentNotFound: "Attachment metadata is missing from this replica."
+        case .attachmentUnavailable: "No trusted online device currently has this attachment."
+        }
+    }
 }
