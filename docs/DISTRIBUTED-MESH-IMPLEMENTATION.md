@@ -58,7 +58,7 @@ be checked out without moving or deleting user data.
 
 ## Phase 1 — shared protocol and transport seam
 
-**State:** in progress
+**State:** complete
 
 Implemented on `feat/distributed-iroh`:
 
@@ -69,11 +69,21 @@ Implemented on `feat/distributed-iroh`:
   size/generation/deadline validation, and receipt transition rules;
 - canonical legacy request/response/event/message models shared by macOS, iOS,
   and CLI, with byte-for-byte request and response fixtures plus tolerant legacy
-  message decoding.
+  message decoding;
+- UDS/TCP and iOS `NWConnection` legacy adapters behind `MeshTransport`, including
+  framed attachment bodies, bounded socket I/O, and isolated temporary-UDS tests;
+- explicit `legacy | iroh | automatic` selection where Phase 1 rejects a required
+  Iroh route and keeps automatic mode on the legacy rollback path;
+- Linux arm64 compile proof with the official `swift:6.2-jammy` image and a
+  read-only repository mount:
 
-Remaining before the Phase 1 exit gate: place the current UDS/TCP client behind
-`MeshTransport`, enforce the explicit unsupported-Iroh behavior, and record a
-Linux compile proof against the shared protocol target.
+  ```sh
+  docker run --rm --platform linux/arm64 -v "$PWD:/workspace:ro" -w /workspace \
+    swift:6.2-jammy swift build --target PharosMeshProtocol \
+    --scratch-path /tmp/pharos-build
+  ```
+
+  Verified image digest: `sha256:1c1f422aee767a7f33b88bc3aee99cad5de4af8723fbee8a3ab6951a6879f929`.
 
 1. Create a pure Swift `PharosMeshProtocol` target with no AppKit, UIKit,
    Network.framework, socket, filesystem, or process dependencies.

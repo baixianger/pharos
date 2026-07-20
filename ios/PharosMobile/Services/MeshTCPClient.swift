@@ -22,25 +22,18 @@ enum MeshTransportError: LocalizedError {
 }
 
 actor MeshTCPClient {
-    func send(_ request: MeshRequest, host: String, port: UInt16) async throws -> MeshResponse {
-        guard !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let nwPort = NWEndpoint.Port(rawValue: port) else {
-            throw MeshTransportError.invalidEndpoint
-        }
-        var payload = try JSONEncoder().encode(request)
-        payload.append(0x0A)
-        let exchange = MeshExchange(
-            connection: NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .tcp),
-            payload: payload,
-            timeout: request.cmd == "events" ? 35 : 5
-        )
-        let response = try await exchange.run()
+    func send(_ request: MeshRequest, host: String, port: UInt16,
+              preference: MeshTransportPreference = .legacy) async throws -> MeshResponse {
+        let response = try await exchange(request, host: host, port: port,
+                                          timeout: request.cmd == "events" ? 35 : 5,
+                                          preference: preference)
         guard response.ok else { throw MeshTransportError.broker(response.error ?? "Mesh request failed.") }
         return response
     }
 
     func uploadAttachment(data: Data, name: String, mimeType: String,
-                          host: String, port: UInt16) async throws -> MeshAttachment {
+                          host: String, port: UInt16,
+                          preference: MeshTransportPreference = .legacy) async throws -> MeshAttachment {
         guard !data.isEmpty, data.count <= DistributedMeshProtocol.maximumBlobBytes else {
             throw MeshTransportError.broker("Attachments must be between 1 byte and 25 MiB.")
         }
@@ -49,43 +42,75 @@ actor MeshTCPClient {
                                         byteSize: data.count, sha256: digest)
         var request = MeshRequest(cmd: "attachment-put")
         request.attachment = attachment
-        var payload = try JSONEncoder().encode(request)
-        payload.append(0x0A)
-        payload.append(data)
-        let exchange = MeshExchange(
-            connection: NWConnection(host: NWEndpoint.Host(host),
-                                     port: try validatedPort(host: host, port: port), using: .tcp),
-            payload: payload
-        )
-        let response = try await exchange.run()
+        let response = try await exchange(request, body: data, host: host, port: port,
+                                          preference: preference)
         guard response.ok, let stored = response.attachment else {
             throw MeshTransportError.broker(response.error ?? "Attachment upload failed.")
         }
         return stored
     }
 
-    func downloadAttachment(id: String, host: String, port: UInt16) async throws -> (MeshAttachment, Data) {
-        var request = MeshRequest(cmd: "attachment-get")
-        request.attachmentID = id
-        var payload = try JSONEncoder().encode(request)
-        payload.append(0x0A)
-        let exchange = MeshDownloadExchange(
-            connection: NWConnection(host: NWEndpoint.Host(host),
-                                     port: try validatedPort(host: host, port: port), using: .tcp),
-            payload: payload
-        )
-        let result = try await exchange.run()
-        let digest = SHA256.hash(data: result.1).map { String(format: "%02x", $0) }.joined()
-        guard digest == result.0.sha256.lowercased() else {
+    func downloadAttachment(id: String, host: String, port: UInt16,
+                            preference: MeshTransportPreference = .legacy) async throws -> (MeshAttachment, Data) {
+        let request = MeshRequest(cmd: "attachment-get", attachmentID: id)
+        let transport = try makeTransport(host: host, port: port, preference: preference)
+        let frame = try await transport.exchange(.init(header: JSONEncoder().encode(request)))
+        let response = try JSONDecoder().decode(MeshResponse.self, from: frame.header)
+        guard response.ok, let attachment = response.attachment, let body = frame.body else {
+            throw MeshTransportError.broker(response.error ?? "Attachment download failed.")
+        }
+        let digest = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+        guard digest == attachment.sha256.lowercased() else {
             throw MeshTransportError.broker("Attachment checksum mismatch.")
         }
-        return result
+        return (attachment, body)
     }
 
-    private func validatedPort(host: String, port: UInt16) throws -> NWEndpoint.Port {
+    private func exchange(_ request: MeshRequest, body: Data? = nil,
+                          host: String, port: UInt16, timeout: TimeInterval = 5,
+                          preference: MeshTransportPreference = .legacy) async throws -> MeshResponse {
+        let transport = try makeTransport(host: host, port: port, timeout: timeout,
+                                          preference: preference)
+        let result = try await transport.exchange(.init(header: JSONEncoder().encode(request), body: body,
+                                                        timeoutMilliseconds: Int(timeout * 1_000)))
+        return try JSONDecoder().decode(MeshResponse.self, from: result.header)
+    }
+
+    private func makeTransport(host: String, port: UInt16,
+                               timeout: TimeInterval = 5,
+                               preference: MeshTransportPreference = .legacy) throws -> NetworkLegacyMeshTransport {
+        _ = try preference.resolved(irohAvailable: false)
         guard !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let value = NWEndpoint.Port(rawValue: port) else { throw MeshTransportError.invalidEndpoint }
-        return value
+        return NetworkLegacyMeshTransport(host: NWEndpoint.Host(host), port: value, timeout: timeout)
+    }
+}
+
+private struct NetworkLegacyMeshTransport: MeshTransport, Sendable {
+    let host: NWEndpoint.Host
+    let port: NWEndpoint.Port
+    let timeout: TimeInterval
+
+    var path: MeshTransportPath { get async { .legacyTCP } }
+
+    func exchange(_ request: MeshTransportRequest) async throws -> MeshTransportResponse {
+        try request.validate()
+        var payload = request.header
+        payload.append(0x0A)
+        if let body = request.body { payload.append(body) }
+        let connection = NWConnection(host: host, port: port, using: .tcp)
+
+        if (try? JSONDecoder().decode(MeshRequest.self, from: request.header).cmd) == "attachment-get" {
+            let result = try await MeshDownloadExchange(connection: connection, payload: payload).run()
+            return MeshTransportResponse(
+                header: try JSONEncoder().encode(MeshResponse(ok: true, attachment: result.0)),
+                body: result.1
+            )
+        }
+
+        let response = try await MeshExchange(connection: connection, payload: payload,
+                                              timeout: timeout).run()
+        return MeshTransportResponse(header: try JSONEncoder().encode(response))
     }
 }
 

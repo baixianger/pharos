@@ -63,6 +63,41 @@ public enum MeshTransportPreference: String, Codable, CaseIterable, Sendable {
     case iroh
     /// Prefer Iroh and permit an explicitly configured migration fallback.
     case automatic
+
+    /// Resolve a user preference against transports compiled into this build.
+    /// Phase 1 passes `irohAvailable: false`, making an explicit Iroh choice a
+    /// visible error while automatic mode keeps the legacy rollback path.
+    public func resolved(irohAvailable: Bool, legacyAvailable: Bool = true) throws -> Self {
+        switch self {
+        case .legacy:
+            guard legacyAvailable else { throw MeshTransportSelectionError.legacyUnavailable }
+            return .legacy
+        case .iroh:
+            guard irohAvailable else { throw MeshTransportSelectionError.irohUnavailable }
+            return .iroh
+        case .automatic:
+            if irohAvailable { return .iroh }
+            if legacyAvailable { return .legacy }
+            throw MeshTransportSelectionError.noAvailableTransport
+        }
+    }
+}
+
+public enum MeshTransportSelectionError: LocalizedError, Equatable, Sendable {
+    case irohUnavailable
+    case legacyUnavailable
+    case noAvailableTransport
+
+    public var errorDescription: String? {
+        switch self {
+        case .irohUnavailable:
+            "Iroh transport is not available in this build. Choose Legacy or Automatic."
+        case .legacyUnavailable:
+            "Legacy transport is not available in this build."
+        case .noAvailableTransport:
+            "No Mesh transport is available in this build."
+        }
+    }
 }
 
 /// What carried a particular connection. IP addresses are intentionally absent:

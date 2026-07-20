@@ -50,6 +50,14 @@ final class DistributedMeshProtocolTests: XCTestCase {
         }
     }
 
+    func testPhaseOneTransportSelectionRejectsExplicitIroh() throws {
+        XCTAssertEqual(try MeshTransportPreference.legacy.resolved(irohAvailable: false), .legacy)
+        XCTAssertEqual(try MeshTransportPreference.automatic.resolved(irohAvailable: false), .legacy)
+        XCTAssertThrowsError(try MeshTransportPreference.iroh.resolved(irohAvailable: false)) {
+            XCTAssertEqual($0 as? MeshTransportSelectionError, .irohUnavailable)
+        }
+    }
+
     func testConnectionSnapshotContainsPathWithoutAddress() throws {
         let snapshot = MeshConnectionSnapshot(
             peer: MeshDeviceID(rawValue: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!),
