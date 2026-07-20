@@ -75,6 +75,18 @@ public struct MeshAuthorHead: Codable, Equatable, Sendable {
     }
 }
 
+public struct MeshLocalAuthorState: Equatable, Sendable {
+    public var head: MeshAuthorHead?
+    /// Maximum HLC observed anywhere in this trust group. A new local write
+    /// must advance past remote history as well as its own author chain.
+    public var lastTimestamp: MeshHybridTimestamp?
+
+    public init(head: MeshAuthorHead?, lastTimestamp: MeshHybridTimestamp?) {
+        self.head = head
+        self.lastTimestamp = lastTimestamp
+    }
+}
+
 public struct MeshMaterializedField: Codable, Equatable, Sendable {
     public var field: String
     public var value: Data?
@@ -147,8 +159,17 @@ public actor DistributedMeshStore {
             try Self.execute(handle, sql: Self.schemaV5)
             try Self.execute(handle, sql: Self.schemaV6)
             try Self.execute(handle, sql: Self.schemaV7)
+            // Schema v2/v3 derived rows are not authoritative for the current
+            // materializer. Persist the rebuild requirement inside this same
+            // migration transaction so every process observes it; an actor-
+            // local Boolean alone lets a later opener incorrectly skip replay.
+            if version < 4 {
+                try Self.execute(
+                    handle, sql: "UPDATE materialization_metadata SET version=0"
+                )
+            }
             let materializationVersion = try Self.readMaterializationVersion(handle)
-            requiresMaterializationRebuild = version < 4 || materializationVersion != 2
+            requiresMaterializationRebuild = materializationVersion != 2
             try Self.execute(handle, sql: "COMMIT")
             try Self.secureDatabaseFiles(databaseURL)
         } catch {
@@ -549,6 +570,39 @@ public actor DistributedMeshStore {
         }
     }
 
+    /// Returns the persisted chain head and its timestamp as one actor-isolated
+    /// read. Local authors use this to continue safely after app restart or a
+    /// wall-clock regression. Another process may still win the following
+    /// insert, so callers must retry sequence/hash conflicts.
+    public func localAuthorState(
+        in group: MeshTrustGroupID, endpoint: MeshEndpointID
+    ) throws -> MeshLocalAuthorState {
+        let head = try authorHead(group: group, endpoint: endpoint)
+        let ownTimestamp: MeshHybridTimestamp?
+        if let head {
+            ownTimestamp = try authorTimestamp(
+                group: group, endpoint: endpoint, sequence: head.sequence
+            )
+        } else {
+            ownTimestamp = nil
+        }
+        let observedTimestamp = try queryOne(
+            "SELECT wall_time_ms, logical_time FROM events WHERE trust_group_id=? " +
+            "ORDER BY wall_time_ms DESC, logical_time DESC LIMIT 1",
+            [.text(group.rawValue.uuidString)]
+        ) { statement in
+            MeshHybridTimestamp(
+                wallTimeMilliseconds: sqlite3_column_int64(statement, 0),
+                logical: UInt32(sqlite3_column_int64(statement, 1))
+            )
+        }
+        return MeshLocalAuthorState(
+            head: head,
+            lastTimestamp: [ownTimestamp, observedTimestamp]
+                .compactMap { $0 }.max()
+        )
+    }
+
     public func events(for group: MeshTrustGroupID, author: MeshEndpointID,
                        after sequence: UInt64, limit: Int = 256) throws -> [MeshReplicatedEvent] {
         guard sequence <= UInt64(Int64.max) else {
@@ -779,6 +833,22 @@ public actor DistributedMeshStore {
                 ),
                 authorEndpointID: endpoint
             )
+        }
+    }
+
+    public func materializedEntities(
+        of type: MeshEntityType, in group: MeshTrustGroupID
+    ) throws -> [MeshEntityReference] {
+        try ensureMaterializedState()
+        return try query(
+            "SELECT DISTINCT entity_id FROM materialized_registers " +
+            "WHERE trust_group_id=? AND entity_type=? ORDER BY entity_id",
+            [.text(group.rawValue.uuidString), .text(type.rawValue)]
+        ) { statement in
+            guard let entity = MeshEntityReference(
+                type: type, id: Self.columnText(statement, index: 0)
+            ) else { throw DistributedMeshStoreError.corruptStoredValue }
+            return entity
         }
     }
 
@@ -1399,6 +1469,17 @@ public actor DistributedMeshStore {
     /// interrupted migration because materialized state is disposable and the
     /// immutable event log remains the source of truth.
     public func rebuildMaterializedState() throws {
+        try transaction {
+            try rebuildMaterializedStateLocked()
+        }
+        materializationNeedsRebuild = false
+    }
+
+    private func rebuildMaterializedStateLocked() throws {
+        // Read the source log only after BEGIN IMMEDIATE. Reading before taking
+        // the writer lock lets a second process commit an event between the
+        // snapshot and DELETE, permanently omitting that event from the derived
+        // view until another rebuild.
         let snapshots = try latestStoredSnapshots()
         let retained = try query(
             "SELECT envelope FROM events ORDER BY wall_time_ms, logical_time, " +
@@ -1410,25 +1491,30 @@ public actor DistributedMeshStore {
             }
             return (event, data)
         }
-        try transaction {
-            try run("DELETE FROM materialized_registers")
-            try run("DELETE FROM materialized_entities")
-            try run("DELETE FROM materialized_immutable_values")
-            try run("DELETE FROM quarantined_events")
-            for bundle in snapshots {
-                try applySnapshotState(bundle.state, in: bundle.snapshot.trustGroupID)
-            }
-            for (event, envelope) in retained {
-                try materialize(event, envelope: envelope)
-            }
-            try run("UPDATE materialization_metadata SET version=2")
+        try run("DELETE FROM materialized_registers")
+        try run("DELETE FROM materialized_entities")
+        try run("DELETE FROM materialized_immutable_values")
+        try run("DELETE FROM quarantined_events")
+        for bundle in snapshots {
+            try applySnapshotState(bundle.state, in: bundle.snapshot.trustGroupID)
         }
-        materializationNeedsRebuild = false
+        for (event, envelope) in retained {
+            try materialize(event, envelope: envelope)
+        }
+        try run("UPDATE materialization_metadata SET version=2")
     }
 
     private func ensureMaterializedState() throws {
         if materializationNeedsRebuild {
-            try rebuildMaterializedState()
+            try transaction {
+                // Another process may have completed the rebuild after this
+                // actor opened. Its version update and replay committed in the
+                // same transaction, so no second destructive pass is needed.
+                if try Self.readMaterializationVersion(database) != 2 {
+                    try rebuildMaterializedStateLocked()
+                }
+            }
+            materializationNeedsRebuild = false
         }
     }
 

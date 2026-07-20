@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import PharosMeshIdentity
 import PharosMeshProtocol
 
 public enum DistributedMeshCryptoError: Error, Equatable, Sendable {
@@ -10,6 +11,15 @@ public enum DistributedMeshCryptoError: Error, Equatable, Sendable {
 /// Crypto operations stay outside the portable schema target. Membership code
 /// must first bind this public key to the event's trusted device and endpoint.
 public enum DistributedMeshCrypto {
+    public static func sign(
+        _ event: MeshReplicatedEvent, with identity: MeshDeviceIdentity
+    ) throws -> MeshReplicatedEvent {
+        var signed = event
+        signed.signature = try identity.signature(for: event.canonicalSigningBytes())
+        try signed.validateStructure()
+        return signed
+    }
+
     public static func sign(_ event: MeshReplicatedEvent,
                             with privateKey: Curve25519.Signing.PrivateKey) throws -> MeshReplicatedEvent {
         var signed = event
