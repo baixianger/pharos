@@ -1,7 +1,8 @@
 import Foundation
 import Crypto
+import CSQLite
+import PharosMeshIdentity
 import PharosMeshProtocol
-import SQLite3
 
 public enum DistributedMeshStoreError: Error, Equatable, Sendable {
     case openFailed(String)
@@ -14,6 +15,7 @@ public enum DistributedMeshStoreError: Error, Equatable, Sendable {
     case commandGenerationMismatch(expected: UInt64, actual: UInt64)
     case idempotencyCollision
     case corruptStoredValue
+    case unsupportedSchemaVersion(Int)
 }
 
 public enum MeshEventInsertion: Equatable, Sendable {
@@ -53,8 +55,18 @@ public actor DistributedMeshStore {
             try Self.execute(handle, sql: "PRAGMA journal_mode=WAL")
             try Self.execute(handle, sql: "PRAGMA synchronous=FULL")
             try Self.execute(handle, sql: "PRAGMA foreign_keys=ON")
-            try Self.execute(handle, sql: Self.schema)
+            try Self.execute(handle, sql: "PRAGMA busy_timeout=5000")
+            try Self.execute(handle, sql: "BEGIN IMMEDIATE")
+            try Self.execute(handle, sql: Self.schemaMetadata)
+            let version = try Self.readSchemaVersion(handle)
+            guard version == 1 || version == 2 else {
+                throw DistributedMeshStoreError.unsupportedSchemaVersion(version)
+            }
+            try Self.execute(handle, sql: Self.schemaV1)
+            try Self.execute(handle, sql: Self.schemaV2)
+            try Self.execute(handle, sql: "COMMIT")
         } catch {
+            try? Self.execute(handle, sql: "ROLLBACK")
             sqlite3_close(handle)
             throw error
         }
@@ -94,6 +106,86 @@ public actor DistributedMeshStore {
             "SELECT epoch FROM membership_epochs WHERE trust_group_id=?",
             [.text(group.rawValue.uuidString)]
         ) { UInt64(sqlite3_column_int64($0, 0)) }
+    }
+
+    /// The pending record persists only invitation and nonce digests. The raw
+    /// QR/deep-link bearer secret is never written to the replica database.
+    public func register(_ record: MeshInvitationUseRecord) throws {
+        try record.validate()
+        try transaction {
+            if let currentEpoch = try membershipEpoch(for: record.trustGroupID),
+               currentEpoch != record.membershipEpoch {
+                throw MeshTrustPairingError.membershipEpochMismatch
+            }
+            guard try invitationRecord(nonceDigest: record.nonceDigest) == nil else {
+                throw MeshTrustPairingError.duplicateInvitation
+            }
+            try run(
+                "INSERT INTO pairing_invitations(trust_group_id, membership_epoch, " +
+                "invitation_digest, nonce_digest, expires_at_ms) VALUES(?, ?, ?, ?, ?)",
+                [.text(record.trustGroupID.rawValue.uuidString),
+                 .integer(Int64(record.membershipEpoch)),
+                 .blob(record.invitationDigest), .blob(record.nonceDigest),
+                 .integer(record.expiresAtMilliseconds)]
+            )
+        }
+    }
+
+    /// `BEGIN IMMEDIATE` serializes redemption across independent SQLite
+    /// connections. Exactly one process can change `consumed_at_ms` from NULL.
+    public func consume(_ record: MeshInvitationUseRecord, accepting device: MeshPairedDevice,
+                        at milliseconds: Int64)
+        throws -> MeshInvitationConsumption {
+        try record.validate()
+        try device.validateBinding()
+        return try transaction { () -> MeshInvitationConsumption in
+            guard let stored = try invitationRecord(nonceDigest: record.nonceDigest) else {
+                return .unknown
+            }
+            guard stored.record == record else { return .mismatch }
+            guard stored.consumedAtMilliseconds == nil else { return .alreadyConsumed }
+            guard milliseconds < stored.record.expiresAtMilliseconds else { return .expired }
+            if let currentEpoch = try membershipEpoch(for: record.trustGroupID),
+               currentEpoch != record.membershipEpoch {
+                return .membershipEpochMismatch
+            }
+            guard try trustedDeviceMatching(
+                group: record.trustGroupID,
+                deviceID: device.descriptor.id,
+                endpointID: device.descriptor.endpointID
+            ) == nil else {
+                return .deviceAlreadyTrusted
+            }
+            try run(
+                "INSERT INTO trusted_devices(trust_group_id, device_id, endpoint_id, " +
+                "membership_epoch, envelope) VALUES(?, ?, ?, ?, ?)",
+                [.text(record.trustGroupID.rawValue.uuidString),
+                 .text(device.descriptor.id.rawValue.uuidString),
+                 .text(device.descriptor.endpointID.rawValue),
+                 .integer(Int64(record.membershipEpoch)),
+                 .blob(try MeshCanonicalStoreJSON.encode(device))]
+            )
+            try run(
+                "UPDATE pairing_invitations SET consumed_at_ms=? " +
+                "WHERE nonce_digest=? AND consumed_at_ms IS NULL",
+                [.integer(milliseconds), .blob(record.nonceDigest)]
+            )
+            return .consumed
+        }
+    }
+
+    public func trustedDevice(in group: MeshTrustGroupID,
+                              id: MeshDeviceID) throws -> MeshPairedDevice? {
+        try queryOne(
+            "SELECT envelope FROM trusted_devices WHERE trust_group_id=? AND device_id=? LIMIT 1",
+            [.text(group.rawValue.uuidString), .text(id.rawValue.uuidString)]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let device = try? JSONDecoder().decode(MeshPairedDevice.self, from: data) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            return device
+        }
     }
 
     /// Inserts only a structurally and cryptographically verified event. The
@@ -305,6 +397,49 @@ public actor DistributedMeshStore {
         }
     }
 
+    private func invitationRecord(nonceDigest: Data) throws
+        -> (record: MeshInvitationUseRecord, consumedAtMilliseconds: Int64?)? {
+        try queryOne(
+            "SELECT trust_group_id, membership_epoch, invitation_digest, nonce_digest, " +
+            "expires_at_ms, consumed_at_ms FROM pairing_invitations WHERE nonce_digest=? LIMIT 1",
+            [.blob(nonceDigest)]
+        ) { statement in
+            guard let groupUUID = UUID(uuidString: Self.columnText(statement, index: 0)),
+                  let invitationDigest = Self.columnData(statement, index: 2),
+                  let storedNonceDigest = Self.columnData(statement, index: 3) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            let consumed = sqlite3_column_type(statement, 5) == SQLITE_NULL
+                ? nil : sqlite3_column_int64(statement, 5)
+            return (
+                MeshInvitationUseRecord(
+                    trustGroupID: MeshTrustGroupID(rawValue: groupUUID),
+                    membershipEpoch: UInt64(sqlite3_column_int64(statement, 1)),
+                    invitationDigest: invitationDigest,
+                    nonceDigest: storedNonceDigest,
+                    expiresAtMilliseconds: sqlite3_column_int64(statement, 4)
+                ),
+                consumed
+            )
+        }
+    }
+
+    private func trustedDeviceMatching(group: MeshTrustGroupID, deviceID: MeshDeviceID,
+                                       endpointID: MeshEndpointID) throws -> MeshPairedDevice? {
+        try queryOne(
+            "SELECT envelope FROM trusted_devices WHERE trust_group_id=? " +
+            "AND (device_id=? OR endpoint_id=?) LIMIT 1",
+            [.text(group.rawValue.uuidString), .text(deviceID.rawValue.uuidString),
+             .text(endpointID.rawValue)]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let device = try? JSONDecoder().decode(MeshPairedDevice.self, from: data) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            return device
+        }
+    }
+
     private enum Binding {
         case integer(Int64)
         case text(String)
@@ -396,6 +531,34 @@ public actor DistributedMeshStore {
         }
     }
 
+    private static func readSchemaVersion(_ database: OpaquePointer) throws -> Int {
+        var statement: OpaquePointer?
+        let prepareResult = sqlite3_prepare_v2(
+            database,
+            "SELECT COUNT(*), MIN(version), MAX(version) FROM schema_metadata",
+            -1, &statement, nil
+        )
+        guard prepareResult == SQLITE_OK, let statement else {
+            throw DistributedMeshStoreError.sqlite(
+                code: prepareResult, message: String(cString: sqlite3_errmsg(database))
+            )
+        }
+        defer { sqlite3_finalize(statement) }
+        let stepResult = sqlite3_step(statement)
+        guard stepResult == SQLITE_ROW else {
+            throw DistributedMeshStoreError.sqlite(
+                code: stepResult, message: String(cString: sqlite3_errmsg(database))
+            )
+        }
+        let count = sqlite3_column_int64(statement, 0)
+        let minimum = sqlite3_column_int64(statement, 1)
+        let maximum = sqlite3_column_int64(statement, 2)
+        guard count == 1, minimum == maximum else {
+            throw DistributedMeshStoreError.corruptStoredValue
+        }
+        return Int(minimum)
+    }
+
     private static func columnText(_ statement: OpaquePointer, index: Int32) -> String {
         sqlite3_column_text(statement, index).map { String(cString: $0) } ?? ""
     }
@@ -407,9 +570,12 @@ public actor DistributedMeshStore {
         return Data(bytes: bytes, count: count)
     }
 
-    private static let schema = """
+    private static let schemaMetadata = """
     CREATE TABLE IF NOT EXISTS schema_metadata(version INTEGER NOT NULL);
     INSERT INTO schema_metadata(version) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM schema_metadata);
+    """
+
+    private static let schemaV1 = """
     CREATE TABLE IF NOT EXISTS membership_epochs(
       trust_group_id TEXT PRIMARY KEY, epoch INTEGER NOT NULL CHECK(epoch > 0));
     CREATE TABLE IF NOT EXISTS events(
@@ -446,7 +612,25 @@ public actor DistributedMeshStore {
       host_device_id TEXT NOT NULL, resource_id TEXT NOT NULL,
       resource_generation INTEGER NOT NULL, state TEXT NOT NULL, receipt BLOB NOT NULL);
     """
+
+    private static let schemaV2 = """
+    CREATE TABLE IF NOT EXISTS pairing_invitations(
+      trust_group_id TEXT NOT NULL,
+      membership_epoch INTEGER NOT NULL CHECK(membership_epoch > 0),
+      invitation_digest BLOB NOT NULL UNIQUE CHECK(length(invitation_digest)=32),
+      nonce_digest BLOB PRIMARY KEY CHECK(length(nonce_digest)=32),
+      expires_at_ms INTEGER NOT NULL, consumed_at_ms INTEGER);
+    CREATE INDEX IF NOT EXISTS pairing_invitations_expiry
+      ON pairing_invitations(expires_at_ms) WHERE consumed_at_ms IS NULL;
+    CREATE TABLE IF NOT EXISTS trusted_devices(
+      trust_group_id TEXT NOT NULL, device_id TEXT NOT NULL, endpoint_id TEXT NOT NULL,
+      membership_epoch INTEGER NOT NULL CHECK(membership_epoch > 0), envelope BLOB NOT NULL,
+      PRIMARY KEY(trust_group_id, device_id), UNIQUE(trust_group_id, endpoint_id));
+    UPDATE schema_metadata SET version=2;
+    """
 }
+
+extension DistributedMeshStore: MeshInvitationUseStore {}
 
 private enum MeshCanonicalStoreJSON {
     static func encode<T: Encodable>(_ value: T) throws -> Data {

@@ -1,7 +1,9 @@
 import Crypto
+import CSQLite
 import Foundation
 import XCTest
 @testable import PharosMeshCore
+import PharosMeshIdentity
 import PharosMeshProtocol
 
 final class DistributedMeshStoreTests: XCTestCase {
@@ -12,7 +14,7 @@ final class DistributedMeshStoreTests: XCTestCase {
 
         let schemaVersion = try await store.schemaVersion()
         let journalMode = try await store.journalMode()
-        XCTAssertEqual(schemaVersion, 1)
+        XCTAssertEqual(schemaVersion, 2)
         XCTAssertEqual(journalMode.lowercased(), "wal")
         try await store.setMembershipEpoch(1, for: fixture.group)
 
@@ -153,6 +155,185 @@ final class DistributedMeshStoreTests: XCTestCase {
         }
     }
 
+    func testV1MigrationPreservesStateAndRejectsFutureSchema() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try executeSQLite(
+            at: fixture.databaseURL,
+            sql: """
+            CREATE TABLE schema_metadata(version INTEGER NOT NULL);
+            INSERT INTO schema_metadata VALUES(1);
+            CREATE TABLE membership_epochs(
+              trust_group_id TEXT PRIMARY KEY, epoch INTEGER NOT NULL CHECK(epoch > 0));
+            INSERT INTO membership_epochs VALUES('\(fixture.group.rawValue.uuidString)', 9);
+            """
+        )
+
+        let migrated = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        let migratedVersion = try await migrated.schemaVersion()
+        let migratedEpoch = try await migrated.membershipEpoch(for: fixture.group)
+        XCTAssertEqual(migratedVersion, 2)
+        XCTAssertEqual(migratedEpoch, 9)
+
+        let futureURL = fixture.directory.appendingPathComponent("future.sqlite")
+        try executeSQLite(
+            at: futureURL,
+            sql: "CREATE TABLE schema_metadata(version INTEGER NOT NULL); " +
+                 "INSERT INTO schema_metadata VALUES(3);"
+        )
+        XCTAssertThrowsError(try DistributedMeshStore(databaseURL: futureURL)) {
+            XCTAssertEqual($0 as? DistributedMeshStoreError, .unsupportedSchemaVersion(3))
+        }
+
+        let ambiguousURL = fixture.directory.appendingPathComponent("ambiguous.sqlite")
+        try executeSQLite(
+            at: ambiguousURL,
+            sql: "CREATE TABLE schema_metadata(version INTEGER NOT NULL); " +
+                 "INSERT INTO schema_metadata VALUES(1); " +
+                 "INSERT INTO schema_metadata VALUES(2);"
+        )
+        XCTAssertThrowsError(try DistributedMeshStore(databaseURL: ambiguousURL)) {
+            XCTAssertEqual($0 as? DistributedMeshStoreError, .corruptStoredValue)
+        }
+    }
+
+    func testPairingRedemptionIsDurableAcrossRestartAndSingleUseAcrossConnections() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let inviter = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 10))
+        let acceptor = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 20))
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        let invitation: MeshTrustInvitation
+        do {
+            let issuingStore = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+            let issuingService = MeshTrustPairingService(
+                identity: inviter, invitationStore: issuingStore
+            )
+            invitation = try await issuingService.issueInvitation(
+                trustGroupID: fixture.group,
+                membershipEpoch: 1,
+                inviterAddressTicket: "isolated-inviter-ticket",
+                requestedRoles: [.replica],
+                now: now
+            )
+        }
+
+        let acceptorService = MeshTrustPairingService(
+            identity: acceptor, invitationStore: MeshMemoryInvitationUseStore()
+        )
+        let acceptance = try acceptorService.createAcceptance(
+            for: invitation,
+            acceptingAddressTicket: "isolated-acceptor-ticket",
+            displayName: "Test iPhone",
+            now: now
+        )
+
+        let reopened = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        let reopenedService = MeshTrustPairingService(identity: inviter, invitationStore: reopened)
+        _ = try await reopenedService.redeem(acceptance, for: invitation, now: now)
+
+        let reopenedAgain = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        let persistedDevice = try await reopenedAgain.trustedDevice(
+            in: fixture.group, id: acceptor.deviceID
+        )
+        XCTAssertEqual(persistedDevice?.descriptor.endpointID, try acceptor.endpointID())
+        XCTAssertEqual(persistedDevice?.addressTicket, "isolated-acceptor-ticket")
+        let finalService = MeshTrustPairingService(
+            identity: inviter, invitationStore: reopenedAgain
+        )
+        do {
+            _ = try await finalService.redeem(acceptance, for: invitation, now: now)
+            XCTFail("a consumed invitation must remain consumed after reopen")
+        } catch {
+            XCTAssertEqual(error as? MeshTrustPairingError, .invitationAlreadyConsumed)
+        }
+    }
+
+    func testConcurrentSQLiteConnectionsHaveExactlyOnePairingWinner() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let inviter = MeshDeviceIdentity.generate()
+        let acceptor = MeshDeviceIdentity.generate()
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let issuingStore = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        let issuingService = MeshTrustPairingService(identity: inviter, invitationStore: issuingStore)
+        let invitation = try await issuingService.issueInvitation(
+            trustGroupID: fixture.group,
+            membershipEpoch: 1,
+            inviterAddressTicket: "isolated-inviter-ticket",
+            requestedRoles: [.controller],
+            now: now
+        )
+        let acceptance = try MeshTrustPairingService(
+            identity: acceptor, invitationStore: MeshMemoryInvitationUseStore()
+        ).createAcceptance(
+            for: invitation,
+            acceptingAddressTicket: "isolated-acceptor-ticket",
+            displayName: "Concurrent Test Device",
+            now: now
+        )
+        let stores = try (0..<8).map { _ in
+            try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        }
+
+        let outcomes = await withTaskGroup(of: Bool.self, returning: [Bool].self) { group in
+            for store in stores {
+                group.addTask {
+                    let service = MeshTrustPairingService(
+                        identity: inviter, invitationStore: store
+                    )
+                    do {
+                        _ = try await service.redeem(acceptance, for: invitation, now: now)
+                        return true
+                    } catch {
+                        return false
+                    }
+                }
+            }
+            var values: [Bool] = []
+            for await value in group { values.append(value) }
+            return values
+        }
+        XCTAssertEqual(outcomes.filter { $0 }.count, 1)
+    }
+
+    func testMembershipEpochAdvanceRevokesPendingInvitationWithoutTrustingDevice() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let store = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        try await store.setMembershipEpoch(1, for: fixture.group)
+        let inviter = MeshDeviceIdentity.generate()
+        let acceptor = MeshDeviceIdentity.generate()
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let service = MeshTrustPairingService(identity: inviter, invitationStore: store)
+        let invitation = try await service.issueInvitation(
+            trustGroupID: fixture.group,
+            membershipEpoch: 1,
+            inviterAddressTicket: "isolated-inviter-ticket",
+            requestedRoles: [.replica],
+            now: now
+        )
+        let acceptance = try MeshTrustPairingService(
+            identity: acceptor, invitationStore: MeshMemoryInvitationUseStore()
+        ).createAcceptance(
+            for: invitation,
+            acceptingAddressTicket: "isolated-acceptor-ticket",
+            displayName: "Revoked Test Device",
+            now: now
+        )
+
+        try await store.setMembershipEpoch(2, for: fixture.group)
+        do {
+            _ = try await service.redeem(acceptance, for: invitation, now: now)
+            XCTFail("an epoch change must revoke pending invitations")
+        } catch {
+            XCTAssertEqual(error as? MeshTrustPairingError, .membershipEpochMismatch)
+        }
+        let trusted = try await store.trustedDevice(in: fixture.group, id: acceptor.deviceID)
+        XCTAssertNil(trusted)
+    }
+
     private final class Fixture {
         let directory: URL
         let databaseURL: URL
@@ -184,5 +365,23 @@ final class DistributedMeshStoreTests: XCTestCase {
             )
             return try DistributedMeshCrypto.sign(event, with: privateKey)
         }
+    }
+}
+
+private func executeSQLite(at url: URL, sql: String) throws {
+    var database: OpaquePointer?
+    guard sqlite3_open_v2(
+        url.path, &database, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE, nil
+    ) == SQLITE_OK, let database else {
+        throw NSError(domain: "DistributedMeshStoreTests", code: 1)
+    }
+    defer { sqlite3_close(database) }
+    var message: UnsafeMutablePointer<CChar>?
+    let result = sqlite3_exec(database, sql, nil, nil, &message)
+    guard result == SQLITE_OK else {
+        let detail = message.map { String(cString: $0) } ?? "sqlite error \(result)"
+        sqlite3_free(message)
+        throw NSError(domain: "DistributedMeshStoreTests", code: Int(result),
+                      userInfo: [NSLocalizedDescriptionKey: detail])
     }
 }

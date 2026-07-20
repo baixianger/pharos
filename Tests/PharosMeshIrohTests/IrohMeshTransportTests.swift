@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import PharosMeshIroh
+import PharosMeshIdentity
 import PharosMeshProtocol
 
 final class IrohMeshTransportTests: XCTestCase {
@@ -71,6 +72,22 @@ final class IrohMeshTransportTests: XCTestCase {
 
         XCTAssertEqual(secret.count, 32)
         XCTAssertEqual(restoredID, firstID)
+    }
+
+    func testStoredSigningIdentityIsTheIrohEndpointIdentity() async throws {
+        let identity = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 100))
+        let runtime = try await IrohEndpointRuntime.bind(
+            secretKey: identity.irohSecretKeyBytes(),
+            relayPolicy: .disabled,
+            bindAddress: "127.0.0.1:0"
+        )
+
+        let endpointID = try await runtime.localAddress().endpointID.rawValue
+        let publicKeyHex = try identity.signingPublicKeyBytes()
+            .map { String(format: "%02x", $0) }
+            .joined()
+        XCTAssertEqual(endpointID, publicKeyHex)
+        try await runtime.close()
     }
 
     func testExchangeTimeoutCancelsAnUnresponsiveIsolatedStream() async throws {

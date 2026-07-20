@@ -101,8 +101,9 @@ mode.
 
 ## Phase 2 — identity, pairing, and Iroh connectivity
 
-**State:** started (Iroh dependency and isolated transport runtime present; durable key stores,
-trust-group pairing, product routing, diagnostics, and UI remain pending)
+**State:** started (Iroh transport, durable identity primitives, and trust-group
+pairing foundation present; product routing, CLI diagnostics, revocation flow,
+and Trusted Devices UI remain pending)
 
 Implemented on `feat/distributed-iroh`:
 
@@ -119,9 +120,26 @@ Implemented on `feat/distributed-iroh`:
   waiting for the underlying FFI operation to unwind;
 - iOS XcodeGen consumes the same `PharosMeshIroh` product. Non-Apple builds see
   an explicit unavailable implementation until the pinned Linux bridge is wired;
-- the full macOS suite passes with 218 tests, an isolated iOS simulator app links
-  both simulator architectures against the verified `v1.1.0` artifact, and the
-  `PharosMeshIroh` target compiles in the official Swift 6.2 Linux arm64 image.
+- `PharosMeshIdentity` owns one Ed25519 secret whose public key is proven to be
+  the Iroh Endpoint ID. Apple storage uses a non-synchronizing,
+  device-only Keychain item; Linux/headless storage uses an atomic mode-0600 file
+  in a mode-0700 directory, rejects symlinks and permissive paths, and survives
+  concurrent first launch without rotating identity;
+- signed pairing tickets use canonical bytes, a maximum ten-minute lifetime,
+  32-byte bearer nonces, explicit roles, trust-group membership epochs, and
+  redacted descriptions. Invitation and acceptance signatures bind Endpoint IDs
+  to signing keys, and tamper/expiry/key-mismatch tests fail closed;
+- SQLite schema v2 stores only pending invitation/nonce digests, atomically burns
+  a ticket in the same transaction that persists the trusted device, waits for
+  competing writers, and revokes pending tickets when the membership epoch
+  advances. Tests prove one winner across sixteen actor tasks and eight separate
+  SQLite connections, persistence across reopen, v1-to-v2 state preservation,
+  and future-schema rejection;
+- the iOS project consumes `PharosMeshIdentity`; an isolated simulator build
+  compiles and links Keychain, identity, pairing, Crypto, and Iroh for both arm64
+  and x86_64. The identity target compiles in the official Swift 6.2 Linux arm64
+  image. These checks use disposable copies/scratch paths and fresh identities;
+  no production Keychain item, database, Broker, room, or endpoint is opened.
 
 1. Pin a reviewed Iroh 1.x / iroh-ffi release; verify license, binary provenance,
    reproducible XCFramework build, and macOS/iOS architectures.
@@ -160,6 +178,12 @@ events are idempotent. It also persists Host command acceptance before side
 effects, rejects semantic idempotency-key collisions, and prevents terminal
 receipt replay. Current tests create databases only under a fresh system
 temporary directory and never open the live Broker or Mesh data locations.
+
+Schema v2 is a transactional migration over v1, preserves existing rows,
+rejects ambiguous/future metadata, and adds atomic pairing-use/trusted-device
+tables. SQLite is exposed through the explicit `CSQLite` SwiftPM system-library
+target instead of an Apple-only implicit module. With `libsqlite3-dev` installed,
+`PharosMeshCore` compiles in the official `swift:6.2-jammy` Linux arm64 image.
 
 Anti-entropy streams, materializers, blob transfer, acknowledgements, snapshots,
 quarantine ingestion, and compaction remain pending.

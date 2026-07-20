@@ -11,6 +11,7 @@ let package = Package(
         .executable(name: "Pharos", targets: ["Pharos"]),
         .executable(name: "pharos-mesh", targets: ["PharosMesh"]),
         .library(name: "PharosMeshProtocol", targets: ["PharosMeshProtocol"]),
+        .library(name: "PharosMeshIdentity", targets: ["PharosMeshIdentity"]),
         .library(name: "PharosMeshIroh", targets: ["PharosMeshIroh"]),
         .library(name: "PharosMeshCore", targets: ["PharosMeshCore"]),
     ],
@@ -20,6 +21,14 @@ let package = Package(
         .package(url: "https://github.com/n0-computer/iroh-ffi", exact: "1.1.0"),
     ],
     targets: [
+        .systemLibrary(
+            name: "CSQLite",
+            pkgConfig: "sqlite3",
+            providers: [
+                .apt(["libsqlite3-dev"]),
+                .brew(["sqlite3"]),
+            ]
+        ),
         .target(
             name: "PharosMeshProtocol",
             path: "Sources/PharosMeshProtocol"
@@ -37,14 +46,23 @@ let package = Package(
             path: "Sources/PharosMeshIroh"
         ),
         .target(
+            name: "PharosMeshIdentity",
+            dependencies: [
+                "PharosMeshProtocol",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Sources/PharosMeshIdentity"
+        ),
+        .target(
             name: "PharosMeshCore",
             dependencies: [
                 "PharosMeshProtocol",
+                "PharosMeshIdentity",
                 "PharosMeshIroh",
+                "CSQLite",
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
-            path: "Sources/PharosMeshCore",
-            linkerSettings: [.linkedLibrary("sqlite3")]
+            path: "Sources/PharosMeshCore"
         ),
         .executableTarget(
             name: "Pharos",
@@ -84,12 +102,20 @@ let package = Package(
         ),
         .testTarget(
             name: "PharosMeshIrohTests",
-            dependencies: ["PharosMeshIroh"],
+            dependencies: ["PharosMeshIroh", "PharosMeshIdentity"],
             path: "Tests/PharosMeshIrohTests"
         ),
         .testTarget(
+            name: "PharosMeshIdentityTests",
+            dependencies: [
+                "PharosMeshIdentity",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Tests/PharosMeshIdentityTests"
+        ),
+        .testTarget(
             name: "PharosMeshCoreTests",
-            dependencies: ["PharosMeshCore"],
+            dependencies: ["PharosMeshCore", "PharosMeshIdentity", "CSQLite"],
             path: "Tests/PharosMeshCoreTests"
         ),
     ]

@@ -38,6 +38,8 @@ targets:
         product: PharosMeshProtocol
       - package: PharosShared
         product: PharosMeshIroh
+      - package: PharosShared
+        product: PharosMeshIdentity
       - package: MarkdownUI
         product: MarkdownUI
       - package: Citadel
