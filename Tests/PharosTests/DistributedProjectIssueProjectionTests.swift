@@ -140,9 +140,13 @@ final class DistributedProjectIssueProjectionTests: XCTestCase {
         try legacyBytes.write(to: legacyURL)
         setenv("PHAROS_DISTRIBUTED", "1", 1)
         setenv("PHAROS_REGISTRY", legacyURL.path, 1)
+        setenv("PHAROS_DISABLE_NOTIFICATIONS", "1", 1)
+        setenv("PHAROS_DISABLE_BACKGROUND_TASKS", "1", 1)
         defer {
             unsetenv("PHAROS_DISTRIBUTED")
             unsetenv("PHAROS_REGISTRY")
+            unsetenv("PHAROS_DISABLE_NOTIFICATIONS")
+            unsetenv("PHAROS_DISABLE_BACKGROUND_TASKS")
         }
 
         let replica = try MeshLocalReplica.openIsolated(

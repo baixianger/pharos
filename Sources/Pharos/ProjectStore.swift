@@ -700,8 +700,16 @@ final class ProjectStore {
         }
         lastFileMtime = fileModificationDate()
         refreshRunningAgents()
-        requestNotificationAuthorizationIfNeeded()
-        startPolling()
+        if ProcessInfo.processInfo.environment[
+            "PHAROS_DISABLE_NOTIFICATIONS"
+        ] != "1" {
+            requestNotificationAuthorizationIfNeeded()
+        }
+        if ProcessInfo.processInfo.environment[
+            "PHAROS_DISABLE_BACKGROUND_TASKS"
+        ] != "1" {
+            startPolling()
+        }
         if registrySync != nil { startFileWatch() }
     }
 
