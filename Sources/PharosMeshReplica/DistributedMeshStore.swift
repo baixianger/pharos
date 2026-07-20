@@ -439,6 +439,49 @@ public actor DistributedMeshStore {
         }
     }
 
+    /// Installs the peer from a signature-verified pairing invitation. The
+    /// pairing service is the only intended caller; this method additionally
+    /// enforces binding, epoch consistency, and idempotent identity matching.
+    public func installVerifiedPeer(
+        _ device: MeshPairedDevice, in group: MeshTrustGroupID,
+        membershipEpoch: UInt64
+    ) throws {
+        try device.validateBinding()
+        guard membershipEpoch > 0, membershipEpoch <= UInt64(Int64.max) else {
+            throw MeshTrustPairingError.membershipEpochMismatch
+        }
+        try transaction {
+            if let current = try self.membershipEpoch(for: group) {
+                guard current == membershipEpoch else {
+                    throw MeshTrustPairingError.membershipEpochMismatch
+                }
+            } else {
+                try run(
+                    "INSERT INTO membership_epochs(trust_group_id, epoch) VALUES(?, ?)",
+                    [.text(group.rawValue.uuidString), .integer(Int64(membershipEpoch))]
+                )
+            }
+            if let existing = try trustedDeviceMatching(
+                group: group, deviceID: device.descriptor.id,
+                endpointID: device.descriptor.endpointID
+            ) {
+                guard existing == device else {
+                    throw MeshTrustPairingError.deviceAlreadyTrusted
+                }
+                return
+            }
+            try run(
+                "INSERT INTO trusted_devices(trust_group_id, device_id, endpoint_id, " +
+                    "membership_epoch, envelope) VALUES(?, ?, ?, ?, ?)",
+                [.text(group.rawValue.uuidString),
+                 .text(device.descriptor.id.rawValue.uuidString),
+                 .text(device.descriptor.endpointID.rawValue),
+                 .integer(Int64(membershipEpoch)),
+                 .blob(try MeshCanonicalStoreJSON.encode(device))]
+            )
+        }
+    }
+
     public func trustedDevice(in group: MeshTrustGroupID,
                               id: MeshDeviceID) throws -> MeshPairedDevice? {
         try queryOne(
@@ -449,6 +492,26 @@ public actor DistributedMeshStore {
                   let device = try? JSONDecoder().decode(MeshPairedDevice.self, from: data) else {
                 throw DistributedMeshStoreError.corruptStoredValue
             }
+            return device
+        }
+    }
+
+    public func trustedDevices(
+        in group: MeshTrustGroupID, membershipEpoch: UInt64
+    ) throws -> [MeshPairedDevice] {
+        guard membershipEpoch <= UInt64(Int64.max) else { return [] }
+        return try queryAll(
+            "SELECT envelope FROM trusted_devices WHERE trust_group_id=? " +
+                "AND membership_epoch=? ORDER BY device_id",
+            [.text(group.rawValue.uuidString), .integer(Int64(membershipEpoch))]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let device = try? JSONDecoder().decode(
+                    MeshPairedDevice.self, from: data
+                  ) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            try device.validateBinding()
             return device
         }
     }

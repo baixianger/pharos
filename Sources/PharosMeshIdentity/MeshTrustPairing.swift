@@ -57,6 +57,9 @@ public protocol MeshInvitationUseStore: Sendable {
     func register(_ record: MeshInvitationUseRecord) async throws
     func consume(_ record: MeshInvitationUseRecord, accepting device: MeshPairedDevice,
                  at milliseconds: Int64) async throws -> MeshInvitationConsumption
+    func installVerifiedPeer(_ device: MeshPairedDevice,
+                             in group: MeshTrustGroupID,
+                             membershipEpoch: UInt64) async throws
 }
 
 public actor MeshMemoryInvitationUseStore: MeshInvitationUseStore {
@@ -97,6 +100,27 @@ public actor MeshMemoryInvitationUseStore: MeshInvitationUseStore {
         records[record.nonceDigest] = state
         trustedDevices[record.trustGroupID, default: [:]][device.descriptor.id] = device
         return .consumed
+    }
+
+    public func installVerifiedPeer(
+        _ device: MeshPairedDevice, in group: MeshTrustGroupID,
+        membershipEpoch: UInt64
+    ) throws {
+        try device.validateBinding()
+        guard membershipEpoch > 0, membershipEpoch <= UInt64(Int64.max) else {
+            throw MeshTrustPairingError.membershipEpochMismatch
+        }
+        let peers = trustedDevices[group]?.values ?? [:].values
+        if let existing = peers.first(where: {
+            $0.descriptor.id == device.descriptor.id ||
+                $0.descriptor.endpointID == device.descriptor.endpointID
+        }) {
+            guard existing == device else {
+                throw MeshTrustPairingError.deviceAlreadyTrusted
+            }
+            return
+        }
+        trustedDevices[group, default: [:]][device.descriptor.id] = device
     }
 
     public func trustedDevice(in group: MeshTrustGroupID,
@@ -209,6 +233,42 @@ public struct MeshTrustPairingService: Sendable {
         acceptance.signature = try identity.signature(for: acceptance.canonicalSigningBytes())
         try verifyAcceptance(acceptance, for: invitation, now: now)
         return acceptance
+    }
+
+    /// Accepts a verified invitation and installs the inviter as the first
+    /// reciprocal trust row before returning our signed acceptance. This makes
+    /// the relationship symmetric without treating the bearer QR secret as a
+    /// long-lived credential.
+    public func acceptAndTrustInviter(
+        _ invitation: MeshTrustInvitation,
+        acceptingAddressTicket: String,
+        displayName: String,
+        inviterDisplayName: String,
+        now: Date = Date()
+    ) async throws -> MeshTrustAcceptance {
+        try verifyInvitation(invitation, now: now)
+        let inviter = MeshPairedDevice(
+            descriptor: MeshDeviceDescriptor(
+                id: invitation.inviterDeviceID,
+                endpointID: invitation.inviterEndpointID,
+                displayName: inviterDisplayName.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ),
+                roles: Set(invitation.requestedRoles),
+                protocolVersion: invitation.protocolVersion
+            ),
+            signingPublicKey: invitation.inviterSigningPublicKey,
+            addressTicket: invitation.inviterAddressTicket
+        )
+        try inviter.validateBinding()
+        try await invitationStore.installVerifiedPeer(
+            inviter, in: invitation.trustGroupID,
+            membershipEpoch: invitation.membershipEpoch
+        )
+        return try createAcceptance(
+            for: invitation, acceptingAddressTicket: acceptingAddressTicket,
+            displayName: displayName, now: now
+        )
     }
 
     public func redeem(

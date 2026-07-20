@@ -34,6 +34,37 @@ final class MeshTrustPairingTests: XCTestCase {
         XCTAssertTrue(acceptance.description.contains("<redacted>"))
         XCTAssertTrue(String(reflecting: acceptance).contains("<redacted>"))
         XCTAssertFalse(acceptance.description.contains(acceptance.signature.base64EncodedString()))
+        let acceptanceTicket = try MeshTrustAcceptanceTicket.encode(acceptance)
+        XCTAssertEqual(
+            try MeshTrustAcceptanceTicket.decode(acceptanceTicket), acceptance
+        )
+        XCTAssertTrue(acceptanceTicket.hasPrefix(MeshTrustAcceptanceTicket.prefix))
+    }
+
+    func testAcceptanceInstallsReciprocalInviterTrust() async throws {
+        let fixture = Fixture()
+        let invitation = try await fixture.inviterService.issueInvitation(
+            trustGroupID: fixture.group,
+            membershipEpoch: 4,
+            inviterAddressTicket: "iroh-inviter-ticket",
+            requestedRoles: [.controller, .replica],
+            now: now
+        )
+
+        _ = try await fixture.acceptorService.acceptAndTrustInviter(
+            invitation,
+            acceptingAddressTicket: "iroh-acceptor-ticket",
+            displayName: "iPhone",
+            inviterDisplayName: "Mac mini",
+            now: now
+        )
+
+        let stored = await fixture.acceptorStore.trustedDevice(
+            in: fixture.group, id: fixture.inviter.deviceID
+        )
+        XCTAssertEqual(stored?.descriptor.endpointID, try fixture.inviter.endpointID())
+        XCTAssertEqual(stored?.descriptor.displayName, "Mac mini")
+        XCTAssertEqual(stored?.addressTicket, "iroh-inviter-ticket")
     }
 
     func testSignedInvitationAcceptanceAndSingleUseRedemption() async throws {
@@ -171,6 +202,7 @@ final class MeshTrustPairingTests: XCTestCase {
         let inviter = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 10))
         let acceptor = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 20))
         let store = MeshMemoryInvitationUseStore()
+        let acceptorStore = MeshMemoryInvitationUseStore()
 
         var inviterService: MeshTrustPairingService {
             MeshTrustPairingService(identity: inviter, invitationStore: store)
@@ -179,7 +211,7 @@ final class MeshTrustPairingTests: XCTestCase {
         var acceptorService: MeshTrustPairingService {
             MeshTrustPairingService(
                 identity: acceptor,
-                invitationStore: MeshMemoryInvitationUseStore()
+                invitationStore: acceptorStore
             )
         }
     }

@@ -303,3 +303,50 @@ public enum MeshTrustInvitationTicket {
         return Data(base64Encoded: base64)
     }
 }
+
+public enum MeshTrustAcceptanceTicket {
+    public static let prefix = "pharos-device-acceptance-v1:"
+    public static let maximumBytes = 64 * 1024
+
+    public static func encode(_ acceptance: MeshTrustAcceptance) throws -> String {
+        try acceptance.validateStructure()
+        let data = try MeshCanonicalJSON.encode(acceptance)
+        guard data.count <= maximumBytes else {
+            throw MeshTrustInvitationValidationError.ticketTooLarge
+        }
+        return prefix + base64URL(data)
+    }
+
+    public static func decode(_ ticket: String) throws -> MeshTrustAcceptance {
+        guard ticket.utf8.count <= maximumBytes * 2, ticket.hasPrefix(prefix) else {
+            throw MeshTrustInvitationValidationError.invalidTicketEncoding
+        }
+        let encoded = String(ticket.dropFirst(prefix.count))
+        guard let data = decodeBase64URL(encoded), data.count <= maximumBytes,
+              let acceptance = try? JSONDecoder().decode(
+                MeshTrustAcceptance.self, from: data
+              ) else {
+            throw MeshTrustInvitationValidationError.invalidTicketEncoding
+        }
+        try acceptance.validateStructure()
+        return acceptance
+    }
+
+    private static func base64URL(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func decodeBase64URL(_ value: String) -> Data? {
+        var base64 = value
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let remainder = base64.count % 4
+        if remainder != 0 {
+            base64 += String(repeating: "=", count: 4 - remainder)
+        }
+        return Data(base64Encoded: base64)
+    }
+}

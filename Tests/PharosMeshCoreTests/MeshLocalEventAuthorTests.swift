@@ -101,6 +101,25 @@ final class MeshLocalEventAuthorTests: XCTestCase {
         XCTAssertEqual(storedGroups, [groups[0]])
     }
 
+    func testPairingGroupAdoptionCannotOverwriteExistingGroup() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let replica = try MeshLocalReplica.open(
+            rootURL: fixture.root,
+            identityStorage: MeshMemoryIdentityStorage()
+        )
+        try replica.adoptActiveTrustGroup(fixture.group)
+        XCTAssertEqual(try replica.activeTrustGroup(), fixture.group)
+
+        XCTAssertThrowsError(
+            try replica.adoptActiveTrustGroup(MeshTrustGroupID())
+        ) {
+            XCTAssertEqual(
+                $0 as? MeshLocalReplicaError, .corruptActiveTrustGroup
+            )
+        }
+    }
+
     private final class Fixture {
         let root: URL
         let group = MeshTrustGroupID()

@@ -224,10 +224,16 @@ private enum MeshHeadlessCLI {
             "cutover", "rollback",
         ]
         let probeCommands = ["probe-serve", "probe"]
+        let deviceCommands = [
+            "device-invite", "device-accept", "device-redeem", "device-list",
+            "sync-serve", "sync",
+        ]
         guard command == "status" || command == "init" ||
-                migrationCommands.contains(command) || probeCommands.contains(command) else {
+                migrationCommands.contains(command) || probeCommands.contains(command) ||
+                deviceCommands.contains(command) else {
             return usageError(
-                "distributed status|init|probe-serve|probe|migration-status|" +
+                "distributed status|init|device-invite|device-accept|" +
+                "device-redeem|device-list|sync-serve|sync|probe-serve|probe|migration-status|" +
                 "migration-prepare|cutover|rollback …"
             )
         }
@@ -264,6 +270,11 @@ private enum MeshHeadlessCLI {
             if command == "probe" {
                 return try await runDistributedProbe(args, replica: replica)
             }
+            if deviceCommands.contains(command) {
+                return try await runDistributedDeviceCommand(
+                    command, args: args, replica: replica
+                )
+            }
             let activeGroup: MeshTrustGroupID?
             if command == "init" {
                 activeGroup = try await replica.ensureActiveTrustGroup()
@@ -299,6 +310,195 @@ private enum MeshHeadlessCLI {
             )
             return 1
         }
+    }
+
+    private static func runDistributedDeviceCommand(
+        _ command: String, args: [String], replica: MeshLocalReplica
+    ) async throws -> Int32 {
+        switch command {
+        case "device-invite":
+            let group = try await replica.ensureActiveTrustGroup()
+            guard let epoch = try await replica.store.membershipEpoch(for: group) else {
+                throw DistributedDeviceCommandError.missingMembership
+            }
+            let runtime = try await distributedRuntime(args, replica: replica)
+            do {
+                let address = try await runtime.localAddress()
+                let roles = try distributedRoles(args)
+                let invitation = try await MeshTrustPairingService(
+                    identity: replica.identity, invitationStore: replica.store
+                ).issueInvitation(
+                    trustGroupID: group, membershipEpoch: epoch,
+                    inviterAddressTicket: address.ticket,
+                    requestedRoles: roles
+                )
+                print(try MeshTrustInvitationTicket.encode(invitation))
+                try await runtime.close()
+                return 0
+            } catch {
+                try? await runtime.close()
+                throw error
+            }
+
+        case "device-accept":
+            guard args.count >= 2,
+                  args[1].hasPrefix(MeshTrustInvitationTicket.prefix),
+                  let name = option("--name", in: args), !name.isEmpty else {
+                return usageError(
+                    "distributed device-accept INVITATION --name NAME " +
+                    "[--inviter-name NAME] --data-dir ABSOLUTE-PATH"
+                )
+            }
+            let invitation = try MeshTrustInvitationTicket.decode(args[1])
+            let runtime = try await distributedRuntime(args, replica: replica)
+            do {
+                let address = try await runtime.localAddress()
+                let acceptance = try await MeshTrustPairingService(
+                    identity: replica.identity, invitationStore: replica.store
+                ).acceptAndTrustInviter(
+                    invitation, acceptingAddressTicket: address.ticket,
+                    displayName: name,
+                    inviterDisplayName: option("--inviter-name", in: args) ?? "Inviter"
+                )
+                try replica.adoptActiveTrustGroup(invitation.trustGroupID)
+                print(try MeshTrustAcceptanceTicket.encode(acceptance))
+                try await runtime.close()
+                return 0
+            } catch {
+                try? await runtime.close()
+                throw error
+            }
+
+        case "device-redeem":
+            guard args.count >= 3 else {
+                return usageError(
+                    "distributed device-redeem INVITATION ACCEPTANCE " +
+                    "--data-dir ABSOLUTE-PATH"
+                )
+            }
+            let invitation = try MeshTrustInvitationTicket.decode(args[1])
+            let acceptance = try MeshTrustAcceptanceTicket.decode(args[2])
+            let paired = try await MeshTrustPairingService(
+                identity: replica.identity, invitationStore: replica.store
+            ).redeem(acceptance, for: invitation)
+            print("trusted\t\(paired.descriptor.id.rawValue.uuidString)")
+            return 0
+
+        case "device-list":
+            let (group, epoch) = try await activeMembership(replica)
+            let peers = try await replica.store.trustedDevices(
+                in: group, membershipEpoch: epoch
+            )
+            for peer in peers {
+                let roles = peer.descriptor.roles.map(\.rawValue).sorted().joined(separator: ",")
+                print(
+                    "\(peer.descriptor.id.rawValue.uuidString)\t" +
+                    "\(peer.descriptor.displayName)\t\(roles)\t" +
+                    "\(peer.descriptor.endpointID.rawValue)"
+                )
+            }
+            return 0
+
+        case "sync-serve":
+            let (group, epoch) = try await activeMembership(replica)
+            let runtime = try await distributedRuntime(args, replica: replica)
+            let address = try await runtime.localAddress()
+            let router = MeshReplicaRPCServer(
+                store: replica.store,
+                hostIdentity: args.contains("--host") ? replica.identity : nil
+            )
+            await runtime.startServing { request, remoteEndpointID in
+                try await router.handle(request, remoteEndpointID: remoteEndpointID)
+            }
+            let status = DistributedSyncServerStatus(
+                deviceID: replica.identity.deviceID.rawValue.uuidString,
+                endpointID: address.endpointID.rawValue,
+                trustGroupID: group.rawValue.uuidString,
+                membershipEpoch: epoch,
+                networkState: "serving"
+            )
+            var line = try sortedJSON(status)
+            line.append(0x0A)
+            try FileHandle.standardOutput.write(contentsOf: line)
+            while !Task.isCancelled {
+                try await Task.sleep(for: .seconds(60))
+            }
+            try await runtime.close()
+            return 0
+
+        case "sync":
+            guard let peerText = option("--peer", in: args),
+                  let peerUUID = UUID(uuidString: peerText) else {
+                return usageError(
+                    "distributed sync --peer DEVICE-UUID --data-dir ABSOLUTE-PATH"
+                )
+            }
+            let (group, epoch) = try await activeMembership(replica)
+            guard let peer = try await replica.store.trustedDevice(
+                in: group, id: MeshDeviceID(rawValue: peerUUID)
+            ) else { throw DistributedDeviceCommandError.peerNotFound }
+            let runtime = try await distributedRuntime(args, replica: replica)
+            do {
+                let transport = IrohMeshTransport(
+                    runtime: runtime,
+                    remote: MeshIrohEndpointAddress(
+                        endpointID: peer.descriptor.endpointID,
+                        ticket: peer.addressTicket
+                    )
+                )
+                let report = try await MeshReplicaSyncSession(
+                    store: replica.store,
+                    client: MeshReplicaRPCClient(transport: transport)
+                ).synchronize(group: group, membershipEpoch: epoch)
+                let result = DistributedSyncResult(
+                    peerDeviceID: peer.descriptor.id.rawValue.uuidString,
+                    path: await transport.path.rawValue,
+                    eventCount: report.eventCount,
+                    snapshotCount: report.snapshotCount,
+                    rangeCount: report.rangeCount
+                )
+                print(String(decoding: try sortedJSON(result), as: UTF8.self))
+                try await runtime.close()
+                return 0
+            } catch {
+                try? await runtime.close()
+                throw error
+            }
+
+        default:
+            return usageError("distributed device-invite|device-accept|device-redeem|device-list|sync-serve|sync …")
+        }
+    }
+
+    private static func distributedRuntime(
+        _ args: [String], replica: MeshLocalReplica
+    ) async throws -> IrohEndpointRuntime {
+        try await IrohEndpointRuntime.bind(
+            secretKey: replica.identity.irohSecretKeyBytes(),
+            relayPolicy: try distributedRelayPolicy(args),
+            bindAddress: option("--bind", in: args)
+        )
+    }
+
+    private static func activeMembership(
+        _ replica: MeshLocalReplica
+    ) async throws -> (MeshTrustGroupID, UInt64) {
+        guard let group = try replica.activeTrustGroup(),
+              let epoch = try await replica.store.membershipEpoch(for: group) else {
+            throw DistributedDeviceCommandError.missingMembership
+        }
+        return (group, epoch)
+    }
+
+    private static func distributedRoles(_ args: [String]) throws -> Set<MeshDeviceRole> {
+        let raw = option("--roles", in: args) ?? "controller,replica"
+        let roles = raw.split(separator: ",").compactMap {
+            MeshDeviceRole(rawValue: String($0))
+        }
+        guard !roles.isEmpty, roles.count == raw.split(separator: ",").count else {
+            throw DistributedDeviceCommandError.invalidRoles
+        }
+        return Set(roles)
     }
 
     /// Starts only the identity-addressed Iroh transport and a bounded
@@ -620,9 +820,31 @@ private enum MeshHeadlessCLI {
         var peerIdentityVerified: Bool
     }
 
+    private struct DistributedSyncServerStatus: Codable {
+        var deviceID: String
+        var endpointID: String
+        var trustGroupID: String
+        var membershipEpoch: UInt64
+        var networkState: String
+    }
+
+    private struct DistributedSyncResult: Codable {
+        var peerDeviceID: String
+        var path: String
+        var eventCount: Int
+        var snapshotCount: Int
+        var rangeCount: Int
+    }
+
     private enum DistributedProbeError: Error {
         case identityMismatch
         case invalidRelayPolicy
+    }
+
+    private enum DistributedDeviceCommandError: Error {
+        case missingMembership
+        case peerNotFound
+        case invalidRoles
     }
 
     private static func runNode(_ args: [String]) -> Int32 {
@@ -876,6 +1098,12 @@ private enum MeshHeadlessCLI {
       registry get [--output PATH]
       registry import <projects.json> --expected REVISION
       distributed status|init [--json] [--data-dir ABSOLUTE-PATH]
+      distributed device-invite --data-dir ABSOLUTE-PATH [--roles controller,replica] [--relay production|disabled]
+      distributed device-accept INVITATION --name NAME --data-dir ABSOLUTE-PATH [--inviter-name NAME]
+      distributed device-redeem INVITATION ACCEPTANCE --data-dir ABSOLUTE-PATH
+      distributed device-list --data-dir ABSOLUTE-PATH
+      distributed sync-serve --data-dir ABSOLUTE-PATH [--host] [--relay production|disabled]
+      distributed sync --peer DEVICE-UUID --data-dir ABSOLUTE-PATH [--relay production|disabled]
       distributed probe-serve --data-dir ABSOLUTE-PATH [--relay production|disabled] [--bind HOST:PORT]
       distributed probe --peer-endpoint ID --peer-ticket TICKET --data-dir ABSOLUTE-PATH [--relay production|disabled] [--bind HOST:PORT]
       distributed migration-status --group UUID --data-dir ABSOLUTE-PATH [--json]
