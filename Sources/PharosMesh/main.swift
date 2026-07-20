@@ -228,7 +228,7 @@ private enum MeshHeadlessCLI {
             "device-invite", "device-accept", "device-redeem", "device-list",
             "sync-serve", "sync", "entity-set", "entity-dump",
             "room-list", "room-create", "room-rename", "room-delete",
-            "room-send", "room-history",
+            "room-send", "room-history", "attachment-put", "attachment-get",
         ]
         guard command == "status" || command == "init" ||
                 migrationCommands.contains(command) || probeCommands.contains(command) ||
@@ -237,6 +237,7 @@ private enum MeshHeadlessCLI {
                 "distributed status|init|device-invite|device-accept|" +
                 "device-redeem|device-list|sync-serve|sync|entity-set|entity-dump|" +
                 "room-list|room-create|room-rename|room-delete|room-send|room-history|" +
+                "attachment-put|attachment-get|" +
                 "probe-serve|probe|migration-status|" +
                 "migration-prepare|cutover|rollback …"
             )
@@ -615,8 +616,20 @@ private enum MeshHeadlessCLI {
             }
             let targets = option("--to", in: args)?.split(separator: ",")
                 .map(String.init) ?? []
+            let attachmentRegistry = DistributedAttachmentRegistry(
+                replica: replica, group: group
+            )
+            var attachments: [MeshAttachment] = []
+            for id in option("--attachments", in: args)?.split(separator: ",")
+                .map(String.init) ?? [] {
+                guard let attachment = try await attachmentRegistry.metadata(id: id) else {
+                    throw DistributedAttachmentRegistryError.invalidMetadata
+                }
+                attachments.append(attachment)
+            }
             let message = try await chat.send(
-                room: room, from: args[2], text: args[3], to: targets
+                room: room, from: args[2], text: args[3], to: targets,
+                attachments: attachments
             )
             print(String(decoding: try sortedJSON(message), as: UTF8.self))
             return 0
@@ -639,12 +652,88 @@ private enum MeshHeadlessCLI {
             print(String(decoding: try sortedJSON(messages), as: UTF8.self))
             return 0
 
+        case "attachment-put":
+            guard args.count >= 2 else {
+                return usageError(
+                    "distributed attachment-put FILE [--name DISPLAY-NAME] " +
+                    "[--mime MEDIA-TYPE] --data-dir ABSOLUTE-PATH"
+                )
+            }
+            let file = URL(fileURLWithPath: args[1]).standardizedFileURL
+            let values = try file.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+            )
+            guard values.isRegularFile == true, values.isSymbolicLink != true,
+                  let size = values.fileSize, size >= 0,
+                  size <= DistributedMeshProtocol.maximumBlobBytes else {
+                throw DistributedAttachmentRegistryError.invalidMetadata
+            }
+            let (group, _) = try await activeMembership(replica)
+            let attachment = try await DistributedAttachmentRegistry(
+                replica: replica, group: group
+            ).put(
+                data: try Data(contentsOf: file, options: [.mappedIfSafe]),
+                name: option("--name", in: args) ?? file.lastPathComponent,
+                mediaType: option("--mime", in: args) ?? "application/octet-stream"
+            )
+            print(String(decoding: try sortedJSON(attachment), as: UTF8.self))
+            return 0
+
+        case "attachment-get":
+            guard args.count >= 2,
+                  let output = option("--output", in: args),
+                  output.hasPrefix("/") else {
+                return usageError(
+                    "distributed attachment-get ID --output ABSOLUTE-PATH " +
+                    "[--peer DEVICE-UUID] [--peer-ticket CURRENT-TICKET] " +
+                    "--data-dir ABSOLUTE-PATH"
+                )
+            }
+            let (group, epoch) = try await activeMembership(replica)
+            let registry = DistributedAttachmentRegistry(
+                replica: replica, group: group
+            )
+            guard let attachment = try await registry.metadata(id: args[1]) else {
+                throw DistributedAttachmentRegistryError.invalidMetadata
+            }
+            let data: Data
+            if let local = try await registry.localData(for: attachment) {
+                data = local
+            } else {
+                guard let peerText = option("--peer", in: args),
+                      let peerUUID = UUID(uuidString: peerText),
+                      let peer = try await replica.store.trustedDevice(
+                        in: group, id: MeshDeviceID(rawValue: peerUUID)
+                      ) else { throw DistributedDeviceCommandError.peerNotFound }
+                let runtime = try await distributedRuntime(args, replica: replica)
+                defer { Task { try? await runtime.close() } }
+                let transport = IrohMeshTransport(
+                    runtime: runtime,
+                    remote: MeshIrohEndpointAddress(
+                        endpointID: peer.descriptor.endpointID,
+                        ticket: option("--peer-ticket", in: args) ?? peer.addressTicket
+                    )
+                )
+                data = try await MeshBlobFetchSession(
+                    store: replica.store,
+                    client: MeshReplicaRPCClient(transport: transport)
+                ).fetch(
+                    try DistributedAttachmentRegistry.digest(for: attachment),
+                    group: group, membershipEpoch: epoch
+                )
+            }
+            try data.write(
+                to: URL(fileURLWithPath: output).standardizedFileURL,
+                options: .atomic
+            )
+            return 0
+
         default:
             return usageError(
                 "distributed device-invite|device-accept|device-redeem|" +
                 "device-list|sync-serve|sync|entity-set|entity-dump|" +
                 "room-list|room-create|room-rename|room-delete|room-send|" +
-                "room-history …"
+                "room-history|attachment-put|attachment-get …"
             )
         }
     }
@@ -1290,8 +1379,10 @@ private enum MeshHeadlessCLI {
       distributed room-create NAME --data-dir ABSOLUTE-PATH
       distributed room-rename OLD-NAME NEW-NAME --data-dir ABSOLUTE-PATH
       distributed room-delete NAME --data-dir ABSOLUTE-PATH
-      distributed room-send ROOM FROM TEXT [--to NICK,NICK] --data-dir ABSOLUTE-PATH
+      distributed room-send ROOM FROM TEXT [--to NICK,NICK] [--attachments ID,ID] --data-dir ABSOLUTE-PATH
       distributed room-history ROOM [--limit N] --data-dir ABSOLUTE-PATH
+      distributed attachment-put FILE [--name DISPLAY-NAME] [--mime MEDIA-TYPE] --data-dir ABSOLUTE-PATH
+      distributed attachment-get ID --output ABSOLUTE-PATH [--peer DEVICE-UUID] [--peer-ticket CURRENT-TICKET] --data-dir ABSOLUTE-PATH
       distributed probe-serve --data-dir ABSOLUTE-PATH [--relay production|disabled] [--bind HOST:PORT]
       distributed probe --peer-endpoint ID --peer-ticket TICKET --data-dir ABSOLUTE-PATH [--relay production|disabled] [--bind HOST:PORT]
       distributed migration-status --group UUID --data-dir ABSOLUTE-PATH [--json]
