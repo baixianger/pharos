@@ -129,7 +129,7 @@ struct SettingsView: View {
                 ) { connection in
                     VStack(alignment: .leading, spacing: 4) {
                         Label(
-                            abbreviated(connection.peer.rawValue),
+                            abbreviated(connection.peer.rawValue.uuidString),
                             systemImage: connection.connected
                                 ? "checkmark.circle.fill" : "circle.dashed"
                         )
@@ -166,7 +166,7 @@ struct SettingsView: View {
             HStack { ProgressView(); Text("Opening private mesh…") }
         case .ready(let deviceID, _):
             LabeledContent("This iPhone") {
-                Text(abbreviated(deviceID.rawValue))
+                Text(abbreviated(deviceID.rawValue.uuidString))
                     .font(.caption.monospaced())
             }
         case .failed(let message):
