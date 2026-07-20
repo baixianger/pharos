@@ -14,7 +14,7 @@ final class DistributedMeshStoreTests: XCTestCase {
 
         let schemaVersion = try await store.schemaVersion()
         let journalMode = try await store.journalMode()
-        XCTAssertEqual(schemaVersion, 5)
+        XCTAssertEqual(schemaVersion, 6)
         XCTAssertEqual(journalMode.lowercased(), "wal")
         try await store.setMembershipEpoch(1, for: fixture.group)
 
@@ -529,85 +529,252 @@ final class DistributedMeshStoreTests: XCTestCase {
         XCTAssertEqual(caughtUp.kind, .upToDate)
     }
 
-    func testAcceptedReceiptIsDurableIdempotencyGate() async throws {
+    func testAuthenticatedHostCommandIsDurableExactlyOnceGateAcrossRestart() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let store = try DistributedMeshStore(databaseURL: fixture.databaseURL)
-        let host = MeshDeviceID()
-        let sender = MeshDeviceID()
+        let host = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 1))
+        let sender = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 2))
+        try await store.setMembershipEpoch(1, for: fixture.group)
+        try await pairController(
+            sender, invitedBy: host, in: fixture.group, store: store
+        )
         let resource = try XCTUnwrap(MeshResourceID(rawValue: "tmux/session"))
+        let registered = try await store.registerHostResource(
+            in: fixture.group, on: host, resourceID: resource,
+            allowedActions: [.stop, .attach],
+            at: .init(wallTimeMilliseconds: 90)
+        )
+        XCTAssertEqual(registered.generation, 1)
+        XCTAssertEqual(registered.state, .active)
+
         let command = MeshHostCommand(
-            trustGroupID: fixture.group, senderDeviceID: sender,
-            targetHostDeviceID: host, targetHostEndpointID: fixture.endpoint,
-            resourceID: resource, expectedResourceGeneration: 7, action: .stop,
-            idempotencyKey: "stop/tmux-session/generation-7",
+            trustGroupID: fixture.group, senderDeviceID: sender.deviceID,
+            targetHostDeviceID: host.deviceID, targetHostEndpointID: try host.endpointID(),
+            resourceID: resource, expectedResourceGeneration: 1, action: .stop,
+            idempotencyKey: "stop/tmux-session/generation-1",
             createdAt: .init(wallTimeMilliseconds: 100), deadlineMilliseconds: 1_000
         )
+        let signed = try MeshHostCommandCrypto.sign(command, membershipEpoch: 1, with: sender)
         let accepted = try await store.accept(
-            command, on: host, currentResourceGeneration: 7,
-            acceptedAt: .init(wallTimeMilliseconds: 110)
+            signed, on: host, receivedAt: .init(wallTimeMilliseconds: 110)
         )
-        XCTAssertEqual(accepted.state, .accepted)
+        XCTAssertEqual(accepted.receipt.state, .accepted)
+        try MeshHostCommandCrypto.verify(
+            accepted, hostPublicKey: try host.signingPublicKeyBytes()
+        )
 
         var retry = command
         retry.id = MeshCommandID()
+        let signedRetry = try MeshHostCommandCrypto.sign(
+            retry, membershipEpoch: 1, with: sender
+        )
         let replay = try await store.accept(
-            retry, on: host, currentResourceGeneration: 7,
-            acceptedAt: .init(wallTimeMilliseconds: 900)
+            signedRetry, on: host, receivedAt: .init(wallTimeMilliseconds: 900)
         )
         XCTAssertEqual(replay, accepted)
 
         var collision = retry
         collision.action = .spawn
+        let signedCollision = try MeshHostCommandCrypto.sign(
+            collision, membershipEpoch: 1, with: sender
+        )
         do {
-            _ = try await store.accept(collision, on: host, currentResourceGeneration: 7,
-                                       acceptedAt: .init(wallTimeMilliseconds: 115))
+            _ = try await store.accept(
+                signedCollision, on: host,
+                receivedAt: .init(wallTimeMilliseconds: 115)
+            )
             XCTFail("same idempotency key must not alias different work")
         } catch {
             XCTAssertEqual(error as? DistributedMeshStoreError, .idempotencyCollision)
         }
 
-        let lateReplay = try await store.accept(
-            command, on: host, currentResourceGeneration: 8,
-            acceptedAt: .init(wallTimeMilliseconds: 120)
+        let contenders = try (0..<8).map { _ in
+            try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        }
+        let claims = try await withThrowingTaskGroup(
+            of: MeshCommandExecutionClaim.self, returning: [MeshCommandExecutionClaim].self
+        ) { group in
+            for contender in contenders {
+                group.addTask {
+                    try await contender.claimExecution(
+                        commandID: command.id, on: host,
+                        at: .init(wallTimeMilliseconds: 120)
+                    )
+                }
+            }
+            var values: [MeshCommandExecutionClaim] = []
+            for try await value in group { values.append(value) }
+            return values
+        }
+        XCTAssertEqual(claims.filter(\.shouldExecute).count, 1)
+        let firstClaim = try XCTUnwrap(claims.first(where: { $0.shouldExecute }))
+        XCTAssertTrue(firstClaim.shouldExecute)
+        XCTAssertEqual(firstClaim.receipt.receipt.state, .executing)
+
+        let reopened = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        let reopenedSchemaVersion = try await reopened.schemaVersion()
+        XCTAssertEqual(reopenedSchemaVersion, 6)
+        let crashReplay = try await reopened.claimExecution(
+            commandID: command.id, on: host,
+            at: .init(wallTimeMilliseconds: 130)
         )
-        XCTAssertEqual(lateReplay, accepted)
+        XCTAssertFalse(crashReplay.shouldExecute)
+        XCTAssertEqual(crashReplay.receipt, firstClaim.receipt)
+        let unfinished = try await reopened.unfinishedCommandReceipts(on: host)
+        XCTAssertEqual(unfinished, [firstClaim.receipt])
+
+        let executed = try await reopened.finishExecution(
+            commandID: command.id, on: host, outcome: .executed,
+            at: .init(wallTimeMilliseconds: 140), result: Data("ok".utf8)
+        )
+        XCTAssertEqual(executed.receipt.state, .executed)
+        let terminalReplay = try await reopened.claimExecution(
+            commandID: command.id, on: host,
+            at: .init(wallTimeMilliseconds: 150)
+        )
+        XCTAssertFalse(terminalReplay.shouldExecute)
+        XCTAssertEqual(terminalReplay.receipt, executed)
+
+        let replacement = try await reopened.replaceHostResource(
+            in: fixture.group, on: host, resourceID: resource,
+            allowedActions: [.stop, .attach],
+            at: .init(wallTimeMilliseconds: 160)
+        )
+        XCTAssertEqual(replacement.generation, 2)
 
         var staleNewCommand = command
         staleNewCommand.id = MeshCommandID()
         staleNewCommand.idempotencyKey = "stop/tmux-session/new-command"
+        let stale = try await reopened.accept(
+            MeshHostCommandCrypto.sign(
+                staleNewCommand, membershipEpoch: 1, with: sender
+            ),
+            on: host, receivedAt: .init(wallTimeMilliseconds: 170)
+        )
+        XCTAssertEqual(stale.receipt.state, .rejected)
+        XCTAssertEqual(stale.receipt.failureCode, "stale-resource-generation")
+
+        var disallowed = command
+        disallowed.id = MeshCommandID()
+        disallowed.expectedResourceGeneration = 2
+        disallowed.action = .spawn
+        disallowed.idempotencyKey = "spawn/tmux-session/generation-2"
+        let rejected = try await reopened.accept(
+            MeshHostCommandCrypto.sign(disallowed, membershipEpoch: 1, with: sender),
+            on: host, receivedAt: .init(wallTimeMilliseconds: 180)
+        )
+        XCTAssertEqual(rejected.receipt.state, .rejected)
+        XCTAssertEqual(rejected.receipt.failureCode, "action-not-allowed")
+
+        var expiredCommand = command
+        expiredCommand.id = MeshCommandID()
+        expiredCommand.expectedResourceGeneration = 2
+        expiredCommand.idempotencyKey = "stop/tmux-session/expired"
+        expiredCommand.deadlineMilliseconds = 190
+        let expired = try await reopened.accept(
+            MeshHostCommandCrypto.sign(expiredCommand, membershipEpoch: 1, with: sender),
+            on: host, receivedAt: .init(wallTimeMilliseconds: 190)
+        )
+        XCTAssertEqual(expired.receipt.state, .expired)
+        XCTAssertEqual(expired.receipt.failureCode, "deadline-expired")
+
+        try await reopened.setMembershipEpoch(2, for: fixture.group)
+        let historicalReplay = try await reopened.accept(
+            signed, on: host, receivedAt: .init(wallTimeMilliseconds: 200)
+        )
+        XCTAssertEqual(historicalReplay, executed)
+
+        try executeSQLite(
+            at: fixture.databaseURL,
+            sql: "UPDATE command_receipts_v2 SET state='failed' " +
+                 "WHERE command_id='\(command.id.rawValue.uuidString)';"
+        )
         do {
-            _ = try await store.accept(staleNewCommand, on: host, currentResourceGeneration: 8,
-                                       acceptedAt: .init(wallTimeMilliseconds: 120))
-            XCTFail("expected generation rejection")
+            _ = try await reopened.commandReceipt(id: command.id)
+            XCTFail("row columns must not diverge from the signed receipt envelope")
         } catch {
-            XCTAssertEqual(error as? DistributedMeshStoreError,
-                           .commandGenerationMismatch(expected: 8, actual: 7))
+            XCTAssertEqual(error as? DistributedMeshStoreError, .corruptStoredValue)
+        }
+    }
+
+    func testHostCommandRejectsTamperingUnknownSendersWrongEndpointAndRevokedEpoch() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let store = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        let host = MeshDeviceIdentity.generate()
+        let sender = MeshDeviceIdentity.generate()
+        try await store.setMembershipEpoch(1, for: fixture.group)
+        try await pairController(sender, invitedBy: host, in: fixture.group, store: store)
+        let resource = try XCTUnwrap(MeshResourceID(rawValue: "agent/session"))
+        _ = try await store.registerHostResource(
+            in: fixture.group, on: host, resourceID: resource,
+            allowedActions: [.poke], at: .init(wallTimeMilliseconds: 1)
+        )
+        let command = MeshHostCommand(
+            trustGroupID: fixture.group, senderDeviceID: sender.deviceID,
+            targetHostDeviceID: host.deviceID, targetHostEndpointID: try host.endpointID(),
+            resourceID: resource, expectedResourceGeneration: 1, action: .poke,
+            idempotencyKey: "poke/agent-session/one",
+            createdAt: .init(wallTimeMilliseconds: 10), deadlineMilliseconds: 100
+        )
+
+        var tampered = try MeshHostCommandCrypto.sign(
+            command, membershipEpoch: 1, with: sender
+        )
+        tampered.command.payload = Data("changed-after-signing".utf8)
+        do {
+            _ = try await store.accept(
+                tampered, on: host, receivedAt: .init(wallTimeMilliseconds: 20)
+            )
+            XCTFail("tampered commands must not reach the receipt journal")
+        } catch {
+            XCTAssertEqual(error as? MeshHostCommandCryptoError, .invalidSignature)
         }
 
-        let executing = try await store.transitionReceipt(
-            commandID: command.id, to: .executing, at: .init(wallTimeMilliseconds: 130)
-        )
-        XCTAssertEqual(executing.state, .executing)
-        let executed = try await store.transitionReceipt(
-            commandID: command.id, to: .executed, at: .init(wallTimeMilliseconds: 140),
-            result: Data("ok".utf8)
-        )
-        XCTAssertEqual(executed.state, .executed)
-        let storedExecuted = try await store.commandReceipt(id: command.id)
-        XCTAssertEqual(storedExecuted, executed)
-
-        let reopenedStore = try DistributedMeshStore(databaseURL: fixture.databaseURL)
-        let reopenedReceipt = try await reopenedStore.commandReceipt(id: command.id)
-        XCTAssertEqual(reopenedReceipt, executed)
-
+        let stranger = MeshDeviceIdentity.generate()
+        var unknown = command
+        unknown.id = MeshCommandID()
+        unknown.senderDeviceID = stranger.deviceID
+        unknown.idempotencyKey = "poke/agent-session/unknown"
         do {
-            _ = try await store.transitionReceipt(
-                commandID: command.id, to: .executing, at: .init(wallTimeMilliseconds: 150)
+            _ = try await store.accept(
+                MeshHostCommandCrypto.sign(unknown, membershipEpoch: 1, with: stranger),
+                on: host, receivedAt: .init(wallTimeMilliseconds: 20)
             )
-            XCTFail("terminal receipt must not execute again")
+            XCTFail("an unpaired sender must not issue Host commands")
         } catch {
-            XCTAssertEqual(error as? MeshSchemaValidationError, .invalidStateTransition)
+            XCTAssertEqual(error as? DistributedMeshStoreError, .commandSenderNotTrusted)
+        }
+
+        var wrongEndpoint = command
+        wrongEndpoint.id = MeshCommandID()
+        wrongEndpoint.idempotencyKey = "poke/agent-session/wrong-endpoint"
+        wrongEndpoint.targetHostEndpointID = try XCTUnwrap(
+            MeshEndpointID(rawValue: "not-the-host")
+        )
+        do {
+            _ = try await store.accept(
+                MeshHostCommandCrypto.sign(wrongEndpoint, membershipEpoch: 1, with: sender),
+                on: host, receivedAt: .init(wallTimeMilliseconds: 20)
+            )
+            XCTFail("commands are directed to one immutable Host Endpoint ID")
+        } catch {
+            XCTAssertEqual(error as? DistributedMeshStoreError, .wrongCommandEndpoint)
+        }
+
+        try await store.setMembershipEpoch(2, for: fixture.group)
+        do {
+            _ = try await store.accept(
+                MeshHostCommandCrypto.sign(command, membershipEpoch: 1, with: sender),
+                on: host, receivedAt: .init(wallTimeMilliseconds: 20)
+            )
+            XCTFail("an old membership epoch must revoke command authority")
+        } catch {
+            XCTAssertEqual(
+                error as? DistributedMeshStoreError,
+                .membershipEpochMismatch(expected: 2, actual: 1)
+            )
         }
     }
 
@@ -782,17 +949,17 @@ final class DistributedMeshStoreTests: XCTestCase {
         let migrated = try DistributedMeshStore(databaseURL: fixture.databaseURL)
         let migratedVersion = try await migrated.schemaVersion()
         let migratedEpoch = try await migrated.membershipEpoch(for: fixture.group)
-        XCTAssertEqual(migratedVersion, 5)
+        XCTAssertEqual(migratedVersion, 6)
         XCTAssertEqual(migratedEpoch, 9)
 
         let futureURL = fixture.directory.appendingPathComponent("future.sqlite")
         try executeSQLite(
             at: futureURL,
             sql: "CREATE TABLE schema_metadata(version INTEGER NOT NULL); " +
-                 "INSERT INTO schema_metadata VALUES(6);"
+                 "INSERT INTO schema_metadata VALUES(7);"
         )
         XCTAssertThrowsError(try DistributedMeshStore(databaseURL: futureURL)) {
-            XCTAssertEqual($0 as? DistributedMeshStoreError, .unsupportedSchemaVersion(6))
+            XCTAssertEqual($0 as? DistributedMeshStoreError, .unsupportedSchemaVersion(7))
         }
 
         let ambiguousURL = fixture.directory.appendingPathComponent("ambiguous.sqlite")
@@ -832,7 +999,7 @@ final class DistributedMeshStoreTests: XCTestCase {
         XCTAssertEqual(fields.map(\.field), ["title"])
         XCTAssertEqual(fields.first?.value, Data("Retained".utf8))
         let schemaVersion = try await migrated.schemaVersion()
-        XCTAssertEqual(schemaVersion, 5)
+        XCTAssertEqual(schemaVersion, 6)
     }
 
     func testInterruptedV3MaterializationRebuildIsRetriedOnNextRead() async throws {
@@ -1010,6 +1177,29 @@ final class DistributedMeshStoreTests: XCTestCase {
             operation: .fieldSetV1, payload: try mutation.canonicalBytes(),
             previousHash: previousHash
         )
+    }
+
+    private func pairController(
+        _ controller: MeshDeviceIdentity, invitedBy host: MeshDeviceIdentity,
+        in group: MeshTrustGroupID, store: DistributedMeshStore
+    ) async throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let hostService = MeshTrustPairingService(
+            identity: host, invitationStore: store
+        )
+        let invitation = try await hostService.issueInvitation(
+            trustGroupID: group, membershipEpoch: 1,
+            inviterAddressTicket: "isolated-host-ticket",
+            requestedRoles: [.controller], now: now
+        )
+        let controllerService = MeshTrustPairingService(
+            identity: controller, invitationStore: MeshMemoryInvitationUseStore()
+        )
+        let acceptance = try controllerService.createAcceptance(
+            for: invitation, acceptingAddressTicket: "isolated-controller-ticket",
+            displayName: "Test Controller", now: now
+        )
+        _ = try await hostService.redeem(acceptance, for: invitation, now: now)
     }
 
     private func blobManifest(for data: Data, chunkSize: Int) -> MeshBlobManifest {

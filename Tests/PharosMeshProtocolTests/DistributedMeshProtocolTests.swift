@@ -356,6 +356,56 @@ final class DistributedMeshProtocolTests: XCTestCase {
         }
     }
 
+    func testDirectedCommandEnvelopesCanonicalizeAuthorityAndExcludeSignatures() throws {
+        let group = MeshTrustGroupID()
+        let sender = MeshDeviceID()
+        let host = MeshDeviceID()
+        let senderEndpoint = try XCTUnwrap(MeshEndpointID(rawValue: "sender-endpoint"))
+        let hostEndpoint = try XCTUnwrap(MeshEndpointID(rawValue: "host-endpoint"))
+        let resourceID = try XCTUnwrap(MeshResourceID(rawValue: "agent/session"))
+        let resource = MeshHostResource(
+            trustGroupID: group, hostDeviceID: host, hostEndpointID: hostEndpoint,
+            resourceID: resourceID, generation: 2,
+            allowedActions: [.stop, .poke], updatedAt: .init(wallTimeMilliseconds: 10)
+        )
+        try resource.validate()
+        XCTAssertEqual(resource.allowedActions, [.poke, .stop])
+
+        let command = MeshHostCommand(
+            trustGroupID: group, senderDeviceID: sender,
+            targetHostDeviceID: host, targetHostEndpointID: hostEndpoint,
+            resourceID: resourceID, expectedResourceGeneration: 2, action: .poke,
+            idempotencyKey: "poke/agent-session/generation-2",
+            createdAt: .init(wallTimeMilliseconds: 20), deadlineMilliseconds: 100
+        )
+        var envelope = MeshSignedHostCommand(
+            command: command, membershipEpoch: 3,
+            senderEndpointID: senderEndpoint
+        )
+        let unsigned = try envelope.canonicalSigningBytes()
+        try envelope.validateStructure(requireSignature: false)
+        envelope.signature = Data(repeating: 1, count: 64)
+        try envelope.validateStructure()
+        XCTAssertEqual(try envelope.canonicalSigningBytes(), unsigned)
+
+        var signedReceipt = MeshSignedCommandReceipt(
+            receipt: MeshCommandReceipt(
+                commandID: command.id, idempotencyKey: command.idempotencyKey,
+                hostDeviceID: host, resourceID: resourceID, resourceGeneration: 2,
+                state: .rejected, acceptedAt: .init(wallTimeMilliseconds: 30),
+                updatedAt: .init(wallTimeMilliseconds: 30),
+                failureCode: "action-not-allowed"
+            ),
+            trustGroupID: group, hostEndpointID: hostEndpoint,
+            commandFingerprint: Data(repeating: 2, count: 32),
+            deadlineMilliseconds: 100
+        )
+        let unsignedReceipt = try signedReceipt.canonicalSigningBytes()
+        signedReceipt.signature = Data(repeating: 3, count: 64)
+        try signedReceipt.validateStructure()
+        XCTAssertEqual(try signedReceipt.canonicalSigningBytes(), unsignedReceipt)
+    }
+
     func testLegacyRequestGoldenJSONRemainsByteCompatible() throws {
         let fixture = try fixtureData(named: "legacy-request")
         let request = try JSONDecoder().decode(MeshRequest.self, from: fixture)

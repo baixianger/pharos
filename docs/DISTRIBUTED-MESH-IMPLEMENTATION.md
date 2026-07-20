@@ -248,6 +248,29 @@ corrupt or unauthorized events never enter materialized state.
 
 ## Phase 4 — Host authority and distributed commands
 
+**State:** started (authenticated Host-local authority and exactly-once claim
+foundation complete; lifecycle adapters and macOS/iOS/CLI surfaces remain pending)
+
+Implemented on `feat/distributed-iroh`:
+
+- schema v6 keeps the legacy v1 receipt table as a rollback journal and adds
+  Host-local resource authority plus a separate authenticated receipt journal;
+- resources bind trust group, Host device ID, Endpoint ID, allowed actions, and
+  a store-owned generation; explicit replacement atomically advances the
+  generation while an app restart alone does not;
+- controller commands carry membership epoch and sender Endpoint ID in an
+  Ed25519-signed directed envelope; acceptance verifies current paired-device
+  membership, controller role, target Host identity, deadline, action, and
+  persisted generation;
+- accepted, rejected, and expired decisions are Host-signed receipts. An atomic
+  accepted-to-executing claim returns `shouldExecute=true` to exactly one SQLite
+  contender; retries, reconnects, and restart recovery return the same receipt
+  with `shouldExecute=false`;
+- tests cover signature tampering, unknown senders, wrong Host Endpoint ID,
+  revoked membership epoch, stale generation, disallowed actions, expiration,
+  concurrent claims, crash recovery, terminal replay, and signed receipt
+  verification without contacting a running Mesh.
+
 1. Bind each Host profile to a trusted device ID and Endpoint ID.
 2. Persist a local Host resource generation for every agent/tmux session.
 3. Implement directed command envelopes and a durable receipt journal.

@@ -23,6 +23,13 @@ public enum DistributedMeshStoreError: Error, Equatable, Sendable {
     case compactionNotAcknowledged(peer: MeshDeviceID, author: MeshEndpointID,
                                    required: UInt64, actual: UInt64)
     case wrongCommandHost
+    case wrongCommandEndpoint
+    case commandSenderNotTrusted
+    case commandSenderUnauthorized
+    case hostIdentityMismatch
+    case hostResourceNotFound
+    case hostResourceRetired
+    case resourceGenerationOverflow
     case commandGenerationMismatch(expected: UInt64, actual: UInt64)
     case idempotencyCollision
     case corruptStoredValue
@@ -120,7 +127,7 @@ public actor DistributedMeshStore {
             try Self.execute(handle, sql: "BEGIN IMMEDIATE")
             try Self.execute(handle, sql: Self.schemaMetadata)
             let version = try Self.readSchemaVersion(handle)
-            guard (1 ... 5).contains(version) else {
+            guard (1 ... 6).contains(version) else {
                 throw DistributedMeshStoreError.unsupportedSchemaVersion(version)
             }
             requiresMaterializationRebuild = version < 3
@@ -129,6 +136,7 @@ public actor DistributedMeshStore {
             try Self.execute(handle, sql: Self.schemaV3)
             try Self.execute(handle, sql: Self.schemaV4)
             try Self.execute(handle, sql: Self.schemaV5)
+            try Self.execute(handle, sql: Self.schemaV6)
             let materializationVersion = try Self.readMaterializationVersion(handle)
             requiresMaterializationRebuild = version < 4 || materializationVersion != 2
             try Self.execute(handle, sql: "COMMIT")
@@ -1266,97 +1274,435 @@ public actor DistributedMeshStore {
         return Data(bytes)
     }
 
-    /// Creates the durable accepted receipt that gates side effects. A retry by
-    /// command ID or idempotency key returns the original receipt unchanged.
-    public func accept(_ command: MeshHostCommand, on host: MeshDeviceID,
-                       currentResourceGeneration: UInt64,
-                       acceptedAt: MeshHybridTimestamp) throws -> MeshCommandReceipt {
-        try command.validate()
-        guard command.targetHostDeviceID == host else {
-            throw DistributedMeshStoreError.wrongCommandHost
-        }
-
-        let fingerprint = Data(SHA256.hash(data: try command.canonicalIdempotencyBytes()))
+    public func registerHostResource(
+        in group: MeshTrustGroupID, on host: MeshDeviceIdentity,
+        resourceID: MeshResourceID, allowedActions: Set<MeshHostAction>,
+        at timestamp: MeshHybridTimestamp
+    ) throws -> MeshHostResource {
+        let endpoint = try host.endpointID()
         return try transaction {
-            if let existing = try storedReceipt(commandID: command.id,
-                                                idempotencyKey: command.idempotencyKey) {
-                guard existing.fingerprint == fingerprint else {
-                    throw DistributedMeshStoreError.idempotencyCollision
+            if let existing = try hostResource(
+                in: group, hostDeviceID: host.deviceID, resourceID: resourceID
+            ) {
+                guard existing.hostEndpointID == endpoint else {
+                    throw DistributedMeshStoreError.hostIdentityMismatch
                 }
-                return existing.receipt
+                guard existing.state == .active else {
+                    throw DistributedMeshStoreError.hostResourceRetired
+                }
+                let normalized = allowedActions.sorted { $0.rawValue < $1.rawValue }
+                guard existing.allowedActions == normalized else {
+                    throw MeshSchemaValidationError.invalidStateTransition
+                }
+                return existing
             }
-            guard command.expectedResourceGeneration == currentResourceGeneration else {
-                throw DistributedMeshStoreError.commandGenerationMismatch(
-                    expected: currentResourceGeneration, actual: command.expectedResourceGeneration
-                )
-            }
-            let receipt = MeshCommandReceipt(
-                commandID: command.id, idempotencyKey: command.idempotencyKey,
-                hostDeviceID: host, resourceID: command.resourceID,
-                resourceGeneration: currentResourceGeneration, state: .accepted,
-                acceptedAt: acceptedAt, updatedAt: acceptedAt
+            let resource = MeshHostResource(
+                trustGroupID: group, hostDeviceID: host.deviceID,
+                hostEndpointID: endpoint, resourceID: resourceID, generation: 1,
+                allowedActions: allowedActions, updatedAt: timestamp
             )
-            try run(
-                "INSERT INTO command_receipts(command_id, idempotency_key, command_fingerprint, " +
-                "host_device_id, resource_id, resource_generation, state, receipt) " +
-                "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-                [.text(command.id.rawValue.uuidString), .text(command.idempotencyKey),
-                 .blob(fingerprint), .text(host.rawValue.uuidString), .text(command.resourceID.rawValue),
-                 .integer(Int64(currentResourceGeneration)), .text(receipt.state.rawValue),
-                 .blob(try MeshCanonicalStoreJSON.encode(receipt))]
-            )
-            return receipt
+            try resource.validate()
+            try storeHostResource(resource, insert: true)
+            return resource
         }
     }
 
-    public func commandReceipt(id: MeshCommandID) throws -> MeshCommandReceipt? {
+    /// Explicitly advances authority when a display name is reused by a new
+    /// process/tmux session. Restarting Pharos alone does not advance it.
+    public func replaceHostResource(
+        in group: MeshTrustGroupID, on host: MeshDeviceIdentity,
+        resourceID: MeshResourceID, allowedActions: Set<MeshHostAction>,
+        at timestamp: MeshHybridTimestamp
+    ) throws -> MeshHostResource {
+        let endpoint = try host.endpointID()
+        return try transaction {
+            guard let current = try hostResource(
+                in: group, hostDeviceID: host.deviceID, resourceID: resourceID
+            ) else { throw DistributedMeshStoreError.hostResourceNotFound }
+            guard current.hostEndpointID == endpoint else {
+                throw DistributedMeshStoreError.hostIdentityMismatch
+            }
+            guard timestamp >= current.updatedAt else {
+                throw MeshSchemaValidationError.invalidStateTransition
+            }
+            guard current.generation < UInt64(Int64.max) else {
+                throw DistributedMeshStoreError.resourceGenerationOverflow
+            }
+            let replacement = MeshHostResource(
+                trustGroupID: group, hostDeviceID: host.deviceID,
+                hostEndpointID: endpoint, resourceID: resourceID,
+                generation: current.generation + 1, allowedActions: allowedActions,
+                updatedAt: timestamp
+            )
+            try replacement.validate()
+            try storeHostResource(replacement, insert: false)
+            return replacement
+        }
+    }
+
+    public func retireHostResource(
+        in group: MeshTrustGroupID, on host: MeshDeviceIdentity,
+        resourceID: MeshResourceID, at timestamp: MeshHybridTimestamp
+    ) throws -> MeshHostResource {
+        let endpoint = try host.endpointID()
+        return try transaction {
+            guard var resource = try hostResource(
+                in: group, hostDeviceID: host.deviceID, resourceID: resourceID
+            ) else { throw DistributedMeshStoreError.hostResourceNotFound }
+            guard resource.hostEndpointID == endpoint else {
+                throw DistributedMeshStoreError.hostIdentityMismatch
+            }
+            if resource.state == .retired { return resource }
+            guard timestamp >= resource.updatedAt else {
+                throw MeshSchemaValidationError.invalidStateTransition
+            }
+            resource.state = .retired
+            resource.updatedAt = timestamp
+            try storeHostResource(resource, insert: false)
+            return resource
+        }
+    }
+
+    public func hostResource(in group: MeshTrustGroupID, hostDeviceID: MeshDeviceID,
+                             resourceID: MeshResourceID) throws -> MeshHostResource? {
         try queryOne(
-            "SELECT receipt FROM command_receipts WHERE command_id=? LIMIT 1",
-            [.text(id.rawValue.uuidString)]
+            "SELECT host_endpoint_id, generation, state, envelope FROM host_resources " +
+            "WHERE trust_group_id=? " +
+            "AND host_device_id=? AND resource_id=? LIMIT 1",
+            [.text(group.rawValue.uuidString), .text(hostDeviceID.rawValue.uuidString),
+             .text(resourceID.rawValue)]
         ) { statement in
-            guard let data = Self.columnData(statement, index: 0),
-                  let value = try? JSONDecoder().decode(MeshCommandReceipt.self, from: data) else {
+            guard let rowEndpoint = MeshEndpointID(
+                    rawValue: Self.columnText(statement, index: 0)
+                  ),
+                  let rowState = MeshHostResourceState(
+                    rawValue: Self.columnText(statement, index: 2)
+                  ),
+                  let data = Self.columnData(statement, index: 3),
+                  let value = try? JSONDecoder().decode(MeshHostResource.self, from: data) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            try value.validate()
+            guard value.trustGroupID == group,
+                  value.hostDeviceID == hostDeviceID,
+                  value.resourceID == resourceID,
+                  value.hostEndpointID == rowEndpoint,
+                  value.generation == UInt64(sqlite3_column_int64(statement, 1)),
+                  value.state == rowState else {
                 throw DistributedMeshStoreError.corruptStoredValue
             }
             return value
         }
     }
 
-    public func transitionReceipt(commandID: MeshCommandID, to next: MeshCommandReceiptState,
-                                  at timestamp: MeshHybridTimestamp, result: Data? = nil,
-                                  failureCode: String? = nil) throws -> MeshCommandReceipt {
-        try transaction {
-            guard var current = try commandReceipt(id: commandID) else {
-                throw DistributedMeshStoreError.corruptStoredValue
+    /// Authenticates and journals a directed command before any side effect.
+    /// Stale, retired, disallowed, and already-expired work receives a signed
+    /// terminal receipt instead of being reported as accepted.
+    public func accept(_ envelope: MeshSignedHostCommand, on host: MeshDeviceIdentity,
+                       receivedAt: MeshHybridTimestamp) throws -> MeshSignedCommandReceipt {
+        try envelope.validateStructure()
+        let command = envelope.command
+        let hostEndpoint = try host.endpointID()
+        guard command.targetHostDeviceID == host.deviceID else {
+            throw DistributedMeshStoreError.wrongCommandHost
+        }
+        guard command.targetHostEndpointID == hostEndpoint else {
+            throw DistributedMeshStoreError.wrongCommandEndpoint
+        }
+        guard let sender = try trustedCommandSender(
+            group: command.trustGroupID, deviceID: command.senderDeviceID,
+            membershipEpoch: envelope.membershipEpoch
+        ) else { throw DistributedMeshStoreError.commandSenderNotTrusted }
+        guard sender.descriptor.endpointID == envelope.senderEndpointID else {
+            throw DistributedMeshStoreError.wrongCommandEndpoint
+        }
+        guard sender.descriptor.roles.contains(.controller) else {
+            throw DistributedMeshStoreError.commandSenderUnauthorized
+        }
+        try MeshHostCommandCrypto.verify(envelope, senderPublicKey: sender.signingPublicKey)
+
+        let fingerprint = Data(SHA256.hash(data: try command.canonicalIdempotencyBytes()))
+        return try transaction {
+            if let existing = try storedReceipt(
+                commandID: command.id, group: command.trustGroupID,
+                hostDeviceID: host.deviceID, idempotencyKey: command.idempotencyKey
+            ) {
+                guard existing.fingerprint == fingerprint else {
+                    throw DistributedMeshStoreError.idempotencyCollision
+                }
+                return existing.receipt
             }
-            try current.validateTransition(to: next)
-            current.state = next
-            current.updatedAt = timestamp
-            current.result = result
-            current.failureCode = failureCode
-            try run(
-                "UPDATE command_receipts SET state=?, receipt=? WHERE command_id=?",
-                [.text(next.rawValue), .blob(try MeshCanonicalStoreJSON.encode(current)),
-                 .text(commandID.rawValue.uuidString)]
+            let currentEpoch = try membershipEpoch(for: command.trustGroupID) ?? 0
+            guard currentEpoch == envelope.membershipEpoch else {
+                throw DistributedMeshStoreError.membershipEpochMismatch(
+                    expected: currentEpoch, actual: envelope.membershipEpoch
+                )
+            }
+            guard let resource = try hostResource(
+                in: command.trustGroupID, hostDeviceID: host.deviceID,
+                resourceID: command.resourceID
+            ) else { throw DistributedMeshStoreError.hostResourceNotFound }
+            guard resource.hostEndpointID == hostEndpoint else {
+                throw DistributedMeshStoreError.hostIdentityMismatch
+            }
+
+            let state: MeshCommandReceiptState
+            let failureCode: String?
+            if receivedAt.wallTimeMilliseconds >= command.deadlineMilliseconds {
+                state = .expired
+                failureCode = "deadline-expired"
+            } else if resource.state != .active {
+                state = .rejected
+                failureCode = "resource-retired"
+            } else if command.expectedResourceGeneration != resource.generation {
+                state = .rejected
+                failureCode = "stale-resource-generation"
+            } else if !resource.allowedActions.contains(command.action) {
+                state = .rejected
+                failureCode = "action-not-allowed"
+            } else {
+                state = .accepted
+                failureCode = nil
+            }
+            let receipt = MeshCommandReceipt(
+                commandID: command.id, idempotencyKey: command.idempotencyKey,
+                hostDeviceID: host.deviceID, resourceID: command.resourceID,
+                resourceGeneration: resource.generation, state: state,
+                acceptedAt: receivedAt, updatedAt: receivedAt,
+                failureCode: failureCode
             )
-            return current
+            let signed = try MeshHostCommandCrypto.sign(
+                MeshSignedCommandReceipt(
+                    receipt: receipt, trustGroupID: command.trustGroupID,
+                    hostEndpointID: hostEndpoint, commandFingerprint: fingerprint,
+                    deadlineMilliseconds: command.deadlineMilliseconds
+                ),
+                with: host
+            )
+            try run(
+                "INSERT INTO command_receipts_v2(command_id, trust_group_id, idempotency_key, " +
+                "command_fingerprint, host_device_id, host_endpoint_id, resource_id, " +
+                "resource_generation, state, receipt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [.text(command.id.rawValue.uuidString),
+                 .text(command.trustGroupID.rawValue.uuidString),
+                 .text(command.idempotencyKey), .blob(fingerprint),
+                 .text(host.deviceID.rawValue.uuidString), .text(hostEndpoint.rawValue),
+                 .text(command.resourceID.rawValue), .integer(Int64(resource.generation)),
+                 .text(state.rawValue), .blob(try MeshCanonicalStoreJSON.encode(signed))]
+            )
+            return signed
         }
     }
 
-    private func storedReceipt(commandID: MeshCommandID, idempotencyKey: String) throws
-        -> (receipt: MeshCommandReceipt, fingerprint: Data)? {
+    public func commandReceipt(id: MeshCommandID) throws -> MeshSignedCommandReceipt? {
         try queryOne(
-            "SELECT receipt, command_fingerprint FROM command_receipts " +
-            "WHERE command_id=? OR idempotency_key=? LIMIT 1",
-            [.text(commandID.rawValue.uuidString), .text(idempotencyKey)]
+            "SELECT state, command_fingerprint, receipt FROM command_receipts_v2 " +
+            "WHERE command_id=? LIMIT 1",
+            [.text(id.rawValue.uuidString)]
+        ) { statement in
+            guard let rowState = MeshCommandReceiptState(
+                    rawValue: Self.columnText(statement, index: 0)
+                  ),
+                  let fingerprint = Self.columnData(statement, index: 1),
+                  let data = Self.columnData(statement, index: 2),
+                  let value = try? JSONDecoder().decode(
+                    MeshSignedCommandReceipt.self, from: data
+                  ) else { throw DistributedMeshStoreError.corruptStoredValue }
+            try verifyStoredCommandReceipt(value)
+            guard value.receipt.commandID == id,
+                  value.receipt.state == rowState,
+                  value.commandFingerprint == fingerprint else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            return value
+        }
+    }
+
+    public func claimExecution(
+        commandID: MeshCommandID, on host: MeshDeviceIdentity,
+        at timestamp: MeshHybridTimestamp
+    ) throws -> MeshCommandExecutionClaim {
+        try transaction {
+            guard var signed = try commandReceipt(id: commandID) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            try verifyHostIdentity(host, for: signed)
+            guard signed.receipt.state == .accepted else {
+                return MeshCommandExecutionClaim(receipt: signed, shouldExecute: false)
+            }
+            if timestamp.wallTimeMilliseconds >= signed.deadlineMilliseconds {
+                signed = try transitionSignedReceipt(
+                    signed, to: .expired, on: host, at: timestamp,
+                    result: nil, failureCode: "deadline-expired"
+                )
+                return MeshCommandExecutionClaim(receipt: signed, shouldExecute: false)
+            }
+            signed = try transitionSignedReceipt(
+                signed, to: .executing, on: host, at: timestamp,
+                result: nil, failureCode: nil
+            )
+            return MeshCommandExecutionClaim(receipt: signed, shouldExecute: true)
+        }
+    }
+
+    public func finishExecution(
+        commandID: MeshCommandID, on host: MeshDeviceIdentity,
+        outcome: MeshCommandReceiptState, at timestamp: MeshHybridTimestamp,
+        result: Data? = nil, failureCode: String? = nil
+    ) throws -> MeshSignedCommandReceipt {
+        guard outcome == .executed || outcome == .failed else {
+            throw MeshSchemaValidationError.invalidStateTransition
+        }
+        return try transaction {
+            guard let signed = try commandReceipt(id: commandID) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            try verifyHostIdentity(host, for: signed)
+            return try transitionSignedReceipt(
+                signed, to: outcome, on: host, at: timestamp,
+                result: result, failureCode: failureCode
+            )
+        }
+    }
+
+    public func unfinishedCommandReceipts(on host: MeshDeviceIdentity) throws
+        -> [MeshSignedCommandReceipt] {
+        let endpoint = try host.endpointID()
+        return try query(
+            "SELECT state, command_fingerprint, receipt FROM command_receipts_v2 " +
+            "WHERE host_device_id=? " +
+            "AND host_endpoint_id=? AND state IN ('accepted', 'executing') ORDER BY command_id",
+            [.text(host.deviceID.rawValue.uuidString), .text(endpoint.rawValue)]
+        ) { statement in
+            guard let rowState = MeshCommandReceiptState(
+                    rawValue: Self.columnText(statement, index: 0)
+                  ),
+                  let fingerprint = Self.columnData(statement, index: 1),
+                  let data = Self.columnData(statement, index: 2),
+                  let receipt = try? JSONDecoder().decode(
+                    MeshSignedCommandReceipt.self, from: data
+                  ) else { throw DistributedMeshStoreError.corruptStoredValue }
+            try verifyStoredCommandReceipt(receipt)
+            guard receipt.receipt.state == rowState,
+                  receipt.commandFingerprint == fingerprint else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            return receipt
+        }
+    }
+
+    private func storedReceipt(commandID: MeshCommandID, group: MeshTrustGroupID,
+                               hostDeviceID: MeshDeviceID, idempotencyKey: String) throws
+        -> (receipt: MeshSignedCommandReceipt, fingerprint: Data)? {
+        try queryOne(
+            "SELECT receipt, command_fingerprint FROM command_receipts_v2 WHERE command_id=? " +
+            "OR (trust_group_id=? AND host_device_id=? AND idempotency_key=?) LIMIT 1",
+            [.text(commandID.rawValue.uuidString), .text(group.rawValue.uuidString),
+             .text(hostDeviceID.rawValue.uuidString), .text(idempotencyKey)]
         ) { statement in
             guard let data = Self.columnData(statement, index: 0),
                   let fingerprint = Self.columnData(statement, index: 1),
-                  let value = try? JSONDecoder().decode(MeshCommandReceipt.self, from: data) else {
+                  let value = try? JSONDecoder().decode(
+                    MeshSignedCommandReceipt.self, from: data
+                  ) else { throw DistributedMeshStoreError.corruptStoredValue }
+            try verifyStoredCommandReceipt(value)
+            guard value.commandFingerprint == fingerprint else {
                 throw DistributedMeshStoreError.corruptStoredValue
             }
             return (value, fingerprint)
         }
+    }
+
+    private func storeHostResource(_ resource: MeshHostResource, insert: Bool) throws {
+        let envelope = try MeshCanonicalStoreJSON.encode(resource)
+        if insert {
+            try run(
+                "INSERT INTO host_resources(trust_group_id, host_device_id, host_endpoint_id, " +
+                "resource_id, generation, state, envelope) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                [.text(resource.trustGroupID.rawValue.uuidString),
+                 .text(resource.hostDeviceID.rawValue.uuidString),
+                 .text(resource.hostEndpointID.rawValue), .text(resource.resourceID.rawValue),
+                 .integer(Int64(resource.generation)), .text(resource.state.rawValue),
+                 .blob(envelope)]
+            )
+        } else {
+            try run(
+                "UPDATE host_resources SET host_endpoint_id=?, generation=?, state=?, envelope=? " +
+                "WHERE trust_group_id=? AND host_device_id=? AND resource_id=?",
+                [.text(resource.hostEndpointID.rawValue), .integer(Int64(resource.generation)),
+                 .text(resource.state.rawValue), .blob(envelope),
+                 .text(resource.trustGroupID.rawValue.uuidString),
+                 .text(resource.hostDeviceID.rawValue.uuidString),
+                 .text(resource.resourceID.rawValue)]
+            )
+        }
+    }
+
+    private func trustedCommandSender(group: MeshTrustGroupID, deviceID: MeshDeviceID,
+                                      membershipEpoch: UInt64) throws -> MeshPairedDevice? {
+        try queryOne(
+            "SELECT envelope FROM trusted_devices WHERE trust_group_id=? AND device_id=? " +
+            "AND membership_epoch=? LIMIT 1",
+            [.text(group.rawValue.uuidString), .text(deviceID.rawValue.uuidString),
+             .integer(Int64(membershipEpoch))]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let device = try? JSONDecoder().decode(MeshPairedDevice.self, from: data) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            try device.validateBinding()
+            return device
+        }
+    }
+
+    private func verifyStoredCommandReceipt(_ receipt: MeshSignedCommandReceipt) throws {
+        try receipt.validateStructure()
+        guard let publicKey = Self.publicKeyData(from: receipt.hostEndpointID) else {
+            throw DistributedMeshStoreError.corruptStoredValue
+        }
+        do { try MeshHostCommandCrypto.verify(receipt, hostPublicKey: publicKey) }
+        catch { throw DistributedMeshStoreError.corruptStoredValue }
+    }
+
+    private func verifyHostIdentity(_ host: MeshDeviceIdentity,
+                                    for receipt: MeshSignedCommandReceipt) throws {
+        try verifyStoredCommandReceipt(receipt)
+        guard receipt.receipt.hostDeviceID == host.deviceID,
+              receipt.hostEndpointID == (try host.endpointID()) else {
+            throw DistributedMeshStoreError.hostIdentityMismatch
+        }
+    }
+
+    private func transitionSignedReceipt(
+        _ current: MeshSignedCommandReceipt, to next: MeshCommandReceiptState,
+        on host: MeshDeviceIdentity, at timestamp: MeshHybridTimestamp,
+        result: Data?, failureCode: String?
+    ) throws -> MeshSignedCommandReceipt {
+        try current.receipt.validateTransition(to: next)
+        guard timestamp >= current.receipt.updatedAt,
+              (result?.count ?? 0) <= DistributedMeshProtocol.maximumHeaderBytes else {
+            throw MeshSchemaValidationError.invalidStateTransition
+        }
+        if let failureCode {
+            guard failureCode.utf8.count <= 128,
+                  !failureCode.isEmpty,
+                  !failureCode.unicodeScalars.contains(
+                    where: CharacterSet.controlCharacters.contains
+                  ) else { throw MeshSchemaValidationError.invalidStateTransition }
+        }
+        var updated = current
+        updated.receipt.state = next
+        updated.receipt.updatedAt = timestamp
+        updated.receipt.result = result
+        updated.receipt.failureCode = failureCode
+        updated.signature = Data()
+        updated = try MeshHostCommandCrypto.sign(updated, with: host)
+        try run(
+            "UPDATE command_receipts_v2 SET state=?, receipt=? WHERE command_id=?",
+            [.text(next.rawValue), .blob(try MeshCanonicalStoreJSON.encode(updated)),
+             .text(updated.receipt.commandID.rawValue.uuidString)]
+        )
+        return updated
     }
 
     private func authorHead(group: MeshTrustGroupID,
@@ -1988,6 +2334,31 @@ public actor DistributedMeshStore {
       PRIMARY KEY(digest, chunk_index),
       FOREIGN KEY(digest) REFERENCES blob_transfers(digest) ON DELETE CASCADE);
     UPDATE schema_metadata SET version=5;
+    """
+
+    /// The v1 receipt table is intentionally retained as a rollback journal.
+    /// New authenticated command handling writes only to command_receipts_v2.
+    private static let schemaV6 = """
+    CREATE TABLE IF NOT EXISTS host_resources(
+      trust_group_id TEXT NOT NULL, host_device_id TEXT NOT NULL,
+      host_endpoint_id TEXT NOT NULL, resource_id TEXT NOT NULL,
+      generation INTEGER NOT NULL CHECK(generation > 0),
+      state TEXT NOT NULL CHECK(state IN ('active', 'retired')),
+      envelope BLOB NOT NULL,
+      PRIMARY KEY(trust_group_id, host_device_id, resource_id));
+    CREATE TABLE IF NOT EXISTS command_receipts_v2(
+      command_id TEXT PRIMARY KEY, trust_group_id TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      command_fingerprint BLOB NOT NULL CHECK(length(command_fingerprint)=32),
+      host_device_id TEXT NOT NULL, host_endpoint_id TEXT NOT NULL,
+      resource_id TEXT NOT NULL, resource_generation INTEGER NOT NULL CHECK(resource_generation > 0),
+      state TEXT NOT NULL
+        CHECK(state IN ('accepted', 'executing', 'executed', 'failed', 'rejected', 'expired')),
+      receipt BLOB NOT NULL,
+      UNIQUE(trust_group_id, host_device_id, idempotency_key));
+    CREATE INDEX IF NOT EXISTS command_receipts_v2_recovery
+      ON command_receipts_v2(host_device_id, state);
+    UPDATE schema_metadata SET version=6;
     """
 }
 
