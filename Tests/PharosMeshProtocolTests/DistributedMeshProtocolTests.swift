@@ -106,6 +106,48 @@ final class DistributedMeshProtocolTests: XCTestCase {
         }
     }
 
+    func testBlobManifestAndChunksEnforceBoundsWithoutTrapping() throws {
+        let digest = try XCTUnwrap(MeshBlobDigest(rawValue: Data(repeating: 1, count: 32)))
+        let invalidChunkSize = MeshBlobManifest(
+            digest: digest, byteSize: 10, chunkSize: 0
+        )
+        XCTAssertEqual(invalidChunkSize.chunkCount, 0)
+        XCTAssertThrowsError(try invalidChunkSize.validate()) {
+            XCTAssertEqual($0 as? MeshBlobValidationError, .invalidChunkSize)
+        }
+
+        let manifest = MeshBlobManifest(
+            digest: digest, byteSize: 10, mediaType: "application/octet-stream",
+            chunkSize: 4
+        )
+        try manifest.validate()
+        XCTAssertEqual(manifest.chunkCount, 3)
+        XCTAssertEqual(try manifest.expectedByteCount(forChunk: 0), 4)
+        XCTAssertEqual(try manifest.expectedByteCount(forChunk: 2), 2)
+        XCTAssertThrowsError(try manifest.expectedByteCount(forChunk: 3)) {
+            XCTAssertEqual($0 as? MeshBlobValidationError, .invalidChunkIndex)
+        }
+
+        let wrongBlob = try XCTUnwrap(
+            MeshBlobDigest(rawValue: Data(repeating: 2, count: 32))
+        )
+        let chunk = MeshBlobChunk(
+            blobDigest: wrongBlob, index: 0, data: Data(repeating: 7, count: 4),
+            chunkDigest: digest
+        )
+        XCTAssertThrowsError(try chunk.validate(against: manifest)) {
+            XCTAssertEqual($0 as? MeshBlobValidationError, .manifestMismatch)
+        }
+
+        let tooLarge = MeshBlobManifest(
+            digest: digest,
+            byteSize: UInt64(DistributedMeshProtocol.maximumBlobBytes) + 1
+        )
+        XCTAssertThrowsError(try tooLarge.validate()) {
+            XCTAssertEqual($0 as? MeshBlobValidationError, .blobTooLarge)
+        }
+    }
+
     func testUUIDv7GenerationRetainsTimestampPrefix() throws {
         let date = Date(timeIntervalSince1970: 1_721_467_260.123)
         let first = MeshEventID.generate(at: date)

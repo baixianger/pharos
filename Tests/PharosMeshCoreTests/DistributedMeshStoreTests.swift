@@ -14,7 +14,7 @@ final class DistributedMeshStoreTests: XCTestCase {
 
         let schemaVersion = try await store.schemaVersion()
         let journalMode = try await store.journalMode()
-        XCTAssertEqual(schemaVersion, 4)
+        XCTAssertEqual(schemaVersion, 5)
         XCTAssertEqual(journalMode.lowercased(), "wal")
         try await store.setMembershipEpoch(1, for: fixture.group)
 
@@ -611,6 +611,160 @@ final class DistributedMeshStoreTests: XCTestCase {
         }
     }
 
+    func testBlobTransferResumesAcrossConnectionsFinalizesIdempotentlyAndRefetchesAfterEviction() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let data = Data("local-first blob payload".utf8)
+        let manifest = blobManifest(for: data, chunkSize: 7)
+        let chunks = try blobChunks(for: data, manifest: manifest)
+        XCTAssertEqual(chunks.count, 4)
+
+        let first = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        let second = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        try await first.registerBlobManifest(manifest)
+        let initialMissing = try await first.missingBlobChunkIndices(for: manifest.digest)
+        XCTAssertEqual(initialMissing, [0, 1, 2, 3])
+        let thirdInsertion = try await first.receiveBlobChunk(chunks[2])
+        let firstInsertion = try await second.receiveBlobChunk(chunks[0])
+        let duplicateInsertion = try await second.receiveBlobChunk(chunks[2])
+        XCTAssertEqual(thirdInsertion, .inserted)
+        XCTAssertEqual(firstInsertion, .inserted)
+        XCTAssertEqual(duplicateInsertion, .duplicate)
+        let remaining = try await first.missingBlobChunkIndices(for: manifest.digest)
+        XCTAssertEqual(remaining, [1, 3])
+        do {
+            try await first.finalizeBlob(manifest.digest)
+            XCTFail("an incomplete blob must not publish")
+        } catch {
+            XCTAssertEqual(error as? MeshBlobStoreError, .incomplete)
+        }
+
+        let fourthInsertion = try await first.receiveBlobChunk(chunks[3])
+        let secondInsertion = try await second.receiveBlobChunk(chunks[1])
+        XCTAssertEqual(fourthInsertion, .inserted)
+        XCTAssertEqual(secondInsertion, .inserted)
+        try await second.finalizeBlob(manifest.digest)
+        let firstData = try await first.blobData(for: manifest.digest)
+        let firstState = try await first.blobState(for: manifest.digest)
+        XCTAssertEqual(firstData, data)
+        XCTAssertEqual(firstState, .complete)
+
+        let reopened = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        try await reopened.finalizeBlob(manifest.digest)
+        let reopenedData = try await reopened.blobData(for: manifest.digest)
+        XCTAssertEqual(reopenedData, data)
+        do {
+            _ = try await reopened.receiveBlobChunk(chunks[0])
+            XCTFail("a complete blob must reject orphan chunks")
+        } catch {
+            XCTAssertEqual(error as? MeshBlobStoreError, .unavailable)
+        }
+
+        try await reopened.evictBlob(manifest.digest)
+        let evictedState = try await reopened.blobState(for: manifest.digest)
+        let evictedData = try await reopened.blobData(for: manifest.digest)
+        let refetchMissing = try await reopened.missingBlobChunkIndices(for: manifest.digest)
+        XCTAssertEqual(evictedState, .evicted)
+        XCTAssertNil(evictedData)
+        XCTAssertEqual(refetchMissing, [0, 1, 2, 3])
+        for chunk in chunks.reversed() {
+            _ = try await reopened.receiveBlobChunk(chunk)
+        }
+        try await reopened.finalizeBlob(manifest.digest)
+        let refetchedData = try await reopened.blobData(for: manifest.digest)
+        XCTAssertEqual(refetchedData, data)
+    }
+
+    func testBlobTransferRejectsChunkTamperingAndRecoversAfterWholeBlobMismatch() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let expected = Data("expected-content".utf8)
+        let manifest = blobManifest(for: expected, chunkSize: 8)
+        let expectedChunks = try blobChunks(for: expected, manifest: manifest)
+        let store = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        try await store.registerBlobManifest(manifest)
+
+        var tampered = expectedChunks[0]
+        tampered.data[0] ^= 0xff
+        do {
+            _ = try await store.receiveBlobChunk(tampered)
+            XCTFail("a chunk with the wrong digest must be rejected")
+        } catch {
+            XCTAssertEqual(error as? MeshBlobValidationError, .chunkDigestMismatch)
+        }
+
+        let wrong = Data("different-bytes!".utf8)
+        XCTAssertEqual(wrong.count, expected.count)
+        let wrongChunks = try blobChunks(for: wrong, manifest: manifest)
+        for chunk in wrongChunks { _ = try await store.receiveBlobChunk(chunk) }
+        do {
+            try await store.finalizeBlob(manifest.digest)
+            XCTFail("a blob with the wrong content digest must not publish")
+        } catch {
+            XCTAssertEqual(error as? MeshBlobValidationError, .blobDigestMismatch)
+        }
+        let corruptState = try await store.blobState(for: manifest.digest)
+        let corruptMissing = try await store.missingBlobChunkIndices(for: manifest.digest)
+        XCTAssertEqual(corruptState, .corrupt)
+        XCTAssertEqual(corruptMissing, Array(expectedChunks.indices))
+
+        for chunk in expectedChunks { _ = try await store.receiveBlobChunk(chunk) }
+        try await store.finalizeBlob(manifest.digest)
+        let recovered = try await store.blobData(for: manifest.digest)
+        XCTAssertEqual(recovered, expected)
+    }
+
+    func testBlobTransferDetectsDamagedChunkOnRestartAndRejectsSymlinkStorage() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let data = Data("resume-after-crash".utf8)
+        let manifest = blobManifest(for: data, chunkSize: 6)
+        let chunks = try blobChunks(for: data, manifest: manifest)
+        let blobRoot = fixture.directory.appendingPathComponent(
+            fixture.databaseURL.lastPathComponent + ".blobs", isDirectory: true
+        )
+        let chunkDirectory = blobRoot.appendingPathComponent(
+            manifest.digest.hex + ".chunks", isDirectory: true
+        )
+        do {
+            let store = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+            try await store.registerBlobManifest(manifest)
+            _ = try await store.receiveBlobChunk(chunks[0])
+        }
+        let firstChunk = chunkDirectory.appendingPathComponent("0.chunk")
+        try Data("damage".utf8).write(to: firstChunk, options: .atomic)
+
+        let reopened = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        let missingAfterDamage = try await reopened.missingBlobChunkIndices(
+            for: manifest.digest
+        )
+        XCTAssertEqual(missingAfterDamage, Array(chunks.indices))
+
+        try FileManager.default.removeItem(at: firstChunk)
+        try FileManager.default.createSymbolicLink(
+            at: firstChunk, withDestinationURL: fixture.databaseURL
+        )
+        do {
+            _ = try await reopened.receiveBlobChunk(chunks[0])
+            XCTFail("chunk storage must never follow a symbolic link")
+        } catch {
+            XCTAssertEqual(error as? MeshBlobStoreError, .unsafeStoragePath)
+        }
+
+        try FileManager.default.removeItem(at: firstChunk)
+        for chunk in chunks { _ = try await reopened.receiveBlobChunk(chunk) }
+        let finalBlob = blobRoot.appendingPathComponent(manifest.digest.hex + ".blob")
+        try FileManager.default.createSymbolicLink(
+            at: finalBlob, withDestinationURL: fixture.databaseURL
+        )
+        do {
+            try await reopened.finalizeBlob(manifest.digest)
+            XCTFail("published blob storage must never follow a symbolic link")
+        } catch {
+            XCTAssertEqual(error as? MeshBlobStoreError, .unsafeStoragePath)
+        }
+    }
+
     func testV1MigrationPreservesStateAndRejectsFutureSchema() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -628,17 +782,17 @@ final class DistributedMeshStoreTests: XCTestCase {
         let migrated = try DistributedMeshStore(databaseURL: fixture.databaseURL)
         let migratedVersion = try await migrated.schemaVersion()
         let migratedEpoch = try await migrated.membershipEpoch(for: fixture.group)
-        XCTAssertEqual(migratedVersion, 4)
+        XCTAssertEqual(migratedVersion, 5)
         XCTAssertEqual(migratedEpoch, 9)
 
         let futureURL = fixture.directory.appendingPathComponent("future.sqlite")
         try executeSQLite(
             at: futureURL,
             sql: "CREATE TABLE schema_metadata(version INTEGER NOT NULL); " +
-                 "INSERT INTO schema_metadata VALUES(5);"
+                 "INSERT INTO schema_metadata VALUES(6);"
         )
         XCTAssertThrowsError(try DistributedMeshStore(databaseURL: futureURL)) {
-            XCTAssertEqual($0 as? DistributedMeshStoreError, .unsupportedSchemaVersion(5))
+            XCTAssertEqual($0 as? DistributedMeshStoreError, .unsupportedSchemaVersion(6))
         }
 
         let ambiguousURL = fixture.directory.appendingPathComponent("ambiguous.sqlite")
@@ -678,7 +832,7 @@ final class DistributedMeshStoreTests: XCTestCase {
         XCTAssertEqual(fields.map(\.field), ["title"])
         XCTAssertEqual(fields.first?.value, Data("Retained".utf8))
         let schemaVersion = try await migrated.schemaVersion()
-        XCTAssertEqual(schemaVersion, 4)
+        XCTAssertEqual(schemaVersion, 5)
     }
 
     func testInterruptedV3MaterializationRebuildIsRetriedOnNextRead() async throws {
@@ -856,6 +1010,29 @@ final class DistributedMeshStoreTests: XCTestCase {
             operation: .fieldSetV1, payload: try mutation.canonicalBytes(),
             previousHash: previousHash
         )
+    }
+
+    private func blobManifest(for data: Data, chunkSize: Int) -> MeshBlobManifest {
+        MeshBlobManifest(
+            digest: MeshBlobDigest(rawValue: Data(SHA256.hash(data: data)))!,
+            byteSize: UInt64(data.count), mediaType: "application/octet-stream",
+            chunkSize: chunkSize
+        )
+    }
+
+    private func blobChunks(for data: Data,
+                            manifest: MeshBlobManifest) throws -> [MeshBlobChunk] {
+        try (0..<manifest.chunkCount).map { index in
+            let start = index * manifest.chunkSize
+            let end = start + (try manifest.expectedByteCount(forChunk: index))
+            let bytes = data.subdata(in: start..<end)
+            return MeshBlobChunk(
+                blobDigest: manifest.digest, index: index, data: bytes,
+                chunkDigest: MeshBlobDigest(
+                    rawValue: Data(SHA256.hash(data: bytes))
+                )!
+            )
+        }
     }
 
     private func signedEvent(

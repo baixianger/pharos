@@ -34,6 +34,21 @@ public enum MeshEventInsertion: Equatable, Sendable {
     case duplicate
 }
 
+public enum MeshBlobChunkInsertion: Equatable, Sendable {
+    case inserted
+    case duplicate
+}
+
+public enum MeshBlobStoreError: Error, Equatable, Sendable {
+    case manifestCollision
+    case notRegistered
+    case chunkCollision
+    case incomplete
+    case unavailable
+    case unsafeStoragePath
+    case fileIO
+}
+
 public struct MeshAuthorHead: Codable, Equatable, Sendable {
     public var endpointID: MeshEndpointID
     public var sequence: UInt64
@@ -82,6 +97,7 @@ public struct MeshQuarantinedEvent: Codable, Equatable, Sendable {
 /// broker or network transport; callers explicitly choose the database URL.
 public actor DistributedMeshStore {
     private let databaseAddress: UInt
+    private let blobDirectoryPath: String
     private var materializationNeedsRebuild: Bool
     private var database: OpaquePointer { OpaquePointer(bitPattern: databaseAddress)! }
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -104,7 +120,7 @@ public actor DistributedMeshStore {
             try Self.execute(handle, sql: "BEGIN IMMEDIATE")
             try Self.execute(handle, sql: Self.schemaMetadata)
             let version = try Self.readSchemaVersion(handle)
-            guard (1 ... 4).contains(version) else {
+            guard (1 ... 5).contains(version) else {
                 throw DistributedMeshStoreError.unsupportedSchemaVersion(version)
             }
             requiresMaterializationRebuild = version < 3
@@ -112,6 +128,7 @@ public actor DistributedMeshStore {
             try Self.execute(handle, sql: Self.schemaV2)
             try Self.execute(handle, sql: Self.schemaV3)
             try Self.execute(handle, sql: Self.schemaV4)
+            try Self.execute(handle, sql: Self.schemaV5)
             let materializationVersion = try Self.readMaterializationVersion(handle)
             requiresMaterializationRebuild = version < 4 || materializationVersion != 2
             try Self.execute(handle, sql: "COMMIT")
@@ -121,6 +138,9 @@ public actor DistributedMeshStore {
             throw error
         }
         databaseAddress = UInt(bitPattern: handle)
+        blobDirectoryPath = databaseURL.deletingLastPathComponent()
+            .appendingPathComponent(databaseURL.lastPathComponent + ".blobs", isDirectory: true)
+            .path
         materializationNeedsRebuild = requiresMaterializationRebuild
     }
 
@@ -781,6 +801,251 @@ public actor DistributedMeshStore {
         return nil
     }
 
+    public func registerBlobManifest(_ manifest: MeshBlobManifest) throws {
+        try manifest.validate()
+        let envelope = try MeshCanonicalStoreJSON.encode(manifest)
+        try transaction {
+            if let existing = try blobTransfer(digest: manifest.digest) {
+                guard existing.manifest == manifest else {
+                    throw MeshBlobStoreError.manifestCollision
+                }
+                return
+            }
+            try run(
+                "INSERT INTO blob_transfers(digest, envelope, local_state) VALUES(?, ?, ?)",
+                [.blob(manifest.digest.rawValue), .blob(envelope),
+                 .text(MeshBlobLocalState.pending.rawValue)]
+            )
+        }
+    }
+
+    public func blobState(for digest: MeshBlobDigest) throws -> MeshBlobLocalState? {
+        try blobTransfer(digest: digest)?.state
+    }
+
+    public func receiveBlobChunk(_ chunk: MeshBlobChunk) throws -> MeshBlobChunkInsertion {
+        guard let transfer = try blobTransfer(digest: chunk.blobDigest) else {
+            throw MeshBlobStoreError.notRegistered
+        }
+        guard transfer.state != .complete else {
+            throw MeshBlobStoreError.unavailable
+        }
+        try chunk.validate(against: transfer.manifest)
+        guard Self.sha256(chunk.data) == chunk.chunkDigest.rawValue else {
+            throw MeshBlobValidationError.chunkDigestMismatch
+        }
+        try ensureBlobStorageDirectory()
+        let directory = try ensureChunkDirectory(for: chunk.blobDigest)
+        let file = directory.appendingPathComponent("\(chunk.index).chunk")
+        if let existing = try receivedChunk(
+            digest: chunk.blobDigest, index: chunk.index
+        ) {
+            guard try Self.isRegularFile(file) else {
+                throw MeshBlobStoreError.unsafeStoragePath
+            }
+            guard existing.digest == chunk.chunkDigest,
+                  existing.byteSize == chunk.data.count,
+                  let stored = try? Data(contentsOf: file), stored == chunk.data else {
+                throw MeshBlobStoreError.chunkCollision
+            }
+            return .duplicate
+        }
+        try Self.writePrivateFile(chunk.data, to: file)
+        return try transaction {
+            if let existing = try receivedChunk(
+                digest: chunk.blobDigest, index: chunk.index
+            ) {
+                guard existing.digest == chunk.chunkDigest,
+                      existing.byteSize == chunk.data.count else {
+                    throw MeshBlobStoreError.chunkCollision
+                }
+                return .duplicate
+            }
+            try run(
+                "INSERT INTO blob_received_chunks(digest, chunk_index, chunk_digest, byte_size) " +
+                "VALUES(?, ?, ?, ?)",
+                [.blob(chunk.blobDigest.rawValue), .integer(Int64(chunk.index)),
+                 .blob(chunk.chunkDigest.rawValue), .integer(Int64(chunk.data.count))]
+            )
+            try run(
+                "UPDATE blob_transfers SET local_state=? WHERE digest=?",
+                [.text(MeshBlobLocalState.pending.rawValue),
+                 .blob(chunk.blobDigest.rawValue)]
+            )
+            return .inserted
+        }
+    }
+
+    public func missingBlobChunkIndices(for digest: MeshBlobDigest) throws -> [Int] {
+        guard let transfer = try blobTransfer(digest: digest) else {
+            throw MeshBlobStoreError.notRegistered
+        }
+        try ensureBlobStorageDirectory()
+        let directory = chunkDirectory(for: digest)
+        var missing: [Int] = []
+        for index in 0..<transfer.manifest.chunkCount {
+            guard let received = try receivedChunk(digest: digest, index: index) else {
+                missing.append(index)
+                continue
+            }
+            let file = directory.appendingPathComponent("\(index).chunk")
+            guard (try? Self.isRegularFile(file)) == true,
+                  let data = try? Data(contentsOf: file),
+                  data.count == received.byteSize,
+                  Self.sha256(data) == received.digest.rawValue else {
+                try run(
+                    "DELETE FROM blob_received_chunks WHERE digest=? AND chunk_index=?",
+                    [.blob(digest.rawValue), .integer(Int64(index))]
+                )
+                missing.append(index)
+                continue
+            }
+        }
+        return missing
+    }
+
+    public func finalizeBlob(_ digest: MeshBlobDigest) throws {
+        guard let transfer = try blobTransfer(digest: digest) else {
+            throw MeshBlobStoreError.notRegistered
+        }
+        if transfer.state == .complete {
+            _ = try blobData(for: digest)
+            return
+        }
+        let missing = try missingBlobChunkIndices(for: digest)
+        guard missing.isEmpty else { throw MeshBlobStoreError.incomplete }
+        try ensureBlobStorageDirectory()
+        let root = URL(fileURLWithPath: blobDirectoryPath, isDirectory: true)
+        let temporary = root.appendingPathComponent(".\(digest.hex).\(UUID().uuidString).tmp")
+        let final = root.appendingPathComponent("\(digest.hex).blob")
+        guard FileManager.default.createFile(
+            atPath: temporary.path, contents: nil,
+            attributes: [.posixPermissions: 0o600]
+        ), let handle = try? FileHandle(forWritingTo: temporary) else {
+            throw MeshBlobStoreError.fileIO
+        }
+        var published = false
+        defer {
+            try? handle.close()
+            if !published { try? FileManager.default.removeItem(at: temporary) }
+        }
+        var hasher = SHA256()
+        var written = 0
+        let directory = chunkDirectory(for: digest)
+        do {
+            for index in 0..<transfer.manifest.chunkCount {
+                let data = try Data(contentsOf: directory.appendingPathComponent("\(index).chunk"))
+                hasher.update(data: data)
+                try handle.write(contentsOf: data)
+                written += data.count
+            }
+            try handle.synchronize()
+            try handle.close()
+        } catch {
+            throw MeshBlobStoreError.fileIO
+        }
+        guard written == Int(transfer.manifest.byteSize),
+              Data(hasher.finalize()) == digest.rawValue else {
+            try resetCorruptBlob(digest, chunkDirectory: directory)
+            throw MeshBlobValidationError.blobDigestMismatch
+        }
+        do {
+            if FileManager.default.fileExists(atPath: final.path) {
+                guard try Self.isRegularFile(final) else {
+                    throw MeshBlobStoreError.unsafeStoragePath
+                }
+                let existing = try Data(contentsOf: final)
+                if existing.count == written, Self.sha256(existing) == digest.rawValue {
+                    try FileManager.default.removeItem(at: temporary)
+                } else {
+                    let quarantined = root.appendingPathComponent(
+                        "\(digest.hex).corrupt.\(UUID().uuidString)"
+                    )
+                    try FileManager.default.moveItem(at: final, to: quarantined)
+                    try FileManager.default.moveItem(at: temporary, to: final)
+                }
+            } else {
+                try FileManager.default.moveItem(at: temporary, to: final)
+            }
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: final.path
+            )
+            published = true
+        } catch let error as MeshBlobStoreError {
+            throw error
+        } catch {
+            throw MeshBlobStoreError.fileIO
+        }
+        try transaction {
+            try run(
+                "UPDATE blob_transfers SET local_state=? WHERE digest=?",
+                [.text(MeshBlobLocalState.complete.rawValue), .blob(digest.rawValue)]
+            )
+            try run(
+                "DELETE FROM blob_received_chunks WHERE digest=?",
+                [.blob(digest.rawValue)]
+            )
+        }
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    public func blobData(for digest: MeshBlobDigest) throws -> Data? {
+        guard let transfer = try blobTransfer(digest: digest) else { return nil }
+        guard transfer.state == .complete else {
+            if transfer.state == .evicted { return nil }
+            throw MeshBlobStoreError.unavailable
+        }
+        let file = URL(fileURLWithPath: blobDirectoryPath, isDirectory: true)
+            .appendingPathComponent("\(digest.hex).blob")
+        guard (try? Self.isRegularFile(file)) == true else {
+            if FileManager.default.fileExists(atPath: file.path) {
+                throw MeshBlobStoreError.unsafeStoragePath
+            }
+            try setBlobState(.corrupt, digest: digest)
+            throw MeshBlobValidationError.blobDigestMismatch
+        }
+        guard let data = try? Data(contentsOf: file),
+              data.count == Int(transfer.manifest.byteSize),
+              Self.sha256(data) == digest.rawValue else {
+            try setBlobState(.corrupt, digest: digest)
+            throw MeshBlobValidationError.blobDigestMismatch
+        }
+        return data
+    }
+
+    public func evictBlob(_ digest: MeshBlobDigest) throws {
+        guard try blobTransfer(digest: digest) != nil else {
+            throw MeshBlobStoreError.notRegistered
+        }
+        let file = URL(fileURLWithPath: blobDirectoryPath, isDirectory: true)
+            .appendingPathComponent("\(digest.hex).blob")
+        if FileManager.default.fileExists(atPath: file.path) {
+            guard try Self.isRegularFile(file) else {
+                throw MeshBlobStoreError.unsafeStoragePath
+            }
+            do { try FileManager.default.removeItem(at: file) }
+            catch { throw MeshBlobStoreError.fileIO }
+        }
+        let directory = chunkDirectory(for: digest)
+        if FileManager.default.fileExists(atPath: directory.path) {
+            let values = try? directory.resourceValues(
+                forKeys: [.isSymbolicLinkKey, .isDirectoryKey]
+            )
+            guard values?.isSymbolicLink != true, values?.isDirectory == true else {
+                throw MeshBlobStoreError.unsafeStoragePath
+            }
+            do { try FileManager.default.removeItem(at: directory) }
+            catch { throw MeshBlobStoreError.fileIO }
+        }
+        try transaction {
+            try run(
+                "DELETE FROM blob_received_chunks WHERE digest=?",
+                [.blob(digest.rawValue)]
+            )
+            try setBlobState(.evicted, digest: digest)
+        }
+    }
+
     /// Replays retained events into derived tables. This is safe after an
     /// interrupted migration because materialized state is disposable and the
     /// immutable event log remains the source of truth.
@@ -1310,6 +1575,148 @@ public actor DistributedMeshStore {
         }
     }
 
+    private func blobTransfer(digest: MeshBlobDigest) throws
+        -> (manifest: MeshBlobManifest, state: MeshBlobLocalState)? {
+        try queryOne(
+            "SELECT envelope, local_state FROM blob_transfers WHERE digest=? LIMIT 1",
+            [.blob(digest.rawValue)]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let manifest = try? JSONDecoder().decode(MeshBlobManifest.self, from: data),
+                  let state = MeshBlobLocalState(
+                      rawValue: Self.columnText(statement, index: 1)
+                  ) else { throw DistributedMeshStoreError.corruptStoredValue }
+            try manifest.validate()
+            return (manifest, state)
+        }
+    }
+
+    private func receivedChunk(digest: MeshBlobDigest, index: Int) throws
+        -> (digest: MeshBlobDigest, byteSize: Int)? {
+        try queryOne(
+            "SELECT chunk_digest, byte_size FROM blob_received_chunks " +
+            "WHERE digest=? AND chunk_index=? LIMIT 1",
+            [.blob(digest.rawValue), .integer(Int64(index))]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let chunkDigest = MeshBlobDigest(rawValue: data) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            return (chunkDigest, Int(sqlite3_column_int64(statement, 1)))
+        }
+    }
+
+    private func setBlobState(_ state: MeshBlobLocalState,
+                              digest: MeshBlobDigest) throws {
+        try run(
+            "UPDATE blob_transfers SET local_state=? WHERE digest=?",
+            [.text(state.rawValue), .blob(digest.rawValue)]
+        )
+    }
+
+    private func resetCorruptBlob(_ digest: MeshBlobDigest,
+                                  chunkDirectory: URL) throws {
+        try transaction {
+            try run(
+                "DELETE FROM blob_received_chunks WHERE digest=?",
+                [.blob(digest.rawValue)]
+            )
+            try setBlobState(.corrupt, digest: digest)
+        }
+        if FileManager.default.fileExists(atPath: chunkDirectory.path) {
+            let values = try? chunkDirectory.resourceValues(
+                forKeys: [.isSymbolicLinkKey, .isDirectoryKey]
+            )
+            guard values?.isSymbolicLink != true, values?.isDirectory == true else {
+                throw MeshBlobStoreError.unsafeStoragePath
+            }
+            do { try FileManager.default.removeItem(at: chunkDirectory) }
+            catch { throw MeshBlobStoreError.fileIO }
+        }
+    }
+
+    private func ensureBlobStorageDirectory() throws {
+        try Self.ensurePrivateDirectory(
+            URL(fileURLWithPath: blobDirectoryPath, isDirectory: true)
+        )
+    }
+
+    private func chunkDirectory(for digest: MeshBlobDigest) -> URL {
+        URL(fileURLWithPath: blobDirectoryPath, isDirectory: true)
+            .appendingPathComponent("\(digest.hex).chunks", isDirectory: true)
+    }
+
+    private func ensureChunkDirectory(for digest: MeshBlobDigest) throws -> URL {
+        let directory = chunkDirectory(for: digest)
+        try Self.ensurePrivateDirectory(directory)
+        return directory
+    }
+
+    private static func ensurePrivateDirectory(_ url: URL) throws {
+        let manager = FileManager.default
+        if manager.fileExists(atPath: url.path) {
+            let values = try? url.resourceValues(
+                forKeys: [.isSymbolicLinkKey, .isDirectoryKey]
+            )
+            guard values?.isSymbolicLink != true, values?.isDirectory == true else {
+                throw MeshBlobStoreError.unsafeStoragePath
+            }
+        } else {
+            do {
+                try manager.createDirectory(
+                    at: url, withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700]
+                )
+            } catch {
+                throw MeshBlobStoreError.fileIO
+            }
+        }
+        do {
+            try manager.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: url.path
+            )
+        } catch {
+            throw MeshBlobStoreError.fileIO
+        }
+    }
+
+    private static func writePrivateFile(_ data: Data, to url: URL) throws {
+        if FileManager.default.fileExists(atPath: url.path),
+           (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+            throw MeshBlobStoreError.unsafeStoragePath
+        }
+        do {
+            try data.write(to: url, options: .atomic)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: url.path
+            )
+        } catch let error as MeshBlobStoreError {
+            throw error
+        } catch {
+            throw MeshBlobStoreError.fileIO
+        }
+    }
+
+    private static func sha256(_ data: Data) -> Data {
+        Data(SHA256.hash(data: data))
+    }
+
+    private static func isRegularFile(_ url: URL) throws -> Bool {
+        do {
+            let values = try url.resourceValues(
+                forKeys: [.isSymbolicLinkKey, .isRegularFileKey]
+            )
+            guard values.isSymbolicLink != true else {
+                throw MeshBlobStoreError.unsafeStoragePath
+            }
+            return values.isRegularFile == true
+        } catch let error as MeshBlobStoreError {
+            throw error
+        } catch {
+            throw MeshBlobStoreError.fileIO
+        }
+    }
+
     private func trustedDeviceMatching(group: MeshTrustGroupID, deviceID: MeshDeviceID,
                                        endpointID: MeshEndpointID) throws -> MeshPairedDevice? {
         try queryOne(
@@ -1567,6 +1974,20 @@ public actor DistributedMeshStore {
     CREATE INDEX IF NOT EXISTS materialized_immutable_source
       ON materialized_immutable_values(source_event_id);
     UPDATE schema_metadata SET version=4;
+    """
+
+    private static let schemaV5 = """
+    CREATE TABLE IF NOT EXISTS blob_transfers(
+      digest BLOB PRIMARY KEY CHECK(length(digest)=32), envelope BLOB NOT NULL,
+      local_state TEXT NOT NULL
+        CHECK(local_state IN ('pending', 'complete', 'corrupt', 'evicted')));
+    CREATE TABLE IF NOT EXISTS blob_received_chunks(
+      digest BLOB NOT NULL, chunk_index INTEGER NOT NULL CHECK(chunk_index >= 0),
+      chunk_digest BLOB NOT NULL CHECK(length(chunk_digest)=32),
+      byte_size INTEGER NOT NULL CHECK(byte_size >= 0),
+      PRIMARY KEY(digest, chunk_index),
+      FOREIGN KEY(digest) REFERENCES blob_transfers(digest) ON DELETE CASCADE);
+    UPDATE schema_metadata SET version=5;
     """
 }
 

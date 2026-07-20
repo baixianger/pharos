@@ -183,7 +183,9 @@ Schema v2 is a transactional migration over v1, preserves existing rows,
 rejects ambiguous/future metadata, and adds atomic pairing-use/trusted-device
 tables. Schema v3 adds field registers and a durable derived-state version;
 schema v4 adds independently stamped immutable values so derived state no longer
-depends on retaining source-event rows. A v2/v3 upgrade, or a process death
+depends on retaining source-event rows. Schema v5 adds content-addressed blob
+manifests, local transfer state, and resumable per-chunk receipts with database
+constraints and cascading cleanup. A v2/v3/v4 upgrade, or a process death
 between schema creation and replay, rebuilds materialized state from the retained
 event log and latest verified snapshot on first use. SQLite is exposed
 through the explicit `CSQLite` SwiftPM system-library target instead of an
@@ -213,9 +215,20 @@ instead of an empty/misleading event batch, and new events continue the retained
 author-head hash chain. Production wiring must derive the active-peer set from
 the revocation-aware membership view; callers cannot enable this API yet.
 
+Attachments now use transport-neutral SHA-256 manifests and bounded chunks.
+The store accepts chunks out of order across independent SQLite connections,
+deduplicates retry delivery, verifies each chunk before recording it, and only
+atomically publishes a final mode-0600 file after its byte count and whole-blob
+digest match. Missing/corrupt chunk files are rediscovered after restart;
+whole-blob corruption clears receipts for a safe re-fetch. Finalization is
+idempotent, eviction removes final and partial cache state while retaining the
+manifest for lazy fetch, and storage refuses symbolic-link traversal. Isolated
+tests cover tampered chunks, wrong final content, restart recovery, concurrent
+connection handoff, eviction/re-fetch, and chunk/final symlink attacks.
+
 Iroh stream routing for the sync messages, richer room/message/project/issue
-operation adapters, revocation-aware compaction policy, blob transfer, and the
-randomized partition/reordering simulation remain pending.
+operation adapters, revocation-aware compaction policy, network blob-stream
+routing, and the randomized partition/reordering simulation remain pending.
 
 1. Add SQLite/WAL schema for events, author heads, materialized entities, blob
    manifests, peer acknowledgements, membership epochs, and snapshots.
