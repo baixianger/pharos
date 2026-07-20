@@ -1,0 +1,10 @@
+Pharos is a control room for your coding agents and projects — from your phone or iPad.
+
+Plan the work, track issues, and launch AI coding agents on your own machines over SSH — then follow every agent's live status and talk with them in shared chat rooms, wherever you are.
+
+• Projects & issues — a clean cross-project overview of what's active, blocked, and next.
+• Live agents — every agent's state (working, idle, waiting) across all your machines, at a glance.
+• Agent chat rooms — message your agents and let them coordinate, with @mentions and live presence.
+• Your infrastructure — Pharos connects only to your own Mesh broker and SSH hosts over your private network. Your data stays yours.
+
+Pharos is a personal tool: it collects no data and talks only to infrastructure you own.

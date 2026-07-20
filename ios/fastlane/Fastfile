@@ -88,6 +88,14 @@ def load_env_file
   end
 end
 
+# Version truth is project.yml's MARKETING_VERSION — the generated Info.plist
+# only references it via $(), so get_version_number can return the placeholder.
+def marketing_version
+  yml = File.read(File.expand_path("../project.yml", __dir__))
+  yml[/MARKETING_VERSION:\s*"([^"]+)"/, 1] ||
+    UI.user_error!("MARKETING_VERSION not found in project.yml")
+end
+
 def asc_api_key
   load_env_file
 
@@ -256,12 +264,91 @@ platform :ios do
         app_identifier: APP_IDENTIFIER,
         app_name:       "Pharos",
         language:       "en-US",
-        app_version:    "0.1.0",
+        app_version:    "1.0",
         sku:            "pharos-mobile-ios-001",
         skip_itc:       false,
         skip_devcenter: true,
         team_id:        TEAM_ID
       )
+    end
+  end
+
+  desc "Read-only: confirm the ASC record exists; print its name and versions."
+  lane :verify_asc_app do
+    api_key = asc_api_key
+    with_env_unset("APP_STORE_CONNECT_API_KEY_PATH") do
+      token = ::Spaceship::ConnectAPI::Token.create(
+        key_id: api_key[:key_id], issuer_id: api_key[:issuer_id], key: api_key[:key]
+      )
+      ::Spaceship::ConnectAPI.token = token
+      app = ::Spaceship::ConnectAPI::App.find(APP_IDENTIFIER)
+      UI.user_error!("No ASC record for #{APP_IDENTIFIER} — create it in the ASC web UI first") unless app
+      UI.message("ASC app: id=#{app.id} name=#{app.name.inspect}")
+      edit = app.get_edit_app_store_version
+      live = app.get_live_app_store_version
+      UI.message("  edit version: #{edit&.version_string.inspect} state=#{edit&.app_store_state}")
+      UI.message("  live version: #{live&.version_string.inspect}")
+    end
+  end
+
+  desc "Read-only: audit the edit version's staged listing (metadata fields + screenshot counts)."
+  lane :audit_listing do
+    api_key = asc_api_key
+    with_env_unset("APP_STORE_CONNECT_API_KEY_PATH") do
+      token = ::Spaceship::ConnectAPI::Token.create(
+        key_id: api_key[:key_id], issuer_id: api_key[:issuer_id], key: api_key[:key]
+      )
+      ::Spaceship::ConnectAPI.token = token
+      app = ::Spaceship::ConnectAPI::App.find(APP_IDENTIFIER)
+      version = app.get_edit_app_store_version
+      UI.user_error!("No edit version") unless version
+      UI.message("Edit version #{version.version_string} (#{version.app_store_state}) copyright=#{version.copyright.inspect}")
+      version.get_app_store_version_localizations.each do |loc|
+        UI.message("[#{loc.locale}]")
+        UI.message("  description: #{loc.description.to_s.length} chars")
+        UI.message("  keywords:    #{loc.keywords.inspect}")
+        UI.message("  promo:       #{loc.promotional_text.to_s.length} chars")
+        UI.message("  notes:       #{loc.whats_new.inspect}")
+        UI.message("  support/marketing: #{loc.support_url.inspect} / #{loc.marketing_url.inspect}")
+        loc.get_app_screenshot_sets.each do |set|
+          UI.message("  screenshots #{set.screenshot_display_type}: #{set.app_screenshots.size}")
+        end
+      end
+      info = app.fetch_edit_app_info
+      if info
+        loc = info.get_app_info_localizations.find { |l| l.locale == "en-US" }
+        UI.message("appInfo: name=#{loc&.name.inspect} subtitle=#{loc&.subtitle.inspect} privacy_url=#{loc&.privacy_policy_url.inspect}")
+      end
+    end
+  end
+
+  desc "Purge every screenshot from the edit version's sets and re-upload the " \
+       "local en-US set exactly once. Works around deliver's verify-loop race " \
+       "against ASC's eventual consistency, which duplicates uploads."
+  lane :reset_screenshots do
+    api_key = asc_api_key
+    with_env_unset("APP_STORE_CONNECT_API_KEY_PATH") do
+      token = ::Spaceship::ConnectAPI::Token.create(
+        key_id: api_key[:key_id], issuer_id: api_key[:issuer_id], key: api_key[:key]
+      )
+      ::Spaceship::ConnectAPI.token = token
+      app = ::Spaceship::ConnectAPI::App.find(APP_IDENTIFIER)
+      version = app.get_edit_app_store_version
+      loc = version.get_app_store_version_localizations.find { |l| l.locale == "en-US" }
+      dir = File.expand_path("screenshots/en-US", __dir__)
+      loc.get_app_screenshot_sets.each do |set|
+        set.app_screenshots.each(&:delete!)
+        pattern = set.screenshot_display_type.include?("IPAD") ? "*-ipad-*.png" : "*-iphone-*.png"
+        Dir[File.join(dir, pattern)].sort.each do |path|
+          UI.message("Uploading #{File.basename(path)} → #{set.screenshot_display_type}")
+          ::Spaceship::ConnectAPI::AppScreenshot.create(
+            app_screenshot_set_id: set.id, path: path, wait_for_processing: true
+          )
+        end
+      end
+      loc.get_app_screenshot_sets.each do |set|
+        UI.success("#{set.screenshot_display_type}: #{set.app_screenshots.size} screenshots")
+      end
     end
   end
 
@@ -339,16 +426,18 @@ platform :ios do
       upload_to_app_store(
         api_key:            api_key,
         app_identifier:     APP_IDENTIFIER,
+        app_version:        marketing_version,  # else deliver targets the LIVE version
         force:              true,
         submit_for_review:  false,
         skip_binary_upload: true,
-        skip_screenshots:   true,
+        skip_screenshots:   false,
+        overwrite_screenshots: true,
         precheck_include_in_app_purchases: false,
         app_review_information: {
           first_name:    "Xiang",
           last_name:     "Bai",
           phone_number:  ENV["ASC_REVIEW_PHONE"].to_s,
-          email_address: ENV["ASC_REVIEW_EMAIL"].to_s,
+          email_address: ENV["ASC_REVIEW_EMAIL"] || "crea.bai@gmail.com",
           demo_user:     "",
           demo_password: "",
           notes:         <<~NOTE
@@ -358,7 +447,7 @@ platform :ios do
             private network + a running broker, the app has nothing to connect to,
             so it cannot be fully exercised by an external reviewer. It is
             distributed via TestFlight internal testing to the owner's own devices.
-            Contact: #{ENV["ASC_REVIEW_EMAIL"]}
+            Contact: #{ENV["ASC_REVIEW_EMAIL"] || "crea.bai@gmail.com"}
           NOTE
         }
       )

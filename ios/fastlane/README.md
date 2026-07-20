@@ -1,72 +1,136 @@
-# PharosMobile — fastlane
+fastlane documentation
+----
 
-Modeled on the sibling `hetznerly` project. Uses **App Store Connect API key
-(.p8)** auth, not an Apple ID. `me.pai.pharos.mobile`, team `TN7ZDD72P2`,
-automatic signing (from `project.yml`).
+# Installation
 
-## Setup (once)
+Make sure you have the latest version of the Xcode command line tools installed:
 
-```bash
-cd ios
-bundle install                      # installs fastlane from the Gemfile
-cp fastlane/.env.example .env       # then fill in the values (.env is gitignored)
+```sh
+xcode-select --install
 ```
 
-`device_install` needs **no** API key — just sign into Xcode → Settings →
-Accounts once and enable Developer Mode on the device. The `.env`/`.p8`/`match`
-values are only for the TestFlight/App Store lanes.
+For _fastlane_ installation instructions, see [Installing _fastlane_](https://docs.fastlane.tools/#installing-fastlane)
 
-## Install onto a paired iPhone/iPad (no App Store account needed)
+# Available Actions
 
-```bash
-bundle exec fastlane device_install            # first paired device
-bundle exec fastlane device_install udid:XXXX  # or a specific device
+## iOS
+
+### ios bootstrap
+
+```sh
+[bundle exec] fastlane ios bootstrap
 ```
 
-Automatic signing + `-allowProvisioningUpdates`; installs via `devicectl`.
-Prerequisites: device unlocked, this Mac trusted, Developer Mode on
-(Settings → Privacy & Security → Developer Mode).
+Register the App ID in the Developer Portal and sync match profiles. Idempotent — re-run after editing entitlements. Only needed for the TestFlight/App Store path; `device_install` uses automatic signing and does not require this.
 
-## TestFlight (internal — no App Review)
+### ios certs
 
-```bash
-bundle exec fastlane create_asc_app         # once, if the app isn't in ASC yet
-bundle exec fastlane beta                   # build Release + upload
-bundle exec fastlane ensure_beta_group      # once: internal "Internal" group
-bundle exec fastlane invite_to_group email:you@example.com
+```sh
+[bundle exec] fastlane ios certs
 ```
 
-Internal testers must be ASC team members (`list_asc_users` to check). Build
-sits in Processing ~5–15 min before it's installable in the TestFlight app.
+Sync App Store certificates & provisioning profiles via match
 
-## Lanes
+### ios bump_build
 
-| Lane | What it does |
-|------|--------------|
-| `device_install` | Dev-signed `.ipa` → paired device via devicectl. Optional `udid:`. |
-| `bootstrap` | Register App ID + sync match dev/appstore profiles (TestFlight path only). |
-| `certs` | Sync App Store certs/profiles via match. |
-| `bump_build` | Build number ← `git rev-list --count HEAD`. |
-| `beta` | Release build → TestFlight. |
-| `create_asc_app` | Create the App Store Connect record (once). |
-| `ensure_beta_group` | Idempotent internal TestFlight group. `name:` (default `Internal`). |
-| `invite_to_group` | Create + assign a tester. `email:` `group:` `first_name:` `last_name:`. |
-| `list_asc_users` | List ASC team members (eligible internal testers). |
-| `stage_listing` / `release` | App Store metadata staging / submit. See note below. |
+```sh
+[bundle exec] fastlane ios bump_build
+```
 
-## Notes / pitfalls baked in
+Bump build number to the current git commit count
 
-- **`api_key` vs `api_key_path`** — the api_key hash is built *before* the env
-  var is unset (`with_env_unset`), so actions don't hit "Unresolved conflict".
-- **`force_legacy_encryption: true`** on `match` — LibreSSL/fastlane-sirp bug on
-  Apple Silicon; drop once on fastlane ≥ 2.233.
-- **VPN DNS** — if TestFlight upload fails with `SSL_connect`/`Connection reset`,
-  Tailscale may be intercepting `api.appstoreconnect.apple.com`
-  (`dscacheutil -q host -a name api.appstoreconnect.apple.com` should be `17.x`).
-  Fix with `tailscale up --accept-dns=false` while shipping.
-- **Personal-app caveat** — Pharos connects to a Tailscale-bound broker on your
-  own Mac, so a public App Review reviewer can't exercise it. Prefer TestFlight
-  internal testing (your own devices, no review). `stage_listing`/`release` are
-  included but public review would need a demo mode first.
-- `project.yml` regenerates `PharosMobile.xcodeproj` via `xcodegen` in
-  `before_all`; don't run two lanes concurrently against the same checkout.
+### ios device_install
+
+```sh
+[bundle exec] fastlane ios device_install
+```
+
+Build a development-signed .ipa and install it onto a paired iPhone/iPad via Xcode's devicectl. Pass `udid:` to target a specific device; defaults to the first paired iOS device. Uses automatic signing (project.yml sets CODE_SIGN_STYLE=Automatic) — no match needed, just sign into Xcode → Settings → Accounts once and enable Developer Mode on the device.
+
+### ios beta
+
+```sh
+[bundle exec] fastlane ios beta
+```
+
+Build Release and upload to TestFlight (internal testing needs no review).
+
+### ios create_asc_app
+
+```sh
+[bundle exec] fastlane ios create_asc_app
+```
+
+Create the App Store Connect record (one-time). Needed before the first TestFlight upload if the app doesn't yet exist in ASC.
+
+### ios verify_asc_app
+
+```sh
+[bundle exec] fastlane ios verify_asc_app
+```
+
+Read-only: confirm the ASC record exists; print its name and versions.
+
+### ios audit_listing
+
+```sh
+[bundle exec] fastlane ios audit_listing
+```
+
+Read-only: audit the edit version's staged listing (metadata fields + screenshot counts).
+
+### ios reset_screenshots
+
+```sh
+[bundle exec] fastlane ios reset_screenshots
+```
+
+Purge every screenshot from the edit version's sets and re-upload the local en-US set exactly once. Works around deliver's verify-loop race against ASC's eventual consistency, which duplicates uploads.
+
+### ios list_asc_users
+
+```sh
+[bundle exec] fastlane ios list_asc_users
+```
+
+List ASC team members. Internal TestFlight testers MUST be ASC team members.
+
+### ios ensure_beta_group
+
+```sh
+[bundle exec] fastlane ios ensure_beta_group
+```
+
+Create a TestFlight Internal Testing group (idempotent). `name:` default 'Internal'.
+
+### ios invite_to_group
+
+```sh
+[bundle exec] fastlane ios invite_to_group
+```
+
+Create + assign a TestFlight tester to a group in one call. Usage: fastlane invite_to_group email:you@example.com group:Internal
+
+### ios stage_listing
+
+```sh
+[bundle exec] fastlane ios stage_listing
+```
+
+Upload metadata to App Store Connect, leaving the listing in 'Prepare for Submission' (no review submission). Personal app — see the note above.
+
+### ios release
+
+```sh
+[bundle exec] fastlane ios release
+```
+
+stage_listing + submit for review (personal app — usually not needed; see the note above stage_listing).
+
+----
+
+This README.md is auto-generated and will be re-generated every time [_fastlane_](https://fastlane.tools) is run.
+
+More information about _fastlane_ can be found on [fastlane.tools](https://fastlane.tools).
+
+The documentation of _fastlane_ can be found on [docs.fastlane.tools](https://docs.fastlane.tools).

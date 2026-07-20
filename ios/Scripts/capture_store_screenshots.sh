@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="${PHAROS_SCREENSHOT_APP:-/tmp/pharos-shots-derived/Build/Products/Debug-iphonesimulator/PharosMobile.app}"
-RAW="$ROOT/fastlane/screenshots/raw-demo"
+RAW="$ROOT/fastlane/raw-demo"
 BUNDLE_ID="me.pai.pharos.mobile"
 
 simulator_id() {

@@ -1,0 +1,1 @@
+coding,agent,claude,codex,project,manager,issues,ssh,terminal,mesh,ai,developer

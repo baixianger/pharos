@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import gc
 
 ROOT = Path(__file__).resolve().parents[1]
-RAW = ROOT / "fastlane/screenshots/raw-demo"
+RAW = ROOT / "fastlane/raw-demo"
 OUT = ROOT / "fastlane/screenshots/en-US"
 
 SIZES = {"iphone": (1320, 2868), "ipad": (2064, 2752)}

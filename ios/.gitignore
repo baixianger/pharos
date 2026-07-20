@@ -17,3 +17,4 @@ fastlane/README.md.bak
 # Ruby / bundler
 vendor/bundle/
 .bundle/
+fastlane/raw-demo/
