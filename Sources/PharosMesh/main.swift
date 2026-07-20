@@ -229,6 +229,8 @@ private enum MeshHeadlessCLI {
             "sync-serve", "sync", "entity-set", "entity-dump",
             "room-list", "room-create", "room-rename", "room-delete",
             "room-send", "room-history", "attachment-put", "attachment-get",
+            "host-resource-register", "host-resource-replace", "host-resource-retire",
+            "host-resource-show", "host-command-send", "host-command-replay",
         ]
         guard command == "status" || command == "init" ||
                 migrationCommands.contains(command) || probeCommands.contains(command) ||
@@ -237,7 +239,8 @@ private enum MeshHeadlessCLI {
                 "distributed status|init|device-invite|device-accept|" +
                 "device-redeem|device-list|sync-serve|sync|entity-set|entity-dump|" +
                 "room-list|room-create|room-rename|room-delete|room-send|room-history|" +
-                "attachment-put|attachment-get|" +
+                "attachment-put|attachment-get|host-resource-register|host-resource-replace|" +
+                "host-resource-retire|host-resource-show|host-command-send|host-command-replay|" +
                 "probe-serve|probe|migration-status|" +
                 "migration-prepare|cutover|rollback …"
             )
@@ -408,10 +411,22 @@ private enum MeshHeadlessCLI {
             let (group, epoch) = try await activeMembership(replica)
             let runtime = try await distributedRuntime(args, replica: replica)
             let address = try await runtime.localAddress()
-            let router = MeshReplicaRPCServer(
-                store: replica.store,
-                hostIdentity: args.contains("--host") ? replica.identity : nil
-            )
+            let router: MeshReplicaRPCServer
+            if args.contains("--host") {
+                let executor = DistributedHostCommandExecutor(
+                    bindings: DistributedHostResourceBindings(
+                        dataDirectory: replica.rootURL
+                    )
+                )
+                router = MeshReplicaRPCServer(
+                    store: replica.store, hostIdentity: replica.identity,
+                    hostCommandHandler: { command in
+                        await executor.execute(command)
+                    }
+                )
+            } else {
+                router = MeshReplicaRPCServer(store: replica.store)
+            }
             await runtime.startServing { request, remoteEndpointID in
                 if let pairing = try? MeshTrustPairingRPCRequest.decode(
                     request.header
@@ -728,12 +743,119 @@ private enum MeshHeadlessCLI {
             )
             return 0
 
+        case "host-resource-register", "host-resource-replace":
+            guard let resourceText = option("--resource", in: args),
+                  let resourceID = MeshResourceID(rawValue: resourceText),
+                  let session = option("--tmux-session", in: args) else {
+                return usageError(
+                    "distributed \(command) --resource ID --tmux-session SESSION " +
+                    "[--tmux-socket ABSOLUTE-PATH] [--actions poke,stop] " +
+                    "--data-dir ABSOLUTE-PATH"
+                )
+            }
+            let actions = try distributedHostActions(args)
+            let binding = try DistributedHostResourceBinding(
+                resourceID: resourceID, tmuxSession: session,
+                tmuxSocket: option("--tmux-socket", in: args)
+            )
+            let bindings = DistributedHostResourceBindings(
+                dataDirectory: replica.rootURL
+            )
+            try bindings.save(binding, for: resourceID)
+            let (group, _) = try await activeMembership(replica)
+            let resource: MeshHostResource
+            if command == "host-resource-register" {
+                resource = try await replica.store.registerHostResource(
+                    in: group, on: replica.identity, resourceID: resourceID,
+                    allowedActions: actions, at: distributedNow()
+                )
+            } else {
+                resource = try await replica.store.replaceHostResource(
+                    in: group, on: replica.identity, resourceID: resourceID,
+                    allowedActions: actions, at: distributedNow()
+                )
+            }
+            print(String(decoding: try sortedJSON(resource), as: UTF8.self))
+            return 0
+
+        case "host-resource-retire":
+            guard let resourceText = option("--resource", in: args),
+                  let resourceID = MeshResourceID(rawValue: resourceText) else {
+                return usageError(
+                    "distributed host-resource-retire --resource ID " +
+                    "--data-dir ABSOLUTE-PATH"
+                )
+            }
+            let (group, _) = try await activeMembership(replica)
+            let resource = try await replica.store.retireHostResource(
+                in: group, on: replica.identity, resourceID: resourceID,
+                at: distributedNow()
+            )
+            try DistributedHostResourceBindings(
+                dataDirectory: replica.rootURL
+            ).remove(resourceID)
+            print(String(decoding: try sortedJSON(resource), as: UTF8.self))
+            return 0
+
+        case "host-resource-show":
+            guard let resourceText = option("--resource", in: args),
+                  let resourceID = MeshResourceID(rawValue: resourceText) else {
+                return usageError(
+                    "distributed host-resource-show --resource ID " +
+                    "--data-dir ABSOLUTE-PATH"
+                )
+            }
+            let (group, _) = try await activeMembership(replica)
+            guard let resource = try await replica.store.hostResource(
+                in: group, hostDeviceID: replica.identity.deviceID,
+                resourceID: resourceID
+            ) else { throw DistributedDeviceCommandError.hostResourceNotFound }
+            print(String(decoding: try sortedJSON(resource), as: UTF8.self))
+            return 0
+
+        case "host-command-send":
+            let signed = try await makeDistributedHostCommand(args, replica: replica)
+            if let output = option("--envelope-out", in: args) {
+                guard output.hasPrefix("/") else {
+                    return usageError("--envelope-out requires an absolute path")
+                }
+                try sortedJSON(signed).write(
+                    to: URL(fileURLWithPath: output), options: .atomic
+                )
+            }
+            return try await sendDistributedHostCommand(
+                signed, args: args, replica: replica
+            )
+
+        case "host-command-replay":
+            guard args.count >= 2, args[1].hasPrefix("/") else {
+                return usageError(
+                    "distributed host-command-replay ABSOLUTE-ENVELOPE-PATH " +
+                    "--peer DEVICE-UUID [--peer-ticket CURRENT-TICKET] " +
+                    "--data-dir ABSOLUTE-PATH"
+                )
+            }
+            let signed = try JSONDecoder().decode(
+                MeshSignedHostCommand.self,
+                from: Data(contentsOf: URL(fileURLWithPath: args[1]))
+            )
+            try signed.validateStructure()
+            guard signed.command.senderDeviceID == replica.identity.deviceID,
+                  signed.senderEndpointID == (try replica.identity.endpointID()) else {
+                throw DistributedDeviceCommandError.commandIdentityMismatch
+            }
+            return try await sendDistributedHostCommand(
+                signed, args: args, replica: replica
+            )
+
         default:
             return usageError(
                 "distributed device-invite|device-accept|device-redeem|" +
                 "device-list|sync-serve|sync|entity-set|entity-dump|" +
                 "room-list|room-create|room-rename|room-delete|room-send|" +
-                "room-history|attachment-put|attachment-get …"
+                "room-history|attachment-put|attachment-get|host-resource-register|" +
+                "host-resource-replace|host-resource-retire|host-resource-show|" +
+                "host-command-send|host-command-replay …"
             )
         }
     }
@@ -756,6 +878,122 @@ private enum MeshHeadlessCLI {
             throw DistributedDeviceCommandError.missingMembership
         }
         return (group, epoch)
+    }
+
+    private static func distributedNow() -> MeshHybridTimestamp {
+        MeshHybridTimestamp(
+            wallTimeMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+        )
+    }
+
+    private static func distributedHostActions(
+        _ args: [String]
+    ) throws -> Set<MeshHostAction> {
+        let values = (option("--actions", in: args) ?? "poke,stop").split(separator: ",")
+        let actions = try values.map { value -> MeshHostAction in
+            switch value {
+            case "poke": return .poke
+            case "stop": return .stop
+            default: throw DistributedDeviceCommandError.invalidHostAction
+            }
+        }
+        guard !actions.isEmpty, Set(actions).count == actions.count else {
+            throw DistributedDeviceCommandError.invalidHostAction
+        }
+        return Set(actions)
+    }
+
+    private static func makeDistributedHostCommand(
+        _ args: [String], replica: MeshLocalReplica
+    ) async throws -> MeshSignedHostCommand {
+        guard let peerText = option("--peer", in: args),
+              let peerUUID = UUID(uuidString: peerText),
+              let resourceText = option("--resource", in: args),
+              let resourceID = MeshResourceID(rawValue: resourceText),
+              let generationText = option("--generation", in: args),
+              let generation = UInt64(generationText), generation > 0,
+              let actionText = option("--action", in: args) else {
+            throw DistributedDeviceCommandError.invalidHostCommand
+        }
+        let action: MeshHostAction
+        let payload: Data
+        switch actionText {
+        case "poke":
+            guard let text = option("--text", in: args) else {
+                throw DistributedDeviceCommandError.invalidHostCommand
+            }
+            let value = DistributedHostPokePayload(text: text)
+            try value.validate()
+            action = .poke
+            payload = try sortedJSON(value)
+        case "stop":
+            action = .stop
+            payload = Data()
+        default:
+            throw DistributedDeviceCommandError.invalidHostAction
+        }
+        let (group, epoch) = try await activeMembership(replica)
+        guard let peer = try await replica.store.trustedDevice(
+            in: group, id: MeshDeviceID(rawValue: peerUUID)
+        ), peer.descriptor.roles.contains(.host) else {
+            throw DistributedDeviceCommandError.peerNotHost
+        }
+        let now = distributedNow()
+        let timeoutSeconds = Int64(option("--timeout-seconds", in: args) ?? "30") ?? 30
+        guard timeoutSeconds > 0, timeoutSeconds <= 3_600 else {
+            throw DistributedDeviceCommandError.invalidHostCommand
+        }
+        let command = MeshHostCommand(
+            trustGroupID: group, senderDeviceID: replica.identity.deviceID,
+            targetHostDeviceID: peer.descriptor.id,
+            targetHostEndpointID: peer.descriptor.endpointID,
+            resourceID: resourceID, expectedResourceGeneration: generation,
+            action: action,
+            idempotencyKey: option("--idempotency-key", in: args)
+                ?? "command-\(UUID().uuidString)",
+            createdAt: now,
+            deadlineMilliseconds: now.wallTimeMilliseconds + timeoutSeconds * 1_000,
+            payload: payload
+        )
+        return try MeshHostCommandCrypto.sign(
+            command, membershipEpoch: epoch, with: replica.identity
+        )
+    }
+
+    private static func sendDistributedHostCommand(
+        _ signed: MeshSignedHostCommand, args: [String], replica: MeshLocalReplica
+    ) async throws -> Int32 {
+        guard let peerText = option("--peer", in: args),
+              let peerUUID = UUID(uuidString: peerText),
+              peerUUID == signed.command.targetHostDeviceID.rawValue else {
+            throw DistributedDeviceCommandError.invalidHostCommand
+        }
+        let (group, _) = try await activeMembership(replica)
+        guard group == signed.command.trustGroupID,
+              let peer = try await replica.store.trustedDevice(
+                in: group, id: MeshDeviceID(rawValue: peerUUID)
+              ), peer.descriptor.endpointID == signed.command.targetHostEndpointID else {
+            throw DistributedDeviceCommandError.peerNotFound
+        }
+        let runtime = try await distributedRuntime(args, replica: replica)
+        do {
+            let transport = IrohMeshTransport(
+                runtime: runtime,
+                remote: MeshIrohEndpointAddress(
+                    endpointID: peer.descriptor.endpointID,
+                    ticket: option("--peer-ticket", in: args) ?? peer.addressTicket
+                )
+            )
+            let receipt = try await MeshReplicaRPCClient(
+                transport: transport
+            ).sendHostCommand(signed)
+            print(String(decoding: try sortedJSON(receipt), as: UTF8.self))
+            try await runtime.close()
+            return receipt.receipt.state == .executed ? 0 : 1
+        } catch {
+            try? await runtime.close()
+            throw error
+        }
     }
 
     private static func distributedRoles(_ args: [String]) throws -> Set<MeshDeviceRole> {
@@ -1114,6 +1352,11 @@ private enum MeshHeadlessCLI {
         case missingMembership
         case peerNotFound
         case invalidRoles
+        case hostResourceNotFound
+        case invalidHostAction
+        case invalidHostCommand
+        case peerNotHost
+        case commandIdentityMismatch
     }
 
     private static func runNode(_ args: [String]) -> Int32 {
@@ -1383,6 +1626,12 @@ private enum MeshHeadlessCLI {
       distributed room-history ROOM [--limit N] --data-dir ABSOLUTE-PATH
       distributed attachment-put FILE [--name DISPLAY-NAME] [--mime MEDIA-TYPE] --data-dir ABSOLUTE-PATH
       distributed attachment-get ID --output ABSOLUTE-PATH [--peer DEVICE-UUID] [--peer-ticket CURRENT-TICKET] --data-dir ABSOLUTE-PATH
+      distributed host-resource-register --resource ID --tmux-session SESSION [--tmux-socket ABSOLUTE-PATH] [--actions poke,stop] --data-dir ABSOLUTE-PATH
+      distributed host-resource-replace --resource ID --tmux-session SESSION [--tmux-socket ABSOLUTE-PATH] [--actions poke,stop] --data-dir ABSOLUTE-PATH
+      distributed host-resource-retire --resource ID --data-dir ABSOLUTE-PATH
+      distributed host-resource-show --resource ID --data-dir ABSOLUTE-PATH
+      distributed host-command-send --peer DEVICE-UUID --resource ID --generation N --action poke|stop [--text TEXT] [--idempotency-key KEY] [--envelope-out ABSOLUTE-PATH] [--peer-ticket CURRENT-TICKET] --data-dir ABSOLUTE-PATH
+      distributed host-command-replay ABSOLUTE-ENVELOPE-PATH --peer DEVICE-UUID [--peer-ticket CURRENT-TICKET] --data-dir ABSOLUTE-PATH
       distributed probe-serve --data-dir ABSOLUTE-PATH [--relay production|disabled] [--bind HOST:PORT]
       distributed probe --peer-endpoint ID --peer-ticket TICKET --data-dir ABSOLUTE-PATH [--relay production|disabled] [--bind HOST:PORT]
       distributed migration-status --group UUID --data-dir ABSOLUTE-PATH [--json]
