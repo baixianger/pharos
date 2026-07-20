@@ -71,6 +71,41 @@ final class DistributedMeshProtocolTests: XCTestCase {
         XCTAssertFalse(json.contains("port"))
     }
 
+    func testIrohStreamFrameRoundTripsHeaderAndAttachment() throws {
+        let frame = MeshStreamFrame(
+            kind: .request,
+            header: Data(#"{"cmd":"attachment-put"}"#.utf8),
+            body: Data([0, 1, 2, 3, 255])
+        )
+        let encoded = try MeshStreamFrameCodec.encode(frame)
+
+        XCTAssertEqual(encoded.prefix(4), Data("PHM1".utf8))
+        XCTAssertEqual(try MeshStreamFrameCodec.decode(encoded), frame)
+    }
+
+    func testIrohStreamFrameRejectsMalformedAndOversizedLengthsBeforePayloadDecode() throws {
+        let valid = try MeshStreamFrameCodec.encode(
+            MeshStreamFrame(kind: .response, header: Data("{}".utf8))
+        )
+
+        XCTAssertThrowsError(try MeshStreamFrameCodec.decode(valid.dropLast())) {
+            XCTAssertEqual($0 as? MeshStreamFrameError, .lengthMismatch)
+        }
+
+        var invalidKind = valid
+        invalidKind[4] = 99
+        XCTAssertThrowsError(try MeshStreamFrameCodec.decode(invalidKind)) {
+            XCTAssertEqual($0 as? MeshStreamFrameError, .invalidKind)
+        }
+
+        var oversizedBody = valid
+        let declared = UInt64(DistributedMeshProtocol.maximumBlobBytes + 1).bigEndian
+        withUnsafeBytes(of: declared) { oversizedBody.replaceSubrange(12..<20, with: $0) }
+        XCTAssertThrowsError(try MeshStreamFrameCodec.decode(oversizedBody)) {
+            XCTAssertEqual($0 as? MeshStreamFrameError, .bodyTooLarge)
+        }
+    }
+
     func testUUIDv7GenerationRetainsTimestampPrefix() throws {
         let date = Date(timeIntervalSince1970: 1_721_467_260.123)
         let first = MeshEventID.generate(at: date)

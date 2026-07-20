@@ -11,11 +11,13 @@ let package = Package(
         .executable(name: "Pharos", targets: ["Pharos"]),
         .executable(name: "pharos-mesh", targets: ["PharosMesh"]),
         .library(name: "PharosMeshProtocol", targets: ["PharosMeshProtocol"]),
+        .library(name: "PharosMeshIroh", targets: ["PharosMeshIroh"]),
         .library(name: "PharosMeshCore", targets: ["PharosMeshCore"]),
     ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
         .package(url: "https://github.com/apple/swift-crypto", from: "3.0.0"),
+        .package(url: "https://github.com/n0-computer/iroh-ffi", exact: "1.1.0"),
     ],
     targets: [
         .target(
@@ -23,9 +25,22 @@ let package = Package(
             path: "Sources/PharosMeshProtocol"
         ),
         .target(
+            name: "PharosMeshIroh",
+            dependencies: [
+                "PharosMeshProtocol",
+                .product(
+                    name: "IrohLib",
+                    package: "iroh-ffi",
+                    condition: .when(platforms: [.macOS, .iOS])
+                ),
+            ],
+            path: "Sources/PharosMeshIroh"
+        ),
+        .target(
             name: "PharosMeshCore",
             dependencies: [
                 "PharosMeshProtocol",
+                "PharosMeshIroh",
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Sources/PharosMeshCore",
@@ -66,6 +81,11 @@ let package = Package(
             dependencies: ["PharosMeshProtocol"],
             path: "Tests/PharosMeshProtocolTests",
             resources: [.copy("Fixtures")]
+        ),
+        .testTarget(
+            name: "PharosMeshIrohTests",
+            dependencies: ["PharosMeshIroh"],
+            path: "Tests/PharosMeshIrohTests"
         ),
         .testTarget(
             name: "PharosMeshCoreTests",

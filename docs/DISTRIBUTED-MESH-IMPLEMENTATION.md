@@ -101,6 +101,28 @@ mode.
 
 ## Phase 2 — identity, pairing, and Iroh connectivity
 
+**State:** started (Iroh dependency and isolated transport runtime present; durable key stores,
+trust-group pairing, product routing, diagnostics, and UI remain pending)
+
+Implemented on `feat/distributed-iroh`:
+
+- exact SwiftPM pin to the official `n0-computer/iroh-ffi` `v1.1.0` release;
+- release provenance, license, Apple slice, and Linux artifact checks recorded in
+  [IROH-DEPENDENCY.md](IROH-DEPENDENCY.md);
+- `PharosMeshIroh` endpoint runtime using the production `me.pai.pharos/mesh/1`
+  ALPN, opaque Endpoint IDs, cached peer connections, direct/relay path
+  classification, and bounded binary request/response streams;
+- relay-disabled loopback tests bind fresh identities to independent ephemeral
+  `127.0.0.1:0` ports and prove a framed request/attachment response plus stable
+  Endpoint ID restoration from the same secret key. A deliberately stalled
+  stream proves the public timeout returns in under one second rather than
+  waiting for the underlying FFI operation to unwind;
+- iOS XcodeGen consumes the same `PharosMeshIroh` product. Non-Apple builds see
+  an explicit unavailable implementation until the pinned Linux bridge is wired;
+- the full macOS suite passes with 218 tests, an isolated iOS simulator app links
+  both simulator architectures against the verified `v1.1.0` artifact, and the
+  `PharosMeshIroh` target compiles in the official Swift 6.2 Linux arm64 image.
+
 1. Pin a reviewed Iroh 1.x / iroh-ffi release; verify license, binary provenance,
    reproducible XCFramework build, and macOS/iOS architectures.
 2. Implement device-key stores for macOS Keychain, iOS Keychain, and Linux
