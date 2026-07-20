@@ -15,6 +15,13 @@ public enum DistributedMeshStoreError: Error, Equatable, Sendable {
     case syncVectorTrustGroupMismatch
     case acknowledgementRegression(current: UInt64, proposed: UInt64)
     case acknowledgementBeyondLocalHead(local: UInt64, proposed: UInt64)
+    case snapshotDoesNotCoverLocalHead(MeshEndpointID)
+    case snapshotHeadHashMismatch(MeshEndpointID)
+    case snapshotNotFound
+    case snapshotIDCollision
+    case snapshotCheckpointUnavailable(MeshEndpointID)
+    case compactionNotAcknowledged(peer: MeshDeviceID, author: MeshEndpointID,
+                                   required: UInt64, actual: UInt64)
     case wrongCommandHost
     case commandGenerationMismatch(expected: UInt64, actual: UInt64)
     case idempotencyCollision
@@ -97,16 +104,16 @@ public actor DistributedMeshStore {
             try Self.execute(handle, sql: "BEGIN IMMEDIATE")
             try Self.execute(handle, sql: Self.schemaMetadata)
             let version = try Self.readSchemaVersion(handle)
-            guard (1 ... 3).contains(version) else {
+            guard (1 ... 4).contains(version) else {
                 throw DistributedMeshStoreError.unsupportedSchemaVersion(version)
             }
             requiresMaterializationRebuild = version < 3
             try Self.execute(handle, sql: Self.schemaV1)
             try Self.execute(handle, sql: Self.schemaV2)
             try Self.execute(handle, sql: Self.schemaV3)
+            try Self.execute(handle, sql: Self.schemaV4)
             let materializationVersion = try Self.readMaterializationVersion(handle)
-            requiresMaterializationRebuild = requiresMaterializationRebuild ||
-                materializationVersion != 1
+            requiresMaterializationRebuild = version < 4 || materializationVersion != 2
             try Self.execute(handle, sql: "COMMIT")
         } catch {
             try? Self.execute(handle, sql: "ROLLBACK")
@@ -405,6 +412,39 @@ public actor DistributedMeshStore {
         )
     }
 
+    /// Returns a contiguous event range, an explicit caught-up marker, or the
+    /// latest covering snapshot when the requested prefix has been compacted.
+    public func syncResponse(for request: MeshEventRangeRequest) throws
+        -> MeshEventRangeResponse {
+        let batch = try eventBatch(for: request)
+        if let first = batch.first, first.authorSequence == request.afterSequence + 1 {
+            let response = MeshEventRangeResponse(
+                request: request, kind: .events, events: batch
+            )
+            try response.validate()
+            return response
+        }
+        let head = try authorHead(
+            group: request.trustGroupID, endpoint: request.authorEndpointID
+        )?.sequence ?? 0
+        if head <= request.afterSequence {
+            let response = MeshEventRangeResponse(request: request, kind: .upToDate)
+            try response.validate()
+            return response
+        }
+        guard let snapshot = try coveringSnapshot(
+            in: request.trustGroupID, author: request.authorEndpointID,
+            after: request.afterSequence
+        ) else {
+            throw DistributedMeshStoreError.snapshotNotFound
+        }
+        let response = MeshEventRangeResponse(
+            request: request, kind: .snapshot, snapshot: snapshot
+        )
+        try response.validate()
+        return response
+    }
+
     /// Persists a peer's applied vector monotonically. An acknowledgement may
     /// not claim an event this replica does not possess.
     public func acknowledge(_ vector: MeshSyncVector, from peer: MeshDeviceID) throws {
@@ -501,7 +541,7 @@ public actor DistributedMeshStore {
                                            in group: MeshTrustGroupID) throws -> Data? {
         try ensureMaterializedState()
         return try queryOne(
-            "SELECT value FROM materialized_entities WHERE trust_group_id=? " +
+            "SELECT value FROM materialized_immutable_values WHERE trust_group_id=? " +
             "AND entity_type=? AND entity_id=?",
             [.text(group.rawValue.uuidString), .text(entity.type.rawValue), .text(entity.id)]
         ) { statement in
@@ -529,10 +569,223 @@ public actor DistributedMeshStore {
         }
     }
 
+    public func createSnapshot(
+        for group: MeshTrustGroupID,
+        identity: MeshDeviceIdentity,
+        createdAt: MeshHybridTimestamp
+    ) throws -> MeshReplicaSnapshotBundle {
+        try ensureMaterializedState()
+        guard let epoch = try membershipEpoch(for: group) else {
+            throw DistributedMeshStoreError.membershipEpochMismatch(expected: 0, actual: 0)
+        }
+        let heads = try authorHeads(for: group).map {
+            MeshSnapshotAuthorHead(
+                endpointID: $0.endpointID, sequence: $0.sequence, eventHash: $0.eventHash
+            )
+        }
+        let fields = try snapshotFields(in: group)
+        let immutableValues = try snapshotImmutableValues(in: group)
+        let state = try MeshReplicaState(
+            fields: fields, immutableValues: immutableValues
+        )
+        return try MeshReplicaSnapshotCrypto.make(
+            trustGroupID: group, membershipEpoch: epoch, identity: identity,
+            createdAt: createdAt, authorHeads: heads, state: state
+        )
+    }
+
+    public func persistSnapshot(_ bundle: MeshReplicaSnapshotBundle,
+                                creatorPublicKey: Data) throws {
+        try MeshReplicaSnapshotCrypto.verify(bundle, creatorPublicKey: creatorPublicKey)
+        guard let epoch = try membershipEpoch(for: bundle.snapshot.trustGroupID),
+              epoch == bundle.snapshot.membershipEpoch else {
+            throw DistributedMeshStoreError.membershipEpochMismatch(
+                expected: try membershipEpoch(for: bundle.snapshot.trustGroupID) ?? 0,
+                actual: bundle.snapshot.membershipEpoch
+            )
+        }
+        let envelope = try MeshCanonicalStoreJSON.encode(bundle)
+        guard envelope.count <= DistributedMeshProtocol.maximumBlobBytes +
+                DistributedMeshProtocol.maximumHeaderBytes else {
+            throw MeshSnapshotValidationError.snapshotTooLarge
+        }
+        try transaction {
+            try storeSnapshot(bundle, envelope: envelope)
+        }
+    }
+
+    /// Installs a trusted snapshot atomically. Local heads may advance but never
+    /// regress or fork. Existing event rows are retained; only the separately
+    /// acknowledgement-gated compaction API may delete history.
+    public func installSnapshot(_ bundle: MeshReplicaSnapshotBundle,
+                                creatorPublicKey: Data) throws {
+        try MeshReplicaSnapshotCrypto.verify(bundle, creatorPublicKey: creatorPublicKey)
+        try ensureMaterializedState()
+        let group = bundle.snapshot.trustGroupID
+        guard let epoch = try membershipEpoch(for: group),
+              epoch == bundle.snapshot.membershipEpoch else {
+            throw DistributedMeshStoreError.membershipEpochMismatch(
+                expected: try membershipEpoch(for: group) ?? 0,
+                actual: bundle.snapshot.membershipEpoch
+            )
+        }
+        let remoteHeads = Dictionary(
+            uniqueKeysWithValues: bundle.snapshot.authorHeads.map { ($0.endpointID, $0) }
+        )
+        for local in try authorHeads(for: group) {
+            guard let remote = remoteHeads[local.endpointID],
+                  remote.sequence >= local.sequence else {
+                throw DistributedMeshStoreError.snapshotDoesNotCoverLocalHead(local.endpointID)
+            }
+            if remote.sequence == local.sequence, remote.eventHash != local.eventHash {
+                throw DistributedMeshStoreError.snapshotHeadHashMismatch(local.endpointID)
+            }
+        }
+        let envelope = try MeshCanonicalStoreJSON.encode(bundle)
+        try transaction {
+            try run(
+                "DELETE FROM materialized_registers WHERE trust_group_id=?",
+                [.text(group.rawValue.uuidString)]
+            )
+            try run(
+                "DELETE FROM materialized_immutable_values WHERE trust_group_id=?",
+                [.text(group.rawValue.uuidString)]
+            )
+            try applySnapshotState(bundle.state, in: group)
+            try run(
+                "DELETE FROM author_heads WHERE trust_group_id=?",
+                [.text(group.rawValue.uuidString)]
+            )
+            for head in bundle.snapshot.authorHeads {
+                try run(
+                    "INSERT INTO author_heads(trust_group_id, author_endpoint_id, sequence, " +
+                    "event_hash) VALUES(?, ?, ?, ?)",
+                    [.text(group.rawValue.uuidString), .text(head.endpointID.rawValue),
+                     .integer(Int64(head.sequence)), .blob(head.eventHash)]
+                )
+            }
+            try storeSnapshot(bundle, envelope: envelope)
+            try run("UPDATE materialization_metadata SET version=2")
+        }
+        materializationNeedsRebuild = false
+    }
+
+    /// Deletes history covered by a signed snapshot only after every active
+    /// peer has durably acknowledged each author checkpoint.
+    public func compactEvents(
+        using snapshotID: MeshEventID,
+        creatorPublicKey: Data,
+        activePeers: [MeshDeviceID]
+    ) throws -> Int {
+        guard let bundle = try storedSnapshot(id: snapshotID) else {
+            throw DistributedMeshStoreError.snapshotNotFound
+        }
+        try MeshReplicaSnapshotCrypto.verify(bundle, creatorPublicKey: creatorPublicKey)
+        let group = bundle.snapshot.trustGroupID
+        guard let epoch = try membershipEpoch(for: group),
+              epoch == bundle.snapshot.membershipEpoch else {
+            throw DistributedMeshStoreError.membershipEpochMismatch(
+                expected: try membershipEpoch(for: group) ?? 0,
+                actual: bundle.snapshot.membershipEpoch
+            )
+        }
+        let peers = Array(Set(activePeers)).sorted()
+        return try transaction {
+            var removed = 0
+            for checkpoint in bundle.snapshot.authorHeads {
+                guard let local = try authorHead(
+                    group: group, endpoint: checkpoint.endpointID
+                ), local.sequence >= checkpoint.sequence else {
+                    throw DistributedMeshStoreError.snapshotCheckpointUnavailable(
+                        checkpoint.endpointID
+                    )
+                }
+                let localHash: Data?
+                if local.sequence == checkpoint.sequence {
+                    localHash = local.eventHash
+                } else {
+                    localHash = try eventHash(
+                        group: group, endpoint: checkpoint.endpointID,
+                        sequence: checkpoint.sequence
+                    )
+                }
+                guard localHash == checkpoint.eventHash else {
+                    throw DistributedMeshStoreError.snapshotHeadHashMismatch(
+                        checkpoint.endpointID
+                    )
+                }
+                for peer in peers {
+                    let acknowledged = try acknowledgement(
+                        group: group, peer: peer, author: checkpoint.endpointID
+                    ) ?? 0
+                    guard acknowledged >= checkpoint.sequence else {
+                        throw DistributedMeshStoreError.compactionNotAcknowledged(
+                            peer: peer, author: checkpoint.endpointID,
+                            required: checkpoint.sequence, actual: acknowledged
+                        )
+                    }
+                }
+                try run(
+                    "DELETE FROM events WHERE trust_group_id=? AND author_endpoint_id=? " +
+                    "AND author_sequence<=?",
+                    [.text(group.rawValue.uuidString), .text(checkpoint.endpointID.rawValue),
+                     .integer(Int64(checkpoint.sequence))]
+                )
+                removed += Int(sqlite3_changes(database))
+            }
+            return removed
+        }
+    }
+
+    public func latestSnapshot(in group: MeshTrustGroupID) throws -> MeshReplicaSnapshotBundle? {
+        let bundle = try queryOne(
+            "SELECT envelope FROM snapshots WHERE trust_group_id=? " +
+            "ORDER BY created_at_ms DESC, snapshot_id DESC LIMIT 1",
+            [.text(group.rawValue.uuidString)]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let bundle = try? JSONDecoder().decode(
+                      MeshReplicaSnapshotBundle.self, from: data
+                  ) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            return bundle
+        }
+        if let bundle { try verifyStoredSnapshot(bundle) }
+        return bundle
+    }
+
+    private func coveringSnapshot(in group: MeshTrustGroupID,
+                                  author: MeshEndpointID,
+                                  after sequence: UInt64) throws
+        -> MeshReplicaSnapshotBundle? {
+        let bundles = try query(
+            "SELECT envelope FROM snapshots WHERE trust_group_id=? " +
+            "ORDER BY created_at_ms DESC, snapshot_id DESC",
+            [.text(group.rawValue.uuidString)]
+        ) { statement -> MeshReplicaSnapshotBundle in
+            guard let data = Self.columnData(statement, index: 0),
+                  let bundle = try? JSONDecoder().decode(
+                      MeshReplicaSnapshotBundle.self, from: data
+                  ) else { throw DistributedMeshStoreError.corruptStoredValue }
+            return bundle
+        }
+        for bundle in bundles {
+            try verifyStoredSnapshot(bundle)
+            if bundle.snapshot.authorHeads.contains(where: {
+                $0.endpointID == author && $0.sequence > sequence
+            }) {
+                return bundle
+            }
+        }
+        return nil
+    }
+
     /// Replays retained events into derived tables. This is safe after an
     /// interrupted migration because materialized state is disposable and the
     /// immutable event log remains the source of truth.
     public func rebuildMaterializedState() throws {
+        let snapshots = try latestStoredSnapshots()
         let retained = try query(
             "SELECT envelope FROM events ORDER BY wall_time_ms, logical_time, " +
             "author_endpoint_id, event_id"
@@ -546,11 +799,15 @@ public actor DistributedMeshStore {
         try transaction {
             try run("DELETE FROM materialized_registers")
             try run("DELETE FROM materialized_entities")
+            try run("DELETE FROM materialized_immutable_values")
             try run("DELETE FROM quarantined_events")
+            for bundle in snapshots {
+                try applySnapshotState(bundle.state, in: bundle.snapshot.trustGroupID)
+            }
             for (event, envelope) in retained {
                 try materialize(event, envelope: envelope)
             }
-            try run("UPDATE materialization_metadata SET version=1")
+            try run("UPDATE materialization_metadata SET version=2")
         }
         materializationNeedsRebuild = false
     }
@@ -559,6 +816,189 @@ public actor DistributedMeshStore {
         if materializationNeedsRebuild {
             try rebuildMaterializedState()
         }
+    }
+
+    private func snapshotFields(in group: MeshTrustGroupID) throws -> [MeshSnapshotField] {
+        try query(
+            "SELECT entity_type, entity_id, field_name, value, is_deleted, source_event_id, " +
+            "wall_time_ms, logical_time, author_endpoint_id FROM materialized_registers " +
+            "WHERE trust_group_id=? ORDER BY entity_type, entity_id, field_name",
+            [.text(group.rawValue.uuidString)]
+        ) { statement in
+            guard let type = MeshEntityType(rawValue: Self.columnText(statement, index: 0)),
+                  let entity = MeshEntityReference(
+                      type: type, id: Self.columnText(statement, index: 1)
+                  ),
+                  let eventUUID = UUID(uuidString: Self.columnText(statement, index: 5)),
+                  let eventID = MeshEventID(rawValue: eventUUID),
+                  let endpoint = MeshEndpointID(rawValue: Self.columnText(statement, index: 8)) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            let isDeleted = sqlite3_column_int64(statement, 4) != 0
+            return MeshSnapshotField(
+                entity: entity,
+                mutation: MeshFieldMutation(
+                    field: Self.columnText(statement, index: 2),
+                    value: Self.columnData(statement, index: 3), isDeleted: isDeleted
+                ),
+                sourceEventID: eventID,
+                timestamp: MeshHybridTimestamp(
+                    wallTimeMilliseconds: sqlite3_column_int64(statement, 6),
+                    logical: UInt32(sqlite3_column_int64(statement, 7))
+                ),
+                authorEndpointID: endpoint
+            )
+        }
+    }
+
+    private func snapshotImmutableValues(in group: MeshTrustGroupID) throws
+        -> [MeshSnapshotImmutable] {
+        try query(
+            "SELECT entity_type, entity_id, value, source_event_id, wall_time_ms, " +
+            "logical_time, author_endpoint_id FROM materialized_immutable_values " +
+            "WHERE trust_group_id=? ORDER BY entity_type, entity_id",
+            [.text(group.rawValue.uuidString)]
+        ) { statement in
+            guard let type = MeshEntityType(rawValue: Self.columnText(statement, index: 0)),
+                  let entity = MeshEntityReference(
+                      type: type, id: Self.columnText(statement, index: 1)
+                  ),
+                  let value = Self.columnData(statement, index: 2),
+                  let eventUUID = UUID(uuidString: Self.columnText(statement, index: 3)),
+                  let eventID = MeshEventID(rawValue: eventUUID),
+                  let endpoint = MeshEndpointID(rawValue: Self.columnText(statement, index: 6))
+            else { throw DistributedMeshStoreError.corruptStoredValue }
+            return MeshSnapshotImmutable(
+                entity: entity, value: value, sourceEventID: eventID,
+                timestamp: MeshHybridTimestamp(
+                    wallTimeMilliseconds: sqlite3_column_int64(statement, 4),
+                    logical: UInt32(sqlite3_column_int64(statement, 5))
+                ),
+                authorEndpointID: endpoint
+            )
+        }
+    }
+
+    private func applySnapshotState(_ state: MeshReplicaState,
+                                    in group: MeshTrustGroupID) throws {
+        try state.validate()
+        for field in state.fields {
+            try run(
+                "INSERT INTO materialized_registers(trust_group_id, entity_type, entity_id, " +
+                "field_name, value, is_deleted, source_event_id, wall_time_ms, logical_time, " +
+                "author_endpoint_id) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [.text(group.rawValue.uuidString), .text(field.entity.type.rawValue),
+                 .text(field.entity.id), .text(field.mutation.field),
+                 field.mutation.value.map(Binding.blob) ?? .null,
+                 .integer(field.mutation.isDeleted ? 1 : 0),
+                 .text(field.sourceEventID.rawValue.uuidString),
+                 .integer(field.timestamp.wallTimeMilliseconds),
+                 .integer(Int64(field.timestamp.logical)),
+                 .text(field.authorEndpointID.rawValue)]
+            )
+        }
+        for immutable in state.immutableValues {
+            try run(
+                "INSERT INTO materialized_immutable_values(trust_group_id, entity_type, " +
+                "entity_id, value, source_event_id, wall_time_ms, logical_time, " +
+                "author_endpoint_id) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                [.text(group.rawValue.uuidString), .text(immutable.entity.type.rawValue),
+                 .text(immutable.entity.id), .blob(immutable.value),
+                 .text(immutable.sourceEventID.rawValue.uuidString),
+                 .integer(immutable.timestamp.wallTimeMilliseconds),
+                 .integer(Int64(immutable.timestamp.logical)),
+                 .text(immutable.authorEndpointID.rawValue)]
+            )
+        }
+    }
+
+    private func storeSnapshot(_ bundle: MeshReplicaSnapshotBundle,
+                               envelope: Data) throws {
+        if let existing = try queryOne(
+            "SELECT envelope FROM snapshots WHERE snapshot_id=? LIMIT 1",
+            [.text(bundle.snapshot.id.rawValue.uuidString)],
+            transform: { statement -> Data in
+                guard let data = Self.columnData(statement, index: 0) else {
+                    throw DistributedMeshStoreError.corruptStoredValue
+                }
+                return data
+            }
+        ) {
+            guard existing == envelope else {
+                throw DistributedMeshStoreError.snapshotIDCollision
+            }
+            return
+        }
+        try run(
+            "INSERT INTO snapshots(snapshot_id, trust_group_id, envelope, created_at_ms) " +
+            "VALUES(?, ?, ?, ?)",
+            [.text(bundle.snapshot.id.rawValue.uuidString),
+             .text(bundle.snapshot.trustGroupID.rawValue.uuidString), .blob(envelope),
+             .integer(bundle.snapshot.createdAt.wallTimeMilliseconds)]
+        )
+    }
+
+    private func storedSnapshot(id: MeshEventID) throws -> MeshReplicaSnapshotBundle? {
+        let bundle = try queryOne(
+            "SELECT envelope FROM snapshots WHERE snapshot_id=? LIMIT 1",
+            [.text(id.rawValue.uuidString)]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let bundle = try? JSONDecoder().decode(
+                      MeshReplicaSnapshotBundle.self, from: data
+                  ) else { throw DistributedMeshStoreError.corruptStoredValue }
+            return bundle
+        }
+        if let bundle { try verifyStoredSnapshot(bundle) }
+        return bundle
+    }
+
+    private func latestStoredSnapshots() throws -> [MeshReplicaSnapshotBundle] {
+        let stored = try query(
+            "SELECT trust_group_id, envelope FROM snapshots " +
+            "ORDER BY trust_group_id, created_at_ms DESC, snapshot_id DESC"
+        ) { statement -> (String, MeshReplicaSnapshotBundle) in
+            guard let data = Self.columnData(statement, index: 1),
+                  let bundle = try? JSONDecoder().decode(
+                      MeshReplicaSnapshotBundle.self, from: data
+                  ) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            return (Self.columnText(statement, index: 0), bundle)
+        }
+        var seen: Set<String> = []
+        var result: [MeshReplicaSnapshotBundle] = []
+        for (group, bundle) in stored where seen.insert(group).inserted {
+            try verifyStoredSnapshot(bundle)
+            result.append(bundle)
+        }
+        return result
+    }
+
+    private func verifyStoredSnapshot(_ bundle: MeshReplicaSnapshotBundle) throws {
+        guard let publicKey = Self.publicKeyData(
+            from: bundle.snapshot.creatorEndpointID
+        ) else { throw DistributedMeshStoreError.corruptStoredValue }
+        do {
+            try MeshReplicaSnapshotCrypto.verify(bundle, creatorPublicKey: publicKey)
+        } catch {
+            throw DistributedMeshStoreError.corruptStoredValue
+        }
+    }
+
+    private static func publicKeyData(from endpoint: MeshEndpointID) -> Data? {
+        let value = endpoint.rawValue
+        guard value.utf8.count == 64 else { return nil }
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(32)
+        var index = value.startIndex
+        for _ in 0..<32 {
+            let next = value.index(index, offsetBy: 2)
+            guard let byte = UInt8(value[index..<next], radix: 16) else { return nil }
+            bytes.append(byte)
+            index = next
+        }
+        return Data(bytes)
     }
 
     /// Creates the durable accepted receipt that gates side effects. A retry by
@@ -694,6 +1134,21 @@ public actor DistributedMeshStore {
         ) { UInt64(sqlite3_column_int64($0, 0)) }
     }
 
+    private func eventHash(group: MeshTrustGroupID, endpoint: MeshEndpointID,
+                           sequence: UInt64) throws -> Data? {
+        try queryOne(
+            "SELECT event_hash FROM events WHERE trust_group_id=? AND author_endpoint_id=? " +
+            "AND author_sequence=? LIMIT 1",
+            [.text(group.rawValue.uuidString), .text(endpoint.rawValue),
+             .integer(Int64(sequence))]
+        ) { statement in
+            guard let hash = Self.columnData(statement, index: 0) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            return hash
+        }
+    }
+
     private func materialize(_ event: MeshReplicatedEvent, envelope: Data) throws {
         if event.operation == .fieldSetV1 {
             do {
@@ -758,35 +1213,47 @@ public actor DistributedMeshStore {
 
     private func materializeImmutable(_ event: MeshReplicatedEvent) throws {
         let existing = try queryOne(
-            "SELECT e.envelope FROM materialized_entities m JOIN events e " +
-            "ON e.event_id=m.source_event_id WHERE m.trust_group_id=? AND m.entity_type=? " +
-            "AND m.entity_id=? LIMIT 1",
+            "SELECT wall_time_ms, logical_time, author_endpoint_id, source_event_id " +
+            "FROM materialized_immutable_values WHERE trust_group_id=? AND entity_type=? " +
+            "AND entity_id=? LIMIT 1",
             [.text(event.trustGroupID.rawValue.uuidString), .text(event.entity.type.rawValue),
              .text(event.entity.id)]
-        ) { statement -> MeshReplicatedEvent in
-            guard let data = Self.columnData(statement, index: 0),
-                  let value = try? JSONDecoder().decode(MeshReplicatedEvent.self, from: data) else {
+        ) { statement -> (MeshHybridTimestamp, MeshEndpointID, MeshEventID) in
+            guard let endpoint = MeshEndpointID(rawValue: Self.columnText(statement, index: 2)),
+                  let uuid = UUID(uuidString: Self.columnText(statement, index: 3)),
+                  let eventID = MeshEventID(rawValue: uuid) else {
                 throw DistributedMeshStoreError.corruptStoredValue
             }
-            return value
+            return (
+                MeshHybridTimestamp(
+                    wallTimeMilliseconds: sqlite3_column_int64(statement, 0),
+                    logical: UInt32(sqlite3_column_int64(statement, 1))
+                ), endpoint, eventID
+            )
         }
         // Immutable-ID collisions resolve to the earliest deterministic stamp,
         // independent of arrival order. Normal UUIDv7 entity IDs never collide.
         if let existing,
            !Self.materializationStamp(
-               timestamp: existing.hybridTimestamp, endpoint: existing.authorEndpointID,
-               eventID: existing.id,
+               timestamp: existing.0, endpoint: existing.1,
+               eventID: existing.2,
                winsOver: (event.hybridTimestamp, event.authorEndpointID, event.id)
            ) {
             return
         }
         try run(
-            "INSERT INTO materialized_entities(trust_group_id, entity_type, entity_id, value, " +
-            "source_event_id) VALUES(?, ?, ?, ?, ?) " +
+            "INSERT INTO materialized_immutable_values(trust_group_id, entity_type, entity_id, " +
+            "value, source_event_id, wall_time_ms, logical_time, author_endpoint_id) " +
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?) " +
             "ON CONFLICT(trust_group_id, entity_type, entity_id) DO UPDATE SET " +
-            "value=excluded.value, source_event_id=excluded.source_event_id",
+            "value=excluded.value, source_event_id=excluded.source_event_id, " +
+            "wall_time_ms=excluded.wall_time_ms, logical_time=excluded.logical_time, " +
+            "author_endpoint_id=excluded.author_endpoint_id",
             [.text(event.trustGroupID.rawValue.uuidString), .text(event.entity.type.rawValue),
-             .text(event.entity.id), .blob(event.payload), .text(event.id.rawValue.uuidString)]
+             .text(event.entity.id), .blob(event.payload), .text(event.id.rawValue.uuidString),
+             .integer(event.hybridTimestamp.wallTimeMilliseconds),
+             .integer(Int64(event.hybridTimestamp.logical)),
+             .text(event.authorEndpointID.rawValue)]
         )
     }
 
@@ -1089,6 +1556,17 @@ public actor DistributedMeshStore {
     INSERT INTO materialization_metadata(version)
       SELECT 0 WHERE NOT EXISTS(SELECT 1 FROM materialization_metadata);
     UPDATE schema_metadata SET version=3;
+    """
+
+    private static let schemaV4 = """
+    CREATE TABLE IF NOT EXISTS materialized_immutable_values(
+      trust_group_id TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL,
+      value BLOB NOT NULL, source_event_id TEXT NOT NULL, wall_time_ms INTEGER NOT NULL,
+      logical_time INTEGER NOT NULL, author_endpoint_id TEXT NOT NULL,
+      PRIMARY KEY(trust_group_id, entity_type, entity_id));
+    CREATE INDEX IF NOT EXISTS materialized_immutable_source
+      ON materialized_immutable_values(source_event_id);
+    UPDATE schema_metadata SET version=4;
     """
 }
 

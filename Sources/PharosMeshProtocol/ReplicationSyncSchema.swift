@@ -91,6 +91,66 @@ public struct MeshEventRangeRequest: Codable, Equatable, Sendable {
     }
 }
 
+public enum MeshEventRangeResponseKind: String, Codable, Sendable {
+    case events
+    case snapshot
+    case upToDate = "up-to-date"
+}
+
+public struct MeshEventRangeResponse: Codable, Equatable, Sendable {
+    public var request: MeshEventRangeRequest
+    public var kind: MeshEventRangeResponseKind
+    public var events: [MeshReplicatedEvent]
+    public var snapshot: MeshReplicaSnapshotBundle?
+
+    public init(request: MeshEventRangeRequest, kind: MeshEventRangeResponseKind,
+                events: [MeshReplicatedEvent] = [],
+                snapshot: MeshReplicaSnapshotBundle? = nil) {
+        self.request = request
+        self.kind = kind
+        self.events = events
+        self.snapshot = snapshot
+    }
+
+    public func validate() throws {
+        try request.validate()
+        switch kind {
+        case .events:
+            guard snapshot == nil, !events.isEmpty, events.count <= request.limit else {
+                throw MeshReplicationValidationError.invalidRangeResponse
+            }
+            var expected = request.afterSequence + 1
+            for event in events {
+                guard event.trustGroupID == request.trustGroupID,
+                      event.membershipEpoch == request.membershipEpoch,
+                      event.authorEndpointID == request.authorEndpointID,
+                      event.authorSequence == expected else {
+                    throw MeshReplicationValidationError.invalidRangeResponse
+                }
+                expected += 1
+            }
+        case .snapshot:
+            guard events.isEmpty, let snapshot else {
+                throw MeshReplicationValidationError.invalidRangeResponse
+            }
+            try snapshot.snapshot.validate()
+            try snapshot.state.validate()
+            guard snapshot.snapshot.trustGroupID == request.trustGroupID,
+                  snapshot.snapshot.membershipEpoch == request.membershipEpoch,
+                  snapshot.snapshot.authorHeads.contains(where: {
+                      $0.endpointID == request.authorEndpointID &&
+                          $0.sequence > request.afterSequence
+                  }) else {
+                throw MeshReplicationValidationError.invalidRangeResponse
+            }
+        case .upToDate:
+            guard events.isEmpty, snapshot == nil else {
+                throw MeshReplicationValidationError.invalidRangeResponse
+            }
+        }
+    }
+}
+
 /// One field mutation for project/issue LWW registers. A tombstone is explicit
 /// so deletion never depends on an ambiguous missing/null value.
 public struct MeshFieldMutation: Codable, Equatable, Sendable {
@@ -137,6 +197,7 @@ public enum MeshReplicationValidationError: Error, Equatable, Sendable {
     case duplicateAuthor
     case authorsNotCanonical
     case invalidRangeLimit
+    case invalidRangeResponse
     case invalidField
     case invalidTombstone
     case valueTooLarge

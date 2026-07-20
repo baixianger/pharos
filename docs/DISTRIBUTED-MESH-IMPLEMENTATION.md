@@ -181,9 +181,11 @@ temporary directory and never open the live Broker or Mesh data locations.
 
 Schema v2 is a transactional migration over v1, preserves existing rows,
 rejects ambiguous/future metadata, and adds atomic pairing-use/trusted-device
-tables. Schema v3 adds field registers and a durable derived-state version. A
-v2 upgrade, or a process death between schema creation and replay, rebuilds
-materialized state from the retained event log on first use. SQLite is exposed
+tables. Schema v3 adds field registers and a durable derived-state version;
+schema v4 adds independently stamped immutable values so derived state no longer
+depends on retaining source-event rows. A v2/v3 upgrade, or a process death
+between schema creation and replay, rebuilds materialized state from the retained
+event log and latest verified snapshot on first use. SQLite is exposed
 through the explicit `CSQLite` SwiftPM system-library target instead of an
 Apple-only implicit module. With `libsqlite3-dev` installed, `PharosMeshCore`
 compiles in the official `swift:6.2-jammy` Linux arm64 image.
@@ -199,8 +201,21 @@ Malformed payloads for known operations remain in the signed event chain for
 forward compatibility but enter semantic quarantine and never reach derived
 state. Tests exercise three replicas with different inter-author arrival orders.
 
+Replica snapshots contain canonical field/immutable state, per-author sequence
+and hash checkpoints, a state digest, creator identity, membership epoch, and an
+Ed25519 signature. Snapshot IDs are immutable; every database read re-verifies
+the digest, Endpoint-ID/key binding, and signature. Installation atomically
+restores state and author heads without deleting local history. Compaction is a
+separate transaction that requires an already-persisted snapshot and a monotonic
+acknowledgement from every caller-supplied active peer for every checkpoint.
+After compaction, a range request receives the covering snapshot explicitly
+instead of an empty/misleading event batch, and new events continue the retained
+author-head hash chain. Production wiring must derive the active-peer set from
+the revocation-aware membership view; callers cannot enable this API yet.
+
 Iroh stream routing for the sync messages, richer room/message/project/issue
-operation adapters, blob transfer, signed snapshots, and compaction remain pending.
+operation adapters, revocation-aware compaction policy, blob transfer, and the
+randomized partition/reordering simulation remain pending.
 
 1. Add SQLite/WAL schema for events, author heads, materialized entities, blob
    manifests, peer acknowledgements, membership epochs, and snapshots.

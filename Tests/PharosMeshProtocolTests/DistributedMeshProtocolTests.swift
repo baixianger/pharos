@@ -235,6 +235,34 @@ final class DistributedMeshProtocolTests: XCTestCase {
         }
     }
 
+    func testSnapshotStateCanonicalizesFieldsAndRejectsDuplicateKeys() throws {
+        let project = MeshEntityReference(type: .project, id: "project")!
+        let endpoint = MeshEndpointID(rawValue: "author")!
+        let first = MeshSnapshotField(
+            entity: project,
+            mutation: MeshFieldMutation(field: "a", value: Data("one".utf8)),
+            sourceEventID: .generate(), timestamp: .init(wallTimeMilliseconds: 1),
+            authorEndpointID: endpoint
+        )
+        let second = MeshSnapshotField(
+            entity: project,
+            mutation: MeshFieldMutation(field: "b", value: Data("two".utf8)),
+            sourceEventID: .generate(), timestamp: .init(wallTimeMilliseconds: 2),
+            authorEndpointID: endpoint
+        )
+        let state = try MeshReplicaState(fields: [second, first], immutableValues: [])
+        XCTAssertEqual(state.fields.map(\.mutation.field), ["a", "b"])
+        XCTAssertEqual(
+            try JSONDecoder().decode(MeshReplicaState.self, from: state.canonicalBytes()), state
+        )
+
+        XCTAssertThrowsError(try MeshReplicaState(
+            fields: [first, first], immutableValues: []
+        )) {
+            XCTAssertEqual($0 as? MeshSnapshotValidationError, .duplicateEntityState)
+        }
+    }
+
     func testCanonicalSigningBytesAreStableAndExcludeSignature() throws {
         var event = makeEvent(sequence: 1)
         let unsigned = try event.canonicalSigningBytes()

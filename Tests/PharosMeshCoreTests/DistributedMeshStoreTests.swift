@@ -14,7 +14,7 @@ final class DistributedMeshStoreTests: XCTestCase {
 
         let schemaVersion = try await store.schemaVersion()
         let journalMode = try await store.journalMode()
-        XCTAssertEqual(schemaVersion, 3)
+        XCTAssertEqual(schemaVersion, 4)
         XCTAssertEqual(journalMode.lowercased(), "wal")
         try await store.setMembershipEpoch(1, for: fixture.group)
 
@@ -256,6 +256,279 @@ final class DistributedMeshStoreTests: XCTestCase {
         XCTAssertEqual(second, first)
     }
 
+    func testSignedSnapshotPersistsAcrossRestartAndRejectsTamperedState() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let identity = MeshDeviceIdentity.generate()
+        let key = try Curve25519.Signing.PrivateKey(
+            rawRepresentation: identity.irohSecretKeyBytes()
+        )
+        let endpoint = try identity.endpointID()
+        let project = MeshEntityReference(type: .project, id: "snapshot-project")!
+        let message = MeshEntityReference(type: .message, id: "snapshot-message")!
+        let fieldEvent = try signedFieldEvent(
+            group: fixture.group, device: identity.deviceID, endpoint: endpoint, key: key,
+            sequence: 1, timestamp: .init(wallTimeMilliseconds: 100), entity: project,
+            mutation: MeshFieldMutation(field: "name", value: Data("Snapshot".utf8))
+        )
+        let immutableEvent = try signedEvent(
+            group: fixture.group, device: identity.deviceID, endpoint: endpoint, key: key,
+            sequence: 2, timestamp: .init(wallTimeMilliseconds: 200), entity: message,
+            operation: .immutablePutV1, payload: Data("hello".utf8),
+            previousHash: try DistributedMeshCrypto.digest(fieldEvent)
+        )
+        let bundle: MeshReplicaSnapshotBundle
+        do {
+            let store = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+            try await store.setMembershipEpoch(1, for: fixture.group)
+            _ = try await store.insert(
+                fieldEvent, authorPublicKey: try identity.signingPublicKeyBytes()
+            )
+            _ = try await store.insert(
+                immutableEvent, authorPublicKey: try identity.signingPublicKeyBytes()
+            )
+            bundle = try await store.createSnapshot(
+                for: fixture.group, identity: identity,
+                createdAt: .init(wallTimeMilliseconds: 300)
+            )
+            try MeshReplicaSnapshotCrypto.verify(
+                bundle, creatorPublicKey: try identity.signingPublicKeyBytes()
+            )
+            try await store.persistSnapshot(
+                bundle, creatorPublicKey: try identity.signingPublicKeyBytes()
+            )
+        }
+        XCTAssertEqual(bundle.snapshot.authorHeads.map(\.sequence), [2])
+        XCTAssertEqual(bundle.state.fields.count, 1)
+        XCTAssertEqual(bundle.state.immutableValues.count, 1)
+
+        let reopened = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        let persisted = try await reopened.latestSnapshot(in: fixture.group)
+        XCTAssertEqual(persisted, bundle)
+
+        var tampered = bundle
+        tampered.state.fields[0].mutation.value = Data("tampered".utf8)
+        do {
+            try await reopened.persistSnapshot(
+                tampered, creatorPublicKey: try identity.signingPublicKeyBytes()
+            )
+            XCTFail("tampered snapshot state must not replace the verified bundle")
+        } catch {
+            XCTAssertEqual(
+                error as? MeshReplicaSnapshotCryptoError, .stateDigestMismatch
+            )
+        }
+        let stillPersisted = try await reopened.latestSnapshot(in: fixture.group)
+        XCTAssertEqual(stillPersisted, bundle)
+
+        var collision = bundle
+        collision.state.fields[0].mutation.value = Data("different-valid-state".utf8)
+        collision.snapshot.stateDigest = try MeshReplicaSnapshotCrypto.digest(collision.state)
+        collision.snapshot.signature = try identity.signature(
+            for: collision.snapshot.canonicalSigningBytes()
+        )
+        do {
+            try await reopened.persistSnapshot(
+                collision, creatorPublicKey: try identity.signingPublicKeyBytes()
+            )
+            XCTFail("a snapshot ID must identify immutable bytes")
+        } catch {
+            XCTAssertEqual(error as? DistributedMeshStoreError, .snapshotIDCollision)
+        }
+    }
+
+    func testSnapshotInstallRestoresStateAndHeadsBeforeDeletingCoveredEvents() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let identity = MeshDeviceIdentity.generate()
+        let key = try Curve25519.Signing.PrivateKey(
+            rawRepresentation: identity.irohSecretKeyBytes()
+        )
+        let publicKey = try identity.signingPublicKeyBytes()
+        let endpoint = try identity.endpointID()
+        let project = MeshEntityReference(type: .project, id: "installed-project")!
+        let message = MeshEntityReference(type: .message, id: "installed-message")!
+        let first = try signedFieldEvent(
+            group: fixture.group, device: identity.deviceID, endpoint: endpoint, key: key,
+            sequence: 1, timestamp: .init(wallTimeMilliseconds: 100), entity: project,
+            mutation: MeshFieldMutation(field: "name", value: Data("Installed".utf8))
+        )
+        let second = try signedEvent(
+            group: fixture.group, device: identity.deviceID, endpoint: endpoint, key: key,
+            sequence: 2, timestamp: .init(wallTimeMilliseconds: 200), entity: message,
+            operation: .immutablePutV1, payload: Data("message".utf8),
+            previousHash: try DistributedMeshCrypto.digest(first)
+        )
+        let source = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        try await source.setMembershipEpoch(1, for: fixture.group)
+        _ = try await source.insert(first, authorPublicKey: publicKey)
+        _ = try await source.insert(second, authorPublicKey: publicKey)
+        let bundle = try await source.createSnapshot(
+            for: fixture.group, identity: identity,
+            createdAt: .init(wallTimeMilliseconds: 300)
+        )
+
+        let targetURL = fixture.directory.appendingPathComponent("snapshot-target.sqlite")
+        let target = try DistributedMeshStore(databaseURL: targetURL)
+        try await target.setMembershipEpoch(1, for: fixture.group)
+        try await target.installSnapshot(bundle, creatorPublicKey: publicKey)
+        let targetFields = try await target.materializedFields(for: project, in: fixture.group)
+        XCTAssertEqual(targetFields.first?.value, Data("Installed".utf8))
+        let targetMessage = try await target.materializedImmutableValue(
+            for: message, in: fixture.group
+        )
+        XCTAssertEqual(targetMessage, Data("message".utf8))
+        let installedVector = try await target.syncVector(for: fixture.group)
+        XCTAssertEqual(installedVector.authors.map(\.sequence), [2])
+        let coveredEvents = try await target.events(
+            for: fixture.group, author: endpoint, after: 0
+        )
+        XCTAssertEqual(coveredEvents, [])
+
+        let third = try signedFieldEvent(
+            group: fixture.group, device: identity.deviceID, endpoint: endpoint, key: key,
+            sequence: 3, timestamp: .init(wallTimeMilliseconds: 400), entity: project,
+            mutation: MeshFieldMutation(field: "name", value: Data("Advanced".utf8)),
+            previousHash: try XCTUnwrap(bundle.snapshot.authorHeads.first?.eventHash)
+        )
+        _ = try await target.insert(third, authorPublicKey: publicKey)
+        let advanced = try await target.materializedFields(for: project, in: fixture.group)
+        XCTAssertEqual(advanced.first?.value, Data("Advanced".utf8))
+        do {
+            try await target.installSnapshot(bundle, creatorPublicKey: publicKey)
+            XCTFail("an older snapshot must not regress the local author head")
+        } catch {
+            XCTAssertEqual(
+                error as? DistributedMeshStoreError,
+                .snapshotDoesNotCoverLocalHead(endpoint)
+            )
+        }
+
+        let recoveryURL = fixture.directory.appendingPathComponent("snapshot-recovery.sqlite")
+        do {
+            let recovery = try DistributedMeshStore(databaseURL: recoveryURL)
+            try await recovery.setMembershipEpoch(1, for: fixture.group)
+            try await recovery.installSnapshot(bundle, creatorPublicKey: publicKey)
+        }
+        try executeSQLite(
+            at: recoveryURL,
+            sql: "DELETE FROM materialized_registers; " +
+                 "DELETE FROM materialized_immutable_values; " +
+                 "UPDATE materialization_metadata SET version=0;"
+        )
+        let recovered = try DistributedMeshStore(databaseURL: recoveryURL)
+        let recoveredFields = try await recovered.materializedFields(
+            for: project, in: fixture.group
+        )
+        XCTAssertEqual(recoveredFields.first?.value, Data("Installed".utf8))
+        let recoveredMessage = try await recovered.materializedImmutableValue(
+            for: message, in: fixture.group
+        )
+        XCTAssertEqual(recoveredMessage, Data("message".utf8))
+    }
+
+    func testCompactionRequiresEveryActivePeerAcknowledgementAndPreservesContinuation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let identity = MeshDeviceIdentity.generate()
+        let key = try Curve25519.Signing.PrivateKey(
+            rawRepresentation: identity.irohSecretKeyBytes()
+        )
+        let publicKey = try identity.signingPublicKeyBytes()
+        let endpoint = try identity.endpointID()
+        let entity = MeshEntityReference(type: .issue, id: "compact-issue")!
+        let first = try signedFieldEvent(
+            group: fixture.group, device: identity.deviceID, endpoint: endpoint, key: key,
+            sequence: 1, timestamp: .init(wallTimeMilliseconds: 100), entity: entity,
+            mutation: MeshFieldMutation(field: "title", value: Data("one".utf8))
+        )
+        let second = try signedFieldEvent(
+            group: fixture.group, device: identity.deviceID, endpoint: endpoint, key: key,
+            sequence: 2, timestamp: .init(wallTimeMilliseconds: 200), entity: entity,
+            mutation: MeshFieldMutation(field: "title", value: Data("two".utf8)),
+            previousHash: try DistributedMeshCrypto.digest(first)
+        )
+        let store = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        try await store.setMembershipEpoch(1, for: fixture.group)
+        _ = try await store.insert(first, authorPublicKey: publicKey)
+        _ = try await store.insert(second, authorPublicKey: publicKey)
+        let snapshot = try await store.createSnapshot(
+            for: fixture.group, identity: identity,
+            createdAt: .init(wallTimeMilliseconds: 250)
+        )
+        try await store.persistSnapshot(snapshot, creatorPublicKey: publicKey)
+
+        let firstPeer = MeshDeviceID()
+        let secondPeer = MeshDeviceID()
+        let vector = try await store.syncVector(for: fixture.group)
+        try await store.acknowledge(vector, from: firstPeer)
+        do {
+            _ = try await store.compactEvents(
+                using: snapshot.snapshot.id, creatorPublicKey: publicKey,
+                activePeers: [firstPeer, secondPeer]
+            )
+            XCTFail("all active peers must acknowledge before event deletion")
+        } catch {
+            XCTAssertEqual(
+                error as? DistributedMeshStoreError,
+                .compactionNotAcknowledged(
+                    peer: secondPeer, author: endpoint, required: 2, actual: 0
+                )
+            )
+        }
+        let retained = try await store.events(for: fixture.group, author: endpoint, after: 0)
+        XCTAssertEqual(retained, [first, second])
+
+        try await store.acknowledge(vector, from: secondPeer)
+        let removed = try await store.compactEvents(
+            using: snapshot.snapshot.id, creatorPublicKey: publicKey,
+            activePeers: [secondPeer, firstPeer, firstPeer]
+        )
+        XCTAssertEqual(removed, 2)
+        let afterCompaction = try await store.events(
+            for: fixture.group, author: endpoint, after: 0
+        )
+        XCTAssertEqual(afterCompaction, [])
+        let fields = try await store.materializedFields(for: entity, in: fixture.group)
+        XCTAssertEqual(fields.first?.value, Data("two".utf8))
+        let compactedVector = try await store.syncVector(for: fixture.group)
+        XCTAssertEqual(compactedVector, vector)
+        let repeated = try await store.compactEvents(
+            using: snapshot.snapshot.id, creatorPublicKey: publicKey,
+            activePeers: [firstPeer, secondPeer]
+        )
+        XCTAssertEqual(repeated, 0)
+
+        let third = try signedFieldEvent(
+            group: fixture.group, device: identity.deviceID, endpoint: endpoint, key: key,
+            sequence: 3, timestamp: .init(wallTimeMilliseconds: 300), entity: entity,
+            mutation: MeshFieldMutation(field: "title", value: Data("three".utf8)),
+            previousHash: try XCTUnwrap(snapshot.snapshot.authorHeads.first?.eventHash)
+        )
+        _ = try await store.insert(third, authorPublicKey: publicKey)
+        let continued = try await store.materializedFields(for: entity, in: fixture.group)
+        XCTAssertEqual(continued.first?.value, Data("three".utf8))
+
+        let compactedRequest = MeshEventRangeRequest(
+            trustGroupID: fixture.group, membershipEpoch: 1,
+            authorEndpointID: endpoint, afterSequence: 0
+        )
+        let snapshotFallback = try await store.syncResponse(for: compactedRequest)
+        XCTAssertEqual(snapshotFallback.kind, .snapshot)
+        XCTAssertEqual(snapshotFallback.snapshot, snapshot)
+        let incremental = try await store.syncResponse(for: MeshEventRangeRequest(
+            trustGroupID: fixture.group, membershipEpoch: 1,
+            authorEndpointID: endpoint, afterSequence: 2
+        ))
+        XCTAssertEqual(incremental.kind, .events)
+        XCTAssertEqual(incremental.events, [third])
+        let caughtUp = try await store.syncResponse(for: MeshEventRangeRequest(
+            trustGroupID: fixture.group, membershipEpoch: 1,
+            authorEndpointID: endpoint, afterSequence: 3
+        ))
+        XCTAssertEqual(caughtUp.kind, .upToDate)
+    }
+
     func testAcceptedReceiptIsDurableIdempotencyGate() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -355,17 +628,17 @@ final class DistributedMeshStoreTests: XCTestCase {
         let migrated = try DistributedMeshStore(databaseURL: fixture.databaseURL)
         let migratedVersion = try await migrated.schemaVersion()
         let migratedEpoch = try await migrated.membershipEpoch(for: fixture.group)
-        XCTAssertEqual(migratedVersion, 3)
+        XCTAssertEqual(migratedVersion, 4)
         XCTAssertEqual(migratedEpoch, 9)
 
         let futureURL = fixture.directory.appendingPathComponent("future.sqlite")
         try executeSQLite(
             at: futureURL,
             sql: "CREATE TABLE schema_metadata(version INTEGER NOT NULL); " +
-                 "INSERT INTO schema_metadata VALUES(4);"
+                 "INSERT INTO schema_metadata VALUES(5);"
         )
         XCTAssertThrowsError(try DistributedMeshStore(databaseURL: futureURL)) {
-            XCTAssertEqual($0 as? DistributedMeshStoreError, .unsupportedSchemaVersion(4))
+            XCTAssertEqual($0 as? DistributedMeshStoreError, .unsupportedSchemaVersion(5))
         }
 
         let ambiguousURL = fixture.directory.appendingPathComponent("ambiguous.sqlite")
@@ -405,7 +678,7 @@ final class DistributedMeshStoreTests: XCTestCase {
         XCTAssertEqual(fields.map(\.field), ["title"])
         XCTAssertEqual(fields.first?.value, Data("Retained".utf8))
         let schemaVersion = try await migrated.schemaVersion()
-        XCTAssertEqual(schemaVersion, 3)
+        XCTAssertEqual(schemaVersion, 4)
     }
 
     func testInterruptedV3MaterializationRebuildIsRetriedOnNextRead() async throws {
