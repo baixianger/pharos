@@ -55,6 +55,17 @@ final class RoomStore {
 
     func refresh() async {
         guard !isDemo else { return }
+        guard !usesDistributedRegistry else {
+            // Rooms, messages, agents, attachments, and Host commands are not
+            // migrated yet. Keep their legacy projections empty and, most
+            // importantly, never fall through to the retired Broker endpoint.
+            rooms = []
+            messages = []
+            members = [:]
+            selectedRoom = nil
+            hasMoreHistory = false
+            return
+        }
         guard !settings.mesh.host.isEmpty, !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
@@ -91,7 +102,7 @@ final class RoomStore {
     /// change occurs, then the durable room/roster/history snapshot is reloaded.
     /// A timeout refresh is the reconnect safety net.
     func watchEvents() async {
-        guard !isDemo else { return }
+        guard !isDemo, !usesDistributedRegistry else { return }
         var cursor: UInt64?
         while !Task.isCancelled {
             do {
@@ -683,6 +694,9 @@ final class RoomStore {
 
     private func request(_ request: MeshRequest) async throws -> MeshResponse {
         guard !isDemo else { throw DemoNetworkError.disabled }
+        guard !usesDistributedRegistry else {
+            throw LegacyBrokerDisabledError.distributedMode
+        }
         var authenticated = request
         if authenticated.authToken == nil, !settings.mesh.controlToken.isEmpty {
             authenticated.authToken = settings.mesh.controlToken
@@ -711,6 +725,13 @@ final class RoomStore {
 private enum DemoNetworkError: LocalizedError {
     case disabled
     var errorDescription: String? { "Network access is disabled in demo mode." }
+}
+
+private enum LegacyBrokerDisabledError: LocalizedError {
+    case distributedMode
+    var errorDescription: String? {
+        "This feature has not moved to device-to-device Mesh yet. The retired Broker will not be contacted."
+    }
 }
 
 private enum RegistryMutationError: LocalizedError {
