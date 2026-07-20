@@ -128,6 +128,56 @@ final class DistributedProjectIssueProjectionTests: XCTestCase {
         XCTAssertEqual(restored.map(\.name), ["Recoverable"])
     }
 
+    @MainActor
+    func testProjectStoreDistributedModeWritesReplicaWithoutTouchingLegacyRegistry() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "pharos-project-store-product-\(UUID().uuidString)", isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let legacyURL = root.appendingPathComponent("projects.json")
+        let legacyBytes = Data("legacy-must-remain-untouched".utf8)
+        try legacyBytes.write(to: legacyURL)
+        setenv("PHAROS_DISTRIBUTED", "1", 1)
+        setenv("PHAROS_REGISTRY", legacyURL.path, 1)
+        defer {
+            unsetenv("PHAROS_DISTRIBUTED")
+            unsetenv("PHAROS_REGISTRY")
+        }
+
+        let replica = try MeshLocalReplica.openIsolated(
+            rootURL: root.appendingPathComponent("replica")
+        )
+        let group = try await replica.ensureActiveTrustGroup()
+        let store = ProjectStore()
+        await store.activateDistributedRegistry(replica: replica, group: group)
+        let project = Project(
+            name: "Product path", localPath: "/host-only/checkout",
+            addedAt: Date(timeIntervalSince1970: 1)
+        )
+        store.add(project)
+        store.addIssue(project.id, title: "Replicated issue")
+
+        for _ in 0..<100 where store.registrySyncStatus != .synced {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(store.registrySyncStatus, .synced)
+        let projection = DistributedProjectIssueProjection(
+            replica: replica, group: group
+        )
+        let materialized = try await projection.materializedProjects()
+
+        XCTAssertEqual(materialized.map(\.name), ["Product path"])
+        XCTAssertEqual(materialized[0].issues.map(\.title), ["Replicated issue"])
+        XCTAssertNil(materialized[0].localPath)
+        XCTAssertEqual(try Data(contentsOf: legacyURL), legacyBytes)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(
+                "distributed-project-cache.json"
+            ).path
+        ))
+    }
+
     private final class Fixture {
         let root: URL
         let group = MeshTrustGroupID()

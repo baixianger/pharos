@@ -625,9 +625,8 @@ final class ProjectStore {
     /// and CLI agree without treating iCloud or a Host checkout as shared state.
     private var fileURL: URL {
         if ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1" {
-            return DataLocation.current.appendingPathComponent(
-                "distributed-project-cache.json"
-            )
+            return PharosCore.registryURL.deletingLastPathComponent()
+                .appendingPathComponent("distributed-project-cache.json")
         }
         return PharosCore.registryURL
     }
