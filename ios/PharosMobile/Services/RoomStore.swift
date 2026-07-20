@@ -188,9 +188,10 @@ final class RoomStore {
                                        to: targets.isEmpty ? nil : targets)
             outgoing.replyToID = replyTo?.id
             outgoing.attachments = attachments.isEmpty ? nil : attachments
-            _ = try await request(outgoing)
+            let response = try await request(outgoing)
             try await loadLatestPage(for: room)
             error = nil
+            notice = response.note
             return true
         } catch {
             self.error = error.localizedDescription

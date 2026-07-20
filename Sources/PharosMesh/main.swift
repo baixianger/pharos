@@ -84,6 +84,7 @@ private enum MeshHeadlessCLI {
             var request = MeshRequest(cmd: "join", room: args[1], nick: args[2])
             request.session = session
             request.memberID = session
+            request.nodeID = MeshNodeIdentity.current
             request.project = FileManager.default.currentDirectoryPath
             request.host = ProcessInfo.processInfo.hostName
             request.kind = option("--kind", in: args)

@@ -132,12 +132,14 @@ enum MeshHooks {
         let env = ProcessInfo.processInfo.environment
         let pane = env["TMUX"] != nil ? env["TMUX_PANE"] : nil
         let socket = RemoteLaunch.tmuxSocket(fromEnvironmentValue: env["TMUX"])
-        MeshClient.sendIfUp(MeshRequest(cmd: "mark", nick: nick, project: cwd,
-                                        session: session,
-                                        host: HostIdentity.current,
-                                        tmuxPane: pane, tmuxSocket: socket,
-                                        state: state.rawValue,
-                                        stateReason: reason))
+        var request = MeshRequest(cmd: "mark", nick: nick, project: cwd,
+                                  session: session,
+                                  host: HostIdentity.current,
+                                  tmuxPane: pane, tmuxSocket: socket,
+                                  state: state.rawValue,
+                                  stateReason: reason)
+        request.nodeID = MeshNodeIdentity.current
+        MeshClient.sendIfUp(request)
     }
 
     /// Stop-hook body. Every failure path returns 0 with no output: a broken or
@@ -634,9 +636,11 @@ enum MeshHooks {
         guard !sessionID.isEmpty, let pane = environment["TMUX_PANE"], !pane.isEmpty,
               environment["TMUX"] != nil else { return }
         let socket = RemoteLaunch.tmuxSocket(fromEnvironmentValue: environment["TMUX"])
-        MeshClient.sendIfUp(MeshRequest(cmd: "rebind", project: cwd, session: sessionID,
-                                        host: HostIdentity.current,
-                                        tmuxPane: pane, tmuxSocket: socket))
+        var request = MeshRequest(cmd: "rebind", project: cwd, session: sessionID,
+                                  host: HostIdentity.current,
+                                  tmuxPane: pane, tmuxSocket: socket)
+        request.nodeID = MeshNodeIdentity.current
+        MeshClient.sendIfUp(request)
     }
 
     static func currentSessionID(

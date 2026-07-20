@@ -184,7 +184,10 @@ enum CLI {
     private static func runMesh(_ args: [String]) async -> Int32 {
         guard let sub = args.first else { print(meshUsage); return 2 }
         let a = Array(args.dropFirst())
-        func report(_ r: MeshResponse) -> Int32 { print(r.ok ? "ok" : "error: \(r.error ?? "?")"); return r.ok ? 0 : 1 }
+        func report(_ r: MeshResponse) -> Int32 {
+            print(r.ok ? (r.note ?? "ok") : "error: \(r.error ?? "?")")
+            return r.ok ? 0 : 1
+        }
         func printMessages(_ messages: [MeshMsg], empty: String) {
             if messages.isEmpty { print(empty) }
             for message in messages {
@@ -233,14 +236,16 @@ enum CLI {
             var kind: String?
             if let i = a.firstIndex(of: "--kind"), i + 1 < a.count { kind = a[i + 1] }
             kind = kind ?? detectAgentKind(env)
-            let r = MeshClient.send(MeshRequest(cmd: "join", room: a[0], nick: a[1],
-                                                project: FileManager.default.currentDirectoryPath,
-                                                session: session,
-                                                host: HostIdentity.current,
-                                                tmuxPane: pane,
-                                                tmuxSocket: socket,
-                                                kind: kind,
-                                                tailscaleIP: detectTailscaleIP()))
+            var request = MeshRequest(cmd: "join", room: a[0], nick: a[1],
+                                      project: FileManager.default.currentDirectoryPath,
+                                      session: session,
+                                      host: HostIdentity.current,
+                                      tmuxPane: pane,
+                                      tmuxSocket: socket,
+                                      kind: kind,
+                                      tailscaleIP: detectTailscaleIP())
+            request.nodeID = MeshNodeIdentity.current
+            let r = MeshClient.send(request)
             guard r.ok else { return report(r) }
             print("joined \(a[0]) as \(a[1])")
             let history = r.messages ?? []

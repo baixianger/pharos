@@ -2007,6 +2007,53 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         XCTAssertEqual(broker.process(MeshRequest(cmd: "node-list")).nodes?.map(\.id), ["node-1"])
     }
 
+    func testExplicitNodeIdentityRoutesPokeAcrossLocalizedHostMismatchWithoutTailscale() throws {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "node-heartbeat", memberID: "node-1",
+                                                 host: "xiangs-mac-mini.local")).ok)
+        var join = MeshRequest(cmd: "join", room: "mobile-dev", nick: "beiou-vi",
+                               session: "session-1", host: "Xiang’s Mac mini",
+                               tmuxPane: "%16", kind: "codex")
+        join.nodeID = "node-1"
+        XCTAssertTrue(broker.process(join).ok)
+
+        let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
+        let member = try XCTUnwrap(roster.first { $0.nick == "beiou-vi" })
+        XCTAssertEqual(member.nodeID, "node-1")
+        XCTAssertEqual(member.nodeOnline, true)
+
+        let sent = broker.process(MeshRequest(cmd: "say", room: "mobile-dev", nick: "human",
+                                              text: "@beiou-vi review", to: ["beiou-vi"]))
+        XCTAssertTrue(sent.ok)
+        XCTAssertNil(sent.note)
+        let command = try XCTUnwrap(broker.process(
+            MeshRequest(cmd: "node-command-list", nodeID: "node-1")
+        ).commands?.first)
+        let payload = try XCTUnwrap(command.payload?.data(using: .utf8))
+        XCTAssertEqual(try JSONDecoder().decode(MeshNodePokePayload.self, from: payload).memberID,
+                       "session-1")
+    }
+
+    func testExplicitNodeIdentityDoesNotFallBackToAHostLookalikeAndReportsUnroutablePoke() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "node-heartbeat", memberID: "wrong-node",
+                                                 host: "same-host")).ok)
+        var join = MeshRequest(cmd: "join", room: "dev", nick: "agent",
+                               session: "session-1", host: "same-host",
+                               tmuxPane: "%1", kind: "codex")
+        join.nodeID = "expected-node"
+        XCTAssertTrue(broker.process(join).ok)
+
+        let sent = broker.process(MeshRequest(cmd: "say", room: "dev", nick: "human",
+                                              text: "@agent hello", to: ["agent"]))
+        XCTAssertTrue(sent.ok)
+        XCTAssertEqual(sent.members?.first?.nodeOnline, false)
+        XCTAssertTrue(sent.note?.contains("@agent") == true)
+        XCTAssertTrue(broker.process(
+            MeshRequest(cmd: "node-command-list", nodeID: "wrong-node")
+        ).commands?.isEmpty == true)
+    }
+
     func testManualPokeRequiresHostNodeAndPublishesDurableCommand() throws {
         let broker = MeshBroker()
         XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "dev", nick: "agent",

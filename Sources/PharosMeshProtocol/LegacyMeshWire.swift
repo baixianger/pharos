@@ -246,6 +246,9 @@ public struct MeshUnread: Codable, Sendable {
 }
 
 public struct MeshPresenceEntry: Codable, Sendable {
+    /// Stable owner for control-plane actions. Unlike host names and overlay
+    /// addresses, this survives computer renames and missing Tailscale probes.
+    public var nodeID: String?
     public var project: String?
     public var session: String?
     public var host: String?
@@ -260,12 +263,12 @@ public struct MeshPresenceEntry: Codable, Sendable {
     public var rooms: [String]
     public var lastSeen: Double
     public var online: Bool
-    public init(project: String? = nil, session: String? = nil, host: String? = nil,
+    public init(nodeID: String? = nil, project: String? = nil, session: String? = nil, host: String? = nil,
                 tmuxPane: String? = nil, tmuxSocket: String? = nil,
                 state: String? = nil, stateTs: Double? = nil, stateReason: String? = nil,
                 kind: String? = nil, tailscaleIP: String? = nil,
                 aliases: [String: String], rooms: [String], lastSeen: Double, online: Bool) {
-        self.project = project; self.session = session; self.host = host; self.tmuxPane = tmuxPane
+        self.nodeID = nodeID; self.project = project; self.session = session; self.host = host; self.tmuxPane = tmuxPane
         self.tmuxSocket = tmuxSocket; self.state = state; self.stateTs = stateTs
         self.stateReason = stateReason; self.kind = kind; self.tailscaleIP = tailscaleIP
         self.aliases = aliases; self.rooms = rooms; self.lastSeen = lastSeen; self.online = online
@@ -275,6 +278,7 @@ public struct MeshPresenceEntry: Codable, Sendable {
 public struct MeshMemberInfo: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var nick: String
+    public var nodeID: String?
     public var project: String?
     public var session: String?
     public var host: String?
@@ -289,12 +293,14 @@ public struct MeshMemberInfo: Codable, Sendable, Equatable, Identifiable {
     public var rooms: [String]
     public var lastSeen: Double
     public var nodeOnline: Bool?
-    public init(id: String, nick: String, project: String? = nil, session: String? = nil,
+    public init(id: String, nick: String, nodeID: String? = nil,
+                project: String? = nil, session: String? = nil,
                 host: String? = nil, tmuxPane: String? = nil, tmuxSocket: String? = nil,
                 state: String? = nil, stateTs: Double? = nil, stateReason: String? = nil,
                 unread: Int? = nil, kind: String? = nil, tailscaleIP: String? = nil,
                 rooms: [String], lastSeen: Double, nodeOnline: Bool? = nil) {
-        self.id = id; self.nick = nick; self.project = project; self.session = session
+        self.id = id; self.nick = nick; self.nodeID = nodeID
+        self.project = project; self.session = session
         self.host = host; self.tmuxPane = tmuxPane; self.tmuxSocket = tmuxSocket
         self.state = state; self.stateTs = stateTs; self.stateReason = stateReason
         self.unread = unread; self.kind = kind; self.tailscaleIP = tailscaleIP

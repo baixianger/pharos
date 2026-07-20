@@ -774,7 +774,7 @@ struct MeshRoomView: View {
                 request.attachments = attachments.isEmpty ? nil : attachments
                 let resp = MeshClient.send(request)
                 if !resp.ok { return (false, [resp.error ?? "Message could not be sent."]) }
-                return (true, [])
+                return (true, resp.note.map { [$0] } ?? [])
             }.value
             if !result.sent {
                 draft = text
