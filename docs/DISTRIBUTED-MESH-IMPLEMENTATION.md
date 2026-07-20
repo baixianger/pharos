@@ -58,6 +58,20 @@ be checked out without moving or deleting user data.
 
 ## Phase 1 — shared protocol and transport seam
 
+**State:** in progress
+
+Implemented on `feat/distributed-iroh`:
+
+- transport-neutral request/response bytes and explicit legacy/Iroh preferences;
+- shared identity, UUIDv7 event, hybrid-time, entity/operation, Host command,
+  and durable receipt value types;
+- deterministic signing bytes, Ed25519 verification, SHA-256 author hash chains,
+  size/generation/deadline validation, and receipt transition rules.
+
+Remaining before the Phase 1 exit gate: move the existing duplicated legacy
+request/response/message models into the shared target and add byte-for-byte
+golden fixtures consumed by macOS, iOS, and CLI adapters.
+
 1. Create a pure Swift `PharosMeshProtocol` target with no AppKit, UIKit,
    Network.framework, socket, filesystem, or process dependencies.
 2. Move/canonicalize shared wire value types currently duplicated by macOS and
@@ -101,6 +115,19 @@ reconnect by Endpoint ID; direct and forced-relay tests pass; revocation blocks 
 new connection; legacy mode still works.
 
 ## Phase 3 — local event store and anti-entropy sync
+
+**State:** started (storage foundation only; no production runtime wiring)
+
+The isolated `DistributedMeshStore` now creates a caller-selected SQLite WAL
+replica with the Phase 3 tables. It verifies signatures, membership epoch,
+per-author sequence continuity, and previous hashes transactionally; duplicate
+events are idempotent. It also persists Host command acceptance before side
+effects, rejects semantic idempotency-key collisions, and prevents terminal
+receipt replay. Current tests create databases only under a fresh system
+temporary directory and never open the live Broker or Mesh data locations.
+
+Anti-entropy streams, materializers, blob transfer, acknowledgements, snapshots,
+quarantine ingestion, and compaction remain pending.
 
 1. Add SQLite/WAL schema for events, author heads, materialized entities, blob
    manifests, peer acknowledgements, membership epochs, and snapshots.
@@ -198,4 +225,3 @@ re-cutover are both demonstrated.
 - Multi-user/shared-team authorization. The first trust-group model is for one
   person and their devices, while keeping signed authorship and membership
   epochs extensible.
-

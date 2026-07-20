@@ -28,7 +28,8 @@ let package = Package(
                 "PharosMeshProtocol",
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
-            path: "Sources/PharosMeshCore"
+            path: "Sources/PharosMeshCore",
+            linkerSettings: [.linkedLibrary("sqlite3")]
         ),
         .executableTarget(
             name: "Pharos",
@@ -64,6 +65,11 @@ let package = Package(
             name: "PharosMeshProtocolTests",
             dependencies: ["PharosMeshProtocol"],
             path: "Tests/PharosMeshProtocolTests"
+        ),
+        .testTarget(
+            name: "PharosMeshCoreTests",
+            dependencies: ["PharosMeshCore"],
+            path: "Tests/PharosMeshCoreTests"
         ),
     ]
 )
