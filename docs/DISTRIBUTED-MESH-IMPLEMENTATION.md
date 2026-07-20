@@ -192,7 +192,10 @@ tables. Schema v3 adds field registers and a durable derived-state version;
 schema v4 adds independently stamped immutable values so derived state no longer
 depends on retaining source-event rows. Schema v5 adds content-addressed blob
 manifests, local transfer state, and resumable per-chunk receipts with database
-constraints and cascading cleanup. A v2/v3/v4 upgrade, or a process death
+constraints and cascading cleanup. Schema v6 adds Host resource generations and
+the authenticated command receipt journal. Schema v7 adds the per-trust-group
+migration cutover state, inventory digest, and monotonic CAS generation. A
+v2/v3/v4 upgrade, or a process death
 between schema creation and replay, rebuilds materialized state from the retained
 event log and latest verified snapshot on first use. SQLite is exposed
 through the explicit `CSQLite` SwiftPM system-library target instead of an
@@ -216,11 +219,14 @@ Ed25519 signature. Snapshot IDs are immutable; every database read re-verifies
 the digest, Endpoint-ID/key binding, and signature. Installation atomically
 restores state and author heads without deleting local history. Compaction is a
 separate transaction that requires an already-persisted snapshot and a monotonic
-acknowledgement from every caller-supplied active peer for every checkpoint.
+acknowledgement from every active peer for every checkpoint.
 After compaction, a range request receives the covering snapshot explicitly
 instead of an empty/misleading event batch, and new events continue the retained
-author-head hash chain. Production wiring must derive the active-peer set from
-the revocation-aware membership view; callers cannot enable this API yet.
+author-head hash chain. The product-safe API derives that peer set from trusted
+devices in the snapshot's exact current membership epoch and excludes only the
+snapshot creator. Advancing the epoch invalidates both the old snapshot and its
+peer set, so a stale caller cannot compact across revocation. The explicit-peer
+variant remains only for deterministic recovery tools and tests.
 
 Attachments now use transport-neutral SHA-256 manifests and bounded chunks.
 The store accepts chunks out of order across independent SQLite connections,
@@ -249,6 +255,29 @@ and Endpoint IDs, database path, and `network=stopped`. This is persistence
 wiring only: it does not read, start, stop, or modify the legacy Broker and does
 not automatically start Iroh networking.
 
+Offline migration accepts only an explicit legacy data directory and rejects
+symbolic-link source paths. It inventories `projects.json`, durable mailboxes,
+room JSONL transcripts, attachment metadata, and attachment bytes by relative
+path, size, and SHA-256. It converts project JSON (which retains issues), room
+memberships and unread mailboxes, messages, and attachment metadata into a
+canonical genesis state; attachment bytes enter the verified content-addressed
+blob store. The genesis ID, unsigned snapshot bytes, and state are deterministic
+for an inventory, and the creator signs the snapshot. Repeated export/import is
+idempotent even when the crypto provider produces a different valid signature
+over identical unsigned bytes.
+
+`distributed migration-import` requires both `--legacy-data-dir` and
+`--data-dir`, installs the signed genesis, verifies all blobs, and stops in
+`shadow` mode with legacy still authoritative. `migration-status`, `cutover`,
+and `rollback` require an explicit group; mutations also require the inventory
+digest and expected CAS generation. `shadow` and `rolled-back` are enforced as
+read-only by the event and Host-command transactions, while `distributed`
+enables only distributed writes. Re-importing a frozen final delta requires the
+current generation; verified blobs are published first, then snapshot install
+and inventory-generation refresh commit in one SQLite transaction. These
+commands never start networking or delete the legacy store. Freezing and
+retaining the legacy Broker remains an explicit operator step around cutover.
+
 The transport-neutral `MeshReplicaRPCHeader` correlates every request and
 response by UUID, operation, trust group, membership epoch, and disposition.
 Typed payloads use the bounded transport body; only small routing/chunk metadata
@@ -265,10 +294,16 @@ anti-entropy. Isolated tests cover event convergence, bounded blob reconstructio
 Host command receipt routing, response-ID mismatch, unknown Endpoint IDs, and
 membership-epoch revocation without opening production state.
 
-Product endpoint scheduling, richer room/message/project/issue operation
-adapters, revocation-aware compaction policy, streaming snapshots larger than a
-single bounded RPC body, and the randomized partition/reordering simulation
-remain pending.
+A fixed-seed, transport-free reliability simulation creates three isolated WAL
+replicas, authors independent hash chains under skewed clocks, randomly drops
+links, varies direction and bounded range size, reverses cross-author request
+order, and redelivers every event. After a full-connect heal, all three replicas
+have byte-identical vectors and canonical materialized state. This complements
+the real loopback-Iroh test without involving any production listener or data.
+
+Product endpoint scheduling, richer room/message/project/issue mutation
+adapters, streaming snapshots larger than a single bounded RPC body, live
+shadow-view comparison, and production network fault drills remain pending.
 
 1. Add SQLite/WAL schema for events, author heads, materialized entities, blob
    manifests, peer acknowledgements, membership epochs, and snapshots.
@@ -346,6 +381,13 @@ Exit: the app remains useful with no background grant and converges on next
 foreground; push improves freshness without becoming correctness-critical.
 
 ## Phase 6 — migration and cutover
+
+Implemented foundation: deterministic signed genesis export/import, SHA-256
+file/blob inventory, durable shadow/distributed/rolled-back state, CAS cutover,
+transaction-enforced distributed write authority, one-command rollback, and
+re-cutover. Still required before a real cutover: production-shaped dry runs,
+live read-only shadow comparison, an external legacy-write freeze, and a full
+release-cycle retention drill.
 
 1. Export a signed legacy snapshot plus blob manifest and SHA-256 inventory.
 2. Import it as a deterministic genesis snapshot into a new trust group.

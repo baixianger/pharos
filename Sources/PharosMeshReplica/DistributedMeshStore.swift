@@ -33,6 +33,11 @@ public enum DistributedMeshStoreError: Error, Equatable, Sendable {
     case commandGenerationMismatch(expected: UInt64, actual: UInt64)
     case idempotencyCollision
     case rpcPeerNotTrusted
+    case migrationNotPrepared
+    case migrationInventoryMismatch
+    case migrationGenerationMismatch(expected: UInt64, actual: UInt64)
+    case invalidMigrationTransition(from: MeshMigrationMode, to: MeshMigrationMode)
+    case distributedWritesDisabled(MeshMigrationMode)
     case unsafeDatabasePath
     case corruptStoredValue
     case unsupportedSchemaVersion(Int)
@@ -105,7 +110,7 @@ public struct MeshQuarantinedEvent: Codable, Equatable, Sendable {
 /// One serialized SQLite connection per local replica. No method contacts a
 /// broker or network transport; callers explicitly choose the database URL.
 public actor DistributedMeshStore {
-    public nonisolated static let currentSchemaVersion = 6
+    public nonisolated static let currentSchemaVersion = 7
     private let databaseAddress: UInt
     private let blobDirectoryPath: String
     private var materializationNeedsRebuild: Bool
@@ -141,6 +146,7 @@ public actor DistributedMeshStore {
             try Self.execute(handle, sql: Self.schemaV4)
             try Self.execute(handle, sql: Self.schemaV5)
             try Self.execute(handle, sql: Self.schemaV6)
+            try Self.execute(handle, sql: Self.schemaV7)
             let materializationVersion = try Self.readMaterializationVersion(handle)
             requiresMaterializationRebuild = version < 4 || materializationVersion != 2
             try Self.execute(handle, sql: "COMMIT")
@@ -228,6 +234,111 @@ public actor DistributedMeshStore {
             "SELECT epoch FROM membership_epochs WHERE trust_group_id=?",
             [.text(group.rawValue.uuidString)]
         ) { UInt64(sqlite3_column_int64($0, 0)) }
+    }
+
+    public func migrationState(
+        for group: MeshTrustGroupID
+    ) throws -> MeshMigrationCutoverState? {
+        try queryOne(
+            "SELECT envelope FROM migration_cutovers WHERE trust_group_id=?",
+            [.text(group.rawValue.uuidString)]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let state = try? JSONDecoder().decode(
+                    MeshMigrationCutoverState.self, from: data
+                  ) else { throw DistributedMeshStoreError.corruptStoredValue }
+            try state.validate()
+            return state
+        }
+    }
+
+    /// Starts (or idempotently resumes) a read-only distributed shadow. This
+    /// never changes the legacy store and does not grant distributed writes.
+    public func prepareMigration(
+        for group: MeshTrustGroupID, inventoryDigest: Data,
+        at timestamp: MeshHybridTimestamp
+    ) throws -> MeshMigrationCutoverState {
+        guard inventoryDigest.count == 32 else {
+            throw MeshMigrationValidationError.invalidInventoryDigest
+        }
+        return try transaction {
+            if let existing = try migrationState(for: group) {
+                guard existing.inventoryDigest == inventoryDigest else {
+                    throw DistributedMeshStoreError.migrationInventoryMismatch
+                }
+                return existing
+            }
+            let state = MeshMigrationCutoverState(
+                trustGroupID: group, inventoryDigest: inventoryDigest,
+                generation: 1, mode: .shadow, updatedAt: timestamp
+            )
+            try storeMigrationState(state)
+            return state
+        }
+    }
+
+    /// Atomically transfers write authority to the distributed replica after
+    /// the caller has frozen legacy writes and verified the final inventory.
+    public func cutOverMigration(
+        for group: MeshTrustGroupID, inventoryDigest: Data,
+        expectedGeneration: UInt64, at timestamp: MeshHybridTimestamp
+    ) throws -> MeshMigrationCutoverState {
+        try transitionMigration(
+            for: group, inventoryDigest: inventoryDigest,
+            expectedGeneration: expectedGeneration, to: .distributed,
+            at: timestamp
+        )
+    }
+
+    /// Records a newly verified shadow/final-delta inventory without changing
+    /// write authority. A distributed-authoritative group must roll back before
+    /// importing legacy state again.
+    public func refreshMigrationInventory(
+        for group: MeshTrustGroupID, inventoryDigest: Data,
+        expectedGeneration: UInt64, at timestamp: MeshHybridTimestamp
+    ) throws -> MeshMigrationCutoverState {
+        guard inventoryDigest.count == 32 else {
+            throw MeshMigrationValidationError.invalidInventoryDigest
+        }
+        return try transaction {
+            guard let current = try migrationState(for: group) else {
+                throw DistributedMeshStoreError.migrationNotPrepared
+            }
+            guard current.generation == expectedGeneration else {
+                throw DistributedMeshStoreError.migrationGenerationMismatch(
+                    expected: current.generation, actual: expectedGeneration
+                )
+            }
+            guard current.mode != .distributed else {
+                throw DistributedMeshStoreError.invalidMigrationTransition(
+                    from: current.mode, to: current.mode
+                )
+            }
+            guard current.generation < UInt64(Int64.max) else {
+                throw MeshMigrationValidationError.invalidGeneration
+            }
+            if current.inventoryDigest == inventoryDigest { return current }
+            let next = MeshMigrationCutoverState(
+                trustGroupID: group, inventoryDigest: inventoryDigest,
+                generation: current.generation + 1, mode: current.mode,
+                updatedAt: timestamp
+            )
+            try storeMigrationState(next)
+            return next
+        }
+    }
+
+    /// One-command rollback: distributed becomes read-only and legacy regains
+    /// write authority. Both stores remain intact for audit and re-cutover.
+    public func rollBackMigration(
+        for group: MeshTrustGroupID, inventoryDigest: Data,
+        expectedGeneration: UInt64, at timestamp: MeshHybridTimestamp
+    ) throws -> MeshMigrationCutoverState {
+        try transitionMigration(
+            for: group, inventoryDigest: inventoryDigest,
+            expectedGeneration: expectedGeneration, to: .rolledBack,
+            at: timestamp
+        )
     }
 
     /// The pending record persists only invitation and nonce digests. The raw
@@ -366,6 +477,7 @@ public actor DistributedMeshStore {
                 guard existing == bytes else { throw DistributedMeshStoreError.eventIDCollision }
                 return .duplicate
             }
+            try requireDistributedWriteAuthorityIfMigrating(event.trustGroupID)
 
             let storedEpoch = try membershipEpoch(for: event.trustGroupID)
             guard storedEpoch == event.membershipEpoch else {
@@ -752,59 +864,78 @@ public actor DistributedMeshStore {
     /// acknowledgement-gated compaction API may delete history.
     public func installSnapshot(_ bundle: MeshReplicaSnapshotBundle,
                                 creatorPublicKey: Data) throws {
-        try MeshReplicaSnapshotCrypto.verify(bundle, creatorPublicKey: creatorPublicKey)
-        try ensureMaterializedState()
-        let group = bundle.snapshot.trustGroupID
-        guard let epoch = try membershipEpoch(for: group),
-              epoch == bundle.snapshot.membershipEpoch else {
-            throw DistributedMeshStoreError.membershipEpochMismatch(
-                expected: try membershipEpoch(for: group) ?? 0,
-                actual: bundle.snapshot.membershipEpoch
-            )
-        }
-        let remoteHeads = Dictionary(
-            uniqueKeysWithValues: bundle.snapshot.authorHeads.map { ($0.endpointID, $0) }
+        let envelope = try validatedSnapshotEnvelope(
+            bundle, creatorPublicKey: creatorPublicKey
         )
-        for local in try authorHeads(for: group) {
-            guard let remote = remoteHeads[local.endpointID],
-                  remote.sequence >= local.sequence else {
-                throw DistributedMeshStoreError.snapshotDoesNotCoverLocalHead(local.endpointID)
-            }
-            if remote.sequence == local.sequence, remote.eventHash != local.eventHash {
-                throw DistributedMeshStoreError.snapshotHeadHashMismatch(local.endpointID)
-            }
-        }
-        let envelope = try MeshCanonicalStoreJSON.encode(bundle)
         try transaction {
-            try run(
-                "DELETE FROM materialized_registers WHERE trust_group_id=?",
-                [.text(group.rawValue.uuidString)]
-            )
-            try run(
-                "DELETE FROM materialized_immutable_values WHERE trust_group_id=?",
-                [.text(group.rawValue.uuidString)]
-            )
-            try applySnapshotState(bundle.state, in: group)
-            try run(
-                "DELETE FROM author_heads WHERE trust_group_id=?",
-                [.text(group.rawValue.uuidString)]
-            )
-            for head in bundle.snapshot.authorHeads {
-                try run(
-                    "INSERT INTO author_heads(trust_group_id, author_endpoint_id, sequence, " +
-                    "event_hash) VALUES(?, ?, ?, ?)",
-                    [.text(group.rawValue.uuidString), .text(head.endpointID.rawValue),
-                     .integer(Int64(head.sequence)), .blob(head.eventHash)]
-                )
-            }
-            try storeSnapshot(bundle, envelope: envelope)
-            try run("UPDATE materialization_metadata SET version=2")
+            try installSnapshotState(bundle, envelope: envelope)
         }
         materializationNeedsRebuild = false
     }
 
+    /// Atomically installs a verified final-delta snapshot and records its
+    /// shadow inventory. Blob bytes must be verified before calling this API.
+    public func installMigrationSnapshot(
+        _ bundle: MeshReplicaSnapshotBundle, creatorPublicKey: Data,
+        inventoryDigest: Data, expectedGeneration: UInt64?
+    ) throws -> MeshMigrationCutoverState {
+        guard inventoryDigest.count == 32 else {
+            throw MeshMigrationValidationError.invalidInventoryDigest
+        }
+        let envelope = try validatedSnapshotEnvelope(
+            bundle, creatorPublicKey: creatorPublicKey
+        )
+        let state = try transaction { () -> MeshMigrationCutoverState in
+            let next: MeshMigrationCutoverState
+            if let current = try migrationState(for: bundle.snapshot.trustGroupID) {
+                guard current.mode != .distributed else {
+                    throw DistributedMeshStoreError.invalidMigrationTransition(
+                        from: current.mode, to: current.mode
+                    )
+                }
+                guard let expectedGeneration,
+                      current.generation == expectedGeneration else {
+                    throw DistributedMeshStoreError.migrationGenerationMismatch(
+                        expected: current.generation, actual: expectedGeneration ?? 0
+                    )
+                }
+                if current.inventoryDigest == inventoryDigest {
+                    next = current
+                } else {
+                    guard current.generation < UInt64(Int64.max) else {
+                        throw MeshMigrationValidationError.invalidGeneration
+                    }
+                    next = MeshMigrationCutoverState(
+                        trustGroupID: current.trustGroupID,
+                        inventoryDigest: inventoryDigest,
+                        generation: current.generation + 1, mode: current.mode,
+                        updatedAt: bundle.snapshot.createdAt
+                    )
+                }
+            } else {
+                guard expectedGeneration == nil else {
+                    throw DistributedMeshStoreError.migrationNotPrepared
+                }
+                next = MeshMigrationCutoverState(
+                    trustGroupID: bundle.snapshot.trustGroupID,
+                    inventoryDigest: inventoryDigest, generation: 1,
+                    mode: .shadow, updatedAt: bundle.snapshot.createdAt
+                )
+            }
+            try installSnapshotState(bundle, envelope: envelope)
+            try storeMigrationState(next)
+            return next
+        }
+        materializationNeedsRebuild = false
+        return state
+    }
+
     /// Deletes history covered by a signed snapshot only after every active
     /// peer has durably acknowledged each author checkpoint.
+    ///
+    /// Prefer `compactEventsUsingCurrentMembership` in product code. This
+    /// lower-level variant exists for deterministic recovery tools and tests
+    /// whose peer set comes from an independently verified membership view.
     public func compactEvents(
         using snapshotID: MeshEventID,
         creatorPublicKey: Data,
@@ -868,6 +999,35 @@ public actor DistributedMeshStore {
             }
             return removed
         }
+    }
+
+    /// Derives the acknowledgement barrier from the exact current membership
+    /// epoch before deleting any covered history. A snapshot creator does not
+    /// acknowledge its own checkpoint; every other trusted installation does.
+    /// Advancing the epoch revokes the old snapshot and peer set together.
+    public func compactEventsUsingCurrentMembership(
+        using snapshotID: MeshEventID,
+        creatorPublicKey: Data
+    ) throws -> Int {
+        guard let bundle = try storedSnapshot(id: snapshotID) else {
+            throw DistributedMeshStoreError.snapshotNotFound
+        }
+        let group = bundle.snapshot.trustGroupID
+        guard let epoch = try membershipEpoch(for: group),
+              epoch == bundle.snapshot.membershipEpoch else {
+            throw DistributedMeshStoreError.membershipEpochMismatch(
+                expected: try membershipEpoch(for: group) ?? 0,
+                actual: bundle.snapshot.membershipEpoch
+            )
+        }
+        let peers = try trustedReplicaPeers(
+            in: group, membershipEpoch: epoch,
+            excluding: bundle.snapshot.creatorEndpointID
+        )
+        return try compactEvents(
+            using: snapshotID, creatorPublicKey: creatorPublicKey,
+            activePeers: peers
+        )
     }
 
     public func latestSnapshot(in group: MeshTrustGroupID) throws -> MeshReplicaSnapshotBundle? {
@@ -1366,6 +1526,68 @@ public actor DistributedMeshStore {
         }
     }
 
+    private func validatedSnapshotEnvelope(
+        _ bundle: MeshReplicaSnapshotBundle, creatorPublicKey: Data
+    ) throws -> Data {
+        try MeshReplicaSnapshotCrypto.verify(bundle, creatorPublicKey: creatorPublicKey)
+        try ensureMaterializedState()
+        let group = bundle.snapshot.trustGroupID
+        guard let epoch = try membershipEpoch(for: group),
+              epoch == bundle.snapshot.membershipEpoch else {
+            throw DistributedMeshStoreError.membershipEpochMismatch(
+                expected: try membershipEpoch(for: group) ?? 0,
+                actual: bundle.snapshot.membershipEpoch
+            )
+        }
+        let envelope = try MeshCanonicalStoreJSON.encode(bundle)
+        guard envelope.count <= DistributedMeshProtocol.maximumBlobBytes +
+                DistributedMeshProtocol.maximumHeaderBytes else {
+            throw MeshSnapshotValidationError.snapshotTooLarge
+        }
+        return envelope
+    }
+
+    private func installSnapshotState(
+        _ bundle: MeshReplicaSnapshotBundle, envelope: Data
+    ) throws {
+        let group = bundle.snapshot.trustGroupID
+        let remoteHeads = Dictionary(
+            uniqueKeysWithValues: bundle.snapshot.authorHeads.map { ($0.endpointID, $0) }
+        )
+        for local in try authorHeads(for: group) {
+            guard let remote = remoteHeads[local.endpointID],
+                  remote.sequence >= local.sequence else {
+                throw DistributedMeshStoreError.snapshotDoesNotCoverLocalHead(local.endpointID)
+            }
+            if remote.sequence == local.sequence, remote.eventHash != local.eventHash {
+                throw DistributedMeshStoreError.snapshotHeadHashMismatch(local.endpointID)
+            }
+        }
+        try run(
+            "DELETE FROM materialized_registers WHERE trust_group_id=?",
+            [.text(group.rawValue.uuidString)]
+        )
+        try run(
+            "DELETE FROM materialized_immutable_values WHERE trust_group_id=?",
+            [.text(group.rawValue.uuidString)]
+        )
+        try applySnapshotState(bundle.state, in: group)
+        try run(
+            "DELETE FROM author_heads WHERE trust_group_id=?",
+            [.text(group.rawValue.uuidString)]
+        )
+        for head in bundle.snapshot.authorHeads {
+            try run(
+                "INSERT INTO author_heads(trust_group_id, author_endpoint_id, sequence, " +
+                "event_hash) VALUES(?, ?, ?, ?)",
+                [.text(group.rawValue.uuidString), .text(head.endpointID.rawValue),
+                 .integer(Int64(head.sequence)), .blob(head.eventHash)]
+            )
+        }
+        try storeSnapshot(bundle, envelope: envelope)
+        try run("UPDATE materialization_metadata SET version=2")
+    }
+
     private func storeSnapshot(_ bundle: MeshReplicaSnapshotBundle,
                                envelope: Data) throws {
         if let existing = try queryOne(
@@ -1378,9 +1600,19 @@ public actor DistributedMeshStore {
                 return data
             }
         ) {
-            guard existing == envelope else {
+            if existing == envelope { return }
+            guard let existingBundle = try? JSONDecoder().decode(
+                    MeshReplicaSnapshotBundle.self, from: existing
+                  ),
+                  (try? verifyStoredSnapshot(existingBundle)) != nil,
+                  existingBundle.state == bundle.state,
+                  (try? existingBundle.snapshot.canonicalSigningBytes()) ==
+                    (try? bundle.snapshot.canonicalSigningBytes()) else {
                 throw DistributedMeshStoreError.snapshotIDCollision
             }
+            // Ed25519 implementations may blind signing internally. Two valid
+            // signatures over identical unsigned snapshot bytes do not create
+            // distinct snapshot content or break idempotent migration import.
             return
         }
         try run(
@@ -1462,6 +1694,7 @@ public actor DistributedMeshStore {
     ) throws -> MeshHostResource {
         let endpoint = try host.endpointID()
         return try transaction {
+            try requireDistributedWriteAuthorityIfMigrating(group)
             if let existing = try hostResource(
                 in: group, hostDeviceID: host.deviceID, resourceID: resourceID
             ) {
@@ -1497,6 +1730,7 @@ public actor DistributedMeshStore {
     ) throws -> MeshHostResource {
         let endpoint = try host.endpointID()
         return try transaction {
+            try requireDistributedWriteAuthorityIfMigrating(group)
             guard let current = try hostResource(
                 in: group, hostDeviceID: host.deviceID, resourceID: resourceID
             ) else { throw DistributedMeshStoreError.hostResourceNotFound }
@@ -1527,6 +1761,7 @@ public actor DistributedMeshStore {
     ) throws -> MeshHostResource {
         let endpoint = try host.endpointID()
         return try transaction {
+            try requireDistributedWriteAuthorityIfMigrating(group)
             guard var resource = try hostResource(
                 in: group, hostDeviceID: host.deviceID, resourceID: resourceID
             ) else { throw DistributedMeshStoreError.hostResourceNotFound }
@@ -1613,6 +1848,7 @@ public actor DistributedMeshStore {
                 }
                 return existing.receipt
             }
+            try requireDistributedWriteAuthorityIfMigrating(command.trustGroupID)
             let currentEpoch = try membershipEpoch(for: command.trustGroupID) ?? 0
             guard currentEpoch == envelope.membershipEpoch else {
                 throw DistributedMeshStoreError.membershipEpochMismatch(
@@ -2277,6 +2513,94 @@ public actor DistributedMeshStore {
         }
     }
 
+    private func trustedReplicaPeers(
+        in group: MeshTrustGroupID, membershipEpoch: UInt64,
+        excluding creatorEndpointID: MeshEndpointID
+    ) throws -> [MeshDeviceID] {
+        guard membershipEpoch <= UInt64(Int64.max) else {
+            throw MeshSchemaValidationError.invalidMembershipEpoch
+        }
+        return try query(
+            "SELECT envelope FROM trusted_devices WHERE trust_group_id=? " +
+            "AND membership_epoch=? AND endpoint_id<>? ORDER BY device_id",
+            [.text(group.rawValue.uuidString), .integer(Int64(membershipEpoch)),
+             .text(creatorEndpointID.rawValue)]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let device = try? JSONDecoder().decode(MeshPairedDevice.self, from: data) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            try device.validateBinding()
+            return device.descriptor.id
+        }
+    }
+
+    private func transitionMigration(
+        for group: MeshTrustGroupID, inventoryDigest: Data,
+        expectedGeneration: UInt64, to nextMode: MeshMigrationMode,
+        at timestamp: MeshHybridTimestamp
+    ) throws -> MeshMigrationCutoverState {
+        guard inventoryDigest.count == 32 else {
+            throw MeshMigrationValidationError.invalidInventoryDigest
+        }
+        return try transaction {
+            guard let current = try migrationState(for: group) else {
+                throw DistributedMeshStoreError.migrationNotPrepared
+            }
+            guard current.inventoryDigest == inventoryDigest else {
+                throw DistributedMeshStoreError.migrationInventoryMismatch
+            }
+            guard current.generation == expectedGeneration else {
+                throw DistributedMeshStoreError.migrationGenerationMismatch(
+                    expected: current.generation, actual: expectedGeneration
+                )
+            }
+            let allowed = switch (current.mode, nextMode) {
+            case (.shadow, .distributed), (.rolledBack, .distributed),
+                 (.distributed, .rolledBack): true
+            default: false
+            }
+            guard allowed else {
+                throw DistributedMeshStoreError.invalidMigrationTransition(
+                    from: current.mode, to: nextMode
+                )
+            }
+            guard current.generation < UInt64(Int64.max) else {
+                throw MeshMigrationValidationError.invalidGeneration
+            }
+            let next = MeshMigrationCutoverState(
+                trustGroupID: group, inventoryDigest: inventoryDigest,
+                generation: current.generation + 1, mode: nextMode,
+                updatedAt: timestamp
+            )
+            try storeMigrationState(next)
+            return next
+        }
+    }
+
+    private func storeMigrationState(_ state: MeshMigrationCutoverState) throws {
+        try state.validate()
+        try run(
+            "INSERT INTO migration_cutovers(trust_group_id, inventory_digest, generation, " +
+            "mode, envelope) VALUES(?, ?, ?, ?, ?) " +
+            "ON CONFLICT(trust_group_id) DO UPDATE SET " +
+            "inventory_digest=excluded.inventory_digest, generation=excluded.generation, " +
+            "mode=excluded.mode, envelope=excluded.envelope",
+            [.text(state.trustGroupID.rawValue.uuidString),
+             .blob(state.inventoryDigest), .integer(Int64(state.generation)),
+             .text(state.mode.rawValue), .blob(try MeshCanonicalStoreJSON.encode(state))]
+        )
+    }
+
+    private func requireDistributedWriteAuthorityIfMigrating(
+        _ group: MeshTrustGroupID
+    ) throws {
+        guard let state = try migrationState(for: group) else { return }
+        guard state.distributedMayWrite else {
+            throw DistributedMeshStoreError.distributedWritesDisabled(state.mode)
+        }
+    }
+
     private enum Binding {
         case integer(Int64)
         case text(String)
@@ -2557,6 +2881,16 @@ public actor DistributedMeshStore {
     CREATE INDEX IF NOT EXISTS command_receipts_v2_recovery
       ON command_receipts_v2(host_device_id, state);
     UPDATE schema_metadata SET version=6;
+    """
+
+    private static let schemaV7 = """
+    CREATE TABLE IF NOT EXISTS migration_cutovers(
+      trust_group_id TEXT PRIMARY KEY,
+      inventory_digest BLOB NOT NULL CHECK(length(inventory_digest)=32),
+      generation INTEGER NOT NULL CHECK(generation > 0),
+      mode TEXT NOT NULL CHECK(mode IN ('shadow', 'distributed', 'rolled-back')),
+      envelope BLOB NOT NULL);
+    UPDATE schema_metadata SET version=7;
     """
 }
 

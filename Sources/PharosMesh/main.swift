@@ -1,10 +1,10 @@
 import Foundation
 import PharosMeshCore
 
-exit(MeshHeadlessCLI.run(Array(CommandLine.arguments.dropFirst())))
+exit(await MeshHeadlessCLI.run(Array(CommandLine.arguments.dropFirst())))
 
 private enum MeshHeadlessCLI {
-    static func run(_ args: [String]) -> Int32 {
+    static func run(_ args: [String]) async -> Int32 {
         guard let command = args.first else {
             print(usage)
             return 2
@@ -167,7 +167,7 @@ private enum MeshHeadlessCLI {
             return runRegistry(Array(args.dropFirst()))
 
         case "distributed":
-            return runDistributed(Array(args.dropFirst()))
+            return await runDistributed(Array(args.dropFirst()))
 
         case "--help", "-h", "help":
             print(usage)
@@ -216,11 +216,15 @@ private enum MeshHeadlessCLI {
 
     /// Initializes or reports the isolated local-first replica only. It never
     /// starts a listener, dials a peer, or reads legacy Broker state.
-    private static func runDistributed(_ args: [String]) -> Int32 {
+    private static func runDistributed(_ args: [String]) async -> Int32 {
         let command = args.first ?? "status"
-        guard command == "status" || command == "init" else {
+        let migrationCommands = [
+            "migration-status", "migration-prepare", "migration-import",
+            "cutover", "rollback",
+        ]
+        guard command == "status" || command == "init" || migrationCommands.contains(command) else {
             return usageError(
-                "distributed status|init [--json] [--data-dir ABSOLUTE-PATH]"
+                "distributed status|init|migration-status|migration-prepare|cutover|rollback …"
             )
         }
         let dataDirectory: String?
@@ -233,6 +237,9 @@ private enum MeshHeadlessCLI {
         } else {
             dataDirectory = nil
         }
+        if migrationCommands.contains(command), dataDirectory == nil {
+            return usageError("migration commands require --data-dir ABSOLUTE-PATH")
+        }
         do {
             let replica: MeshLocalReplica
             if let dataDirectory {
@@ -241,6 +248,11 @@ private enum MeshHeadlessCLI {
                 )
             } else {
                 replica = try MeshLocalReplica.openDefault()
+            }
+            if migrationCommands.contains(command) {
+                return try await runMigrationCommand(
+                    command, args: args, replica: replica
+                )
             }
             let status = DistributedStatus(
                 protocolVersion: DistributedMeshProtocol.version,
@@ -265,10 +277,176 @@ private enum MeshHeadlessCLI {
             return 0
         } catch {
             FileHandle.standardError.write(
-                Data("error: could not open distributed replica: \(error)\n".utf8)
+                Data("error: distributed command failed: \(error)\n".utf8)
             )
             return 1
         }
+    }
+
+    private static func runMigrationCommand(
+        _ command: String, args: [String], replica: MeshLocalReplica
+    ) async throws -> Int32 {
+        guard let groupText = option("--group", in: args),
+              let groupUUID = UUID(uuidString: groupText) else {
+            return usageError("migration commands require --group UUID")
+        }
+        let group = MeshTrustGroupID(rawValue: groupUUID)
+        if command == "migration-status" {
+            guard let state = try await replica.store.migrationState(for: group) else {
+                FileHandle.standardError.write(Data("error: migration is not prepared\n".utf8))
+                return 1
+            }
+            printMigrationState(state, json: args.contains("--json"))
+            return 0
+        }
+        if command == "migration-import" {
+            guard let sourcePath = option("--legacy-data-dir", in: args),
+                  sourcePath.hasPrefix("/"), !sourcePath.hasPrefix("--") else {
+                return usageError("migration-import requires --legacy-data-dir ABSOLUTE-PATH")
+            }
+            let epoch = option("--epoch", in: args).flatMap(UInt64.init) ?? 1
+            guard epoch > 0, epoch <= UInt64(Int64.max) else {
+                return usageError("--epoch must be a positive 64-bit integer")
+            }
+            let currentEpoch = try await replica.store.membershipEpoch(for: group)
+            guard currentEpoch == nil || currentEpoch == epoch else {
+                let message = "error: migration epoch \(epoch) does not match " +
+                    "existing epoch \(currentEpoch!)\n"
+                FileHandle.standardError.write(Data(message.utf8))
+                return 1
+            }
+            let existingState = try await replica.store.migrationState(for: group)
+            let expectedGeneration = option("--generation", in: args).flatMap(UInt64.init)
+            if let existingState {
+                guard existingState.mode != .distributed else {
+                    FileHandle.standardError.write(Data(
+                        "error: roll back distributed authority before re-import\n".utf8
+                    ))
+                    return 1
+                }
+                guard expectedGeneration == existingState.generation else {
+                    return usageError(
+                        "re-import requires current --generation \(existingState.generation)"
+                    )
+                }
+            } else if expectedGeneration != nil {
+                return usageError("first migration-import must not pass --generation")
+            }
+            let migration = try LegacyMeshMigration.export(
+                sourceRoot: URL(fileURLWithPath: sourcePath, isDirectory: true),
+                trustGroupID: group, membershipEpoch: epoch,
+                identity: replica.identity
+            )
+            if currentEpoch == nil {
+                try await replica.store.setMembershipEpoch(epoch, for: group)
+            }
+            let digest = try migration.inventory.digest()
+            let state = try await LegacyMeshMigration.installForShadow(
+                migration, into: replica.store,
+                creatorPublicKey: replica.identity.signingPublicKeyBytes(),
+                expectedGeneration: expectedGeneration
+            )
+            let digestHex = digest.map { String(format: "%02x", $0) }.joined()
+            if args.contains("--json") {
+                struct ImportResult: Codable {
+                    var inventoryDigest: String
+                    var counts: LegacyMigrationCounts
+                    var cutover: MeshMigrationCutoverState
+                    var networkState: String
+                }
+                let result = ImportResult(
+                    inventoryDigest: digestHex,
+                    counts: migration.inventory.counts, cutover: state,
+                    networkState: "stopped"
+                )
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+                print(String(decoding: try encoder.encode(result), as: UTF8.self))
+            } else {
+                print("inventory\t\(digestHex)")
+                print("projects\t\(migration.inventory.counts.projects)")
+                print("issues\t\(migration.inventory.counts.issues)")
+                print("rooms\t\(migration.inventory.counts.rooms)")
+                print("messages\t\(migration.inventory.counts.messages)")
+                print("attachments\t\(migration.inventory.counts.attachments)")
+                print("mode\t\(state.mode.rawValue)")
+                print("network\tstopped")
+            }
+            return 0
+        }
+        guard let digestText = option("--inventory", in: args),
+              let digest = hexData(digestText), digest.count == 32 else {
+            return usageError("migration command requires --inventory SHA256")
+        }
+        let now = MeshHybridTimestamp(
+            wallTimeMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+        )
+        let state: MeshMigrationCutoverState
+        switch command {
+        case "migration-prepare":
+            state = try await replica.store.prepareMigration(
+                for: group, inventoryDigest: digest, at: now
+            )
+        case "cutover", "rollback":
+            guard let generationText = option("--generation", in: args),
+                  let generation = UInt64(generationText), generation > 0 else {
+                return usageError("cutover and rollback require --generation N")
+            }
+            if command == "cutover" {
+                state = try await replica.store.cutOverMigration(
+                    for: group, inventoryDigest: digest,
+                    expectedGeneration: generation, at: now
+                )
+            } else {
+                state = try await replica.store.rollBackMigration(
+                    for: group, inventoryDigest: digest,
+                    expectedGeneration: generation, at: now
+                )
+            }
+        default:
+            return usageError(command)
+        }
+        printMigrationState(state, json: args.contains("--json"))
+        return 0
+    }
+
+    private static func printMigrationState(
+        _ state: MeshMigrationCutoverState, json: Bool
+    ) {
+        if json {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            if let data = try? encoder.encode(state) {
+                print(String(decoding: data, as: UTF8.self))
+            }
+        } else {
+            let inventory = state.inventoryDigest.map {
+                String(format: "%02x", $0)
+            }.joined()
+            let legacyWrites = state.legacyMayWrite ? "enabled" : "disabled"
+            let distributedWrites = state.distributedMayWrite ? "enabled" : "disabled"
+            print("group\t\(state.trustGroupID.rawValue.uuidString)")
+            print("inventory\t\(inventory)")
+            print("generation\t\(state.generation)")
+            print("mode\t\(state.mode.rawValue)")
+            print("legacy-writes\t\(legacyWrites)")
+            print("distributed-writes\t\(distributedWrites)")
+            print("network\tstopped")
+        }
+    }
+
+    private static func hexData(_ value: String) -> Data? {
+        guard value.count.isMultiple(of: 2) else { return nil }
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(value.count / 2)
+        var index = value.startIndex
+        while index < value.endIndex {
+            let end = value.index(index, offsetBy: 2)
+            guard let byte = UInt8(value[index..<end], radix: 16) else { return nil }
+            bytes.append(byte)
+            index = end
+        }
+        return Data(bytes)
     }
 
     private struct DistributedStatus: Codable {
@@ -531,6 +709,11 @@ private enum MeshHeadlessCLI {
       registry get [--output PATH]
       registry import <projects.json> --expected REVISION
       distributed status|init [--json] [--data-dir ABSOLUTE-PATH]
+      distributed migration-status --group UUID --data-dir ABSOLUTE-PATH [--json]
+      distributed migration-import --group UUID --legacy-data-dir ABSOLUTE-PATH --data-dir ABSOLUTE-PATH [--epoch N] [--generation N] [--json]
+      distributed migration-prepare --group UUID --inventory SHA256 --data-dir ABSOLUTE-PATH
+      distributed cutover --group UUID --inventory SHA256 --generation N --data-dir ABSOLUTE-PATH
+      distributed rollback --group UUID --inventory SHA256 --generation N --data-dir ABSOLUTE-PATH
 
     Add `--endpoint HOST:PORT` to any client command to dial a remote broker.
     """
