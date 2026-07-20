@@ -48,6 +48,17 @@ public actor DistributedChatRegistry {
         }
     }
 
+    public func members(in room: MeshRoomInfo) async throws -> [DistributedChatMember] {
+        let record = try await resolveRoom(room)
+        return try await membershipRecords()
+            .filter { $0.roomID == record.id }
+            .map { DistributedChatMember(id: $0.memberID, nick: $0.nick) }
+            .sorted {
+                let order = $0.nick.localizedCaseInsensitiveCompare($1.nick)
+                return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
+            }
+    }
+
     @discardableResult
     public func createRoom(named rawName: String) async throws -> MeshRoomInfo {
         let name = try Self.validName(rawName)
@@ -383,6 +394,16 @@ public enum DistributedChatRegistryError: LocalizedError, Equatable, Sendable {
         case .invalidName: "Names must contain 1–128 printable UTF-8 bytes."
         case .invalidMemberID: "The member identity is invalid."
         }
+    }
+}
+
+public struct DistributedChatMember: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var nick: String
+
+    public init(id: String, nick: String) {
+        self.id = id
+        self.nick = nick
     }
 }
 

@@ -169,6 +169,10 @@ final class DistributedMeshSupport {
         try await requireChatRegistry().messages(in: room, limit: limit)
     }
 
+    func members(in room: MeshRoomInfo) async throws -> [DistributedChatMember] {
+        try await requireChatRegistry().members(in: room)
+    }
+
     func createRoom(named name: String) async throws -> MeshRoomInfo {
         try await requireChatRegistry().createRoom(named: name)
     }

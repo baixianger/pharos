@@ -15,6 +15,7 @@ struct MeshRoomView: View {
     /// picked yet (reload seeds the first).
     @Binding var room: String
     @Environment(ProjectStore.self) private var store
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @State private var rooms: [String] = []
     @State private var membersByRoom: [String: [String]] = [:]
     @State private var membersInfoByRoom: [String: [String: MeshMemberInfo]] = [:]
@@ -50,7 +51,12 @@ struct MeshRoomView: View {
             // Rapid switches can leave several detached history reads in
             // flight. Only the room still visible may update the transcript.
             let requested = room
-            let loaded = await Self.history(requested)
+            let loaded: [MeshMsg]
+            if distributedMesh.isProductModeEnabled {
+                loaded = await distributedHistory(requested)
+            } else {
+                loaded = await Self.history(requested)
+            }
             guard !Task.isCancelled, room == requested else { return }
             messages = loaded
         }
@@ -699,6 +705,12 @@ struct MeshRoomView: View {
     /// Upload one file as a pending attachment — shared by the "+" button and
     /// drag-and-drop, so a dropped file behaves exactly like a chosen one.
     private func uploadFile(at url: URL) {
+        guard !distributedMesh.isProductModeEnabled else {
+            addNotices([
+                "Attachments are moving to content-addressed device Mesh storage; the retired Broker was not contacted."
+            ])
+            return
+        }
         uploadingAttachment = true
         Task {
             let result = await Task.detached { () -> Result<MeshAttachment, Error> in
@@ -731,6 +743,12 @@ struct MeshRoomView: View {
     }
 
     private func openAttachment(_ attachment: MeshAttachment) {
+        guard !distributedMesh.isProductModeEnabled else {
+            addNotices([
+                "This attachment has not been fetched into the distributed blob cache yet."
+            ])
+            return
+        }
         Task {
             let result = await Task.detached { () -> Result<URL, Error> in
                 let directory = FileManager.default.temporaryDirectory
@@ -762,6 +780,33 @@ struct MeshRoomView: View {
         let mentions = MeshHooks.parseTextMentions(text)
         let to = mentions.isEmpty ? nil : mentions
         Task {
+            if distributedMesh.isProductModeEnabled {
+                do {
+                    guard attachments.isEmpty else {
+                        throw DistributedChatViewError.attachmentsPending
+                    }
+                    let target = try await distributedRoom(named: r)
+                    _ = try await distributedMesh.sendChatMessage(
+                        text, in: target, to: mentions,
+                        replyTo: reply.map {
+                            MeshReply(
+                                messageID: $0.stableID, from: $0.from,
+                                preview: String($0.text.prefix(160)), ts: $0.ts
+                            )
+                        }
+                    )
+                    _ = await distributedMesh.synchronizeOnce()
+                    messages = try await distributedMesh.chatMessages(
+                        in: target, limit: 200
+                    )
+                } catch {
+                    draft = text
+                    replyingTo = reply
+                    pendingAttachments = attachments
+                    addNotices([error.localizedDescription])
+                }
+                return
+            }
             let result = await Task.detached { () -> (sent: Bool, notes: [String]) in
                 if reply != nil || !attachments.isEmpty {
                     let capabilities = MeshClient.send(MeshRequest(cmd: "capabilities"))
@@ -794,6 +839,39 @@ struct MeshRoomView: View {
         loading = true
         let selected = room
         Task {
+            if distributedMesh.isProductModeEnabled {
+                defer { loading = false }
+                do {
+                    let roomInfos = try await distributedMesh.chatRooms()
+                    let names = roomInfos.map(\.name)
+                    var nextMembers: [String: [String]] = [:]
+                    var nextInfo: [String: [String: MeshMemberInfo]] = [:]
+                    for roomInfo in roomInfos {
+                        let roomMembers = try await distributedMesh.chatMembers(in: roomInfo)
+                        nextMembers[roomInfo.name] = roomMembers.map(\.nick)
+                        nextInfo[roomInfo.name] = Dictionary(
+                            uniqueKeysWithValues: roomMembers.map { member in
+                                (member.nick, MeshMemberInfo(
+                                    id: member.id, nick: member.nick,
+                                    state: "gone", rooms: [roomInfo.name],
+                                    lastSeen: 0, nodeOnline: nil
+                                ))
+                            }
+                        )
+                    }
+                    rooms = names
+                    membersByRoom = nextMembers
+                    membersInfoByRoom = nextInfo
+                    guard room == selected else { return }
+                    let picked = selected.isEmpty || !names.contains(selected)
+                        ? (names.first ?? "") : selected
+                    room = picked
+                    messages = picked.isEmpty ? [] : await distributedHistory(picked)
+                } catch {
+                    addNotices([error.localizedDescription])
+                }
+                return
+            }
             let snap = await Self.fetch(selected: selected)
             loading = false
             // Remote broker unreachable (e.g. peer daemon died) → re-bootstrap.
@@ -815,6 +893,14 @@ struct MeshRoomView: View {
     /// authoritative, so every event simply triggers the existing snapshot
     /// reload and a 30-second recovery poll covers disconnections.
     private func watchEvents() async {
+        if distributedMesh.isProductModeEnabled {
+            while !Task.isCancelled {
+                _ = await distributedMesh.synchronizeOnce()
+                reload()
+                try? await Task.sleep(for: .seconds(2))
+            }
+            return
+        }
         while !Task.isCancelled && !resolved {
             try? await Task.sleep(for: .milliseconds(100))
         }
@@ -848,6 +934,13 @@ struct MeshRoomView: View {
     private func resolveRemote() async {
         guard !resolving else { return }
         resolving = true
+        if distributedMesh.isProductModeEnabled {
+            MeshClient.remoteEndpoint = nil
+            resolving = false
+            resolved = true
+            reload()
+            return
+        }
         if let endpoint = store.validMeshServerEndpoint {
             MeshClient.remoteEndpoint = endpoint
             MeshPaths.setDialEndpointFile(endpoint)
@@ -906,6 +999,39 @@ struct MeshRoomView: View {
         return await Task.detached {
             MeshClient.send(MeshRequest(cmd: "history", room: room, limit: 200)).messages ?? []
         }.value
+    }
+
+    private func distributedRoom(named name: String) async throws -> MeshRoomInfo {
+        guard let room = try await distributedMesh.chatRooms().first(where: {
+            $0.name == name
+        }) else { throw DistributedChatViewError.roomNotFound }
+        return room
+    }
+
+    private func distributedHistory(_ name: String) async -> [MeshMsg] {
+        guard !name.isEmpty else { return [] }
+        do {
+            let target = try await distributedRoom(named: name)
+            return try await distributedMesh.chatMessages(
+                in: target, limit: 200
+            )
+        } catch {
+            return []
+        }
+    }
+}
+
+private enum DistributedChatViewError: LocalizedError {
+    case roomNotFound
+    case attachmentsPending
+
+    var errorDescription: String? {
+        switch self {
+        case .roomNotFound:
+            "Room not found in the local replica. Sync and try again."
+        case .attachmentsPending:
+            "Attachments are not migrated to distributed blob transfer yet."
+        }
     }
 }
 

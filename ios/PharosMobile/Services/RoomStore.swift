@@ -62,8 +62,12 @@ final class RoomStore {
             do {
                 let nextRooms = try await distributedMesh.rooms()
                 rooms = nextRooms
-                let allMemberships = nextRooms.flatMap { room in
-                    room.members.map { distributedMember(nick: $0, room: room.name) }
+                var allMemberships: [MeshMember] = []
+                for room in nextRooms {
+                    let roomMembers = try await distributedMesh.members(in: room)
+                    allMemberships.append(contentsOf: roomMembers.map {
+                        distributedMember($0, room: room.name)
+                    })
                 }
                 members = RosterIndex.byNick(allMemberships)
                 if let selectedRoom,
@@ -813,9 +817,11 @@ final class RoomStore {
         rooms.first { $0.name == name }
     }
 
-    private func distributedMember(nick: String, room: String) -> MeshMember {
+    private func distributedMember(
+        _ member: DistributedChatMember, room: String
+    ) -> MeshMember {
         MeshMember(
-            id: "distributed:\(room):\(nick)", nick: nick,
+            id: member.id, nick: member.nick,
             rooms: [room], lastSeen: 0, nodeOnline: nil
         )
     }

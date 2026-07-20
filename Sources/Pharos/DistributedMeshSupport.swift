@@ -20,6 +20,7 @@ final class DistributedMeshSupport {
     private(set) var connections: [MeshDeviceID: MeshConnectionSnapshot] = [:]
     private(set) var lastSyncError: String?
     @ObservationIgnored private var runtime: IrohEndpointRuntime?
+    @ObservationIgnored private var chatRegistry: DistributedChatRegistry?
 
     var isProductModeEnabled: Bool {
         ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1"
@@ -35,6 +36,11 @@ final class DistributedMeshSupport {
             localReplica = replica
             if isProductModeEnabled {
                 activeTrustGroupID = try await replica.ensureActiveTrustGroup()
+                if let group = activeTrustGroupID {
+                    chatRegistry = DistributedChatRegistry(
+                        replica: replica, group: group
+                    )
+                }
             }
             state = .ready(
                 deviceID: replica.identity.deviceID,
@@ -103,6 +109,52 @@ final class DistributedMeshSupport {
         return try MeshTrustInvitationLink.encode(invitation)
     }
 
+    func chatRooms() async throws -> [MeshRoomInfo] {
+        try await requireChatRegistry().rooms()
+    }
+
+    func chatMembers(in room: MeshRoomInfo) async throws -> [DistributedChatMember] {
+        try await requireChatRegistry().members(in: room)
+    }
+
+    func chatMessages(in room: MeshRoomInfo, limit: Int? = nil) async throws -> [MeshMsg] {
+        try await requireChatRegistry().messages(in: room, limit: limit)
+    }
+
+    func createChatRoom(named name: String) async throws -> MeshRoomInfo {
+        try await requireChatRegistry().createRoom(named: name)
+    }
+
+    func renameChatRoom(_ room: MeshRoomInfo, to name: String) async throws {
+        try await requireChatRegistry().renameRoom(room, to: name)
+    }
+
+    func deleteChatRoom(_ room: MeshRoomInfo) async throws {
+        try await requireChatRegistry().deleteRoom(room)
+    }
+
+    func sendChatMessage(
+        _ text: String, in room: MeshRoomInfo, to: [String],
+        replyTo: MeshReply? = nil, attachments: [MeshAttachment] = []
+    ) async throws -> MeshMsg {
+        try await requireChatRegistry().send(
+            room: room, from: "human", text: text, to: to,
+            replyTo: replyTo, attachments: attachments
+        )
+    }
+
+    func renameChatMember(
+        _ memberID: String, in room: MeshRoomInfo, to nick: String
+    ) async throws {
+        try await requireChatRegistry().renameMember(
+            room: room, memberID: memberID, to: nick
+        )
+    }
+
+    func removeChatMember(_ memberID: String, from room: MeshRoomInfo) async throws {
+        try await requireChatRegistry().leave(room: room, memberID: memberID)
+    }
+
     /// One bounded pull from every trusted current-epoch peer. Every device
     /// runs the same loop, so synchronization stays decentralized and offline
     /// writers converge after either side reconnects.
@@ -151,8 +203,16 @@ final class DistributedMeshSupport {
             return 0
         }
     }
+
+    private func requireChatRegistry() throws -> DistributedChatRegistry {
+        guard let chatRegistry else {
+            throw DistributedMeshSupportError.noActiveTrustGroup
+        }
+        return chatRegistry
+    }
 }
 
 private enum DistributedMeshSupportError: Error {
     case networkNotReady
+    case noActiveTrustGroup
 }
