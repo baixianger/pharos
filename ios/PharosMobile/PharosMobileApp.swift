@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 @main
 struct PharosMobileApp: App {
@@ -43,7 +44,7 @@ private struct AppContainer: View {
             .environment(rooms)
             .environment(pairing)
             .environment(distributedMesh)
-            .onOpenURL { pairing.receive($0) }
+            .onOpenURL { receivePairingURL($0) }
             .fullScreenCover(isPresented: $pairing.showsSetupGuide) {
                 BrokerSetupGuide()
                     .environment(settings)
@@ -81,5 +82,28 @@ private struct AppContainer: View {
             .onChange(of: settings.mesh.host) { _, host in
                 if !host.isEmpty { pairing.showsSetupGuide = false }
             }
+    }
+
+    private func receivePairingURL(_ url: URL) {
+        pairing.receive(url)
+#if DEBUG
+        // Device-lab hook: exercise the signed, single-use network handshake
+        // without screen-coordinate automation. Release builds always require
+        // the visible confirmation sheet.
+        guard ProcessInfo.processInfo.environment[
+            "PHAROS_TEST_AUTO_ACCEPT_DEVICE"
+        ] == "1", let pending = pairing.pendingDevice else { return }
+        pairing.pendingDevice = nil
+        Task { @MainActor in
+            do {
+                try await distributedMesh.accept(
+                    pending.invitation, displayName: UIDevice.current.name
+                )
+            } catch {
+                pairing.errorMessage = "Pairing failed: \(error)"
+                pairing.showsError = true
+            }
+        }
+#endif
     }
 }
