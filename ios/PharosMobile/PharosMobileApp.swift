@@ -94,12 +94,22 @@ private struct AppContainer: View {
             "PHAROS_TEST_AUTO_ACCEPT_DEVICE"
         ] == "1", let pending = pairing.pendingDevice else { return }
         pairing.pendingDevice = nil
+        print("PHAROS_DEVICE_TEST invitation-received")
         Task { @MainActor in
+            for _ in 0..<100 {
+                if case .opening = distributedMesh.state {
+                    try? await Task.sleep(for: .milliseconds(100))
+                    continue
+                }
+                break
+            }
             do {
                 try await distributedMesh.accept(
                     pending.invitation, displayName: UIDevice.current.name
                 )
+                print("PHAROS_DEVICE_TEST pairing-accepted")
             } catch {
+                print("PHAROS_DEVICE_TEST pairing-failed \(error)")
                 pairing.errorMessage = "Pairing failed: \(error)"
                 pairing.showsError = true
             }
