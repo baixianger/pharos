@@ -101,9 +101,9 @@ mode.
 
 ## Phase 2 — identity, pairing, and Iroh connectivity
 
-**State:** started (Iroh transport, durable identity primitives, and trust-group
-pairing foundation present; product routing, CLI diagnostics, revocation flow,
-and Trusted Devices UI remain pending)
+**State:** started (Iroh transport, durable identity primitives, trust-group
+pairing, and authenticated replica RPC routing present; product endpoint
+lifecycle, CLI diagnostics, revocation UI, and Trusted Devices UI remain pending)
 
 Implemented on `feat/distributed-iroh`:
 
@@ -118,6 +118,10 @@ Implemented on `feat/distributed-iroh`:
   Endpoint ID restoration from the same secret key. A deliberately stalled
   stream proves the public timeout returns in under one second rather than
   waiting for the underlying FFI operation to unwind;
+- `MeshReplicaRPCServer` authorizes the remote Endpoint ID reported by the Iroh
+  QUIC connection against an exact current-epoch trust row before routing any
+  application operation. A relay-disabled isolated Iroh test proves the router
+  does not trust an Endpoint ID supplied in request JSON;
 - iOS XcodeGen consumes the same `PharosMeshIroh` product. Non-Apple builds see
   an explicit unavailable implementation until the pinned Linux bridge is wired;
 - `PharosMeshIdentity` owns one Ed25519 secret whose public key is proven to be
@@ -245,10 +249,26 @@ and Endpoint IDs, database path, and `network=stopped`. This is persistence
 wiring only: it does not read, start, stop, or modify the legacy Broker and does
 not automatically start Iroh networking.
 
-Authenticated Iroh stream routing for sync messages, richer
-room/message/project/issue operation adapters, revocation-aware compaction
-policy, network blob-stream routing, and the randomized partition/reordering
-simulation remain pending.
+The transport-neutral `MeshReplicaRPCHeader` correlates every request and
+response by UUID, operation, trust group, membership epoch, and disposition.
+Typed payloads use the bounded transport body; only small routing/chunk metadata
+enters the header. `MeshReplicaRPCClient` and `MeshReplicaRPCServer` implement
+vector exchange, bounded range/snapshot fetch, monotonic acknowledgement,
+manifest lookup, verified chunk fetch, and directed Host commands. The Host
+client checks command correlation, semantic fingerprint, target identity, and
+the Host's Ed25519 receipt signature before returning a receipt.
+
+`MeshReplicaSyncSession` performs a bounded pull-and-ack pass, reusing the
+store's signature, membership, sequence, hash-chain, snapshot, and
+materialization checks. Both peers run the same pass for bidirectional
+anti-entropy. Isolated tests cover event convergence, bounded blob reconstruction,
+Host command receipt routing, response-ID mismatch, unknown Endpoint IDs, and
+membership-epoch revocation without opening production state.
+
+Product endpoint scheduling, richer room/message/project/issue operation
+adapters, revocation-aware compaction policy, streaming snapshots larger than a
+single bounded RPC body, and the randomized partition/reordering simulation
+remain pending.
 
 1. Add SQLite/WAL schema for events, author heads, materialized entities, blob
    manifests, peer acknowledgements, membership epochs, and snapshots.
@@ -291,6 +311,9 @@ Implemented on `feat/distributed-iroh`:
   revoked membership epoch, stale generation, disallowed actions, expiration,
   concurrent claims, crash recovery, terminal replay, and signed receipt
   verification without contacting a running Mesh.
+- the authenticated replica RPC command route binds the QUIC peer Endpoint ID
+  to the signed controller envelope and returns only a correlated,
+  signature-verified Host receipt; it still never performs the side effect.
 
 1. Bind each Host profile to a trusted device ID and Endpoint ID.
 2. Persist a local Host resource generation for every agent/tmux session.

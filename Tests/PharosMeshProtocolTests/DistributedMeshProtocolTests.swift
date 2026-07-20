@@ -406,6 +406,39 @@ final class DistributedMeshProtocolTests: XCTestCase {
         XCTAssertEqual(try signedReceipt.canonicalSigningBytes(), unsignedReceipt)
     }
 
+    func testReplicaRPCHeaderCanonicalizesRoutingAndRejectsAmbiguousFailures() throws {
+        let group = MeshTrustGroupID(
+            rawValue: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        )
+        let header = MeshReplicaRPCHeader(
+            requestID: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+            operation: .syncRange, trustGroupID: group, membershipEpoch: 7,
+            disposition: .request, metadata: Data("range-v1".utf8)
+        )
+        let bytes = try header.canonicalBytes()
+        XCTAssertEqual(try MeshReplicaRPCHeader.decode(bytes), header)
+        let json = try XCTUnwrap(String(data: bytes, encoding: .utf8))
+        XCTAssertTrue(json.contains(#""operation":"sync.range.v1""#))
+        XCTAssertTrue(json.contains(#""version":1"#))
+
+        var invalid = header
+        invalid.disposition = .failure
+        invalid.errorCode = "unsafe error with spaces"
+        XCTAssertThrowsError(try invalid.validate()) {
+            XCTAssertEqual(
+                $0 as? MeshReplicaRPCValidationError, .invalidDisposition
+            )
+        }
+        invalid.errorCode = "peer-not-trusted"
+        XCTAssertThrowsError(try invalid.validate()) {
+            XCTAssertEqual(
+                $0 as? MeshReplicaRPCValidationError, .invalidDisposition
+            )
+        }
+        invalid.metadata = nil
+        try invalid.validate()
+    }
+
     func testLegacyRequestGoldenJSONRemainsByteCompatible() throws {
         let fixture = try fixtureData(named: "legacy-request")
         let request = try JSONDecoder().decode(MeshRequest.self, from: fixture)

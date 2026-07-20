@@ -113,7 +113,9 @@ let package = Package(
         ),
         .testTarget(
             name: "PharosMeshIrohTests",
-            dependencies: ["PharosMeshIroh", "PharosMeshIdentity"],
+            dependencies: [
+                "PharosMeshIroh", "PharosMeshIdentity", "PharosMeshReplica",
+            ],
             path: "Tests/PharosMeshIrohTests"
         ),
         .testTarget(

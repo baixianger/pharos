@@ -32,6 +32,7 @@ public enum DistributedMeshStoreError: Error, Equatable, Sendable {
     case resourceGenerationOverflow
     case commandGenerationMismatch(expected: UInt64, actual: UInt64)
     case idempotencyCollision
+    case rpcPeerNotTrusted
     case unsafeDatabasePath
     case corruptStoredValue
     case unsupportedSchemaVersion(Int)
@@ -309,6 +310,39 @@ public actor DistributedMeshStore {
         }
     }
 
+    /// Resolves the authenticated transport identity only when it belongs to
+    /// the exact current membership epoch. Old rows remain available for audit
+    /// and rollback, but cannot authorize a new RPC after revocation advances
+    /// the epoch.
+    public func trustedDevice(in group: MeshTrustGroupID,
+                              endpointID: MeshEndpointID,
+                              membershipEpoch: UInt64) throws -> MeshPairedDevice? {
+        guard membershipEpoch <= UInt64(Int64.max) else { return nil }
+        return try queryOne(
+            "SELECT envelope FROM trusted_devices WHERE trust_group_id=? " +
+            "AND endpoint_id=? AND membership_epoch=? LIMIT 1",
+            [.text(group.rawValue.uuidString), .text(endpointID.rawValue),
+             .integer(Int64(membershipEpoch))]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let device = try? JSONDecoder().decode(MeshPairedDevice.self, from: data) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            try device.validateBinding()
+            return device
+        }
+    }
+
+    public func authorizeReplicaRPCPeer(
+        in group: MeshTrustGroupID, endpointID: MeshEndpointID,
+        membershipEpoch: UInt64
+    ) throws -> MeshPairedDevice {
+        try requireReplicaRPCPeer(
+            in: group, endpointID: endpointID,
+            membershipEpoch: membershipEpoch
+        )
+    }
+
     /// Inserts only a structurally and cryptographically verified event. The
     /// caller supplies the trusted membership public key; this method checks it
     /// before opening the write transaction.
@@ -434,6 +468,17 @@ public actor DistributedMeshStore {
         )
     }
 
+    public func syncVector(
+        for group: MeshTrustGroupID, requestedBy endpointID: MeshEndpointID,
+        membershipEpoch: UInt64
+    ) throws -> MeshSyncVector {
+        _ = try requireReplicaRPCPeer(
+            in: group, endpointID: endpointID,
+            membershipEpoch: membershipEpoch
+        )
+        return try syncVector(for: group)
+    }
+
     /// Computes bounded requests for the ranges advertised by a remote peer but
     /// absent locally. Repeated vector exchange advances ranges larger than the
     /// protocol maximum without an unbounded allocation.
@@ -512,6 +557,17 @@ public actor DistributedMeshStore {
         return response
     }
 
+    public func syncResponse(
+        for request: MeshEventRangeRequest,
+        requestedBy endpointID: MeshEndpointID
+    ) throws -> MeshEventRangeResponse {
+        _ = try requireReplicaRPCPeer(
+            in: request.trustGroupID, endpointID: endpointID,
+            membershipEpoch: request.membershipEpoch
+        )
+        return try syncResponse(for: request)
+    }
+
     /// Persists a peer's applied vector monotonically. An acknowledgement may
     /// not claim an event this replica does not possess.
     public func acknowledge(_ vector: MeshSyncVector, from peer: MeshDeviceID) throws {
@@ -552,6 +608,16 @@ public actor DistributedMeshStore {
                 )
             }
         }
+    }
+
+    public func acknowledge(
+        _ vector: MeshSyncVector, requestedBy endpointID: MeshEndpointID
+    ) throws {
+        let peer = try requireReplicaRPCPeer(
+            in: vector.trustGroupID, endpointID: endpointID,
+            membershipEpoch: vector.membershipEpoch
+        )
+        try acknowledge(vector, from: peer.descriptor.id)
     }
 
     public func acknowledgementVector(for group: MeshTrustGroupID,
@@ -864,6 +930,82 @@ public actor DistributedMeshStore {
                  .text(MeshBlobLocalState.pending.rawValue)]
             )
         }
+    }
+
+    public func blobManifest(for digest: MeshBlobDigest) throws -> MeshBlobManifest? {
+        try blobTransfer(digest: digest)?.manifest
+    }
+
+    public func blobManifest(
+        for digest: MeshBlobDigest, in group: MeshTrustGroupID,
+        requestedBy endpointID: MeshEndpointID, membershipEpoch: UInt64
+    ) throws -> MeshBlobManifest? {
+        _ = try requireReplicaRPCPeer(
+            in: group, endpointID: endpointID,
+            membershipEpoch: membershipEpoch
+        )
+        return try blobManifest(for: digest)
+    }
+
+    /// Reads one verified bounded chunk from a complete local blob. The caller
+    /// can place the returned bytes directly in a transport body without ever
+    /// allocating or sending more than the manifest's chunk size.
+    public func blobChunk(for digest: MeshBlobDigest, index: Int) throws -> MeshBlobChunk {
+        guard let transfer = try blobTransfer(digest: digest) else {
+            throw MeshBlobStoreError.notRegistered
+        }
+        guard transfer.state == .complete else { throw MeshBlobStoreError.unavailable }
+        let expected = try transfer.manifest.expectedByteCount(forChunk: index)
+        let file = URL(fileURLWithPath: blobDirectoryPath, isDirectory: true)
+            .appendingPathComponent("\(digest.hex).blob")
+        guard (try? Self.isRegularFile(file)) == true else {
+            if FileManager.default.fileExists(atPath: file.path) {
+                throw MeshBlobStoreError.unsafeStoragePath
+            }
+            try setBlobState(.corrupt, digest: digest)
+            throw MeshBlobValidationError.blobDigestMismatch
+        }
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        guard let size = attributes[.size] as? NSNumber,
+              size.uint64Value == transfer.manifest.byteSize else {
+            try setBlobState(.corrupt, digest: digest)
+            throw MeshBlobValidationError.blobDigestMismatch
+        }
+        let handle: FileHandle
+        do { handle = try FileHandle(forReadingFrom: file) }
+        catch { throw MeshBlobStoreError.fileIO }
+        defer { try? handle.close() }
+        let bytes: Data
+        do {
+            try handle.seek(
+                toOffset: UInt64(index) * UInt64(transfer.manifest.chunkSize)
+            )
+            bytes = try handle.read(upToCount: expected) ?? Data()
+        } catch {
+            throw MeshBlobStoreError.fileIO
+        }
+        guard bytes.count == expected else {
+            try setBlobState(.corrupt, digest: digest)
+            throw MeshBlobValidationError.blobDigestMismatch
+        }
+        guard let chunkDigest = MeshBlobDigest(rawValue: Self.sha256(bytes)) else {
+            throw MeshBlobStoreError.fileIO
+        }
+        return MeshBlobChunk(
+            blobDigest: digest, index: index, data: bytes,
+            chunkDigest: chunkDigest
+        )
+    }
+
+    public func blobChunk(
+        for digest: MeshBlobDigest, index: Int, in group: MeshTrustGroupID,
+        requestedBy endpointID: MeshEndpointID, membershipEpoch: UInt64
+    ) throws -> MeshBlobChunk {
+        _ = try requireReplicaRPCPeer(
+            in: group, endpointID: endpointID,
+            membershipEpoch: membershipEpoch
+        )
+        return try blobChunk(for: digest, index: index)
     }
 
     public func blobState(for digest: MeshBlobDigest) throws -> MeshBlobLocalState? {
@@ -1692,6 +1834,23 @@ public actor DistributedMeshStore {
             try device.validateBinding()
             return device
         }
+    }
+
+    private func requireReplicaRPCPeer(
+        in group: MeshTrustGroupID, endpointID: MeshEndpointID,
+        membershipEpoch: UInt64
+    ) throws -> MeshPairedDevice {
+        let current = try self.membershipEpoch(for: group) ?? 0
+        guard current == membershipEpoch else {
+            throw DistributedMeshStoreError.membershipEpochMismatch(
+                expected: current, actual: membershipEpoch
+            )
+        }
+        guard let peer = try trustedDevice(
+            in: group, endpointID: endpointID,
+            membershipEpoch: membershipEpoch
+        ) else { throw DistributedMeshStoreError.rpcPeerNotTrusted }
+        return peer
     }
 
     private func verifyStoredCommandReceipt(_ receipt: MeshSignedCommandReceipt) throws {

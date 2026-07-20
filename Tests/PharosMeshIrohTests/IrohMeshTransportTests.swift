@@ -3,6 +3,7 @@ import XCTest
 @testable import PharosMeshIroh
 import PharosMeshIdentity
 import PharosMeshProtocol
+import PharosMeshReplica
 
 final class IrohMeshTransportTests: XCTestCase {
     func testAvailabilityMatchesCompiledPlatformSupport() {
@@ -88,6 +89,73 @@ final class IrohMeshTransportTests: XCTestCase {
             .joined()
         XCTAssertEqual(endpointID, publicKeyHex)
         try await runtime.close()
+    }
+
+    func testAuthenticatedReplicaRPCUsesConnectionEndpointIdentity() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "pharos-iroh-rpc-\(UUID().uuidString)", isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let group = MeshTrustGroupID()
+        let serverIdentity = MeshDeviceIdentity.generate()
+        let clientIdentity = MeshDeviceIdentity.generate()
+        let store = try DistributedMeshStore(
+            databaseURL: directory.appendingPathComponent("replica.sqlite")
+        )
+        try await store.setMembershipEpoch(1, for: group)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let pairing = MeshTrustPairingService(
+            identity: serverIdentity, invitationStore: store
+        )
+        let invitation = try await pairing.issueInvitation(
+            trustGroupID: group, membershipEpoch: 1,
+            inviterAddressTicket: "isolated-server-ticket",
+            requestedRoles: [.replica], now: now
+        )
+        let acceptance = try MeshTrustPairingService(
+            identity: clientIdentity,
+            invitationStore: MeshMemoryInvitationUseStore()
+        ).createAcceptance(
+            for: invitation, acceptingAddressTicket: "isolated-client-ticket",
+            displayName: "Iroh RPC Client", now: now
+        )
+        _ = try await pairing.redeem(acceptance, for: invitation, now: now)
+
+        let serverRuntime = try await IrohEndpointRuntime.bind(
+            secretKey: serverIdentity.irohSecretKeyBytes(),
+            relayPolicy: .disabled, bindAddress: "127.0.0.1:0"
+        )
+        let clientRuntime = try await IrohEndpointRuntime.bind(
+            secretKey: clientIdentity.irohSecretKeyBytes(),
+            relayPolicy: .disabled, bindAddress: "127.0.0.1:0"
+        )
+        do {
+            let router = MeshReplicaRPCServer(store: store)
+            await serverRuntime.startServing { request, remoteEndpointID in
+                try await router.handle(
+                    request, remoteEndpointID: remoteEndpointID
+                )
+            }
+            let transport = IrohMeshTransport(
+                runtime: clientRuntime,
+                remote: try await serverRuntime.localAddress()
+            )
+            let vector = try await MeshReplicaRPCClient(
+                transport: transport
+            ).syncVector(for: group, membershipEpoch: 1)
+            XCTAssertEqual(vector.trustGroupID, group)
+            XCTAssertEqual(vector.membershipEpoch, 1)
+            XCTAssertEqual(vector.authors, [])
+        } catch {
+            try? await clientRuntime.close()
+            try? await serverRuntime.close()
+            throw error
+        }
+        try await clientRuntime.close()
+        try await serverRuntime.close()
     }
 
     func testExchangeTimeoutCancelsAnUnresponsiveIsolatedStream() async throws {

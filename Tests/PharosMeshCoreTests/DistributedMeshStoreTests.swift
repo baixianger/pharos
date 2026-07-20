@@ -61,6 +61,171 @@ final class DistributedMeshStoreTests: XCTestCase {
         }
     }
 
+    func testAuthenticatedReplicaRPCRoutesSyncBlobsCommandsAndRevocation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let hostDirectory = fixture.directory.appendingPathComponent("host", isDirectory: true)
+        let clientDirectory = fixture.directory.appendingPathComponent("client", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: hostDirectory, withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: clientDirectory, withIntermediateDirectories: true
+        )
+        let hostStore = try DistributedMeshStore(
+            databaseURL: hostDirectory.appendingPathComponent("replica.sqlite")
+        )
+        let clientStore = try DistributedMeshStore(
+            databaseURL: clientDirectory.appendingPathComponent("replica.sqlite")
+        )
+        try await hostStore.setMembershipEpoch(1, for: fixture.group)
+        try await clientStore.setMembershipEpoch(1, for: fixture.group)
+        let host = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 10))
+        let controller = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 20))
+        try await pairDevice(
+            controller, roles: [.controller], invitedBy: host,
+            in: fixture.group, store: hostStore
+        )
+        try await pairDevice(
+            host, roles: [.host, .replica], invitedBy: controller,
+            in: fixture.group, store: clientStore
+        )
+
+        let entity = MeshEntityReference(type: .project, id: "rpc-project")!
+        let mutation = MeshFieldMutation(
+            field: "title", value: Data("RPC Project".utf8)
+        )
+        let hostKey = try Curve25519.Signing.PrivateKey(
+            rawRepresentation: host.irohSecretKeyBytes()
+        )
+        let event = try signedFieldEvent(
+            group: fixture.group, device: host.deviceID,
+            endpoint: try host.endpointID(), key: hostKey, sequence: 1,
+            timestamp: .init(wallTimeMilliseconds: 1_000), entity: entity,
+            mutation: mutation
+        )
+        _ = try await hostStore.insert(
+            event, authorPublicKey: try host.signingPublicKeyBytes()
+        )
+
+        let blobData = Data("bounded-rpc-blob-payload".utf8)
+        let manifest = blobManifest(for: blobData, chunkSize: 7)
+        try await hostStore.registerBlobManifest(manifest)
+        for chunk in try blobChunks(for: blobData, manifest: manifest) {
+            _ = try await hostStore.receiveBlobChunk(chunk)
+        }
+        try await hostStore.finalizeBlob(manifest.digest)
+
+        let resourceID = MeshResourceID(rawValue: "agent/rpc-test")!
+        _ = try await hostStore.registerHostResource(
+            in: fixture.group, on: host, resourceID: resourceID,
+            allowedActions: [.poke],
+            at: .init(wallTimeMilliseconds: 1_000)
+        )
+
+        let server = MeshReplicaRPCServer(
+            store: hostStore, hostIdentity: host,
+            timestamp: { MeshHybridTimestamp(wallTimeMilliseconds: 2_000) }
+        )
+        let transport = ReplicaRPCServerTransport(
+            server: server, remoteEndpointID: try controller.endpointID()
+        )
+        let client = MeshReplicaRPCClient(transport: transport)
+        let report = try await MeshReplicaSyncSession(
+            store: clientStore, client: client
+        ).synchronize(group: fixture.group, membershipEpoch: 1, rangeLimit: 1)
+        XCTAssertEqual(report, MeshReplicaSyncReport(eventCount: 1, rangeCount: 1))
+        let fields = try await clientStore.materializedFields(
+            for: entity, in: fixture.group
+        )
+        XCTAssertEqual(fields.first?.value, mutation.value)
+        let clientVector = try await clientStore.syncVector(for: fixture.group)
+        let hostVector = try await hostStore.syncVector(for: fixture.group)
+        XCTAssertEqual(clientVector, hostVector)
+
+        let fetchedManifest = try await client.blobManifest(
+            manifest.digest, group: fixture.group, membershipEpoch: 1
+        )
+        XCTAssertEqual(fetchedManifest, manifest)
+        try await clientStore.registerBlobManifest(fetchedManifest)
+        for index in 0..<manifest.chunkCount {
+            let chunk = try await client.blobChunk(
+                manifest.digest, index: index, group: fixture.group,
+                membershipEpoch: 1
+            )
+            _ = try await clientStore.receiveBlobChunk(chunk)
+        }
+        try await clientStore.finalizeBlob(manifest.digest)
+        let fetchedBlob = try await clientStore.blobData(for: manifest.digest)
+        XCTAssertEqual(fetchedBlob, blobData)
+
+        let command = MeshHostCommand(
+            trustGroupID: fixture.group, senderDeviceID: controller.deviceID,
+            targetHostDeviceID: host.deviceID,
+            targetHostEndpointID: try host.endpointID(), resourceID: resourceID,
+            expectedResourceGeneration: 1, action: .poke,
+            idempotencyKey: "rpc-command-1",
+            createdAt: .init(wallTimeMilliseconds: 1_000),
+            deadlineMilliseconds: 3_000
+        )
+        let signedCommand = try MeshHostCommandCrypto.sign(
+            command, membershipEpoch: 1, with: controller
+        )
+        let receipt = try await client.sendHostCommand(signedCommand)
+        XCTAssertEqual(receipt.receipt.state, .accepted)
+        try MeshHostCommandCrypto.verify(
+            receipt, hostPublicKey: try host.signingPublicKeyBytes()
+        )
+
+        let unknown = MeshDeviceIdentity.generate()
+        let unauthorized = MeshReplicaRPCClient(transport: ReplicaRPCServerTransport(
+            server: server, remoteEndpointID: try unknown.endpointID()
+        ))
+        do {
+            _ = try await unauthorized.syncVector(
+                for: fixture.group, membershipEpoch: 1
+            )
+            XCTFail("an unpaired Endpoint ID must not enter the RPC router")
+        } catch {
+            XCTAssertEqual(
+                error as? MeshReplicaRPCError,
+                .remoteFailure("peer-not-trusted")
+            )
+        }
+
+        try await hostStore.setMembershipEpoch(2, for: fixture.group)
+        do {
+            _ = try await client.syncVector(for: fixture.group, membershipEpoch: 1)
+            XCTFail("a stale membership epoch must be rejected")
+        } catch {
+            XCTAssertEqual(
+                error as? MeshReplicaRPCError,
+                .remoteFailure("membership-epoch-mismatch")
+            )
+        }
+        do {
+            _ = try await client.syncVector(for: fixture.group, membershipEpoch: 2)
+            XCTFail("an old trust row must not authorize the new epoch")
+        } catch {
+            XCTAssertEqual(
+                error as? MeshReplicaRPCError,
+                .remoteFailure("peer-not-trusted")
+            )
+        }
+    }
+
+    func testReplicaRPCClientRejectsMismatchedResponseCorrelation() async throws {
+        let client = MeshReplicaRPCClient(transport: MismatchedReplicaRPCTransport())
+        do {
+            _ = try await client.syncVector(
+                for: MeshTrustGroupID(), membershipEpoch: 1
+            )
+            XCTFail("a response for another request ID must not be accepted")
+        } catch {
+            XCTAssertEqual(error as? MeshReplicaRPCError, .responseMismatch)
+        }
+    }
+
     func testStoreUsesWALAndPersistsVerifiedHashChainIdempotently() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -1256,6 +1421,29 @@ final class DistributedMeshStoreTests: XCTestCase {
         _ = try await hostService.redeem(acceptance, for: invitation, now: now)
     }
 
+    private func pairDevice(
+        _ device: MeshDeviceIdentity, roles: Set<MeshDeviceRole>,
+        invitedBy inviter: MeshDeviceIdentity, in group: MeshTrustGroupID,
+        store: DistributedMeshStore
+    ) async throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let inviterService = MeshTrustPairingService(
+            identity: inviter, invitationStore: store
+        )
+        let invitation = try await inviterService.issueInvitation(
+            trustGroupID: group, membershipEpoch: 1,
+            inviterAddressTicket: "isolated-inviter-ticket",
+            requestedRoles: roles, now: now
+        )
+        let acceptance = try MeshTrustPairingService(
+            identity: device, invitationStore: MeshMemoryInvitationUseStore()
+        ).createAcceptance(
+            for: invitation, acceptingAddressTicket: "isolated-device-ticket",
+            displayName: "RPC Test Device", now: now
+        )
+        _ = try await inviterService.redeem(acceptance, for: invitation, now: now)
+    }
+
     private func blobManifest(for data: Data, chunkSize: Int) -> MeshBlobManifest {
         MeshBlobManifest(
             digest: MeshBlobDigest(rawValue: Data(SHA256.hash(data: data)))!,
@@ -1327,6 +1515,41 @@ final class DistributedMeshStoreTests: XCTestCase {
             )
             return try DistributedMeshCrypto.sign(event, with: privateKey)
         }
+    }
+}
+
+private struct ReplicaRPCServerTransport: MeshTransport, Sendable {
+    let server: MeshReplicaRPCServer
+    let remoteEndpointID: MeshEndpointID
+
+    var path: MeshTransportPath { get async { .local } }
+
+    func exchange(_ request: MeshTransportRequest) async throws -> MeshTransportResponse {
+        try await server.handle(request, remoteEndpointID: remoteEndpointID)
+    }
+}
+
+private struct MismatchedReplicaRPCTransport: MeshTransport, Sendable {
+    var path: MeshTransportPath { get async { .local } }
+
+    func exchange(_ request: MeshTransportRequest) async throws -> MeshTransportResponse {
+        let requestHeader = try MeshReplicaRPCHeader.decode(request.header)
+        let responseHeader = MeshReplicaRPCHeader(
+            requestID: UUID(), operation: requestHeader.operation,
+            trustGroupID: requestHeader.trustGroupID,
+            membershipEpoch: requestHeader.membershipEpoch,
+            disposition: .success
+        )
+        let vector = try MeshSyncVector(
+            trustGroupID: requestHeader.trustGroupID,
+            membershipEpoch: requestHeader.membershipEpoch, authors: []
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return MeshTransportResponse(
+            header: try responseHeader.canonicalBytes(),
+            body: try encoder.encode(vector)
+        )
     }
 }
 
