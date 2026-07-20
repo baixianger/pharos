@@ -223,9 +223,12 @@ private enum MeshHeadlessCLI {
             "migration-status", "migration-prepare", "migration-import",
             "cutover", "rollback",
         ]
-        guard command == "status" || command == "init" || migrationCommands.contains(command) else {
+        let probeCommands = ["probe-serve", "probe"]
+        guard command == "status" || command == "init" ||
+                migrationCommands.contains(command) || probeCommands.contains(command) else {
             return usageError(
-                "distributed status|init|migration-status|migration-prepare|cutover|rollback …"
+                "distributed status|init|probe-serve|probe|migration-status|" +
+                "migration-prepare|cutover|rollback …"
             )
         }
         let dataDirectory: String?
@@ -255,6 +258,12 @@ private enum MeshHeadlessCLI {
                     command, args: args, replica: replica
                 )
             }
+            if command == "probe-serve" {
+                return try await runDistributedProbeServer(args, replica: replica)
+            }
+            if command == "probe" {
+                return try await runDistributedProbe(args, replica: replica)
+            }
             let status = DistributedStatus(
                 protocolVersion: DistributedMeshProtocol.version,
                 schemaVersion: DistributedMeshStore.currentSchemaVersion,
@@ -282,6 +291,120 @@ private enum MeshHeadlessCLI {
             )
             return 1
         }
+    }
+
+    /// Starts only the identity-addressed Iroh transport and a bounded
+    /// diagnostic ping handler. It never opens a legacy endpoint or mutates
+    /// replica state, so operators can validate path selection before pairing
+    /// or migration cutover.
+    private static func runDistributedProbeServer(
+        _ args: [String], replica: MeshLocalReplica
+    ) async throws -> Int32 {
+        let runtime = try await IrohEndpointRuntime.bind(
+            secretKey: replica.identity.irohSecretKeyBytes(),
+            relayPolicy: try distributedRelayPolicy(args),
+            bindAddress: option("--bind", in: args)
+        )
+        let address = try await runtime.localAddress()
+        let localEndpoint = address.endpointID.rawValue
+        await runtime.startServing { request, remoteEndpointID in
+            let ping = try JSONDecoder().decode(
+                DistributedProbePing.self, from: request.header
+            )
+            guard ping.kind == "ping",
+                  ping.senderEndpointID == remoteEndpointID.rawValue else {
+                throw DistributedProbeError.identityMismatch
+            }
+            let response = DistributedProbePong(
+                kind: "pong", nonce: ping.nonce,
+                serverEndpointID: localEndpoint,
+                observedPeerEndpointID: remoteEndpointID.rawValue
+            )
+            return MeshTransportResponse(header: try sortedJSON(response))
+        }
+        let status = DistributedProbeServerStatus(
+            deviceID: replica.identity.deviceID.rawValue.uuidString,
+            endpointID: address.endpointID.rawValue,
+            ticket: address.ticket,
+            networkState: "serving"
+        )
+        print(String(decoding: try sortedJSON(status), as: UTF8.self))
+        FileHandle.standardOutput.synchronizeFile()
+        while !Task.isCancelled {
+            try await Task.sleep(for: .seconds(60))
+        }
+        try await runtime.close()
+        return 0
+    }
+
+    private static func runDistributedProbe(
+        _ args: [String], replica: MeshLocalReplica
+    ) async throws -> Int32 {
+        guard let endpointText = option("--peer-endpoint", in: args),
+              let endpointID = MeshEndpointID(rawValue: endpointText),
+              let ticket = option("--peer-ticket", in: args), !ticket.isEmpty else {
+            return usageError(
+                "distributed probe --peer-endpoint ID --peer-ticket TICKET " +
+                "--data-dir ABSOLUTE-PATH"
+            )
+        }
+        let runtime = try await IrohEndpointRuntime.bind(
+            secretKey: replica.identity.irohSecretKeyBytes(),
+            relayPolicy: try distributedRelayPolicy(args),
+            bindAddress: option("--bind", in: args)
+        )
+        do {
+            let localEndpoint = try await runtime.localAddress().endpointID
+            let nonce = UUID().uuidString
+            let ping = DistributedProbePing(
+                kind: "ping", nonce: nonce,
+                senderEndpointID: localEndpoint.rawValue
+            )
+            let transport = IrohMeshTransport(
+                runtime: runtime,
+                remote: MeshIrohEndpointAddress(endpointID: endpointID, ticket: ticket)
+            )
+            let response = try await transport.exchange(MeshTransportRequest(
+                header: try sortedJSON(ping), timeoutMilliseconds: 10_000
+            ))
+            let pong = try JSONDecoder().decode(
+                DistributedProbePong.self, from: response.header
+            )
+            guard pong.kind == "pong", pong.nonce == nonce,
+                  pong.serverEndpointID == endpointID.rawValue,
+                  pong.observedPeerEndpointID == localEndpoint.rawValue else {
+                throw DistributedProbeError.identityMismatch
+            }
+            let result = DistributedProbeResult(
+                localEndpointID: localEndpoint.rawValue,
+                peerEndpointID: endpointID.rawValue,
+                path: await transport.path.rawValue,
+                nonceVerified: true,
+                peerIdentityVerified: true
+            )
+            print(String(decoding: try sortedJSON(result), as: UTF8.self))
+            try await runtime.close()
+            return 0
+        } catch {
+            try? await runtime.close()
+            throw error
+        }
+    }
+
+    private static func distributedRelayPolicy(
+        _ args: [String]
+    ) throws -> MeshIrohRelayPolicy {
+        switch option("--relay", in: args) ?? "production" {
+        case "production": return .production
+        case "disabled": return .disabled
+        default: throw DistributedProbeError.invalidRelayPolicy
+        }
+    }
+
+    private static func sortedJSON<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(value)
     }
 
     private static func runMigrationCommand(
@@ -457,6 +580,39 @@ private enum MeshHeadlessCLI {
         var endpointID: String
         var databasePath: String
         var networkState: String
+    }
+
+    private struct DistributedProbePing: Codable {
+        var kind: String
+        var nonce: String
+        var senderEndpointID: String
+    }
+
+    private struct DistributedProbePong: Codable {
+        var kind: String
+        var nonce: String
+        var serverEndpointID: String
+        var observedPeerEndpointID: String
+    }
+
+    private struct DistributedProbeServerStatus: Codable {
+        var deviceID: String
+        var endpointID: String
+        var ticket: String
+        var networkState: String
+    }
+
+    private struct DistributedProbeResult: Codable {
+        var localEndpointID: String
+        var peerEndpointID: String
+        var path: String
+        var nonceVerified: Bool
+        var peerIdentityVerified: Bool
+    }
+
+    private enum DistributedProbeError: Error {
+        case identityMismatch
+        case invalidRelayPolicy
     }
 
     private static func runNode(_ args: [String]) -> Int32 {
@@ -710,6 +866,8 @@ private enum MeshHeadlessCLI {
       registry get [--output PATH]
       registry import <projects.json> --expected REVISION
       distributed status|init [--json] [--data-dir ABSOLUTE-PATH]
+      distributed probe-serve --data-dir ABSOLUTE-PATH [--relay production|disabled] [--bind HOST:PORT]
+      distributed probe --peer-endpoint ID --peer-ticket TICKET --data-dir ABSOLUTE-PATH [--relay production|disabled] [--bind HOST:PORT]
       distributed migration-status --group UUID --data-dir ABSOLUTE-PATH [--json]
       distributed migration-import --group UUID --legacy-data-dir ABSOLUTE-PATH --data-dir ABSOLUTE-PATH [--epoch N] [--generation N] [--json]
       distributed migration-prepare --group UUID --inventory SHA256 --data-dir ABSOLUTE-PATH
