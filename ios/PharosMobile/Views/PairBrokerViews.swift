@@ -377,7 +377,7 @@ struct PairingScannerSheet: View {
                     } description: {
                         Text("Paste the pairing link instead.")
                     } actions: {
-                        TextField("pharos://pair?…", text: $manualLink)
+                        TextField("pharos://device?… or pharos://pair?…", text: $manualLink)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .textFieldStyle(.roundedBorder)
@@ -387,7 +387,7 @@ struct PairingScannerSheet: View {
                     .padding()
                 }
             }
-            .navigationTitle("Scan Broker Code")
+            .navigationTitle("Scan Pairing Code")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

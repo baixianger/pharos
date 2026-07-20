@@ -67,7 +67,9 @@ struct SettingsView: View {
                 } header: {
                     Text("Device SSH identity")
                 } footer: {
-                    Text("Private keys are device-local in Keychain and never uploaded to iCloud. Hosts use SSH to launch, attach, and stop agents; Mesh traffic goes directly to the Broker.")
+                    Text(isDistributed
+                         ? "Private keys are device-local in Keychain and never uploaded to iCloud. Hosts use SSH only for agent execution; replicated Mesh data travels directly between trusted devices."
+                         : "Private keys are device-local in Keychain and never uploaded to iCloud. Hosts use SSH to launch, attach, and stop agents; Mesh traffic goes directly to the Broker.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
