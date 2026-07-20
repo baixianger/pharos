@@ -175,8 +175,9 @@ new connection; legacy mode still works.
 
 ## Phase 3 — local event store and anti-entropy sync
 
-**State:** started (durable sync/materialization and portable local-replica
-wiring present; authenticated network routing remains pending)
+**State:** core complete (durable sync/materialization, portable local-replica
+wiring, authenticated Iroh routing, compaction, and reliability simulation are
+present; richer product mutation adapters and production fault drills remain)
 
 The isolated `DistributedMeshStore` now creates a caller-selected SQLite WAL
 replica with the Phase 3 tables. It verifies signatures, membership epoch,
@@ -323,9 +324,9 @@ corrupt or unauthorized events never enter materialized state.
 
 ## Phase 4 — Host authority and distributed commands
 
-**State:** started (authenticated Host-local authority and exactly-once claim
-foundation complete; shared local replica surfaces are present, while command
-lifecycle adapters remain pending)
+**State:** core complete (authenticated Host-local authority, directed Iroh RPC,
+durable receipts, generation gates, and exactly-once claims are present; product
+command lifecycle adapters remain pending)
 
 Implemented on `feat/distributed-iroh`:
 
