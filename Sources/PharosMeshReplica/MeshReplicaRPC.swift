@@ -14,6 +14,11 @@ public enum MeshReplicaRPCError: Error, Equatable, Sendable {
     case synchronizationLimitExceeded
 }
 
+public enum MeshHostCommandExecutionOutcome: Equatable, Sendable {
+    case executed(Data?)
+    case failed(code: String)
+}
+
 /// Authenticated application router for one already-identified Iroh peer. The
 /// transport supplies `remoteEndpointID` from the QUIC connection; no request
 /// field is ever accepted as proof of peer identity.
@@ -21,6 +26,7 @@ public struct MeshReplicaRPCServer: Sendable {
     public let store: DistributedMeshStore
     public let hostIdentity: MeshDeviceIdentity?
     private let timestamp: @Sendable () -> MeshHybridTimestamp
+    private let hostCommandHandler: (@Sendable (MeshHostCommand) async -> MeshHostCommandExecutionOutcome)?
 
     public init(
         store: DistributedMeshStore, hostIdentity: MeshDeviceIdentity? = nil,
@@ -32,6 +38,23 @@ public struct MeshReplicaRPCServer: Sendable {
     ) {
         self.store = store
         self.hostIdentity = hostIdentity
+        self.hostCommandHandler = nil
+        self.timestamp = timestamp
+    }
+
+    public init(
+        store: DistributedMeshStore, hostIdentity: MeshDeviceIdentity?,
+        hostCommandHandler: @escaping @Sendable (MeshHostCommand) async
+            -> MeshHostCommandExecutionOutcome,
+        timestamp: @escaping @Sendable () -> MeshHybridTimestamp = {
+            MeshHybridTimestamp(
+                wallTimeMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            )
+        }
+    ) {
+        self.store = store
+        self.hostIdentity = hostIdentity
+        self.hostCommandHandler = hostCommandHandler
         self.timestamp = timestamp
     }
 
@@ -136,9 +159,34 @@ public struct MeshReplicaRPCServer: Sendable {
                       command.senderEndpointID == remoteEndpointID else {
                     return try failure(for: header, code: "command-identity-mismatch")
                 }
-                let receipt = try await store.accept(
+                var receipt = try await store.accept(
                     command, on: hostIdentity, receivedAt: timestamp()
                 )
+                if receipt.receipt.state == .accepted,
+                   let hostCommandHandler {
+                    let claim = try await store.claimExecution(
+                        commandID: command.command.id,
+                        on: hostIdentity, at: timestamp()
+                    )
+                    receipt = claim.receipt
+                    if claim.shouldExecute {
+                        let outcome = await hostCommandHandler(command.command)
+                        switch outcome {
+                        case .executed(let result):
+                            receipt = try await store.finishExecution(
+                                commandID: command.command.id,
+                                on: hostIdentity, outcome: .executed,
+                                at: timestamp(), result: result
+                            )
+                        case .failed(let code):
+                            receipt = try await store.finishExecution(
+                                commandID: command.command.id,
+                                on: hostIdentity, outcome: .failed,
+                                at: timestamp(), failureCode: code
+                            )
+                        }
+                    }
+                }
                 return try success(for: header, body: try MeshReplicaRPCJSON.encode(receipt))
             }
         } catch let error as MeshReplicaRPCError {

@@ -143,8 +143,13 @@ final class DistributedMeshStoreTests: XCTestCase {
             at: .init(wallTimeMilliseconds: 1_000)
         )
 
+        let executionCounter = HostExecutionCounter()
         let server = MeshReplicaRPCServer(
             store: hostStore, hostIdentity: host,
+            hostCommandHandler: { command in
+                await executionCounter.record(command.id)
+                return .executed(Data("poke-ok".utf8))
+            },
             timestamp: { MeshHybridTimestamp(wallTimeMilliseconds: 2_000) }
         )
         let transport = ReplicaRPCServerTransport(
@@ -196,10 +201,15 @@ final class DistributedMeshStoreTests: XCTestCase {
             command, membershipEpoch: 1, with: controller
         )
         let receipt = try await client.sendHostCommand(signedCommand)
-        XCTAssertEqual(receipt.receipt.state, .accepted)
+        XCTAssertEqual(receipt.receipt.state, .executed)
+        XCTAssertEqual(receipt.receipt.result, Data("poke-ok".utf8))
         try MeshHostCommandCrypto.verify(
             receipt, hostPublicKey: try host.signingPublicKeyBytes()
         )
+        let replayedReceipt = try await client.sendHostCommand(signedCommand)
+        XCTAssertEqual(replayedReceipt, receipt)
+        let executionCount = await executionCounter.count
+        XCTAssertEqual(executionCount, 1)
 
         let unknown = MeshDeviceIdentity.generate()
         let unauthorized = MeshReplicaRPCClient(transport: ReplicaRPCServerTransport(
@@ -1941,6 +1951,16 @@ private struct ReplicaRPCServerTransport: MeshTransport, Sendable {
 
     func exchange(_ request: MeshTransportRequest) async throws -> MeshTransportResponse {
         try await server.handle(request, remoteEndpointID: remoteEndpointID)
+    }
+}
+
+private actor HostExecutionCounter {
+    private(set) var count = 0
+    private var commands: [MeshCommandID] = []
+
+    func record(_ command: MeshCommandID) {
+        count += 1
+        commands.append(command)
     }
 }
 
