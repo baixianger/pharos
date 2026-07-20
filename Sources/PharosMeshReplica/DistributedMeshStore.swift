@@ -500,7 +500,7 @@ public actor DistributedMeshStore {
         in group: MeshTrustGroupID, membershipEpoch: UInt64
     ) throws -> [MeshPairedDevice] {
         guard membershipEpoch <= UInt64(Int64.max) else { return [] }
-        return try queryAll(
+        return try query(
             "SELECT envelope FROM trusted_devices WHERE trust_group_id=? " +
                 "AND membership_epoch=? ORDER BY device_id",
             [.text(group.rawValue.uuidString), .integer(Int64(membershipEpoch))]
