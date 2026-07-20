@@ -409,7 +409,50 @@ private enum MeshHeadlessCLI {
                 hostIdentity: args.contains("--host") ? replica.identity : nil
             )
             await runtime.startServing { request, remoteEndpointID in
-                try await router.handle(request, remoteEndpointID: remoteEndpointID)
+                if let pairing = try? MeshTrustPairingRPCRequest.decode(
+                    request.header
+                ) {
+                    guard pairing.acceptance.acceptingEndpointID == remoteEndpointID else {
+                        throw MeshTrustPairingError.endpointKeyMismatch
+                    }
+                    let paired = try await MeshTrustPairingService(
+                        identity: replica.identity,
+                        invitationStore: replica.store
+                    ).redeem(
+                        pairing.acceptance, for: pairing.invitation
+                    )
+                    return MeshTransportResponse(
+                        header: try MeshTrustPairingRPCResponse(
+                            acceptedDeviceID: paired.descriptor.id
+                        ).encoded()
+                    )
+                }
+                return try await router.handle(
+                    request, remoteEndpointID: remoteEndpointID
+                )
+            }
+            if args.contains("--invite-file") {
+                guard let path = option("--invite-file", in: args),
+                      path.hasPrefix("/"), !path.hasPrefix("--") else {
+                    return usageError("--invite-file requires an absolute path")
+                }
+                let invitation = try await MeshTrustPairingService(
+                    identity: replica.identity,
+                    invitationStore: replica.store
+                ).issueInvitation(
+                    trustGroupID: group,
+                    membershipEpoch: epoch,
+                    inviterAddressTicket: address.ticket,
+                    requestedRoles: distributedRoles(args)
+                )
+                let link = try MeshTrustInvitationLink.encode(invitation)
+                let file = URL(fileURLWithPath: path)
+                try Data("\(link.absoluteString)\n".utf8).write(
+                    to: file, options: .atomic
+                )
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600], ofItemAtPath: file.path
+                )
             }
             let status = DistributedSyncServerStatus(
                 deviceID: replica.identity.deviceID.rawValue.uuidString,
@@ -1147,7 +1190,7 @@ private enum MeshHeadlessCLI {
       distributed device-accept INVITATION --name NAME --data-dir ABSOLUTE-PATH [--inviter-name NAME]
       distributed device-redeem INVITATION ACCEPTANCE --data-dir ABSOLUTE-PATH
       distributed device-list --data-dir ABSOLUTE-PATH
-      distributed sync-serve --data-dir ABSOLUTE-PATH [--host] [--relay production|disabled]
+      distributed sync-serve --data-dir ABSOLUTE-PATH [--host] [--invite-file ABSOLUTE-PATH] [--roles controller,replica] [--relay production|disabled]
       distributed sync --peer DEVICE-UUID --data-dir ABSOLUTE-PATH [--peer-ticket CURRENT-TICKET] [--relay production|disabled]
       distributed entity-set --type TYPE --id ID --field FIELD --json-value JSON --data-dir ABSOLUTE-PATH
       distributed entity-dump --type TYPE --id ID --data-dir ABSOLUTE-PATH
