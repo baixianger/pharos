@@ -1,6 +1,7 @@
 import SwiftUI
 import Observation
 import AppKit
+import PharosMeshCore
 @preconcurrency import UserNotifications
 
 /// On-disk shape of the registry.
@@ -484,7 +485,10 @@ final class ProjectStore {
     private var meshSnapshotPolling = false
     var lastError: String?
     private(set) var registrySyncStatus: RegistrySyncStatus = .connecting
-    private var registrySync: BrokerRegistrySync!
+    private var registrySync: BrokerRegistrySync?
+    private var distributedProjection: DistributedProjectIssueProjection?
+    private var distributedPublishTask: Task<Void, Never>?
+    private(set) var usesDistributedRegistry = false
     var terminal: TerminalApp = .ghostty {
         didSet { PharosPrefs.shared.set(terminal.rawValue, forKey: "pharos.terminal") }
     }
@@ -619,7 +623,14 @@ final class ProjectStore {
     /// The registry file. Resolved from the shared `DataLocation` (honoring the
     /// Broker-backed cache (plus the `PHAROS_REGISTRY` test override) so the GUI
     /// and CLI agree without treating iCloud or a Host checkout as shared state.
-    private var fileURL: URL { PharosCore.registryURL }
+    private var fileURL: URL {
+        if ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1" {
+            return DataLocation.current.appendingPathComponent(
+                "distributed-project-cache.json"
+            )
+        }
+        return PharosCore.registryURL
+    }
     private var pollTask: Task<Void, Never>?
     /// Last modification date of projects.json we've observed/written, used by the
     /// external-edit watcher to avoid reloading our own saves in a loop.
@@ -656,20 +667,32 @@ final class ProjectStore {
         }
         meshHubHostID = d.bool(forKey: "pharos.hostBroker") ? HostIdentity.current : nil
         if let endpoint = validMeshServerEndpoint { MeshClient.remoteEndpoint = endpoint }
-        registrySync = BrokerRegistrySync(revision: d.string(forKey: "pharos.registryRevision")) { [weak self] event in
-            Task { @MainActor in self?.handleRegistryEvent(event) }
-        }
         load()
-        if d.bool(forKey: "pharos.registryPending"),
-           let payload = try? String(contentsOf: fileURL, encoding: .utf8) {
-            registrySyncStatus = .pending
-            registrySync.submit(payload)
-        } else if let snapshot = registrySync.bootstrap(), applyRegistryPayload(snapshot.payload) {
-            d.set(snapshot.revision, forKey: "pharos.registryRevision")
-            registrySyncStatus = .synced
-            persistCurrentCache()
+        if ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1" {
+            // The local cache is display-only until DistributedMeshSupport
+            // attaches the replica. Never dial the legacy Broker in this mode.
+            registrySyncStatus = .connecting
         } else {
-            registrySyncStatus = .offline("Using the last local cache until the Broker reconnects.")
+            let sync = BrokerRegistrySync(
+                revision: d.string(forKey: "pharos.registryRevision")
+            ) { [weak self] event in
+                Task { @MainActor in self?.handleRegistryEvent(event) }
+            }
+            registrySync = sync
+            if d.bool(forKey: "pharos.registryPending"),
+               let payload = try? String(contentsOf: fileURL, encoding: .utf8) {
+                registrySyncStatus = .pending
+                sync.submit(payload)
+            } else if let snapshot = sync.bootstrap(),
+                      applyRegistryPayload(snapshot.payload) {
+                d.set(snapshot.revision, forKey: "pharos.registryRevision")
+                registrySyncStatus = .synced
+                persistCurrentCache()
+            } else {
+                registrySyncStatus = .offline(
+                    "Using the last local cache until the Broker reconnects."
+                )
+            }
         }
         // Migrate the old local preference without carrying it in project data.
         if d.bool(forKey: "pharos.hostMesh") {
@@ -680,7 +703,7 @@ final class ProjectStore {
         refreshRunningAgents()
         requestNotificationAuthorizationIfNeeded()
         startPolling()
-        startFileWatch()
+        if registrySync != nil { startFileWatch() }
     }
 
     // MARK: External-edit watcher (live registry sync)
@@ -694,7 +717,7 @@ final class ProjectStore {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard let self, !Task.isCancelled else { return }
-                self.registrySync.retryAndRefresh()
+                self.registrySync?.retryAndRefresh()
                 self.reloadIfChangedExternally()
             }
         }
@@ -799,6 +822,45 @@ final class ProjectStore {
 
     // MARK: Persistence
 
+    func activateDistributedRegistry(
+        replica: MeshLocalReplica, group: MeshTrustGroupID
+    ) async {
+        let projection = DistributedProjectIssueProjection(
+            replica: replica, group: group
+        )
+        distributedProjection = projection
+        usesDistributedRegistry = true
+        registrySyncStatus = .connecting
+        do {
+            var materialized = try await projection.materializedProjects()
+            if materialized.isEmpty,
+               ProcessInfo.processInfo.environment[
+                   "PHAROS_DISTRIBUTED_SEED_CACHE"
+               ] == "1", !projects.isEmpty {
+                var seed = StoreData(projects: projects)
+                HostLocalProjectPaths.captureAndStrip(&seed)
+                try await projection.publish(projects: seed.projects)
+                materialized = try await projection.materializedProjects()
+            }
+            applyDistributedProjects(materialized)
+            registrySyncStatus = .synced
+        } catch {
+            registrySyncStatus = .offline(
+                "Could not open the distributed project replica: \(error)"
+            )
+        }
+    }
+
+    private func applyDistributedProjects(_ portable: [Project]) {
+        var store = StoreData(projects: portable)
+        HostLocalProjectPaths.apply(to: &store)
+        projects = store.projects
+        groups = Array(Set(projects.flatMap(\.tags))).sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+        persistCurrentCache()
+    }
+
     func load() {
         guard let data = try? Data(contentsOf: fileURL) else { return }
         _ = applyRegistryData(data)
@@ -836,9 +898,35 @@ final class ProjectStore {
         HostLocalProjectPaths.captureAndStrip(&store)
         if let data = try? encoder.encode(store) {
             writeCache(data)
+            if usesDistributedRegistry, let projection = distributedProjection {
+                registrySyncStatus = .pending
+                let snapshot = store.projects
+                let previous = distributedPublishTask
+                distributedPublishTask = Task { [weak self] in
+                    _ = await previous?.value
+                    guard !Task.isCancelled else { return }
+                    do {
+                        try await projection.publish(projects: snapshot)
+                        let materialized = try await projection.materializedProjects()
+                        guard !Task.isCancelled else { return }
+                        await MainActor.run {
+                            guard let self else { return }
+                            self.applyDistributedProjects(materialized)
+                            self.registrySyncStatus = .synced
+                        }
+                    } catch {
+                        await MainActor.run {
+                            self?.registrySyncStatus = .offline(
+                                "Local changes are queued in the distributed replica: \(error)"
+                            )
+                        }
+                    }
+                }
+                return
+            }
             PharosPrefs.shared.set(true, forKey: "pharos.registryPending")
             registrySyncStatus = .pending
-            registrySync.submit(String(decoding: data, as: UTF8.self))
+            registrySync?.submit(String(decoding: data, as: UTF8.self))
         }
     }
 
@@ -888,7 +976,7 @@ final class ProjectStore {
                 PharosPrefs.shared.set(remote.revision, forKey: "pharos.registryRevision")
                 persistCurrentCache()
             }
-            registrySync.acceptRemoteAfterConflict()
+            registrySync?.acceptRemoteAfterConflict()
             PharosPrefs.shared.set(false, forKey: "pharos.registryPending")
             registrySyncStatus = .conflict(file.path)
             reportError("Another client changed project data first. The Broker version was loaded and your local edit was preserved at \(file.path).")
@@ -953,7 +1041,25 @@ final class ProjectStore {
 
     func syncRegistryNow() {
         registrySyncStatus = .connecting
-        registrySync.retryAndRefresh()
+        if let projection = distributedProjection {
+            Task { [weak self] in
+                do {
+                    let projects = try await projection.materializedProjects()
+                    await MainActor.run {
+                        self?.applyDistributedProjects(projects)
+                        self?.registrySyncStatus = .synced
+                    }
+                } catch {
+                    await MainActor.run {
+                        self?.registrySyncStatus = .offline(
+                            "Could not read the distributed replica: \(error)"
+                        )
+                    }
+                }
+            }
+        } else {
+            registrySync?.retryAndRefresh()
+        }
     }
     func contains(name: String) -> Bool { projects.contains { $0.name == name } }
     func contains(remote: String) -> Bool { projects.contains { $0.githubRemote == remote } }

@@ -1,9 +1,11 @@
 import Foundation
 import PharosMeshIdentity
+import PharosMeshProtocol
 
 public enum MeshLocalReplicaError: Error, Equatable, Sendable {
     case missingApplicationSupportDirectory
     case invalidDataDirectory
+    case corruptActiveTrustGroup
 }
 
 /// The one local replica factory used by macOS, iOS, and the headless CLI.
@@ -88,6 +90,48 @@ public struct MeshLocalReplica: Sendable {
 #endif
     }
 
+    public func activeTrustGroup() throws -> MeshTrustGroupID? {
+        let storage = MeshFileIdentityStorage(
+            fileURL: rootURL.appendingPathComponent("active-trust-group-v1.json")
+        )
+        guard let data = try storage.load() else { return nil }
+        guard let profile = try? JSONDecoder().decode(
+            ActiveTrustGroupProfile.self, from: data
+        ), profile.version == 1 else {
+            throw MeshLocalReplicaError.corruptActiveTrustGroup
+        }
+        return profile.trustGroupID
+    }
+
+    /// Creates the first personal trust group exactly once across concurrent
+    /// app/CLI launches. Joining an existing group uses pairing and must never
+    /// overwrite this selection implicitly.
+    public func ensureActiveTrustGroup() async throws -> MeshTrustGroupID {
+        if let existing = try activeTrustGroup() {
+            if try await store.membershipEpoch(for: existing) == nil {
+                try await store.setMembershipEpoch(1, for: existing)
+            }
+            return existing
+        }
+        let candidate = MeshTrustGroupID()
+        let profile = ActiveTrustGroupProfile(
+            version: 1, trustGroupID: candidate
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let storage = MeshFileIdentityStorage(
+            fileURL: rootURL.appendingPathComponent("active-trust-group-v1.json")
+        )
+        _ = try storage.insertIfAbsent(try encoder.encode(profile))
+        guard let winner = try activeTrustGroup() else {
+            throw MeshLocalReplicaError.corruptActiveTrustGroup
+        }
+        if try await store.membershipEpoch(for: winner) == nil {
+            try await store.setMembershipEpoch(1, for: winner)
+        }
+        return winner
+    }
+
     private static func ensurePrivateDirectory(_ directory: URL) throws {
         let manager = FileManager.default
         if manager.fileExists(atPath: directory.path) {
@@ -106,5 +150,10 @@ public struct MeshLocalReplica: Sendable {
         try manager.setAttributes(
             [.posixPermissions: 0o700], ofItemAtPath: directory.path
         )
+    }
+
+    private struct ActiveTrustGroupProfile: Codable {
+        var version: Int
+        var trustGroupID: MeshTrustGroupID
     }
 }

@@ -264,11 +264,18 @@ private enum MeshHeadlessCLI {
             if command == "probe" {
                 return try await runDistributedProbe(args, replica: replica)
             }
+            let activeGroup: MeshTrustGroupID?
+            if command == "init" {
+                activeGroup = try await replica.ensureActiveTrustGroup()
+            } else {
+                activeGroup = try replica.activeTrustGroup()
+            }
             let status = DistributedStatus(
                 protocolVersion: DistributedMeshProtocol.version,
                 schemaVersion: DistributedMeshStore.currentSchemaVersion,
                 deviceID: replica.identity.deviceID.rawValue.uuidString,
                 endpointID: try replica.identity.endpointID().rawValue,
+                activeTrustGroupID: activeGroup?.rawValue.uuidString,
                 databasePath: replica.rootURL
                     .appendingPathComponent("replica-v1.sqlite").path,
                 networkState: "stopped"
@@ -280,6 +287,7 @@ private enum MeshHeadlessCLI {
             } else {
                 print("device\t\(status.deviceID)")
                 print("endpoint\t\(status.endpointID)")
+                print("group\t\(status.activeTrustGroupID ?? "not-initialized")")
                 print("schema\t\(status.schemaVersion)")
                 print("database\t\(status.databasePath)")
                 print("network\t\(status.networkState)")
@@ -579,6 +587,7 @@ private enum MeshHeadlessCLI {
         var schemaVersion: Int
         var deviceID: String
         var endpointID: String
+        var activeTrustGroupID: String?
         var databasePath: String
         var networkState: String
     }

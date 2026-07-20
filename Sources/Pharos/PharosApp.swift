@@ -63,6 +63,16 @@ struct PharosApp: App {
                 .preferredColorScheme(store.appearance.colorScheme)
                 .task {
                     await distributedMesh.start()
+                    if distributedMesh.isProductModeEnabled,
+                       let replica = distributedMesh.localReplica,
+                       let group = distributedMesh.activeTrustGroupID {
+                        await store.activateDistributedRegistry(
+                            replica: replica, group: group
+                        )
+                        // Distributed mode owns project/issue persistence and
+                        // never starts, dials, or repairs the legacy Broker.
+                        return
+                    }
                     // This mesh bootstrap is app-global state — run it once, not
                     // for every window/tab. Re-running it per tab re-dialed the
                     // broker and blocked the main thread, so a new tab's title

@@ -78,6 +78,29 @@ final class MeshLocalEventAuthorTests: XCTestCase {
         XCTAssertEqual(Set(fields.map(\.field)), Set(["status", "title"]))
     }
 
+    func testConcurrentFirstLaunchChoosesOnePersistentTrustGroup() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let storage = MeshMemoryIdentityStorage()
+        let first = try MeshLocalReplica.open(
+            rootURL: fixture.root, identityStorage: storage
+        )
+        let second = try MeshLocalReplica.open(
+            rootURL: fixture.root, identityStorage: storage
+        )
+
+        async let firstGroup = first.ensureActiveTrustGroup()
+        async let secondGroup = second.ensureActiveTrustGroup()
+        let groups = try await [firstGroup, secondGroup]
+        let epoch = try await first.store.membershipEpoch(for: groups[0])
+        let storedGroups = try await first.store.trustGroupIDs()
+
+        XCTAssertEqual(groups[0], groups[1])
+        XCTAssertEqual(try first.activeTrustGroup(), groups[0])
+        XCTAssertEqual(epoch, 1)
+        XCTAssertEqual(storedGroups, [groups[0]])
+    }
+
     private final class Fixture {
         let root: URL
         let group = MeshTrustGroupID()

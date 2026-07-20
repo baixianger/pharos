@@ -15,6 +15,11 @@ final class DistributedMeshSupport {
 
     private(set) var state: State = .opening
     private(set) var localReplica: MeshLocalReplica?
+    private(set) var activeTrustGroupID: MeshTrustGroupID?
+
+    var isProductModeEnabled: Bool {
+        ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1"
+    }
 
     func start() async {
         guard localReplica == nil else { return }
@@ -24,6 +29,9 @@ final class DistributedMeshSupport {
                 try MeshLocalReplica.openDefault()
             }.value
             localReplica = replica
+            if isProductModeEnabled {
+                activeTrustGroupID = try await replica.ensureActiveTrustGroup()
+            }
             state = .ready(
                 deviceID: replica.identity.deviceID,
                 endpointID: try replica.identity.endpointID()

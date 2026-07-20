@@ -257,6 +257,17 @@ public actor DistributedMeshStore {
         ) { UInt64(sqlite3_column_int64($0, 0)) }
     }
 
+    public func trustGroupIDs() throws -> [MeshTrustGroupID] {
+        try query(
+            "SELECT trust_group_id FROM membership_epochs ORDER BY trust_group_id"
+        ) { statement in
+            guard let uuid = UUID(
+                uuidString: Self.columnText(statement, index: 0)
+            ) else { throw DistributedMeshStoreError.corruptStoredValue }
+            return MeshTrustGroupID(rawValue: uuid)
+        }
+    }
+
     public func migrationState(
         for group: MeshTrustGroupID
     ) throws -> MeshMigrationCutoverState? {
