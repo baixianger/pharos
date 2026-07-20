@@ -414,6 +414,7 @@ private enum MeshHeadlessCLI {
             let status = DistributedSyncServerStatus(
                 deviceID: replica.identity.deviceID.rawValue.uuidString,
                 endpointID: address.endpointID.rawValue,
+                ticket: address.ticket,
                 trustGroupID: group.rawValue.uuidString,
                 membershipEpoch: epoch,
                 networkState: "serving"
@@ -444,7 +445,7 @@ private enum MeshHeadlessCLI {
                     runtime: runtime,
                     remote: MeshIrohEndpointAddress(
                         endpointID: peer.descriptor.endpointID,
-                        ticket: peer.addressTicket
+                        ticket: option("--peer-ticket", in: args) ?? peer.addressTicket
                     )
                 )
                 let report = try await MeshReplicaSyncSession(
@@ -866,6 +867,7 @@ private enum MeshHeadlessCLI {
     private struct DistributedSyncServerStatus: Codable {
         var deviceID: String
         var endpointID: String
+        var ticket: String
         var trustGroupID: String
         var membershipEpoch: UInt64
         var networkState: String
@@ -1146,7 +1148,7 @@ private enum MeshHeadlessCLI {
       distributed device-redeem INVITATION ACCEPTANCE --data-dir ABSOLUTE-PATH
       distributed device-list --data-dir ABSOLUTE-PATH
       distributed sync-serve --data-dir ABSOLUTE-PATH [--host] [--relay production|disabled]
-      distributed sync --peer DEVICE-UUID --data-dir ABSOLUTE-PATH [--relay production|disabled]
+      distributed sync --peer DEVICE-UUID --data-dir ABSOLUTE-PATH [--peer-ticket CURRENT-TICKET] [--relay production|disabled]
       distributed entity-set --type TYPE --id ID --field FIELD --json-value JSON --data-dir ABSOLUTE-PATH
       distributed entity-dump --type TYPE --id ID --data-dir ABSOLUTE-PATH
       distributed probe-serve --data-dir ABSOLUTE-PATH [--relay production|disabled] [--bind HOST:PORT]
