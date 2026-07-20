@@ -226,14 +226,15 @@ private enum MeshHeadlessCLI {
         let probeCommands = ["probe-serve", "probe"]
         let deviceCommands = [
             "device-invite", "device-accept", "device-redeem", "device-list",
-            "sync-serve", "sync",
+            "sync-serve", "sync", "entity-set", "entity-dump",
         ]
         guard command == "status" || command == "init" ||
                 migrationCommands.contains(command) || probeCommands.contains(command) ||
                 deviceCommands.contains(command) else {
             return usageError(
                 "distributed status|init|device-invite|device-accept|" +
-                "device-redeem|device-list|sync-serve|sync|probe-serve|probe|migration-status|" +
+                "device-redeem|device-list|sync-serve|sync|entity-set|entity-dump|" +
+                "probe-serve|probe|migration-status|" +
                 "migration-prepare|cutover|rollback …"
             )
         }
@@ -465,8 +466,50 @@ private enum MeshHeadlessCLI {
                 throw error
             }
 
+        case "entity-set":
+            guard let typeText = option("--type", in: args),
+                  let type = MeshEntityType(rawValue: typeText),
+                  let id = option("--id", in: args),
+                  let entity = MeshEntityReference(type: type, id: id),
+                  let field = option("--field", in: args),
+                  let value = option("--json-value", in: args) else {
+                return usageError(
+                    "distributed entity-set --type TYPE --id ID --field FIELD " +
+                    "--json-value JSON --data-dir ABSOLUTE-PATH"
+                )
+            }
+            let (group, _) = try await activeMembership(replica)
+            let event = try await MeshLocalEventAuthor(
+                replica: replica, trustGroupID: group
+            ).setField(field, value: Data(value.utf8), on: entity)
+            print("event\t\(event.id.rawValue.uuidString)")
+            return 0
+
+        case "entity-dump":
+            guard let typeText = option("--type", in: args),
+                  let type = MeshEntityType(rawValue: typeText),
+                  let id = option("--id", in: args),
+                  let entity = MeshEntityReference(type: type, id: id) else {
+                return usageError(
+                    "distributed entity-dump --type TYPE --id ID " +
+                    "--data-dir ABSOLUTE-PATH"
+                )
+            }
+            let (group, _) = try await activeMembership(replica)
+            let fields = try await replica.store.materializedFields(
+                for: entity, in: group
+            )
+            for field in fields {
+                let value = field.value.map { String(decoding: $0, as: UTF8.self) } ?? "null"
+                print("\(field.field)\t\(field.isDeleted ? "deleted" : value)")
+            }
+            return 0
+
         default:
-            return usageError("distributed device-invite|device-accept|device-redeem|device-list|sync-serve|sync …")
+            return usageError(
+                "distributed device-invite|device-accept|device-redeem|" +
+                "device-list|sync-serve|sync|entity-set|entity-dump …"
+            )
         }
     }
 
@@ -1104,6 +1147,8 @@ private enum MeshHeadlessCLI {
       distributed device-list --data-dir ABSOLUTE-PATH
       distributed sync-serve --data-dir ABSOLUTE-PATH [--host] [--relay production|disabled]
       distributed sync --peer DEVICE-UUID --data-dir ABSOLUTE-PATH [--relay production|disabled]
+      distributed entity-set --type TYPE --id ID --field FIELD --json-value JSON --data-dir ABSOLUTE-PATH
+      distributed entity-dump --type TYPE --id ID --data-dir ABSOLUTE-PATH
       distributed probe-serve --data-dir ABSOLUTE-PATH [--relay production|disabled] [--bind HOST:PORT]
       distributed probe --peer-endpoint ID --peer-ticket TICKET --data-dir ABSOLUTE-PATH [--relay production|disabled] [--bind HOST:PORT]
       distributed migration-status --group UUID --data-dir ABSOLUTE-PATH [--json]
