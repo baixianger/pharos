@@ -23,6 +23,14 @@ For _fastlane_ installation instructions, see [Installing _fastlane_](https://do
 
 Register the App ID in the Developer Portal and sync match profiles. Idempotent — re-run after editing entitlements. Only needed for the TestFlight/App Store path; `device_install` uses automatic signing and does not require this.
 
+### ios fix_icloud_capability
+
+```sh
+[bundle exec] fastlane ios fix_icloud_capability
+```
+
+Enable the iCloud capability on the App ID (the app entitles ubiquity-kvstore for multi-machine sync) and force-regenerate the appstore match profile so it embeds the entitlement. Idempotent.
+
 ### ios certs
 
 ```sh
@@ -110,6 +118,62 @@ Create a TestFlight Internal Testing group (idempotent). `name:` default 'Intern
 ```
 
 Create + assign a TestFlight tester to a group in one call. Usage: fastlane invite_to_group email:you@example.com group:Internal
+
+### ios set_price_free
+
+```sh
+[bundle exec] fastlane ios set_price_free
+```
+
+Set the app's price to Free (one-time). The FREE price point id must be looked up dynamically — the old USA_F sentinel is dead.
+
+### ios ensure_category
+
+```sh
+[bundle exec] fastlane ios ensure_category
+```
+
+Print current categories; set primary to DEVELOPER_TOOLS if unset.
+
+### ios prepare_version_attrs
+
+```sh
+[bundle exec] fastlane ios prepare_version_attrs
+```
+
+Patch the edit version: usesIdfa=false and releaseType=MANUAL. deliver's submission_information does NOT set the version's usesIdfa attribute, and MANUAL guarantees approval never auto-ships.
+
+### ios set_age_rating
+
+```sh
+[bundle exec] fastlane ios set_age_rating
+```
+
+Set the full age-rating declaration (everything NONE/false — Pharos is a single-user developer tool; its chat is with the owner's own agents, not user-to-user). PATCHes at the appInfo level: the version-level path errors, and fastlane 2.232's rating_config.json predates the 2025 socialMedia fields.
+
+### ios select_build
+
+```sh
+[bundle exec] fastlane ios select_build
+```
+
+Attach the latest VALID processed build to the edit version. Pharos uploads via beta, so fastlane#19633 (Xcode-Cloud builds only) doesn't apply.
+
+### ios why_blocked
+
+```sh
+[bundle exec] fastlane ios why_blocked
+```
+
+Explain why the current version is not submittable — dumps the editable version's state, review attributes, and attached build.
+
+### ios submit_review_v2
+
+```sh
+[bundle exec] fastlane ios submit_review_v2
+```
+
+Submit the current version for review via the modern reviewSubmissions flow (fastlane's submit_for_review posts to a removed endpoint). HUMAN GATE: only run when the human explicitly says submit.
 
 ### ios stage_listing
 
