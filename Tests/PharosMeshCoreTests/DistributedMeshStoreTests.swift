@@ -7,6 +7,60 @@ import PharosMeshIdentity
 import PharosMeshProtocol
 
 final class DistributedMeshStoreTests: XCTestCase {
+    func testPortableLocalReplicaFactorySharesIdentityAndStoreWithoutLegacyPaths() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let root = fixture.directory.appendingPathComponent(
+            "distributed/replica", isDirectory: true
+        )
+        let identityStorage = MeshMemoryIdentityStorage()
+        let first = try MeshLocalReplica.open(
+            rootURL: root, identityStorage: identityStorage
+        )
+        try await first.store.setMembershipEpoch(4, for: fixture.group)
+
+        let reopened = try MeshLocalReplica.open(
+            rootURL: root, identityStorage: identityStorage
+        )
+        XCTAssertEqual(reopened.identity, first.identity)
+        let reopenedEpoch = try await reopened.store.membershipEpoch(for: fixture.group)
+        XCTAssertEqual(reopenedEpoch, 4)
+        XCTAssertEqual(reopened.rootURL, root.standardizedFileURL)
+        let directoryPermissions = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: root.path)[.posixPermissions]
+                as? NSNumber
+        )
+        let databasePermissions = try XCTUnwrap(
+            FileManager.default.attributesOfItem(
+                atPath: root.appendingPathComponent("replica-v1.sqlite").path
+            )[.posixPermissions] as? NSNumber
+        )
+        XCTAssertEqual(directoryPermissions.intValue & 0o777, 0o700)
+        XCTAssertEqual(databasePermissions.intValue & 0o777, 0o600)
+
+        let linkedRoot = fixture.directory.appendingPathComponent("linked-replica")
+        try FileManager.default.createSymbolicLink(
+            at: linkedRoot, withDestinationURL: root
+        )
+        XCTAssertThrowsError(try MeshLocalReplica.open(
+            rootURL: linkedRoot, identityStorage: MeshMemoryIdentityStorage()
+        )) {
+            XCTAssertEqual($0 as? MeshLocalReplicaError, .invalidDataDirectory)
+        }
+
+        let unsafeRoot = fixture.directory.appendingPathComponent("unsafe", isDirectory: true)
+        try FileManager.default.createDirectory(at: unsafeRoot, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: unsafeRoot.appendingPathComponent("replica-v1.sqlite"),
+            withDestinationURL: fixture.databaseURL
+        )
+        XCTAssertThrowsError(try MeshLocalReplica.open(
+            rootURL: unsafeRoot, identityStorage: MeshMemoryIdentityStorage()
+        )) {
+            XCTAssertEqual($0 as? DistributedMeshStoreError, .unsafeDatabasePath)
+        }
+    }
+
     func testStoreUsesWALAndPersistsVerifiedHashChainIdempotently() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

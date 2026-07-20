@@ -166,6 +166,9 @@ private enum MeshHeadlessCLI {
         case "registry":
             return runRegistry(Array(args.dropFirst()))
 
+        case "distributed":
+            return runDistributed(Array(args.dropFirst()))
+
         case "--help", "-h", "help":
             print(usage)
             return 0
@@ -209,6 +212,72 @@ private enum MeshHeadlessCLI {
         default:
             return usageError("attachment put|get …")
         }
+    }
+
+    /// Initializes or reports the isolated local-first replica only. It never
+    /// starts a listener, dials a peer, or reads legacy Broker state.
+    private static func runDistributed(_ args: [String]) -> Int32 {
+        let command = args.first ?? "status"
+        guard command == "status" || command == "init" else {
+            return usageError(
+                "distributed status|init [--json] [--data-dir ABSOLUTE-PATH]"
+            )
+        }
+        let dataDirectory: String?
+        if args.contains("--data-dir") {
+            guard let candidate = option("--data-dir", in: args),
+                  candidate.hasPrefix("/"), !candidate.hasPrefix("--") else {
+                return usageError("--data-dir requires an absolute path")
+            }
+            dataDirectory = candidate
+        } else {
+            dataDirectory = nil
+        }
+        do {
+            let replica: MeshLocalReplica
+            if let dataDirectory {
+                replica = try MeshLocalReplica.openIsolated(
+                    rootURL: URL(fileURLWithPath: dataDirectory, isDirectory: true)
+                )
+            } else {
+                replica = try MeshLocalReplica.openDefault()
+            }
+            let status = DistributedStatus(
+                protocolVersion: DistributedMeshProtocol.version,
+                schemaVersion: DistributedMeshStore.currentSchemaVersion,
+                deviceID: replica.identity.deviceID.rawValue.uuidString,
+                endpointID: try replica.identity.endpointID().rawValue,
+                databasePath: replica.rootURL
+                    .appendingPathComponent("replica-v1.sqlite").path,
+                networkState: "stopped"
+            )
+            if args.contains("--json") {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+                print(String(decoding: try encoder.encode(status), as: UTF8.self))
+            } else {
+                print("device\t\(status.deviceID)")
+                print("endpoint\t\(status.endpointID)")
+                print("schema\t\(status.schemaVersion)")
+                print("database\t\(status.databasePath)")
+                print("network\t\(status.networkState)")
+            }
+            return 0
+        } catch {
+            FileHandle.standardError.write(
+                Data("error: could not open distributed replica: \(error)\n".utf8)
+            )
+            return 1
+        }
+    }
+
+    private struct DistributedStatus: Codable {
+        var protocolVersion: Int
+        var schemaVersion: Int
+        var deviceID: String
+        var endpointID: String
+        var databasePath: String
+        var networkState: String
     }
 
     private static func runNode(_ args: [String]) -> Int32 {
@@ -461,6 +530,7 @@ private enum MeshHeadlessCLI {
       attachment get <id> [--out PATH]
       registry get [--output PATH]
       registry import <projects.json> --expected REVISION
+      distributed status|init [--json] [--data-dir ABSOLUTE-PATH]
 
     Add `--endpoint HOST:PORT` to any client command to dial a remote broker.
     """

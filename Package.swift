@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "PharosMeshProtocol", targets: ["PharosMeshProtocol"]),
         .library(name: "PharosMeshIdentity", targets: ["PharosMeshIdentity"]),
         .library(name: "PharosMeshIroh", targets: ["PharosMeshIroh"]),
+        .library(name: "PharosMeshReplica", targets: ["PharosMeshReplica"]),
         .library(name: "PharosMeshCore", targets: ["PharosMeshCore"]),
     ],
     dependencies: [
@@ -23,7 +24,6 @@ let package = Package(
     targets: [
         .systemLibrary(
             name: "CSQLite",
-            pkgConfig: "sqlite3",
             providers: [
                 .apt(["libsqlite3-dev"]),
                 .brew(["sqlite3"]),
@@ -54,11 +54,22 @@ let package = Package(
             path: "Sources/PharosMeshIdentity"
         ),
         .target(
+            name: "PharosMeshReplica",
+            dependencies: [
+                "PharosMeshProtocol",
+                "PharosMeshIdentity",
+                "CSQLite",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Sources/PharosMeshReplica"
+        ),
+        .target(
             name: "PharosMeshCore",
             dependencies: [
                 "PharosMeshProtocol",
                 "PharosMeshIdentity",
                 "PharosMeshIroh",
+                "PharosMeshReplica",
                 "CSQLite",
                 .product(name: "Crypto", package: "swift-crypto"),
             ],

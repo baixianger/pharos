@@ -32,6 +32,7 @@ public enum DistributedMeshStoreError: Error, Equatable, Sendable {
     case resourceGenerationOverflow
     case commandGenerationMismatch(expected: UInt64, actual: UInt64)
     case idempotencyCollision
+    case unsafeDatabasePath
     case corruptStoredValue
     case unsupportedSchemaVersion(Int)
 }
@@ -103,6 +104,7 @@ public struct MeshQuarantinedEvent: Codable, Equatable, Sendable {
 /// One serialized SQLite connection per local replica. No method contacts a
 /// broker or network transport; callers explicitly choose the database URL.
 public actor DistributedMeshStore {
+    public nonisolated static let currentSchemaVersion = 6
     private let databaseAddress: UInt
     private let blobDirectoryPath: String
     private var materializationNeedsRebuild: Bool
@@ -110,6 +112,7 @@ public actor DistributedMeshStore {
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     public init(databaseURL: URL) throws {
+        try Self.validateDatabaseLocation(databaseURL)
         var handle: OpaquePointer?
         var requiresMaterializationRebuild = false
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
@@ -127,7 +130,7 @@ public actor DistributedMeshStore {
             try Self.execute(handle, sql: "BEGIN IMMEDIATE")
             try Self.execute(handle, sql: Self.schemaMetadata)
             let version = try Self.readSchemaVersion(handle)
-            guard (1 ... 6).contains(version) else {
+            guard (1 ... Self.currentSchemaVersion).contains(version) else {
                 throw DistributedMeshStoreError.unsupportedSchemaVersion(version)
             }
             requiresMaterializationRebuild = version < 3
@@ -140,6 +143,7 @@ public actor DistributedMeshStore {
             let materializationVersion = try Self.readMaterializationVersion(handle)
             requiresMaterializationRebuild = version < 4 || materializationVersion != 2
             try Self.execute(handle, sql: "COMMIT")
+            try Self.secureDatabaseFiles(databaseURL)
         } catch {
             try? Self.execute(handle, sql: "ROLLBACK")
             sqlite3_close(handle)
@@ -150,6 +154,41 @@ public actor DistributedMeshStore {
             .appendingPathComponent(databaseURL.lastPathComponent + ".blobs", isDirectory: true)
             .path
         materializationNeedsRebuild = requiresMaterializationRebuild
+    }
+
+    private static func validateDatabaseLocation(_ databaseURL: URL) throws {
+        let parent = databaseURL.deletingLastPathComponent()
+        let parentValues = try parent.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard parentValues.isDirectory == true, parentValues.isSymbolicLink != true else {
+            throw DistributedMeshStoreError.unsafeDatabasePath
+        }
+        guard FileManager.default.fileExists(atPath: databaseURL.path) else { return }
+        let values = try databaseURL.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+        )
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw DistributedMeshStoreError.unsafeDatabasePath
+        }
+    }
+
+    private static func secureDatabaseFiles(_ databaseURL: URL) throws {
+        for file in [
+            databaseURL,
+            URL(fileURLWithPath: databaseURL.path + "-wal"),
+            URL(fileURLWithPath: databaseURL.path + "-shm"),
+        ] where FileManager.default.fileExists(atPath: file.path) {
+            let values = try file.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+            )
+            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                throw DistributedMeshStoreError.unsafeDatabasePath
+            }
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: file.path
+            )
+        }
     }
 
     deinit {

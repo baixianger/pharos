@@ -1,36 +1,23 @@
 import Observation
-import PharosMeshIdentity
-import PharosMeshProtocol
-import PharosMeshReplica
+import PharosMeshCore
 
-/// The iOS target imports the same transport contracts as macOS and the Mesh
-/// CLI and opens the exact same replica schema in its sandbox. Networking stays
-/// dormant until a trusted Iroh peer is paired; startup never dials a legacy
-/// Broker or another device.
+/// macOS owner of the shared local replica. It deliberately does not start an
+/// Iroh endpoint or alter legacy Broker routing during migration; those are
+/// explicit later actions using this already-stable identity and store.
 @Observable
 @MainActor
 final class DistributedMeshSupport {
     enum State: Equatable {
-        case disabled
         case opening
         case ready(deviceID: MeshDeviceID, endpointID: MeshEndpointID)
         case failed(String)
     }
 
-    static let protocolVersion = DistributedMeshProtocol.version
-    static let alpn = DistributedMeshProtocol.alpn
-
-    private(set) var state: State
+    private(set) var state: State = .opening
     private(set) var localReplica: MeshLocalReplica?
-    private let isDemo: Bool
-
-    init(demo: Bool = false) {
-        isDemo = demo
-        state = demo ? .disabled : .opening
-    }
 
     func start() async {
-        guard !isDemo, localReplica == nil else { return }
+        guard localReplica == nil else { return }
         state = .opening
         do {
             let replica = try await Task.detached {

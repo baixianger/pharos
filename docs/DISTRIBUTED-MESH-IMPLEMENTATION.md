@@ -135,11 +135,13 @@ Implemented on `feat/distributed-iroh`:
   advances. Tests prove one winner across sixteen actor tasks and eight separate
   SQLite connections, persistence across reopen, v1-to-v2 state preservation,
   and future-schema rejection;
-- the iOS project consumes `PharosMeshIdentity`; an isolated simulator build
-  compiles and links Keychain, identity, pairing, Crypto, and Iroh for both arm64
-  and x86_64. The identity target compiles in the official Swift 6.2 Linux arm64
-  image. These checks use disposable copies/scratch paths and fresh identities;
-  no production Keychain item, database, Broker, room, or endpoint is opened.
+- the iOS project consumes `PharosMeshIdentity` and the portable
+  `PharosMeshReplica` product; isolated simulator builds compile and link
+  Keychain, identity, pairing, Crypto, SQLite, replica persistence, and Iroh for
+  both arm64 and x86_64. The identity and replica targets compile in the official
+  Swift 6.2 Linux arm64 image. These checks use disposable copies/scratch paths
+  and fresh identities; no production Keychain item, database, Broker, room, or
+  endpoint is opened.
 
 1. Pin a reviewed Iroh 1.x / iroh-ffi release; verify license, binary provenance,
    reproducible XCFramework build, and macOS/iOS architectures.
@@ -169,7 +171,8 @@ new connection; legacy mode still works.
 
 ## Phase 3 — local event store and anti-entropy sync
 
-**State:** started (durable sync/materialization foundation; no production runtime wiring)
+**State:** started (durable sync/materialization and portable local-replica
+wiring present; authenticated network routing remains pending)
 
 The isolated `DistributedMeshStore` now creates a caller-selected SQLite WAL
 replica with the Phase 3 tables. It verifies signatures, membership epoch,
@@ -226,9 +229,26 @@ manifest for lazy fetch, and storage refuses symbolic-link traversal. Isolated
 tests cover tampered chunks, wrong final content, restart recovery, concurrent
 connection handoff, eviction/re-fetch, and chunk/final symlink attacks.
 
-Iroh stream routing for the sync messages, richer room/message/project/issue
-operation adapters, revocation-aware compaction policy, network blob-stream
-routing, and the randomized partition/reordering simulation remain pending.
+The persistence and signing layer now lives in the transport-independent
+`PharosMeshReplica` product, which is shared by macOS, iOS, and the Mesh CLI.
+`MeshLocalReplica` opens the same schema and stable device identity on every
+surface. Apple platforms use Application Support plus a device-only Keychain
+identity; Linux uses the XDG data directory (or `~/.local/share`) plus a
+mode-0600 file identity. Replica directories are mode 0700, SQLite files are
+mode 0600, and symbolic-link roots/databases fail closed.
+
+macOS and iOS open their local replica during app startup without dialing a
+peer. The CLI exposes `pharos-mesh distributed status|init`; its
+`--data-dir ABSOLUTE-PATH` mode keeps identity and SQLite state entirely under a
+caller-selected disposable directory. Status reports protocol/schema, device
+and Endpoint IDs, database path, and `network=stopped`. This is persistence
+wiring only: it does not read, start, stop, or modify the legacy Broker and does
+not automatically start Iroh networking.
+
+Authenticated Iroh stream routing for sync messages, richer
+room/message/project/issue operation adapters, revocation-aware compaction
+policy, network blob-stream routing, and the randomized partition/reordering
+simulation remain pending.
 
 1. Add SQLite/WAL schema for events, author heads, materialized entities, blob
    manifests, peer acknowledgements, membership epochs, and snapshots.
@@ -249,7 +269,8 @@ corrupt or unauthorized events never enter materialized state.
 ## Phase 4 — Host authority and distributed commands
 
 **State:** started (authenticated Host-local authority and exactly-once claim
-foundation complete; lifecycle adapters and macOS/iOS/CLI surfaces remain pending)
+foundation complete; shared local replica surfaces are present, while command
+lifecycle adapters remain pending)
 
 Implemented on `feat/distributed-iroh`:
 

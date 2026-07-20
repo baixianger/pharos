@@ -34,6 +34,7 @@ enum PharosMain {
 struct PharosApp: App {
     @Environment(\.openWindow) private var openWindow
     @State private var store = ProjectStore()
+    @State private var distributedMesh = DistributedMeshSupport()
     @State private var showsBrokerSetup: Bool
     // Owns the Sparkle update lifecycle for the app's lifetime.
     private let updaterController = UpdaterController()
@@ -58,8 +59,10 @@ struct PharosApp: App {
                 }
             }
                 .environment(store)
+                .environment(distributedMesh)
                 .preferredColorScheme(store.appearance.colorScheme)
                 .task {
+                    await distributedMesh.start()
                     // This mesh bootstrap is app-global state — run it once, not
                     // for every window/tab. Re-running it per tab re-dialed the
                     // broker and blocked the main thread, so a new tab's title

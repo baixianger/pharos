@@ -12,6 +12,7 @@ private struct AppContainer: View {
     @State private var identities: SSHIdentityStore
     @State private var rooms: RoomStore
     @State private var pairing = PairingCoordinator()
+    @State private var distributedMesh: DistributedMeshSupport
     private let isDemo: Bool
 
     init() {
@@ -26,6 +27,7 @@ private struct AppContainer: View {
             identities: identities,
             demoData: isDemo ? .store : nil
         ))
+        _distributedMesh = State(initialValue: DistributedMeshSupport(demo: isDemo))
     }
 
     var body: some View {
@@ -38,6 +40,7 @@ private struct AppContainer: View {
             .environment(identities)
             .environment(rooms)
             .environment(pairing)
+            .environment(distributedMesh)
             .onOpenURL { pairing.receive($0) }
             .fullScreenCover(isPresented: $pairing.showsSetupGuide) {
                 BrokerSetupGuide()
@@ -57,6 +60,7 @@ private struct AppContainer: View {
             }
             // Open the wizard on first run; close it once a Broker is paired.
             .task {
+                await distributedMesh.start()
                 if !isDemo, settings.mesh.host.isEmpty { pairing.showsSetupGuide = true }
             }
             .onChange(of: settings.mesh.host) { _, host in

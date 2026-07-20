@@ -35,6 +35,7 @@
 		B89BF532FCFAF1DFA9F83902 /* DistributedMeshSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAC0C5B8D36E940BAEF10CBD /* DistributedMeshSupport.swift */; };
 		BB37FC0CD279985FDD3C308E /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 537B4E9606BB15A32FAAD5D8 /* MainTabView.swift */; };
 		BD5DC191A71E8E7DD8250F97 /* PharosMeshIdentity in Frameworks */ = {isa = PBXBuildFile; productRef = 895BFACB2690C2FF4BAD849D /* PharosMeshIdentity */; };
+		D15A6A9E92C74A25A6236E11 /* PharosMeshReplica in Frameworks */ = {isa = PBXBuildFile; productRef = D15A6A9E92C74A25A6236E12 /* PharosMeshReplica */; };
 		BE73222196B7CEA31537C685 /* MeshCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F305FE3168CE78B5488D59 /* MeshCoreTests.swift */; };
 		C7EE7ADECDA5DD123AC8D4D4 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 55D5CBCEDBF5C7FC0D6EA18A /* PrivacyInfo.xcprivacy */; };
 		C9C3004119D3EFAEE3ACCE22 /* MeshWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = B453916340D05CCF7CC4D244 /* MeshWire.swift */; };
@@ -100,6 +101,7 @@
 				3892FC8A0153F79BF6892042 /* PharosMeshProtocol in Frameworks */,
 				33916FD4B450BD27167CF39F /* PharosMeshIroh in Frameworks */,
 				BD5DC191A71E8E7DD8250F97 /* PharosMeshIdentity in Frameworks */,
+				D15A6A9E92C74A25A6236E11 /* PharosMeshReplica in Frameworks */,
 				7F1BDE768D8B320243656FC4 /* MarkdownUI in Frameworks */,
 				2EB44B108D96F3D2C8DDDD03 /* Citadel in Frameworks */,
 				40B71C51DB873AE5D67923CF /* NIOSSH in Frameworks */,
@@ -252,6 +254,7 @@
 				43A361B1B1D4AFE67432EEAE /* PharosMeshProtocol */,
 				441DFE3DAB4D60445046B4FB /* PharosMeshIroh */,
 				895BFACB2690C2FF4BAD849D /* PharosMeshIdentity */,
+				D15A6A9E92C74A25A6236E12 /* PharosMeshReplica */,
 				FBB848C5DA78F0E0BC6EFE38 /* MarkdownUI */,
 				A54D94D0351119125653A006 /* Citadel */,
 				33073278C4DDB3F29B160300 /* NIOSSH */,
@@ -674,6 +677,10 @@
 		895BFACB2690C2FF4BAD849D /* PharosMeshIdentity */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = PharosMeshIdentity;
+		};
+		D15A6A9E92C74A25A6236E12 /* PharosMeshReplica */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PharosMeshReplica;
 		};
 		A54D94D0351119125653A006 /* Citadel */ = {
 			isa = XCSwiftPackageProductDependency;
