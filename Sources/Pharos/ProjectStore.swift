@@ -488,6 +488,9 @@ final class ProjectStore {
     private var registrySync: BrokerRegistrySync?
     private var distributedProjection: DistributedProjectIssueProjection?
     private var distributedPublishTask: Task<Void, Never>?
+    /// Monotonic local snapshot generation. Older queued publishes may finish,
+    /// but only the newest generation may replace UI state or report `synced`.
+    private var distributedPublishRevision: UInt64 = 0
     private(set) var usesDistributedRegistry = false
     var terminal: TerminalApp = .ghostty {
         didSet { PharosPrefs.shared.set(terminal.rawValue, forKey: "pharos.terminal") }
@@ -907,6 +910,8 @@ final class ProjectStore {
             writeCache(data)
             if usesDistributedRegistry, let projection = distributedProjection {
                 registrySyncStatus = .pending
+                distributedPublishRevision &+= 1
+                let revision = distributedPublishRevision
                 let snapshot = store.projects
                 let previous = distributedPublishTask
                 distributedPublishTask = Task { [weak self] in
@@ -917,13 +922,18 @@ final class ProjectStore {
                         let materialized = try await projection.materializedProjects()
                         guard !Task.isCancelled else { return }
                         await MainActor.run {
-                            guard let self else { return }
+                            guard let self,
+                                  self.distributedPublishRevision == revision
+                            else { return }
                             self.applyDistributedProjects(materialized)
                             self.registrySyncStatus = .synced
                         }
                     } catch {
                         await MainActor.run {
-                            self?.registrySyncStatus = .offline(
+                            guard let self,
+                                  self.distributedPublishRevision == revision
+                            else { return }
+                            self.registrySyncStatus = .offline(
                                 "Local changes are queued in the distributed replica: \(error)"
                             )
                         }
