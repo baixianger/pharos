@@ -64,7 +64,8 @@ let package = Package(
         .testTarget(
             name: "PharosMeshProtocolTests",
             dependencies: ["PharosMeshProtocol"],
-            path: "Tests/PharosMeshProtocolTests"
+            path: "Tests/PharosMeshProtocolTests",
+            resources: [.copy("Fixtures")]
         ),
         .testTarget(
             name: "PharosMeshCoreTests",

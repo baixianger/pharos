@@ -1,4 +1,5 @@
 import Foundation
+import PharosMeshProtocol
 
 /// Pure validation shared by the headless Host node and its tests. Client apps
 /// never receive an API that can write to tmux.

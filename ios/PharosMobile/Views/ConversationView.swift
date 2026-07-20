@@ -107,7 +107,7 @@ struct ConversationView: View {
             // scrolled up. ScrollViewReader works in untransformed layout space,
             // where the newest cell is the layout-top (offset 0), so anchor .top.
             .onChange(of: scrollBottomTick) {
-                guard let last = store.messages.last?.id else { return }
+                guard let last = store.messages.last?.stableID else { return }
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
                     proxy.scrollTo(last, anchor: .top)
                 }
@@ -133,9 +133,9 @@ struct ConversationView: View {
         var cells: [TranscriptCell] = []
         for (index, message) in store.messages.enumerated() {
             if startsNewDay(at: index) {
-                cells.append(.divider(id: "day-\(message.id)", date: message.date))
+                cells.append(.divider(id: "day-\(message.stableID)", date: message.date))
             }
-            cells.append(.message(id: message.id, message: message,
+            cells.append(.message(id: message.stableID, message: message,
                                   showsHeader: startsMessageGroup(at: index)))
         }
         return cells

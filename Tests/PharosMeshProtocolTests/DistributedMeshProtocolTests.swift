@@ -141,6 +141,48 @@ final class DistributedMeshProtocolTests: XCTestCase {
         }
     }
 
+    func testLegacyRequestGoldenJSONRemainsByteCompatible() throws {
+        let fixture = try fixtureData(named: "legacy-request")
+        let request = try JSONDecoder().decode(MeshRequest.self, from: fixture)
+        XCTAssertEqual(request.cmd, "node-command-enqueue")
+        XCTAssertEqual(request.action, "poke")
+        XCTAssertEqual(request.memberID, "member-1")
+        XCTAssertEqual(try canonicalLegacyJSON(request), fixture)
+    }
+
+    func testLegacyResponseGoldenJSONRemainsByteCompatible() throws {
+        let fixture = try fixtureData(named: "legacy-response")
+        let response = try JSONDecoder().decode(MeshResponse.self, from: fixture)
+        XCTAssertTrue(response.ok)
+        XCTAssertEqual(response.cursor, 42)
+        XCTAssertEqual(response.messages?.first?.stableID, "message-1")
+        XCTAssertEqual(response.command?.action, .poke)
+        XCTAssertEqual(response.command?.state, .accepted)
+        XCTAssertEqual(try canonicalLegacyJSON(response), fixture)
+    }
+
+    func testLegacyMessageToleratesMissingIDTargetsAndFutureFields() throws {
+        let data = Data(#"{"from":"old","room":"dev","text":"hello","ts":12,"futureField":{"v":2}}"#.utf8)
+        let message = try JSONDecoder().decode(MeshMsg.self, from: data)
+        XCTAssertNil(message.id)
+        XCTAssertEqual(message.to, [])
+        XCTAssertEqual(message.stableID, "legacy|dev|12.0|old")
+    }
+
+    private func fixtureData(named name: String) throws -> Data {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: name, withExtension: "json",
+                                                  subdirectory: "Fixtures"))
+        let data = try Data(contentsOf: url)
+        return Data(data.drop(while: { $0 == 0x0a || $0 == 0x0d || $0 == 0x20 })
+            .reversed().drop(while: { $0 == 0x0a || $0 == 0x0d || $0 == 0x20 }).reversed())
+    }
+
+    private func canonicalLegacyJSON<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(value)
+    }
+
     private func makeEvent(sequence: UInt64) -> MeshReplicatedEvent {
         MeshReplicatedEvent(
             id: .generate(at: Date(timeIntervalSince1970: 1_721_467_260)),

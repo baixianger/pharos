@@ -66,11 +66,14 @@ Implemented on `feat/distributed-iroh`:
 - shared identity, UUIDv7 event, hybrid-time, entity/operation, Host command,
   and durable receipt value types;
 - deterministic signing bytes, Ed25519 verification, SHA-256 author hash chains,
-  size/generation/deadline validation, and receipt transition rules.
+  size/generation/deadline validation, and receipt transition rules;
+- canonical legacy request/response/event/message models shared by macOS, iOS,
+  and CLI, with byte-for-byte request and response fixtures plus tolerant legacy
+  message decoding.
 
-Remaining before the Phase 1 exit gate: move the existing duplicated legacy
-request/response/message models into the shared target and add byte-for-byte
-golden fixtures consumed by macOS, iOS, and CLI adapters.
+Remaining before the Phase 1 exit gate: place the current UDS/TCP client behind
+`MeshTransport`, enforce the explicit unsupported-Iroh behavior, and record a
+Linux compile proof against the shared protocol target.
 
 1. Create a pure Swift `PharosMeshProtocol` target with no AppKit, UIKit,
    Network.framework, socket, filesystem, or process dependencies.
