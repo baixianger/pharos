@@ -652,7 +652,7 @@ final class RoomStore {
                 if self.selectedRoom == room { self.selectedRoom = nil }
             }
         }
-        await roomCommand(MeshRequest(cmd: "delete", room: room)) {
+        return await roomCommand(MeshRequest(cmd: "delete", room: room)) {
             if self.selectedRoom == room { self.selectedRoom = nil }
         }
     }
