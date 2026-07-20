@@ -5,6 +5,7 @@ struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(SSHIdentityStore.self) private var identities
     @Environment(PairingCoordinator.self) private var pairing
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @Environment(\.dismiss) private var dismiss
     @State private var meshHost = ""
     @State private var meshPort = "47800"
@@ -16,44 +17,10 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    Button("Set up Mesh Broker…", systemImage: "wand.and.stars") {
-                        pairing.showsSetupGuide = true
-                    }
-                    Button("Pair with another Broker", systemImage: "qrcode.viewfinder") {
-                        showsPairingScanner = true
-                    }
-                    brokerStatusView
-                    HStack {
-                        Text(brokerTarget)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer()
-                        Button("Test again") { Task { await testBroker() } }
-                            .disabled(brokerStatus.isChecking || !hasValidBrokerTarget)
-                    }
-                    LabeledContent("Host") {
-                        TextField("Tailscale IP or MagicDNS", text: $meshHost)
-                            .multilineTextAlignment(.trailing)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                    }
-                    LabeledContent("Port") {
-                        TextField("47800", text: $meshPort)
-                            .multilineTextAlignment(.trailing)
-                            .keyboardType(.numberPad)
-                    }
-                    Button("Save connection") {
-                        saveMesh()
-                        Task { await testBroker() }
-                    }
-                } header: {
-                    Text("Mesh Broker").textCase(nil)
-                } footer: {
-                    Text("The Broker is the single source of truth for projects, issues, logs, rooms, messages, and attachments. This iPhone keeps only a local cache; Hosts execute agents separately.")
-                        .font(.caption).foregroundStyle(.secondary)
+                if isDistributed {
+                    distributedDevicesSection
+                } else {
+                    brokerSection
                 }
 
                 Section("Hosts") {
@@ -105,8 +72,13 @@ struct SettingsView: View {
                 }
 
                 Section("Runtime limits") {
-                    Label("Live Broker events with reconnect sync", systemImage: "bolt.horizontal.circle")
-                    Label("Background delivery requires a future APNs relay", systemImage: "bell.slash")
+                    if isDistributed {
+                        Label("Signed device-to-device replica sync", systemImage: "point.3.connected.trianglepath.dotted")
+                        Label("Background sync pauses when iOS suspends Pharos", systemImage: "moon.zzz")
+                    } else {
+                        Label("Live Broker events with reconnect sync", systemImage: "bolt.horizontal.circle")
+                        Label("Background delivery requires a future APNs relay", systemImage: "bell.slash")
+                    }
                 }
             }
             .pharosPlainList()
@@ -129,8 +101,124 @@ struct SettingsView: View {
             }
             .onAppear { load() }
             .onChange(of: settings.mesh) { load() }
-            .task { await testBroker() }
+            .task {
+                if !isDistributed { await testBroker() }
+            }
         }
+    }
+
+    private var isDistributed: Bool {
+        ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1"
+    }
+
+    @ViewBuilder
+    private var distributedDevicesSection: some View {
+        Section {
+            Button("Pair a trusted device", systemImage: "qrcode.viewfinder") {
+                showsPairingScanner = true
+            }
+            distributedStateView
+            if distributedMesh.connections.isEmpty {
+                Text("No peer connection has been observed yet.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(
+                    distributedMesh.connections.values.sorted {
+                        $0.peer.rawValue < $1.peer.rawValue
+                    }, id: \.peer
+                ) { connection in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label(
+                            abbreviated(connection.peer.rawValue),
+                            systemImage: connection.connected
+                                ? "checkmark.circle.fill" : "circle.dashed"
+                        )
+                        .foregroundStyle(connection.connected ? .green : .secondary)
+                        Text(String(describing: connection.path))
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if let lastSyncError = distributedMesh.lastSyncError {
+                Text(lastSyncError)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            Button("Sync now", systemImage: "arrow.triangle.2.circlepath") {
+                Task { _ = await distributedMesh.synchronizeOnce() }
+            }
+        } header: {
+            Text("Trusted devices").textCase(nil)
+        } footer: {
+            Text("Every device stores its own signed replica. No Broker is the source of truth; concurrent field edits converge deterministically after devices reconnect.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var distributedStateView: some View {
+        switch distributedMesh.state {
+        case .disabled:
+            Label("Private mesh disabled", systemImage: "network.slash")
+                .foregroundStyle(.secondary)
+        case .opening:
+            HStack { ProgressView(); Text("Opening private mesh…") }
+        case .ready(let deviceID, _):
+            LabeledContent("This iPhone") {
+                Text(abbreviated(deviceID.rawValue))
+                    .font(.caption.monospaced())
+            }
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private var brokerSection: some View {
+        Section {
+            Button("Set up Mesh Broker…", systemImage: "wand.and.stars") {
+                pairing.showsSetupGuide = true
+            }
+            Button("Pair with another Broker", systemImage: "qrcode.viewfinder") {
+                showsPairingScanner = true
+            }
+            brokerStatusView
+            HStack {
+                Text(brokerTarget)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button("Test again") { Task { await testBroker() } }
+                    .disabled(brokerStatus.isChecking || !hasValidBrokerTarget)
+            }
+            LabeledContent("Host") {
+                TextField("Tailscale IP or MagicDNS", text: $meshHost)
+                    .multilineTextAlignment(.trailing)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+            LabeledContent("Port") {
+                TextField("47800", text: $meshPort)
+                    .multilineTextAlignment(.trailing)
+                    .keyboardType(.numberPad)
+            }
+            Button("Save connection") {
+                saveMesh()
+                Task { await testBroker() }
+            }
+        } header: {
+            Text("Mesh Broker").textCase(nil)
+        } footer: {
+            Text("The Broker is the single source of truth for projects, issues, logs, rooms, messages, and attachments. This iPhone keeps only a local cache; Hosts execute agents separately.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func abbreviated(_ value: String) -> String {
+        value.count > 16 ? "\(value.prefix(8))…\(value.suffix(8))" : value
     }
 
     private var hasValidBrokerTarget: Bool {
