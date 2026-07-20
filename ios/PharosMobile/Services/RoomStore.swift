@@ -56,14 +56,33 @@ final class RoomStore {
     func refresh() async {
         guard !isDemo else { return }
         guard !usesDistributedRegistry else {
-            // Rooms, messages, agents, attachments, and Host commands are not
-            // migrated yet. Keep their legacy projections empty and, most
-            // importantly, never fall through to the retired Broker endpoint.
-            rooms = []
-            messages = []
-            members = [:]
-            selectedRoom = nil
-            hasMoreHistory = false
+            guard !isRefreshing else { return }
+            isRefreshing = true
+            defer { isRefreshing = false }
+            do {
+                let nextRooms = try await distributedMesh.rooms()
+                rooms = nextRooms
+                let allMemberships = nextRooms.flatMap { room in
+                    room.members.map { distributedMember(nick: $0, room: room.name) }
+                }
+                members = RosterIndex.byNick(allMemberships)
+                if let selectedRoom,
+                   !nextRooms.contains(where: { $0.name == selectedRoom }) {
+                    self.selectedRoom = nil
+                }
+                if selectedRoom == nil, autoSelectsFirstRoom {
+                    selectedRoom = nextRooms.first?.name
+                }
+                if let selectedRoom {
+                    try await loadLatestPage(for: selectedRoom)
+                } else {
+                    messages = []
+                    hasMoreHistory = false
+                }
+                error = nil
+            } catch {
+                self.error = error.localizedDescription
+            }
             return
         }
         guard !settings.mesh.host.isEmpty, !isRefreshing else { return }
@@ -139,6 +158,18 @@ final class RoomStore {
     /// If the window doesn't reach the new page (a gap after backgrounding),
     /// the window resets to the latest page — the user can pull up to re-page.
     private func loadLatestPage(for room: String) async throws {
+        if usesDistributedRegistry {
+            guard let target = roomInfo(named: room) else {
+                throw DistributedRoomStoreError.roomNotFound
+            }
+            let tail = try await distributedMesh.messages(
+                in: target, limit: Self.historyPageSize
+            )
+            guard selectedRoom == room else { return }
+            messages = tail
+            hasMoreHistory = tail.count == Self.historyPageSize
+            return
+        }
         let paged = await supportsHistoryPaging()
         let limit = paged ? Self.historyPageSize : Self.legacyHistoryLimit
         let tail = try await request(MeshRequest(cmd: "history", room: room, limit: limit)).messages ?? []
@@ -166,6 +197,20 @@ final class RoomStore {
         isLoadingOlder = true
         defer { isLoadingOlder = false }
         do {
+            if usesDistributedRegistry {
+                guard let target = roomInfo(named: room) else {
+                    throw DistributedRoomStoreError.roomNotFound
+                }
+                let requestedLimit = messages.count + Self.historyPageSize
+                let expanded = try await distributedMesh.messages(
+                    in: target, limit: requestedLimit
+                )
+                guard selectedRoom == room, messages.first?.id == anchor else { return }
+                messages = expanded
+                hasMoreHistory = expanded.count == requestedLimit
+                error = nil
+                return
+            }
             var page = MeshRequest(cmd: "history", room: room, limit: Self.historyPageSize)
             page.beforeID = anchor
             let older = try await request(page).messages ?? []
@@ -180,6 +225,13 @@ final class RoomStore {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         do {
+            if usesDistributedRegistry {
+                let created = try await distributedMesh.createRoom(named: trimmed)
+                selectedRoom = created.name
+                _ = await distributedMesh.synchronizeOnce()
+                await refresh()
+                return
+            }
             _ = try await request(MeshRequest(cmd: "create", room: trimmed))
             selectedRoom = trimmed
             await refresh()
@@ -199,6 +251,27 @@ final class RoomStore {
         }
         let targets = MentionParser.targets(in: trimmed)
         do {
+            if usesDistributedRegistry {
+                guard attachments.isEmpty else {
+                    throw DistributedRoomStoreError.attachmentsPending
+                }
+                guard let target = roomInfo(named: room) else {
+                    throw DistributedRoomStoreError.roomNotFound
+                }
+                _ = try await distributedMesh.send(
+                    trimmed, in: target, to: targets,
+                    replyTo: replyTo.map {
+                        MeshReply(
+                            messageID: $0.stableID, from: $0.from,
+                            preview: String($0.text.prefix(160)), ts: $0.ts
+                        )
+                    }
+                )
+                _ = await distributedMesh.synchronizeOnce()
+                try await loadLatestPage(for: room)
+                error = nil
+                return true
+            }
             var outgoing = MeshRequest(cmd: "say", room: room, nick: "human", text: trimmed,
                                        to: targets.isEmpty ? nil : targets)
             outgoing.replyToID = replyTo?.id
@@ -222,6 +295,10 @@ final class RoomStore {
     func dismissNotice() { notice = nil }
 
     func uploadAttachment(data: Data, name: String, mimeType: String) async -> MeshAttachment? {
+        guard !usesDistributedRegistry else {
+            error = DistributedRoomStoreError.attachmentsPending.localizedDescription
+            return nil
+        }
         guard await supportsAdvancedMessages() else {
             error = "Update the Mesh broker before uploading attachments."
             return nil
@@ -239,6 +316,9 @@ final class RoomStore {
 
     func downloadAttachment(_ attachment: MeshAttachment) async -> URL? {
         do {
+            guard !usesDistributedRegistry else {
+                throw DistributedRoomStoreError.attachmentsPending
+            }
             let (metadata, data) = try await mesh.downloadAttachment(id: attachment.id,
                                                                      host: settings.mesh.host,
                                                                      port: settings.mesh.port)
@@ -543,6 +623,17 @@ final class RoomStore {
     func renameRoom(_ room: String, to newName: String) async -> Bool {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != room else { return false }
+        if usesDistributedRegistry {
+            guard let target = roomInfo(named: room) else {
+                error = DistributedRoomStoreError.roomNotFound.localizedDescription
+                return false
+            }
+            return await distributedRoomCommand({
+                try await self.distributedMesh.renameRoom(target, to: trimmed)
+            }) {
+                if self.selectedRoom == room { self.selectedRoom = trimmed }
+            }
+        }
         var req = MeshRequest(cmd: "rename", room: room)
         req.text = trimmed
         return await roomCommand(req) { if self.selectedRoom == room { self.selectedRoom = trimmed } }
@@ -550,6 +641,17 @@ final class RoomStore {
 
     @discardableResult
     func deleteRoom(_ room: String) async -> Bool {
+        if usesDistributedRegistry {
+            guard let target = roomInfo(named: room) else {
+                error = DistributedRoomStoreError.roomNotFound.localizedDescription
+                return false
+            }
+            return await distributedRoomCommand({
+                try await self.distributedMesh.deleteRoom(target)
+            }) {
+                if self.selectedRoom == room { self.selectedRoom = nil }
+            }
+        }
         await roomCommand(MeshRequest(cmd: "delete", room: room)) {
             if self.selectedRoom == room { self.selectedRoom = nil }
         }
@@ -557,6 +659,15 @@ final class RoomStore {
 
     @discardableResult
     func removeMember(_ nick: String, memberID: String, from room: String) async -> Bool {
+        if usesDistributedRegistry {
+            guard let target = roomInfo(named: room) else {
+                error = DistributedRoomStoreError.roomNotFound.localizedDescription
+                return false
+            }
+            return await distributedRoomCommand({
+                try await self.distributedMesh.removeMember(memberID, from: target)
+            }) {}
+        }
         var req = MeshRequest(cmd: "leave", room: room, nick: nick)
         req.memberID = memberID
         return await roomCommand(req) {}
@@ -566,6 +677,17 @@ final class RoomStore {
     func renameMember(_ nick: String, to newNick: String, memberID: String, in room: String) async -> Bool {
         let trimmed = newNick.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != nick else { return false }
+        if usesDistributedRegistry {
+            guard let target = roomInfo(named: room) else {
+                error = DistributedRoomStoreError.roomNotFound.localizedDescription
+                return false
+            }
+            return await distributedRoomCommand({
+                try await self.distributedMesh.renameMember(
+                    memberID, in: target, to: trimmed
+                )
+            }) {}
+        }
         var req = MeshRequest(cmd: "rename-member", room: room, nick: nick)
         req.memberID = memberID
         req.text = trimmed
@@ -579,6 +701,23 @@ final class RoomStore {
                 error = response.error ?? "The Broker rejected the change."
                 return false
             }
+            onSuccess()
+            error = nil
+            await refresh()
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
+    private func distributedRoomCommand(
+        _ command: () async throws -> Void,
+        onSuccess: @MainActor () -> Void
+    ) async -> Bool {
+        do {
+            try await command()
+            _ = await distributedMesh.synchronizeOnce()
             onSuccess()
             error = nil
             await refresh()
@@ -670,6 +809,17 @@ final class RoomStore {
         ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1"
     }
 
+    private func roomInfo(named name: String) -> MeshRoom? {
+        rooms.first { $0.name == name }
+    }
+
+    private func distributedMember(nick: String, room: String) -> MeshMember {
+        MeshMember(
+            id: "distributed:\(room):\(nick)", nick: nick,
+            rooms: [room], lastSeen: 0, nodeOnline: nil
+        )
+    }
+
     private func distributedMutation(
         _ mutation: () async throws -> Void
     ) async -> Bool {
@@ -731,6 +881,20 @@ private enum LegacyBrokerDisabledError: LocalizedError {
     case distributedMode
     var errorDescription: String? {
         "This feature has not moved to device-to-device Mesh yet. The retired Broker will not be contacted."
+    }
+}
+
+private enum DistributedRoomStoreError: LocalizedError {
+    case roomNotFound
+    case attachmentsPending
+
+    var errorDescription: String? {
+        switch self {
+        case .roomNotFound:
+            "Room not found in the local replica. Sync and try again."
+        case .attachmentsPending:
+            "Attachments are still moving to content-addressed device Mesh storage. No retired Broker connection was attempted."
+        }
     }
 }
 

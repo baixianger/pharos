@@ -226,8 +226,21 @@ public struct MeshMsg: Codable, Sendable, Equatable, Identifiable {
 public struct MeshRoomInfo: Codable, Sendable, Equatable, Identifiable, Hashable {
     public var name: String
     public var members: [String]
-    public var id: String { name }
-    public init(name: String, members: [String]) { self.name = name; self.members = members }
+    /// Stable distributed entity identity. Legacy Broker responses omit it and
+    /// continue to identify rooms by name during rollback.
+    public var replicaID: String?
+    public var id: String { replicaID ?? name }
+    public init(name: String, members: [String], replicaID: String? = nil) {
+        self.name = name; self.members = members; self.replicaID = replicaID
+    }
+
+    private enum CodingKeys: String, CodingKey { case name, members, replicaID }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        name = try values.decode(String.self, forKey: .name)
+        members = try values.decodeIfPresent([String].self, forKey: .members) ?? []
+        replicaID = try values.decodeIfPresent(String.self, forKey: .replicaID)
+    }
 }
 
 public struct MeshUnread: Codable, Sendable {

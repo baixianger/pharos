@@ -30,6 +30,7 @@ final class DistributedMeshSupport {
     private(set) var lastSyncError: String?
     @ObservationIgnored private var runtime: IrohEndpointRuntime?
     @ObservationIgnored private var registry: MobileDistributedRegistry?
+    @ObservationIgnored private var chatRegistry: DistributedChatRegistry?
     private let isDemo: Bool
 
     init(demo: Bool = false) {
@@ -48,6 +49,7 @@ final class DistributedMeshSupport {
             activeTrustGroupID = try replica.activeTrustGroup()
             if let group = activeTrustGroupID {
                 registry = MobileDistributedRegistry(replica: replica, group: group)
+                chatRegistry = DistributedChatRegistry(replica: replica, group: group)
             }
             try await startNetwork(replica: replica)
             state = .ready(
@@ -78,6 +80,9 @@ final class DistributedMeshSupport {
         try replica.adoptActiveTrustGroup(invitation.trustGroupID)
         activeTrustGroupID = invitation.trustGroupID
         registry = MobileDistributedRegistry(
+            replica: replica, group: invitation.trustGroupID
+        )
+        chatRegistry = DistributedChatRegistry(
             replica: replica, group: invitation.trustGroupID
         )
         let transport = IrohMeshTransport(
@@ -153,6 +158,48 @@ final class DistributedMeshSupport {
     func addProjectUpdate(to projectName: String, body: String) async throws {
         try await requireRegistry().addProjectUpdate(
             to: projectName, body: body
+        )
+    }
+
+    func rooms() async throws -> [MeshRoomInfo] {
+        try await requireChatRegistry().rooms()
+    }
+
+    func messages(in room: MeshRoomInfo, limit: Int? = nil) async throws -> [MeshMsg] {
+        try await requireChatRegistry().messages(in: room, limit: limit)
+    }
+
+    func createRoom(named name: String) async throws -> MeshRoomInfo {
+        try await requireChatRegistry().createRoom(named: name)
+    }
+
+    func renameRoom(_ room: MeshRoomInfo, to name: String) async throws {
+        try await requireChatRegistry().renameRoom(room, to: name)
+    }
+
+    func deleteRoom(_ room: MeshRoomInfo) async throws {
+        try await requireChatRegistry().deleteRoom(room)
+    }
+
+    func send(
+        _ text: String, in room: MeshRoomInfo, to: [String],
+        replyTo: MeshReply? = nil, attachments: [MeshAttachment] = []
+    ) async throws -> MeshMsg {
+        try await requireChatRegistry().send(
+            room: room, from: "human", text: text, to: to,
+            replyTo: replyTo, attachments: attachments
+        )
+    }
+
+    func removeMember(_ memberID: String, from room: MeshRoomInfo) async throws {
+        try await requireChatRegistry().leave(room: room, memberID: memberID)
+    }
+
+    func renameMember(
+        _ memberID: String, in room: MeshRoomInfo, to nick: String
+    ) async throws {
+        try await requireChatRegistry().renameMember(
+            room: room, memberID: memberID, to: nick
         )
     }
 
@@ -236,6 +283,13 @@ final class DistributedMeshSupport {
             throw MobileDistributedMeshError.noActiveTrustGroup
         }
         return registry
+    }
+
+    private func requireChatRegistry() throws -> DistributedChatRegistry {
+        guard let chatRegistry else {
+            throw MobileDistributedMeshError.noActiveTrustGroup
+        }
+        return chatRegistry
     }
 }
 

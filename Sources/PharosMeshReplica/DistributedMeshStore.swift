@@ -941,6 +941,26 @@ public actor DistributedMeshStore {
         }
     }
 
+    /// Lists immutable entities of one type so product projections can
+    /// materialize append-only domains such as chat messages and attachments.
+    /// Values remain fetched separately to keep callers in control of decode
+    /// and paging costs.
+    public func materializedImmutableEntities(
+        of type: MeshEntityType, in group: MeshTrustGroupID
+    ) throws -> [MeshEntityReference] {
+        try ensureMaterializedState()
+        return try query(
+            "SELECT entity_id FROM materialized_immutable_values " +
+            "WHERE trust_group_id=? AND entity_type=? ORDER BY entity_id",
+            [.text(group.rawValue.uuidString), .text(type.rawValue)]
+        ) { statement in
+            guard let entity = MeshEntityReference(
+                type: type, id: Self.columnText(statement, index: 0)
+            ) else { throw DistributedMeshStoreError.corruptStoredValue }
+            return entity
+        }
+    }
+
     public func quarantinedEvents() throws -> [MeshQuarantinedEvent] {
         try ensureMaterializedState()
         return try query(

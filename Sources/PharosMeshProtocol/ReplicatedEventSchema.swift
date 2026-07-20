@@ -69,6 +69,7 @@ public struct MeshEntityType: RawRepresentable, Codable, Hashable, Sendable {
     public static let project = MeshEntityType(rawValue: "project")!
     public static let issue = MeshEntityType(rawValue: "issue")!
     public static let room = MeshEntityType(rawValue: "room")!
+    public static let roomMembership = MeshEntityType(rawValue: "room-membership")!
     public static let message = MeshEntityType(rawValue: "message")!
     public static let attachment = MeshEntityType(rawValue: "attachment")!
 }
