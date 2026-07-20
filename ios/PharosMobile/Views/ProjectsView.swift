@@ -2,7 +2,8 @@ import SwiftUI
 import UIKit
 
 /// Registry projects presented as a quiet, status-first Linear-style index.
-/// Project data comes only from the Broker, with a device-local offline cache.
+/// Distributed mode reads the device-local signed replica; legacy mode retains
+/// the Broker cache until the migration flag becomes the only runtime.
 struct ProjectsView: View {
     @Environment(RoomStore.self) private var store
     @Environment(AppSettings.self) private var settings
@@ -140,6 +141,7 @@ struct ProjectsView: View {
 
     private var emptyDescription: String {
         if let loadError { return loadError }
+        if isDistributed { return "Create a project here, or pair a trusted device to receive its replicated projects." }
         if settings.mesh.host.isEmpty { return "Connect to your Broker in Settings to load the registry." }
         if filter == .active { return "Projects appear here while an agent reports that working directory." }
         return "The Broker registry did not return any projects."
@@ -153,7 +155,13 @@ struct ProjectsView: View {
             projects = viaMesh
             return
         }
-        loadError = "The Broker is unavailable and no project cache exists yet."
+        loadError = isDistributed
+            ? "Pair this iPhone with a trusted Pharos device before loading replicated projects."
+            : "The Broker is unavailable and no project cache exists yet."
+    }
+
+    private var isDistributed: Bool {
+        ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1"
     }
 }
 
@@ -564,6 +572,9 @@ private struct ProjectDetailHeader: View {
         if activeAgentCount > 0 {
             return activeAgentCount == 1 ? "One agent is working on this project." : "\(activeAgentCount) agents are working on this project."
         }
+        if ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1" {
+            return "Project details, activity, and issues from your signed device replica."
+        }
         return "Project details, activity, and issues from your Broker registry."
     }
 }
@@ -746,4 +757,3 @@ private struct NewProjectIssueView: View {
         }
     }
 }
-

@@ -127,6 +127,7 @@ struct IssuesView: View {
 
     private var emptyDescription: String {
         if let loadError { return loadError }
+        if isDistributed { return "Issues from trusted devices appear here after replica sync." }
         if settings.mesh.host.isEmpty { return "Connect to your Broker in Settings to load issues." }
         if selectedLabel != nil { return "No issues match this label and filter." }
         return filter == .open ? "Nothing is open across your projects." : "No issues match this filter."
@@ -150,7 +151,13 @@ struct IssuesView: View {
             issues = viaMesh
             return
         }
-        loadError = "The Broker is unavailable and no issue cache exists yet."
+        loadError = isDistributed
+            ? "Pair this iPhone with a trusted Pharos device before loading replicated issues."
+            : "The Broker is unavailable and no issue cache exists yet."
+    }
+
+    private var isDistributed: Bool {
+        ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1"
     }
 }
 
