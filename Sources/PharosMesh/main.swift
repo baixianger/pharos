@@ -227,6 +227,8 @@ private enum MeshHeadlessCLI {
         let deviceCommands = [
             "device-invite", "device-accept", "device-redeem", "device-list",
             "sync-serve", "sync", "entity-set", "entity-dump",
+            "room-list", "room-create", "room-rename", "room-delete",
+            "room-send", "room-history",
         ]
         guard command == "status" || command == "init" ||
                 migrationCommands.contains(command) || probeCommands.contains(command) ||
@@ -234,6 +236,7 @@ private enum MeshHeadlessCLI {
             return usageError(
                 "distributed status|init|device-invite|device-accept|" +
                 "device-redeem|device-list|sync-serve|sync|entity-set|entity-dump|" +
+                "room-list|room-create|room-rename|room-delete|room-send|room-history|" +
                 "probe-serve|probe|migration-status|" +
                 "migration-prepare|cutover|rollback …"
             )
@@ -549,10 +552,99 @@ private enum MeshHeadlessCLI {
             }
             return 0
 
+        case "room-list":
+            let (group, _) = try await activeMembership(replica)
+            let rooms = try await DistributedChatRegistry(
+                replica: replica, group: group
+            ).rooms()
+            print(String(decoding: try sortedJSON(rooms), as: UTF8.self))
+            return 0
+
+        case "room-create":
+            guard args.count >= 2 else {
+                return usageError(
+                    "distributed room-create NAME --data-dir ABSOLUTE-PATH"
+                )
+            }
+            let (group, _) = try await activeMembership(replica)
+            let room = try await DistributedChatRegistry(
+                replica: replica, group: group
+            ).createRoom(named: args[1])
+            print(String(decoding: try sortedJSON(room), as: UTF8.self))
+            return 0
+
+        case "room-rename":
+            guard args.count >= 3 else {
+                return usageError(
+                    "distributed room-rename OLD-NAME NEW-NAME --data-dir ABSOLUTE-PATH"
+                )
+            }
+            let (group, _) = try await activeMembership(replica)
+            let chat = DistributedChatRegistry(replica: replica, group: group)
+            guard let room = try await chat.rooms().first(where: { $0.name == args[1] }) else {
+                throw DistributedChatRegistryError.roomNotFound
+            }
+            try await chat.renameRoom(room, to: args[2])
+            return 0
+
+        case "room-delete":
+            guard args.count >= 2 else {
+                return usageError(
+                    "distributed room-delete NAME --data-dir ABSOLUTE-PATH"
+                )
+            }
+            let (group, _) = try await activeMembership(replica)
+            let chat = DistributedChatRegistry(replica: replica, group: group)
+            guard let room = try await chat.rooms().first(where: { $0.name == args[1] }) else {
+                throw DistributedChatRegistryError.roomNotFound
+            }
+            try await chat.deleteRoom(room)
+            return 0
+
+        case "room-send":
+            guard args.count >= 4 else {
+                return usageError(
+                    "distributed room-send ROOM FROM TEXT [--to NICK,NICK] " +
+                    "--data-dir ABSOLUTE-PATH"
+                )
+            }
+            let (group, _) = try await activeMembership(replica)
+            let chat = DistributedChatRegistry(replica: replica, group: group)
+            guard let room = try await chat.rooms().first(where: { $0.name == args[1] }) else {
+                throw DistributedChatRegistryError.roomNotFound
+            }
+            let targets = option("--to", in: args)?.split(separator: ",")
+                .map(String.init) ?? []
+            let message = try await chat.send(
+                room: room, from: args[2], text: args[3], to: targets
+            )
+            print(String(decoding: try sortedJSON(message), as: UTF8.self))
+            return 0
+
+        case "room-history":
+            guard args.count >= 2 else {
+                return usageError(
+                    "distributed room-history ROOM [--limit N] " +
+                    "--data-dir ABSOLUTE-PATH"
+                )
+            }
+            let (group, _) = try await activeMembership(replica)
+            let chat = DistributedChatRegistry(replica: replica, group: group)
+            guard let room = try await chat.rooms().first(where: { $0.name == args[1] }) else {
+                throw DistributedChatRegistryError.roomNotFound
+            }
+            let messages = try await chat.messages(
+                in: room, limit: option("--limit", in: args).flatMap(Int.init)
+            )
+            print(String(decoding: try sortedJSON(messages), as: UTF8.self))
+            return 0
+
         default:
             return usageError(
                 "distributed device-invite|device-accept|device-redeem|" +
-                "device-list|sync-serve|sync|entity-set|entity-dump …"
+                "device-list|sync-serve|sync|entity-set|entity-dump|" +
+                "room-list|room-create|room-rename|room-delete|room-send|" +
+                "room-history …"
             )
         }
     }
@@ -1194,6 +1286,12 @@ private enum MeshHeadlessCLI {
       distributed sync --peer DEVICE-UUID --data-dir ABSOLUTE-PATH [--peer-ticket CURRENT-TICKET] [--relay production|disabled]
       distributed entity-set --type TYPE --id ID --field FIELD --json-value JSON --data-dir ABSOLUTE-PATH
       distributed entity-dump --type TYPE --id ID --data-dir ABSOLUTE-PATH
+      distributed room-list --data-dir ABSOLUTE-PATH
+      distributed room-create NAME --data-dir ABSOLUTE-PATH
+      distributed room-rename OLD-NAME NEW-NAME --data-dir ABSOLUTE-PATH
+      distributed room-delete NAME --data-dir ABSOLUTE-PATH
+      distributed room-send ROOM FROM TEXT [--to NICK,NICK] --data-dir ABSOLUTE-PATH
+      distributed room-history ROOM [--limit N] --data-dir ABSOLUTE-PATH
       distributed probe-serve --data-dir ABSOLUTE-PATH [--relay production|disabled] [--bind HOST:PORT]
       distributed probe --peer-endpoint ID --peer-ticket TICKET --data-dir ABSOLUTE-PATH [--relay production|disabled] [--bind HOST:PORT]
       distributed migration-status --group UUID --data-dir ABSOLUTE-PATH [--json]
