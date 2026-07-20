@@ -5,6 +5,7 @@ import Observation
 @MainActor
 final class RoomStore {
     private let settings: AppSettings
+    private let distributedMesh: DistributedMeshSupport
     private let mesh = MeshTCPClient()
     let isDemo: Bool
     private let demoProjects: [RemoteProject]
@@ -36,8 +37,11 @@ final class RoomStore {
     private static let projectsCacheKey = "pharos.mobile.registry.projects.v1"
     private static let issuesCacheKey = "pharos.mobile.registry.issues.v1"
 
-    init(settings: AppSettings, identities: SSHIdentityStore, demoData: PharosDemoData? = nil) {
+    init(settings: AppSettings, identities: SSHIdentityStore,
+         distributedMesh: DistributedMeshSupport,
+         demoData: PharosDemoData? = nil) {
         self.settings = settings
+        self.distributedMesh = distributedMesh
         isDemo = demoData != nil
         demoProjects = demoData?.projects ?? []
         demoIssues = demoData?.issues ?? []
@@ -247,6 +251,16 @@ final class RoomStore {
     /// last successful payload; SSH Hosts are never used as registry replicas.
     func fetchProjectsOverMesh() async -> [RemoteProject]? {
         if isDemo { return demoProjects }
+        if usesDistributedRegistry {
+            do {
+                let projects = try await distributedMesh.projects()
+                error = nil
+                return projects
+            } catch {
+                self.error = error.localizedDescription
+                return nil
+            }
+        }
         guard !settings.mesh.host.isEmpty else { return cachedProjects() }
         guard let payload = try? await request(MeshRequest(cmd: "projects")).payload else {
             return cachedProjects()
@@ -257,6 +271,16 @@ final class RoomStore {
 
     func fetchIssuesOverMesh() async -> [RemoteIssue]? {
         if isDemo { return demoIssues }
+        if usesDistributedRegistry {
+            do {
+                let issues = try await distributedMesh.issues()
+                error = nil
+                return issues
+            } catch {
+                self.error = error.localizedDescription
+                return nil
+            }
+        }
         guard !settings.mesh.host.isEmpty else { return cachedIssues() }
         guard let payload = try? await request(MeshRequest(cmd: "issues")).payload else {
             return cachedIssues()
@@ -270,6 +294,14 @@ final class RoomStore {
     func addProject(name: String, githubRemote: String?, notes: String, tags: [String]) async -> Bool {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return false }
+        if usesDistributedRegistry {
+            return await distributedMutation {
+                try await self.distributedMesh.addProject(
+                    name: trimmedName, githubRemote: githubRemote,
+                    notes: notes, tags: tags
+                )
+            }
+        }
         return await mutateRegistry { root in
             var projects = root["projects"] as? [[String: Any]] ?? []
             guard !projects.contains(where: {
@@ -300,6 +332,13 @@ final class RoomStore {
     func addIssue(to projectName: String, title: String) async -> Bool {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
+        if usesDistributedRegistry {
+            return await distributedMutation {
+                try await self.distributedMesh.addIssue(
+                    to: projectName, title: trimmed
+                )
+            }
+        }
         return await mutateRegistry { root in
             var projects = root["projects"] as? [[String: Any]] ?? []
             guard let index = projects.firstIndex(where: {
@@ -330,6 +369,14 @@ final class RoomStore {
                      status: String, priority: String, labels: [String]) async -> Bool {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { return false }
+        if usesDistributedRegistry {
+            return await distributedMutation {
+                try await self.distributedMesh.updateIssue(
+                    issue, title: trimmedTitle, body: body,
+                    status: status, priority: priority, labels: labels
+                )
+            }
+        }
         return await mutateRegistry { root in
             var projects = root["projects"] as? [[String: Any]] ?? []
             guard let projectIndex = projects.firstIndex(where: {
@@ -359,6 +406,14 @@ final class RoomStore {
                        notes: String, tags: [String]) async -> Bool {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return false }
+        if usesDistributedRegistry {
+            return await distributedMutation {
+                try await self.distributedMesh.updateProject(
+                    original, name: trimmedName, githubRemote: githubRemote,
+                    notes: notes, tags: tags
+                )
+            }
+        }
         return await mutateRegistry { root in
             var projects = root["projects"] as? [[String: Any]] ?? []
             guard let index = projects.firstIndex(where: {
@@ -383,7 +438,12 @@ final class RoomStore {
     /// The removed dict is relocated verbatim so its payload can't corrupt the
     /// StoreData decode.
     func deleteProject(_ project: RemoteProject) async -> Bool {
-        await mutateRegistry { root in
+        if usesDistributedRegistry {
+            return await distributedMutation {
+                try await self.distributedMesh.deleteProject(project)
+            }
+        }
+        return await mutateRegistry { root in
             var projects = root["projects"] as? [[String: Any]] ?? []
             guard let idx = projects.firstIndex(where: {
                 ($0["name"] as? String)?.localizedCaseInsensitiveCompare(project.name) == .orderedSame
@@ -405,6 +465,13 @@ final class RoomStore {
     func addProjectUpdate(to projectName: String, body: String) async -> Bool {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
+        if usesDistributedRegistry {
+            return await distributedMutation {
+                try await self.distributedMesh.addProjectUpdate(
+                    to: projectName, body: trimmed
+                )
+            }
+        }
         return await mutateRegistry { root in
             var projects = root["projects"] as? [[String: Any]] ?? []
             guard let index = projects.firstIndex(where: {
@@ -430,7 +497,12 @@ final class RoomStore {
     /// Soft-delete an issue: relocate it to the shared Trash (recoverable from
     /// Pharos on Mac). The removed dict is moved verbatim into the payload.
     func deleteIssue(_ issue: RemoteIssue) async -> Bool {
-        await mutateRegistry { root in
+        if usesDistributedRegistry {
+            return await distributedMutation {
+                try await self.distributedMesh.deleteIssue(issue)
+            }
+        }
+        return await mutateRegistry { root in
             var projects = root["projects"] as? [[String: Any]] ?? []
             guard let pi = projects.firstIndex(where: {
                 ($0["name"] as? String)?.localizedCaseInsensitiveCompare(issue.project) == .orderedSame
@@ -577,6 +649,24 @@ final class RoomStore {
                 throw RegistryMutationError.message(response.error ?? "The Broker rejected the change.")
             }
             throw RegistryMutationError.message("The project registry changed repeatedly. Try again.")
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
+    private var usesDistributedRegistry: Bool {
+        ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1"
+    }
+
+    private func distributedMutation(
+        _ mutation: () async throws -> Void
+    ) async -> Bool {
+        do {
+            try await mutation()
+            _ = await distributedMesh.synchronizeOnce()
+            error = nil
+            return true
         } catch {
             self.error = error.localizedDescription
             return false

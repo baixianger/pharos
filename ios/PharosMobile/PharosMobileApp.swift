@@ -20,14 +20,16 @@ private struct AppContainer: View {
         self.isDemo = isDemo
         let settings = AppSettings(demo: isDemo)
         let identities = SSHIdentityStore()
+        let distributedMesh = DistributedMeshSupport(demo: isDemo)
         _settings = State(initialValue: settings)
         _identities = State(initialValue: identities)
+        _distributedMesh = State(initialValue: distributedMesh)
         _rooms = State(initialValue: RoomStore(
             settings: settings,
             identities: identities,
+            distributedMesh: distributedMesh,
             demoData: isDemo ? .store : nil
         ))
-        _distributedMesh = State(initialValue: DistributedMeshSupport(demo: isDemo))
     }
 
     var body: some View {

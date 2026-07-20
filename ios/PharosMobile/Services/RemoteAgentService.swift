@@ -39,7 +39,7 @@ enum SpawnWorkDir: Equatable, Sendable {
 
 /// A project as reported by `pharos list --json` on the target host.
 struct RemoteProject: Identifiable, Sendable, Hashable {
-    var id: String { name }
+    var id: String { replicaID ?? name }
     let name: String
     let localPath: String?
     let githubRemote: String?
@@ -47,6 +47,9 @@ struct RemoteProject: Identifiable, Sendable, Hashable {
     var notes: String = ""
     var issues: [RemoteIssue] = []
     var updates: [RemoteProjectUpdate] = []
+    /// Stable replicated entity identity. Legacy Broker payloads leave this
+    /// nil and retain the historical name-derived identity.
+    var replicaID: String? = nil
     var hasLocalPath: Bool { localPath != nil }
 }
 
@@ -59,7 +62,7 @@ struct RemoteProjectUpdate: Identifiable, Sendable, Hashable {
 
 /// One issue aggregated from `pharos issue list <project> --json` across projects.
 struct RemoteIssue: Identifiable, Sendable, Hashable {
-    var id: String { "\(project)#\(number)" }
+    var id: String { replicaID ?? "\(project)#\(number)" }
     let project: String
     let number: Int
     let title: String
@@ -71,6 +74,9 @@ struct RemoteIssue: Identifiable, Sendable, Hashable {
     /// Manual board ordering set on the desktop; nil when unspecified. Carried
     /// so the iOS list can honor the same ordering within a status group.
     var sortOrder: Double? = nil
+    /// Stable replicated entity identity. This prevents two offline devices
+    /// that choose the same display number from overwriting one another.
+    var replicaID: String? = nil
 }
 
 enum RemoteCommandBuilder {
