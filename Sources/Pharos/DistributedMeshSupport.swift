@@ -2,9 +2,8 @@ import Foundation
 import Observation
 import PharosMeshCore
 
-/// macOS owner of the shared local replica. It deliberately does not start an
-/// Iroh endpoint or alter legacy Broker routing during migration; those are
-/// explicit later actions using this already-stable identity and store.
+/// macOS owner of the local-first replica and its identity-addressed Iroh
+/// endpoint. Distributed product mode never opens legacy Broker routing.
 @Observable
 @MainActor
 final class DistributedMeshSupport {
@@ -17,6 +16,10 @@ final class DistributedMeshSupport {
     private(set) var state: State = .opening
     private(set) var localReplica: MeshLocalReplica?
     private(set) var activeTrustGroupID: MeshTrustGroupID?
+    private(set) var localAddress: MeshIrohEndpointAddress?
+    private(set) var connections: [MeshDeviceID: MeshConnectionSnapshot] = [:]
+    private(set) var lastSyncError: String?
+    @ObservationIgnored private var runtime: IrohEndpointRuntime?
 
     var isProductModeEnabled: Bool {
         ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1"
@@ -39,6 +42,80 @@ final class DistributedMeshSupport {
             )
         } catch {
             state = .failed(String(describing: error))
+        }
+    }
+
+    func startNetwork() async {
+        guard isProductModeEnabled, runtime == nil,
+              let replica = localReplica,
+              activeTrustGroupID != nil else { return }
+        do {
+            let endpoint = try await IrohEndpointRuntime.bind(
+                secretKey: replica.identity.irohSecretKeyBytes()
+            )
+            let address = try await endpoint.localAddress()
+            let router = MeshReplicaRPCServer(
+                store: replica.store, hostIdentity: replica.identity
+            )
+            await endpoint.startServing { request, remoteEndpointID in
+                try await router.handle(
+                    request, remoteEndpointID: remoteEndpointID
+                )
+            }
+            runtime = endpoint
+            localAddress = address
+            lastSyncError = nil
+        } catch {
+            lastSyncError = "Could not start distributed Mesh: \(error)"
+        }
+    }
+
+    /// One bounded pull from every trusted current-epoch peer. Every device
+    /// runs the same loop, so synchronization stays decentralized and offline
+    /// writers converge after either side reconnects.
+    @discardableResult
+    func synchronizeOnce() async -> Int {
+        guard let runtime, let replica = localReplica,
+              let group = activeTrustGroupID,
+              let epoch = try? await replica.store.membershipEpoch(for: group)
+        else { return 0 }
+        do {
+            let peers = try await replica.store.trustedDevices(
+                in: group, membershipEpoch: epoch
+            )
+            var received = 0
+            var failures: [String] = []
+            for peer in peers {
+                let transport = IrohMeshTransport(
+                    runtime: runtime,
+                    remote: MeshIrohEndpointAddress(
+                        endpointID: peer.descriptor.endpointID,
+                        ticket: peer.addressTicket
+                    )
+                )
+                do {
+                    let report = try await MeshReplicaSyncSession(
+                        store: replica.store,
+                        client: MeshReplicaRPCClient(transport: transport)
+                    ).synchronize(group: group, membershipEpoch: epoch)
+                    received += report.eventCount + report.snapshotCount
+                    connections[peer.descriptor.id] = MeshConnectionSnapshot(
+                        peer: peer.descriptor.id, path: await transport.path,
+                        connected: true, lastChange: Date()
+                    )
+                } catch {
+                    failures.append("\(peer.descriptor.displayName): \(error)")
+                    connections[peer.descriptor.id] = MeshConnectionSnapshot(
+                        peer: peer.descriptor.id, path: .unavailable,
+                        connected: false, lastChange: Date()
+                    )
+                }
+            }
+            lastSyncError = failures.isEmpty ? nil : failures.joined(separator: " · ")
+            return received
+        } catch {
+            lastSyncError = "Could not read trusted devices: \(error)"
+            return 0
         }
     }
 }

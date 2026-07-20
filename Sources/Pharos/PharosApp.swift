@@ -41,10 +41,15 @@ struct PharosApp: App {
 
     init() {
         let prefs = PharosPrefs.shared
+        let distributed = ProcessInfo.processInfo.environment[
+            "PHAROS_DISTRIBUTED"
+        ] == "1"
         let alreadyConfigured = prefs.bool(forKey: "pharos.hostBroker")
             || !(prefs.string(forKey: "pharos.meshServerEndpoint") ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        _showsBrokerSetup = State(initialValue: !alreadyConfigured)
+        _showsBrokerSetup = State(
+            initialValue: !distributed && !alreadyConfigured
+        )
     }
 
     var body: some Scene {
@@ -69,6 +74,12 @@ struct PharosApp: App {
                         await store.activateDistributedRegistry(
                             replica: replica, group: group
                         )
+                        await distributedMesh.startNetwork()
+                        while !Task.isCancelled {
+                            let received = await distributedMesh.synchronizeOnce()
+                            if received > 0 { store.syncRegistryNow() }
+                            try? await Task.sleep(for: .seconds(5))
+                        }
                         // Distributed mode owns project/issue persistence and
                         // never starts, dials, or repairs the legacy Broker.
                         return
