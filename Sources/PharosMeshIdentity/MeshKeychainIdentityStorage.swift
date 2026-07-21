@@ -80,7 +80,7 @@ public enum MeshMirroredIdentityStorageError: LocalizedError, Equatable, Sendabl
     public var errorDescription: String? {
         switch self {
         case .headlessBootstrapRequired:
-            "Open the signed Pharos app once in the Mac login session to make its device identity available to the headless CLI."
+            "Run `pharos identity bootstrap` once (or open Pharos) to create this Mac's protected device identity."
         case .identityMismatch:
             "The protected headless identity does not match Keychain. Restore the device identity backup before continuing."
         }

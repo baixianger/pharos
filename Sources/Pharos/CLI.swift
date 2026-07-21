@@ -35,6 +35,17 @@ enum CLI {
             printUsage(); return 0
         case "version", "--version", "-v":
             print("pharos \(version)"); return 0
+        case "identity" where rest.first == "bootstrap":
+            do {
+                let replica = try MeshLocalReplica.openDefault(headless: false)
+                print("identity ready\t\(replica.identity.deviceID.rawValue.uuidString)")
+                return 0
+            } catch {
+                FileHandle.standardError.write(
+                    Data("error: identity bootstrap failed: \(error)\n".utf8)
+                )
+                return 1
+            }
         default:
             break
         }
@@ -845,13 +856,14 @@ enum CLI {
           trash restore <id>           Restore a soft-deleted item
           trash empty                  Permanently purge the Trash
 
-        MULTI-MACHINE (Broker-owned project data; paths stay on each Host)
+        MULTI-MACHINE (distributed project data; paths stay on each device)
           host                         Show this machine's host key
           path <project>               Show THIS Host's local folder
           path <project> <path>        Set THIS machine's local folder for a project
           path <project> --clear       Forget this machine's local folder
 
         OTHER
+          identity bootstrap           Initialize the signed Keychain identity mirror
           help, version
 
         Add --json to any READ command for machine-readable output.

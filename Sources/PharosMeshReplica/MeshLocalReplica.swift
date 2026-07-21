@@ -29,17 +29,21 @@ public struct MeshLocalReplica: Sendable {
     public static func openDefault(headless: Bool = false) throws -> MeshLocalReplica {
         let root = try defaultRootURL()
 #if canImport(Security)
-        let keychain = MeshKeychainIdentityStorage(
+#if os(macOS)
+        // macOS agents must use the same identity from GUI, SSH, tmux, and
+        // launchd. A Keychain item plus a plaintext mirror only duplicates the
+        // secret and makes locked-login sessions unreliable, so the protected
+        // 0600 file is the single authority on Mac. iOS remains Keychain-only.
+        let storage = MeshFileIdentityStorage(
+            fileURL: root.appendingPathComponent("headless-device-identity-v1.json")
+        )
+        if headless, try storage.load() == nil {
+            throw MeshMirroredIdentityStorageError.headlessBootstrapRequired
+        }
+#else
+        let storage = MeshKeychainIdentityStorage(
             service: "me.pai.pharos.mesh.identity", account: "device-v1"
         )
-#if os(macOS)
-        let storage = MeshMirroredIdentityStorage(
-            keychain: keychain,
-            mirrorURL: root.appendingPathComponent("headless-device-identity-v1.json"),
-            headlessOnly: headless
-        )
-#else
-        let storage = keychain
 #endif
         return try open(rootURL: root, identityStorage: storage)
 #else
