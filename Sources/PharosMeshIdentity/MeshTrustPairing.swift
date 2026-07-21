@@ -254,7 +254,12 @@ public struct MeshTrustPairingService: Sendable {
                 displayName: inviterDisplayName.trimmingCharacters(
                     in: .whitespacesAndNewlines
                 ),
-                roles: Set(invitation.requestedRoles),
+                // Accepting a pairing link bootstraps reciprocal trust in the
+                // inviter as the controller that may synchronize and manage
+                // this device. `requestedRoles` belongs exclusively to the
+                // accepting device; mirroring it here could accidentally turn
+                // a Host-only invitation into a non-controller inviter.
+                roles: [.controller, .replica],
                 protocolVersion: invitation.protocolVersion
             ),
             signingPublicKey: invitation.inviterSigningPublicKey,

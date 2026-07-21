@@ -83,6 +83,32 @@ final class MeshTrustPairingTests: XCTestCase {
         XCTAssertEqual(stored?.descriptor.endpointID, try fixture.inviter.endpointID())
         XCTAssertEqual(stored?.descriptor.displayName, "Mac mini")
         XCTAssertEqual(stored?.addressTicket, "iroh-inviter-ticket")
+        XCTAssertEqual(stored?.descriptor.roles, [.controller, .replica])
+    }
+
+    func testRequestedHostRolesDoNotRemoveInviterControllerAuthority() async throws {
+        let fixture = Fixture()
+        let invitation = try await fixture.inviterService.issueInvitation(
+            trustGroupID: fixture.group,
+            membershipEpoch: 4,
+            inviterAddressTicket: "iroh-inviter-ticket",
+            requestedRoles: [.host, .replica],
+            now: now
+        )
+
+        let acceptance = try await fixture.acceptorService.acceptAndTrustInviter(
+            invitation,
+            acceptingAddressTicket: "iroh-acceptor-ticket",
+            displayName: "Execution Host",
+            inviterDisplayName: "Controller",
+            now: now
+        )
+
+        let inviter = await fixture.acceptorStore.trustedDevice(
+            in: fixture.group, id: fixture.inviter.deviceID
+        )
+        XCTAssertEqual(inviter?.descriptor.roles, [.controller, .replica])
+        XCTAssertEqual(acceptance.roles, [.host, .replica])
     }
 
     func testSignedInvitationAcceptanceAndSingleUseRedemption() async throws {
