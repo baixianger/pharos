@@ -414,22 +414,33 @@ public actor DistributedMeshStore {
                currentEpoch != record.membershipEpoch {
                 return .membershipEpochMismatch
             }
-            guard try trustedDeviceMatching(
+            if let existing = try trustedDeviceMatching(
                 group: record.trustGroupID,
                 deviceID: device.descriptor.id,
                 endpointID: device.descriptor.endpointID
-            ) == nil else {
-                return .deviceAlreadyTrusted
+            ) {
+                guard existing.hasSameCryptographicIdentity(as: device) else {
+                    return .deviceAlreadyTrusted
+                }
+                try run(
+                    "UPDATE trusted_devices SET membership_epoch=?, envelope=? " +
+                        "WHERE trust_group_id=? AND device_id=?",
+                    [.integer(Int64(record.membershipEpoch)),
+                     .blob(try MeshCanonicalStoreJSON.encode(device)),
+                     .text(record.trustGroupID.rawValue.uuidString),
+                     .text(device.descriptor.id.rawValue.uuidString)]
+                )
+            } else {
+                try run(
+                    "INSERT INTO trusted_devices(trust_group_id, device_id, endpoint_id, " +
+                        "membership_epoch, envelope) VALUES(?, ?, ?, ?, ?)",
+                    [.text(record.trustGroupID.rawValue.uuidString),
+                     .text(device.descriptor.id.rawValue.uuidString),
+                     .text(device.descriptor.endpointID.rawValue),
+                     .integer(Int64(record.membershipEpoch)),
+                     .blob(try MeshCanonicalStoreJSON.encode(device))]
+                )
             }
-            try run(
-                "INSERT INTO trusted_devices(trust_group_id, device_id, endpoint_id, " +
-                "membership_epoch, envelope) VALUES(?, ?, ?, ?, ?)",
-                [.text(record.trustGroupID.rawValue.uuidString),
-                 .text(device.descriptor.id.rawValue.uuidString),
-                 .text(device.descriptor.endpointID.rawValue),
-                 .integer(Int64(record.membershipEpoch)),
-                 .blob(try MeshCanonicalStoreJSON.encode(device))]
-            )
             try run(
                 "UPDATE pairing_invitations SET consumed_at_ms=? " +
                 "WHERE nonce_digest=? AND consumed_at_ms IS NULL",
@@ -465,9 +476,17 @@ public actor DistributedMeshStore {
                 group: group, deviceID: device.descriptor.id,
                 endpointID: device.descriptor.endpointID
             ) {
-                guard existing == device else {
+                guard existing.hasSameCryptographicIdentity(as: device) else {
                     throw MeshTrustPairingError.deviceAlreadyTrusted
                 }
+                try run(
+                    "UPDATE trusted_devices SET membership_epoch=?, envelope=? " +
+                        "WHERE trust_group_id=? AND device_id=?",
+                    [.integer(Int64(membershipEpoch)),
+                     .blob(try MeshCanonicalStoreJSON.encode(device)),
+                     .text(group.rawValue.uuidString),
+                     .text(device.descriptor.id.rawValue.uuidString)]
+                )
                 return
             }
             try run(

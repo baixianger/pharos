@@ -10,6 +10,9 @@ private enum MeshHeadlessCLI {
             return 2
         }
         let legacyBrokerEnabled = ProcessInfo.processInfo.environment["PHAROS_LEGACY_BROKER"] == "1"
+        if command == "pair", !legacyBrokerEnabled {
+            return await DistributedPairCLI.run(Array(args.dropFirst()))
+        }
         if DistributedAgentCLI.commands.contains(command), !legacyBrokerEnabled {
             return await DistributedAgentCLI.run(args)
         }
@@ -353,7 +356,11 @@ private enum MeshHeadlessCLI {
                     inviterAddressTicket: address.ticket,
                     requestedRoles: roles
                 )
-                print(try MeshTrustInvitationTicket.encode(invitation))
+                if args.contains("--link") {
+                    print(try MeshTrustInvitationLink.encode(invitation).absoluteString)
+                } else {
+                    print(try MeshTrustInvitationTicket.encode(invitation))
+                }
                 try await runtime.close()
                 return 0
             } catch {
@@ -363,14 +370,13 @@ private enum MeshHeadlessCLI {
 
         case "device-accept":
             guard args.count >= 2,
-                  args[1].hasPrefix(MeshTrustInvitationTicket.prefix),
                   let name = option("--name", in: args), !name.isEmpty else {
                 return usageError(
                     "distributed device-accept INVITATION --name NAME " +
                     "[--inviter-name NAME] --data-dir ABSOLUTE-PATH"
                 )
             }
-            let invitation = try MeshTrustInvitationTicket.decode(args[1])
+            let invitation = try distributedInvitation(args[1])
             let runtime = try await distributedRuntime(args, replica: replica)
             do {
                 let address = try await runtime.localAddress()
@@ -399,7 +405,7 @@ private enum MeshHeadlessCLI {
                     "--data-dir ABSOLUTE-PATH"
                 )
             }
-            let invitation = try MeshTrustInvitationTicket.decode(args[1])
+            let invitation = try distributedInvitation(args[1])
             let acceptance = try MeshTrustAcceptanceTicket.decode(args[2])
             let paired = try await MeshTrustPairingService(
                 identity: replica.identity, invitationStore: replica.store
@@ -1628,6 +1634,13 @@ private enum MeshHeadlessCLI {
         return 1
     }
 
+    private static func distributedInvitation(_ value: String) throws -> MeshTrustInvitation {
+        if let url = URL(string: value), url.scheme == "pharos" {
+            return try MeshTrustInvitationLink.decode(url)
+        }
+        return try MeshTrustInvitationTicket.decode(value)
+    }
+
     private static func printTerminalQRCode(_ value: String) {
         let candidates = ["/opt/homebrew/bin/qrencode", "/usr/local/bin/qrencode", "/usr/bin/qrencode"]
         guard let executable = candidates.first(where: {
@@ -1655,7 +1668,7 @@ private enum MeshHeadlessCLI {
       node install [--endpoint HOST:PORT]
       node uninstall
       capabilities [--endpoint HOST:PORT]
-      pair --endpoint HOST:PORT
+      pair invite|accept|redeem|list (distributed trust; use pair --help)
       create <room>
       list
       history <room> [--limit N]

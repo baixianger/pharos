@@ -1838,6 +1838,86 @@ final class DistributedMeshStoreTests: XCTestCase {
         }
     }
 
+    func testRepairPairingRefreshesSameIdentityButRejectsDeviceIDCollision() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let store = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        try await store.setMembershipEpoch(1, for: fixture.group)
+        let inviter = MeshDeviceIdentity.generate()
+        let acceptor = MeshDeviceIdentity.generate()
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let service = MeshTrustPairingService(
+            identity: inviter, invitationStore: store
+        )
+
+        func invitation(at date: Date) async throws -> MeshTrustInvitation {
+            try await service.issueInvitation(
+                trustGroupID: fixture.group, membershipEpoch: 1,
+                inviterAddressTicket: "inviter-\(date.timeIntervalSince1970)",
+                requestedRoles: [.controller, .replica], now: date
+            )
+        }
+
+        let first = try await invitation(at: now)
+        let firstAcceptance = try MeshTrustPairingService(
+            identity: acceptor,
+            invitationStore: MeshMemoryInvitationUseStore()
+        ).createAcceptance(
+            for: first, acceptingAddressTicket: "old-address",
+            displayName: "iPhone", now: now
+        )
+        _ = try await service.redeem(firstAcceptance, for: first, now: now)
+
+        let repairNow = now.addingTimeInterval(1)
+        let repair = try await invitation(at: repairNow)
+        let repairAcceptance = try MeshTrustPairingService(
+            identity: acceptor,
+            invitationStore: MeshMemoryInvitationUseStore()
+        ).createAcceptance(
+            for: repair, acceptingAddressTicket: "refreshed-address",
+            displayName: "Renamed iPhone", now: repairNow
+        )
+        _ = try await service.redeem(
+            repairAcceptance, for: repair, now: repairNow
+        )
+        let refreshed = try await store.trustedDevice(
+            in: fixture.group, id: acceptor.deviceID
+        )
+        XCTAssertEqual(refreshed?.descriptor.displayName, "Renamed iPhone")
+        XCTAssertEqual(refreshed?.addressTicket, "refreshed-address")
+        XCTAssertEqual(
+            refreshed?.signingPublicKey, try acceptor.signingPublicKeyBytes()
+        )
+
+        let attackerSeed = MeshDeviceIdentity.generate()
+        let attacker = try MeshDeviceIdentity(
+            deviceID: acceptor.deviceID,
+            secretKey: attackerSeed.irohSecretKeyBytes(),
+            createdAtMilliseconds: attackerSeed.createdAtMilliseconds
+        )
+        let collisionNow = now.addingTimeInterval(2)
+        let collisionInvitation = try await invitation(at: collisionNow)
+        let collisionAcceptance = try MeshTrustPairingService(
+            identity: attacker,
+            invitationStore: MeshMemoryInvitationUseStore()
+        ).createAcceptance(
+            for: collisionInvitation,
+            acceptingAddressTicket: "attacker-address",
+            displayName: "Impostor", now: collisionNow
+        )
+        do {
+            _ = try await service.redeem(
+                collisionAcceptance, for: collisionInvitation,
+                now: collisionNow
+            )
+            XCTFail("a reused device ID with another signing key must fail")
+        } catch {
+            XCTAssertEqual(
+                error as? MeshTrustPairingError, .deviceAlreadyTrusted
+            )
+        }
+    }
+
     func testConcurrentSQLiteConnectionsHaveExactlyOnePairingWinner() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

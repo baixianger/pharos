@@ -90,11 +90,13 @@ public actor MeshMemoryInvitationUseStore: MeshInvitationUseStore {
         guard !state.consumed else { return .alreadyConsumed }
         guard milliseconds < state.record.expiresAtMilliseconds else { return .expired }
         let groupDevices = trustedDevices[record.trustGroupID]?.values ?? [:].values
-        guard !groupDevices.contains(where: {
+        if let existing = groupDevices.first(where: {
             $0.descriptor.id == device.descriptor.id ||
                 $0.descriptor.endpointID == device.descriptor.endpointID
-        }) else {
-            return .deviceAlreadyTrusted
+        }) {
+            guard existing.hasSameCryptographicIdentity(as: device) else {
+                return .deviceAlreadyTrusted
+            }
         }
         state.consumed = true
         records[record.nonceDigest] = state
@@ -115,10 +117,9 @@ public actor MeshMemoryInvitationUseStore: MeshInvitationUseStore {
             $0.descriptor.id == device.descriptor.id ||
                 $0.descriptor.endpointID == device.descriptor.endpointID
         }) {
-            guard existing == device else {
+            guard existing.hasSameCryptographicIdentity(as: device) else {
                 throw MeshTrustPairingError.deviceAlreadyTrusted
             }
-            return
         }
         trustedDevices[group, default: [:]][device.descriptor.id] = device
     }
@@ -160,6 +161,15 @@ public struct MeshPairedDevice: Codable, Equatable, Sendable {
               addressTicket.utf8.count <= MeshTrustInvitation.maximumAddressTicketBytes else {
             throw MeshTrustPairingError.acceptanceMismatch
         }
+    }
+
+    /// Pairing may safely refresh mutable metadata and the current Iroh address
+    /// ticket only when both stable identifiers still bind to the same signing
+    /// key. This enables recovery pairing without weakening collision checks.
+    public func hasSameCryptographicIdentity(as other: MeshPairedDevice) -> Bool {
+        descriptor.id == other.descriptor.id &&
+            descriptor.endpointID == other.descriptor.endpointID &&
+            signingPublicKey == other.signingPublicKey
     }
 }
 
