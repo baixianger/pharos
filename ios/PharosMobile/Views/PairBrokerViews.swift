@@ -27,10 +27,10 @@ struct BrokerSetupGuide: View {
                     DisclosureGroup("Troubleshooting and manual pairing",
                                     isExpanded: $showsManualEntry) {
                         VStack(alignment: .leading, spacing: 12) {
-                            Text("Paste the pairing link shown by Pharos on your Mac or Linux Broker.")
+                            Text("Paste the trusted-device link shown by Pharos on your Mac or Linux device.")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
-                            TextField("pharos://pair?…", text: $manualLink)
+                            TextField("pharos://device?…", text: $manualLink)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
                                 .textFieldStyle(.roundedBorder)
@@ -80,9 +80,9 @@ private struct SetupIntroSection: View {
             Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(.largeTitle)
                 .foregroundStyle(.tint)
-            Text("First, set up a Pharos Mesh Broker")
+            Text("Join your personal Mesh")
                 .font(.title2.weight(.semibold))
-            Text("The Broker privately stores your projects, issues, rooms, messages, and attachments. You only need one.")
+            Text("Every trusted device keeps its own signed local replica. No Broker or cloud service is the source of truth.")
                 .foregroundStyle(.secondary)
         }
     }
@@ -91,19 +91,19 @@ private struct SetupIntroSection: View {
 private struct BrokerDeploymentSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("1. Choose where the Broker runs", systemImage: "1.circle.fill")
+            Label("1. Keep a trusted device available", systemImage: "1.circle.fill")
                 .font(.headline)
             DeploymentOption(
                 symbol: "desktopcomputer",
                 title: "A personal Mac",
-                detail: "Install the Pharos DMG, open Pharos, and keep the Mac available when you want to sync."
+                detail: "Open Pharos and keep it available while this iPhone pairs and performs its first sync."
             )
             DeploymentOption(
                 symbol: "server.rack",
                 title: "A personal VPC or Linux server",
-                detail: "Install the pharos-mesh package and run its system service for an always-on Broker."
+                detail: "Run the distributed sync service as an optional always-on replica, not as a data authority."
             )
-            Label("Install and sign in to Tailscale on this iPhone and on the Broker machine. Keep both in the same private tailnet.",
+            Label("Iroh connects devices directly when possible and otherwise uses an encrypted relay. No public port or Tailscale setup is required.",
                   systemImage: "lock.shield")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -140,9 +140,9 @@ private struct PairPhoneSection: View {
         VStack(alignment: .leading, spacing: 12) {
             Label("2. Pair this iPhone", systemImage: "2.circle.fill")
                 .font(.headline)
-            Text("On a Mac, open Pharos → Settings → Machines and select Pair iPhone. On Linux, run:")
+            Text("On a Mac, open Pharos → Settings → Machines → Pair a device. Scan its code here. For a headless Linux replica, run:")
                 .foregroundStyle(.secondary)
-            Text("pharos-mesh pair --endpoint HOST:47800")
+            Text("pharos-mesh distributed sync-serve --data-dir /var/lib/pharos-mesh --invite-file /tmp/pharos-invite.txt")
                 .font(.callout.monospaced())
                 .textSelection(.enabled)
                 .padding(12)
@@ -268,6 +268,7 @@ struct PairBrokerConfirmation: View {
 struct PairDeviceConfirmation: View {
     let invitation: MeshTrustInvitation
     @Environment(DistributedMeshSupport.self) private var distributedMesh
+    @Environment(PairingCoordinator.self) private var pairing
     @Environment(\.dismiss) private var dismiss
     @State private var isConnecting = false
     @State private var errorMessage: String?
@@ -411,8 +412,9 @@ struct PairDeviceConfirmation: View {
                 invitation, displayName: UIDevice.current.name
             )
             didConnect = true
+            pairing.showsSetupGuide = false
         } catch {
-            errorMessage = "Pairing failed: \(error)"
+            errorMessage = "Pairing failed: \(error.localizedDescription)"
         }
         isConnecting = false
     }

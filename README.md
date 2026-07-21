@@ -142,7 +142,7 @@ Run `pharos help` for the authoritative list. Summary:
 | Issues & log | `issue add <project> "<title>" [--priority …] [--body …] [--attach <file>]… [--label L]…` · `issue list <project> [--all] [--status S] [--priority P] [--label L] [--milestone M]` · `issue status\|priority <project> <#> <value>` · `issue label add\|rm <project> <#> <label>` · `issue milestone <project> <#> <name\|none>` · `issue parent <project> <#> <parent#\|none>` · `issue link\|unlink <project> <#> <relates\|blocks\|blocked-by\|duplicate> <#>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `attach add\|list\|rm <project> <#> …` · `update add <project> "<text>" [--issue <#>]` |
 | Milestones | `milestone add <project> "<name>" [--due yyyy-MM-dd]` · `milestone list <project>` · `milestone rm <project> <name>` |
 | Registry | `add <name> [--path] [--remote] [--tag]… [--notes]` · `remove <project>` · `rename <project> <new>` · `describe <project> <text…>` · `group create\|delete\|add\|remove …` · `yolo`/`tmux <project> <on\|off>` · `trash restore <id>` · `trash empty` |
-| Mesh | `mesh create\|list\|join\|say\|recv\|who\|poke\|unread\|history\|leave\|rename\|delete` · `mesh pair invite\|accept\|redeem\|list\|revoke` · `mesh install-hooks [--project <dir> \| --user]` (also invocable as `chat`) |
+| Mesh | `mesh create\|list\|join\|say\|recv\|who\|poke\|unread\|history\|leave\|rename\|delete` · `mesh install-hooks [--project <dir> \| --user]` (also invocable as `chat`) |
 | Cross-host | `launch <project> <agent> --host <ssh-alias>` · `issue start <project> <#> <agent> --host <alias>` · `agents [--host]` · `agent peek\|say\|kill <session> [--host]` |
 | Multi-machine | `host` · `path <project> <path>` · `path <project> --clear` |
 
@@ -154,7 +154,7 @@ also post their own progress with `pharos update add`.
 ## Local-first data and execution Hosts
 
 <div align="center">
-  <img src="site/shots/settings-machines.png" width="520" alt="Settings → Machines — Broker and execution Hosts">
+  <img src="site/shots/settings-machines.png" width="520" alt="Settings → Machines — trusted devices and execution Hosts">
 </div>
 
 Every trusted Mac, iPhone, iPad, or Linux device owns a signed SQLite replica of
@@ -170,6 +170,11 @@ advances the signed membership epoch; the omitted key can no longer authenticate
 Keep at least two controller devices. To rotate a device key, pair and verify the
 replacement first, then remove the old device. Checkout paths, SSH keys, tool
 paths, and tmux state remain Host-local. See [ADR-003](docs/ADR-003-LOCAL-FIRST-DISTRIBUTED-MESH.md).
+
+Pair a phone or another Mac from Settings → **Machines** → **Pair a device**.
+For headless Linux pairing and service commands, see
+[Pharos Mesh on Linux](docs/MESH_HEADLESS.md). No public TCP port, fixed Broker,
+or Tailscale configuration is required in the distributed product mode.
 
 ---
 

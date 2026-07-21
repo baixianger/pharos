@@ -14,6 +14,7 @@ private struct AppContainer: View {
     @State private var rooms: RoomStore
     @State private var pairing = PairingCoordinator()
     @State private var distributedMesh: DistributedMeshSupport
+    @State private var lastAutoAcceptedDeviceLink: String?
     private let isDemo: Bool
 
     init() {
@@ -69,8 +70,13 @@ private struct AppContainer: View {
             .task {
                 await distributedMesh.start()
                 let distributed = PharosMeshRuntimeMode.usesDistributedMesh
-                if !isDemo, !distributed, settings.mesh.host.isEmpty {
-                    pairing.showsSetupGuide = true
+                if !isDemo {
+                    if distributed {
+                        pairing.showsSetupGuide =
+                            distributedMesh.activeTrustGroupID == nil
+                    } else if settings.mesh.host.isEmpty {
+                        pairing.showsSetupGuide = true
+                    }
                 }
                 while !Task.isCancelled, !isDemo {
                     _ = await distributedMesh.synchronizeOnce()
@@ -83,14 +89,25 @@ private struct AppContainer: View {
     }
 
     private func receivePairingURL(_ url: URL) {
+#if DEBUG
+        let autoAcceptsDeviceLinks = ProcessInfo.processInfo.environment[
+            "PHAROS_TEST_AUTO_ACCEPT_DEVICE"
+        ] == "1"
+        if autoAcceptsDeviceLinks,
+           lastAutoAcceptedDeviceLink == url.absoluteString {
+            return
+        }
+        if autoAcceptsDeviceLinks {
+            lastAutoAcceptedDeviceLink = url.absoluteString
+        }
+#endif
         pairing.receive(url)
 #if DEBUG
         // Device-lab hook: exercise the signed, single-use network handshake
         // without screen-coordinate automation. Release builds always require
         // the visible confirmation sheet.
-        guard ProcessInfo.processInfo.environment[
-            "PHAROS_TEST_AUTO_ACCEPT_DEVICE"
-        ] == "1", let pending = pairing.pendingDevice else { return }
+        guard autoAcceptsDeviceLinks,
+              let pending = pairing.pendingDevice else { return }
         pairing.pendingDevice = nil
         print("PHAROS_DEVICE_TEST invitation-received")
         Task { @MainActor in
@@ -108,7 +125,7 @@ private struct AppContainer: View {
                 print("PHAROS_DEVICE_TEST pairing-accepted")
             } catch {
                 print("PHAROS_DEVICE_TEST pairing-failed \(error)")
-                pairing.errorMessage = "Pairing failed: \(error)"
+                pairing.errorMessage = "Pairing failed: \(error.localizedDescription)"
                 pairing.showsError = true
             }
         }

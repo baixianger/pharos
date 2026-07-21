@@ -84,6 +84,7 @@ final class DistributedMeshSupport {
     func accept(
         _ invitation: MeshTrustInvitation, displayName: String
     ) async throws {
+        try await waitUntilNetworkReady()
         guard let replica = localReplica, let runtime,
               let localAddress else {
             throw MobileDistributedMeshError.networkNotReady
@@ -132,6 +133,25 @@ final class DistributedMeshSupport {
         }
         try await refreshTrustedDevices()
         _ = await synchronizeOnce()
+    }
+
+    /// A pairing URL can foreground a freshly launched app before its scene
+    /// task has finished opening SQLite and binding Iroh. Wait for that normal
+    /// startup instead of turning a fast scan into a spurious pairing failure.
+    private func waitUntilNetworkReady() async throws {
+        if localReplica == nil {
+            await start()
+        }
+        for _ in 0..<300 {
+            if localReplica != nil, runtime != nil, localAddress != nil {
+                return
+            }
+            if case .failed(let message) = state {
+                throw MobileDistributedMeshError.startupFailed(message)
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        throw MobileDistributedMeshError.networkNotReady
     }
 
     func refreshTrustedDevices() async throws {
@@ -524,6 +544,7 @@ final class DistributedMeshSupport {
 
 private enum MobileDistributedMeshError: LocalizedError {
     case networkNotReady
+    case startupFailed(String)
     case acceptanceMismatch
     case noActiveTrustGroup
     case attachmentNotFound
@@ -533,6 +554,8 @@ private enum MobileDistributedMeshError: LocalizedError {
         switch self {
         case .networkNotReady:
             "The private mesh endpoint is still starting."
+        case .startupFailed(let message):
+            "The private mesh could not start: \(message)"
         case .acceptanceMismatch:
             "The pairing response did not match this device."
         case .noActiveTrustGroup:
