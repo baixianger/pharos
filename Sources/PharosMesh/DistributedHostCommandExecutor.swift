@@ -109,11 +109,14 @@ struct DistributedHostCommandExecutor: Sendable {
                 try payload.validate()
                 try runTmux(
                     executable, binding: binding,
-                    arguments: ["send-keys", "-t", "=\(binding.tmuxSession)", "-l", "--", payload.text]
+                    // `send-keys` resolves a pane target. The trailing colon
+                    // turns the exact session match into its active pane;
+                    // `=session` alone is valid only for session commands.
+                    arguments: ["send-keys", "-t", "=\(binding.tmuxSession):", "-l", "--", payload.text]
                 )
                 try runTmux(
                     executable, binding: binding,
-                    arguments: ["send-keys", "-t", "=\(binding.tmuxSession)", "Enter"]
+                    arguments: ["send-keys", "-t", "=\(binding.tmuxSession):", "Enter"]
                 )
                 return .executed(Data("poke-ok".utf8))
             case .stop:
