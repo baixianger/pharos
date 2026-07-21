@@ -106,6 +106,53 @@ final class IrohMeshTransportTests: XCTestCase {
         try await second.close()
     }
 
+    func testSimultaneousDialConvergesOnOneBidirectionalConnection() async throws {
+        let first = try await IrohEndpointRuntime.bind(
+            relayPolicy: .disabled, bindAddress: "127.0.0.1:0"
+        )
+        let second = try await IrohEndpointRuntime.bind(
+            relayPolicy: .disabled, bindAddress: "127.0.0.1:0"
+        )
+        do {
+            await first.startServing { request, _ in
+                MeshTransportResponse(header: Data("first".utf8), body: request.body)
+            }
+            await second.startServing { request, _ in
+                MeshTransportResponse(header: Data("second".utf8), body: request.body)
+            }
+            let firstAddress = try await first.localAddress()
+            let secondAddress = try await second.localAddress()
+            let firstToSecond = IrohMeshTransport(runtime: first, remote: secondAddress)
+            let secondToFirst = IrohMeshTransport(runtime: second, remote: firstAddress)
+
+            async let forward = try? firstToSecond.exchange(MeshTransportRequest(
+                header: Data("forward".utf8), timeoutMilliseconds: 1_000
+            ))
+            async let reverse = try? secondToFirst.exchange(MeshTransportRequest(
+                header: Data("reverse".utf8), timeoutMilliseconds: 1_000
+            ))
+            _ = await (forward, reverse)
+            try await Task.sleep(for: .milliseconds(50))
+
+            // The first requests may be on the losing connection. The next
+            // round must reuse the canonical survivor in both directions.
+            let forwardAgain = try await firstToSecond.exchange(MeshTransportRequest(
+                header: Data("forward-again".utf8), timeoutMilliseconds: 1_000
+            ))
+            let reverseAgain = try await secondToFirst.exchange(MeshTransportRequest(
+                header: Data("reverse-again".utf8), timeoutMilliseconds: 1_000
+            ))
+            XCTAssertEqual(forwardAgain.header, Data("second".utf8))
+            XCTAssertEqual(reverseAgain.header, Data("first".utf8))
+        } catch {
+            try? await first.close()
+            try? await second.close()
+            throw error
+        }
+        try await first.close()
+        try await second.close()
+    }
+
     func testSecretKeyRestoresStableEndpointIdentityInIsolatedEndpoints() async throws {
         let first = try await IrohEndpointRuntime.bind(
             relayPolicy: .disabled,
@@ -210,7 +257,7 @@ final class IrohMeshTransportTests: XCTestCase {
         try await serverRuntime.close()
     }
 
-    func testExchangeTimeoutCancelsAnUnresponsiveIsolatedStream() async throws {
+    func testExchangeTimeoutReturnsWithoutWaitingForAnUnresponsiveStream() async throws {
         let server = try await IrohEndpointRuntime.bind(
             relayPolicy: .disabled,
             bindAddress: "127.0.0.1:0"

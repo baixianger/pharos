@@ -50,8 +50,13 @@ public enum MeshIrohAvailability {
 /// peer connections. It never reads legacy Broker configuration or data paths.
 public actor IrohEndpointRuntime {
 #if canImport(IrohLib)
+    private struct PeerConnection {
+        let connection: Connection
+        let initiatedLocally: Bool
+    }
+
     private let endpoint: Endpoint
-    private var connections: [MeshEndpointID: Connection] = [:]
+    private var connections: [MeshEndpointID: PeerConnection] = [:]
     private var isServing = false
     private var streamServingTasks: [MeshEndpointID: Task<Void, Never>] = [:]
     private var streamServingGenerations: [MeshEndpointID: UUID] = [:]
@@ -120,9 +125,9 @@ public actor IrohEndpointRuntime {
         for task in streamServingTasks.values { task.cancel() }
         streamServingTasks.removeAll()
         streamServingGenerations.removeAll()
-        for (remoteID, connection) in connections
-        where connection.closeReason() == nil {
-            beginServingStreams(on: connection, remoteID: remoteID)
+        for (remoteID, peer) in connections
+        where peer.connection.closeReason() == nil {
+            beginServingStreams(on: peer.connection, remoteID: remoteID)
         }
         guard !isServing else { return }
         isServing = true
@@ -160,10 +165,11 @@ public actor IrohEndpointRuntime {
 
     public func path(to remote: MeshEndpointID) -> MeshTransportPath {
 #if canImport(IrohLib)
-        guard let connection = connections[remote], connection.closeReason() == nil else {
+        guard let peer = connections[remote],
+              peer.connection.closeReason() == nil else {
             return .unavailable
         }
-        let selected = connection.paths().first(where: \.isSelected)
+        let selected = peer.connection.paths().first(where: \.isSelected)
         if selected?.isRelay == true { return .irohRelay }
         if selected?.isIp == true { return .irohDirect }
         return .unavailable
@@ -186,9 +192,10 @@ public actor IrohEndpointRuntime {
 
 #if canImport(IrohLib)
     private func connection(to remote: MeshIrohEndpointAddress) async throws -> Connection {
-        if let existing = connections[remote.endpointID], existing.closeReason() == nil {
-            beginServingStreams(on: existing, remoteID: remote.endpointID)
-            return existing
+        if let existing = connections[remote.endpointID],
+           existing.connection.closeReason() == nil {
+            beginServingStreams(on: existing.connection, remoteID: remote.endpointID)
+            return existing.connection
         }
         let ticket = try EndpointTicket.fromString(str: remote.ticket)
         let ticketID = ticket.endpointAddr().id().description
@@ -203,12 +210,9 @@ public actor IrohEndpointRuntime {
             try? connection.close(errorCode: 1, reason: Data("identity mismatch".utf8))
             throw MeshIrohError.endpointIdentityMismatch
         }
-        connections[remote.endpointID] = connection
-        beginServingStreams(
-            on: connection, remoteID: remote.endpointID,
-            replacingExisting: true
+        return install(
+            connection, remoteID: remote.endpointID, initiatedLocally: true
         )
-        return connection
     }
 
     private func acceptLoop() async {
@@ -230,15 +234,44 @@ public actor IrohEndpointRuntime {
                 try? connection.close(errorCode: 2, reason: Data("invalid endpoint id".utf8))
                 return
             }
-            connections[remoteID] = connection
-            beginServingStreams(
-                on: connection, remoteID: remoteID,
-                replacingExisting: true
-            )
+            _ = install(connection, remoteID: remoteID, initiatedLocally: false)
         } catch {
             // Connection-local failures end this peer loop. The endpoint accept
             // loop remains available for a clean reconnect.
         }
+    }
+
+    /// Simultaneous reconnects can create one QUIC connection in each
+    /// direction. Both endpoints independently choose the same survivor: the
+    /// lexicographically smaller Endpoint ID owns the dial direction.
+    private func install(
+        _ candidate: Connection,
+        remoteID: MeshEndpointID,
+        initiatedLocally: Bool
+    ) -> Connection {
+        let localID = endpoint.id().description
+        let prefersLocalDial = localID < remoteID.rawValue
+        if let existing = connections[remoteID],
+           existing.connection.closeReason() == nil {
+            let existingIsPreferred = existing.initiatedLocally == prefersLocalDial
+            let candidateIsPreferred = initiatedLocally == prefersLocalDial
+            guard candidateIsPreferred && !existingIsPreferred else {
+                try? candidate.close(
+                    errorCode: 0, reason: Data("duplicate connection".utf8)
+                )
+                return existing.connection
+            }
+            try? existing.connection.close(
+                errorCode: 0, reason: Data("superseded connection".utf8)
+            )
+        }
+        connections[remoteID] = PeerConnection(
+            connection: candidate, initiatedLocally: initiatedLocally
+        )
+        beginServingStreams(
+            on: candidate, remoteID: remoteID, replacingExisting: true
+        )
+        return candidate
     }
 
     private func beginServingStreams(
@@ -339,16 +372,21 @@ public struct IrohMeshTransport: MeshTransport, Sendable {
 }
 
 /// A structured task group waits for every cancelled child before returning.
-/// UniFFI cancellation may need the underlying QUIC operation to unwind, so a
-/// task-group timeout can report the right error only after an unbounded wait.
-/// This single-completion gate returns at the deadline and cancels the losing
-/// operation without allowing either task to resume the continuation twice.
+/// More importantly, cancelling an in-flight UniFFI QUIC call can invalidate
+/// its callback context before Rust completes it. This single-completion gate
+/// returns at the deadline but deliberately lets the exchange unwind when its
+/// connection eventually succeeds or closes.
 private final class MeshIrohExchangeRace: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<MeshTransportResponse, any Error>?
-    private var exchangeTask: Task<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
     private var isFinished = false
+
+    private enum CompletionSource {
+        case exchange
+        case timeout
+        case cancellation
+    }
 
     func start(
         continuation: CheckedContinuation<MeshTransportResponse, any Error>,
@@ -364,39 +402,40 @@ private final class MeshIrohExchangeRace: @unchecked Sendable {
         self.continuation = continuation
         lock.unlock()
 
-        let exchangeTask = Task {
-            do { finish(.success(try await exchange())) }
-            catch { finish(.failure(error)) }
+        Task {
+            do { finish(.success(try await exchange()), source: .exchange) }
+            catch { finish(.failure(error), source: .exchange) }
         }
         let timeoutTask = Task {
             do {
                 try await Task.sleep(for: .milliseconds(timeoutMilliseconds))
-                finish(.failure(MeshIrohError.timeout))
+                finish(.failure(MeshIrohError.timeout), source: .timeout)
             } catch {
-                finish(.failure(error))
+                finish(.failure(error), source: .timeout)
             }
         }
-        attach(exchangeTask: exchangeTask, timeoutTask: timeoutTask)
+        attach(timeoutTask: timeoutTask)
     }
 
     func cancel() {
-        finish(.failure(CancellationError()))
+        finish(.failure(CancellationError()), source: .cancellation)
     }
 
-    private func attach(exchangeTask: Task<Void, Never>, timeoutTask: Task<Void, Never>) {
+    private func attach(timeoutTask: Task<Void, Never>) {
         lock.lock()
         if isFinished {
             lock.unlock()
-            exchangeTask.cancel()
             timeoutTask.cancel()
             return
         }
-        self.exchangeTask = exchangeTask
         self.timeoutTask = timeoutTask
         lock.unlock()
     }
 
-    private func finish(_ result: Result<MeshTransportResponse, any Error>) {
+    private func finish(
+        _ result: Result<MeshTransportResponse, any Error>,
+        source: CompletionSource
+    ) {
         lock.lock()
         guard !isFinished else {
             lock.unlock()
@@ -405,14 +444,11 @@ private final class MeshIrohExchangeRace: @unchecked Sendable {
         isFinished = true
         let continuation = self.continuation
         self.continuation = nil
-        let exchangeTask = self.exchangeTask
         let timeoutTask = self.timeoutTask
-        self.exchangeTask = nil
         self.timeoutTask = nil
         lock.unlock()
 
-        exchangeTask?.cancel()
-        timeoutTask?.cancel()
+        if source != .timeout { timeoutTask?.cancel() }
         continuation?.resume(with: result)
     }
 }
