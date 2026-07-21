@@ -4,8 +4,9 @@ import CoreImage.CIFilterBuiltins
 import PharosMeshCore
 import SwiftUI
 
-/// One desktop pairing assistant for the active Broker. The UI deliberately
-/// does not reveal whether that Broker is local, another Mac, or Linux.
+/// One desktop pairing assistant for trusted devices. Distributed pairing
+/// exchanges signed device identity; legacy Broker pairing stays behind the
+/// explicit compatibility runtime mode.
 struct PairDeviceSheet: View {
     let endpoint: String
     @Environment(DistributedMeshSupport.self) private var distributedMesh
@@ -14,7 +15,7 @@ struct PairDeviceSheet: View {
     @State private var invitation: MeshTrustInvitation?
     @State private var errorMessage: String?
     @State private var loading = true
-    @State private var initialTrustedDeviceCount = 0
+    @State private var initialTrustedDeviceIDs: Set<UUID> = []
     @State private var pairedDeviceName: String?
 
     var body: some View {
@@ -22,7 +23,7 @@ struct PairDeviceSheet: View {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Pair a device").font(.title2.weight(.semibold))
-                    Text("Scan with Pharos on your other device")
+                    Text("Open Pharos on the other device and scan this code")
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -46,15 +47,19 @@ struct PairDeviceSheet: View {
                     .resizable()
                     .scaledToFit()
                     .frame(width: 260, height: 260)
-                    .accessibilityLabel("Pharos Broker pairing QR code")
+                    .accessibilityLabel("Pharos trusted-device pairing QR code")
                 if !distributedMesh.isProductModeEnabled {
                     Text(endpoint)
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                 }
-                PairingExpiryLabel(expiresAtMilliseconds: invitation?.expiresAtMilliseconds)
+                PairingExpiryLabel(
+                    expiresAtMilliseconds: invitation?.expiresAtMilliseconds,
+                    createNewCode: distributedMesh.isProductModeEnabled
+                        ? { Task { await createPairingLink() } } : nil
+                )
                 Label(
-                    "Grants controller and replica access to your personal Mesh",
+                    "Lets this device sync your data and approve signed agent controls",
                     systemImage: "person.badge.key.fill"
                 )
                 .font(.caption)
@@ -66,7 +71,7 @@ struct PairDeviceSheet: View {
             } else {
                 ContentUnavailableView("Pairing unavailable",
                                        systemImage: "exclamationmark.triangle",
-                                       description: Text(errorMessage ?? "The Broker did not create a pairing code."))
+                                       description: Text(errorMessage ?? "Pharos did not create a pairing code."))
                 Button("Try Again") { Task { await createPairingLink() } }
             }
         }
@@ -84,7 +89,9 @@ struct PairDeviceSheet: View {
         pairedDeviceName = nil
         if distributedMesh.isProductModeEnabled {
             do {
-                initialTrustedDeviceCount = distributedMesh.trustedDevices.count
+                initialTrustedDeviceIDs = Set(
+                    distributedMesh.trustedDevices.map { $0.descriptor.id.rawValue }
+                )
                 let url = try await distributedMesh.issueInvitation()
                 invitation = try MeshTrustInvitationLink.decode(url)
                 pairingLink = url.absoluteString
@@ -119,9 +126,10 @@ struct PairDeviceSheet: View {
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
             try? await distributedMesh.refreshTrustedDevices()
-            if distributedMesh.trustedDevices.count > initialTrustedDeviceCount {
-                pairedDeviceName = distributedMesh.trustedDevices.last?.descriptor.displayName
-                    ?? "The new device"
+            if let joined = distributedMesh.trustedDevices.first(where: {
+                !initialTrustedDeviceIDs.contains($0.descriptor.id.rawValue)
+            }) {
+                pairedDeviceName = joined.descriptor.displayName
             }
         }
     }
@@ -129,6 +137,7 @@ struct PairDeviceSheet: View {
 
 private struct PairingExpiryLabel: View {
     let expiresAtMilliseconds: Int64?
+    let createNewCode: (() -> Void)?
 
     var body: some View {
         if let expiresAtMilliseconds {
@@ -138,7 +147,8 @@ private struct PairingExpiryLabel: View {
                         timeIntervalSince1970:
                             Double(expiresAtMilliseconds) / 1_000
                     ),
-                    now: context.date
+                    now: context.date,
+                    createNewCode: createNewCode
                 )
             }
         } else {
@@ -151,19 +161,27 @@ private struct PairingExpiryLabel: View {
 private struct PairingRemainingLabel: View {
     let expiration: Date
     let now: Date
+    let createNewCode: (() -> Void)?
 
     var body: some View {
         let seconds = max(0, Int(expiration.timeIntervalSince(now)))
-        Label {
-            if seconds > 0 {
-                Text("Expires in \(seconds / 60):\(seconds % 60, format: .number.precision(.integerLength(2))) · works once")
-            } else {
-                Text("Expired · create a new code")
+        VStack(spacing: 8) {
+            Label {
+                if seconds > 0 {
+                    Text("Expires in \(seconds / 60):\(seconds % 60, format: .number.precision(.integerLength(2))) · works once")
+                } else {
+                    Text("This pairing code has expired")
+                }
+            } icon: {
+                Image(systemName: seconds > 0 ? "timer" : "exclamationmark.triangle.fill")
             }
-        } icon: {
-            Image(systemName: seconds > 0 ? "timer" : "exclamationmark.triangle.fill")
+            .foregroundStyle(seconds > 0 ? Color.secondary : Color.orange)
+            if seconds == 0, let createNewCode {
+                Button("Create new code", systemImage: "arrow.clockwise") {
+                    createNewCode()
+                }
+            }
         }
-        .foregroundStyle(seconds > 0 ? Color.secondary : Color.orange)
     }
 }
 

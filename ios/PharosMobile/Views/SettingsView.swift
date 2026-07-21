@@ -1,5 +1,6 @@
 import SwiftUI
 import PharosMeshIdentity
+import PharosMeshProtocol
 
 struct SettingsView: View {
     var showsDoneButton = false
@@ -94,7 +95,7 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showHostEditor) { NavigationStack { SSHHostEditor(profile: nil) } }
             .sheet(isPresented: $showsPairingScanner) {
-                PairingScannerSheet { value in
+                PairingScannerSheet(allowsLegacyBrokerLinks: !isDistributed) { value in
                     showsPairingScanner = false
                     Task { @MainActor in
                         try? await Task.sleep(for: .milliseconds(250))
@@ -164,7 +165,7 @@ struct SettingsView: View {
             )
             .foregroundStyle(connection?.connected == true ? .green : .primary)
             Text([
-                device.descriptor.roles.map(\.rawValue).sorted().joined(separator: ", "),
+                deviceAccessSummary(device.descriptor.roles),
                 connection.map { String(describing: $0.path) } ?? "not connected yet",
                 abbreviated(device.descriptor.id.rawValue.uuidString),
             ].joined(separator: " · "))
@@ -236,6 +237,15 @@ struct SettingsView: View {
 
     private func abbreviated(_ value: String) -> String {
         value.count > 16 ? "\(value.prefix(8))…\(value.suffix(8))" : value
+    }
+
+    private func deviceAccessSummary(_ roles: Set<MeshDeviceRole>) -> String {
+        if roles.contains(.controller), roles.contains(.replica) {
+            return "data sync + agent control"
+        }
+        if roles.contains(.controller) { return "agent control" }
+        if roles.contains(.replica) { return "data sync" }
+        return "trusted device"
     }
 
     private var hasValidBrokerTarget: Bool {

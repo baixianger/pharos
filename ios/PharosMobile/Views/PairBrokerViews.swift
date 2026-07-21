@@ -277,7 +277,7 @@ struct PairDeviceConfirmation: View {
             List {
                 Section("Trusted device") {
                     LabeledContent(
-                        "Identity",
+                        "Device endpoint",
                         value: abbreviated(invitation.inviterEndpointID.rawValue)
                     )
                     LabeledContent(
@@ -296,9 +296,8 @@ struct PairDeviceConfirmation: View {
                 }
                 Section("Access") {
                     LabeledContent(
-                        "Permissions",
-                        value: invitation.requestedRoles.map(\.rawValue)
-                            .sorted().formatted()
+                        "Access",
+                        value: accessSummary
                     )
                     LabeledContent(
                         "Personal Mesh",
@@ -335,7 +334,7 @@ struct PairDeviceConfirmation: View {
                 } footer: {
                     Text(
                         "The code is single-use. No IP address, password, " +
-                        "SSH key, or central Broker becomes device identity."
+                        "or SSH key is transferred; the signature verifies the device."
                     )
                 }
             }
@@ -357,6 +356,16 @@ struct PairDeviceConfirmation: View {
     private var switchesPersonalMesh: Bool {
         guard let current = distributedMesh.activeTrustGroupID else { return false }
         return current != invitation.trustGroupID
+    }
+
+    private var accessSummary: String {
+        let roles = Set(invitation.requestedRoles)
+        if roles.contains(.controller), roles.contains(.replica) {
+            return "Data sync and signed agent control"
+        }
+        if roles.contains(.controller) { return "Signed agent control" }
+        if roles.contains(.replica) { return "Data sync" }
+        return "Trusted-device access"
     }
 
     private func abbreviated(_ value: String) -> String {
@@ -387,6 +396,7 @@ private enum PairingValidationState: Equatable {
 }
 
 struct PairingScannerSheet: View {
+    var allowsLegacyBrokerLinks = true
     let onCode: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var manualLink = ""
@@ -404,7 +414,12 @@ struct PairingScannerSheet: View {
                     } description: {
                         Text("Paste the pairing link instead.")
                     } actions: {
-                        TextField("pharos://device?… or pharos://pair?…", text: $manualLink)
+                        TextField(
+                            allowsLegacyBrokerLinks
+                                ? "pharos://device?… or pharos://pair?…"
+                                : "pharos://device?…",
+                            text: $manualLink
+                        )
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .textFieldStyle(.roundedBorder)
