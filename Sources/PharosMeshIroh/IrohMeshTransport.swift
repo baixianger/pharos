@@ -57,14 +57,16 @@ public actor IrohEndpointRuntime {
     }
 
     private let endpoint: Endpoint
+    private let includesRoutingHints: Bool
     private var connections: [MeshEndpointID: PeerConnection] = [:]
     private var isServing = false
     private var streamServingTasks: [MeshEndpointID: Task<Void, Never>] = [:]
     private var streamServingGenerations: [MeshEndpointID: UUID] = [:]
     private var requestHandler: MeshIrohRequestHandler?
 
-    private init(endpoint: Endpoint) {
+    private init(endpoint: Endpoint, includesRoutingHints: Bool) {
         self.endpoint = endpoint
+        self.includesRoutingHints = includesRoutingHints
     }
 #else
     private init() {}
@@ -92,7 +94,13 @@ public actor IrohEndpointRuntime {
             alpns: [Data(DistributedMeshProtocol.alpn.utf8)],
             relayMode: relayMode
         ))
-        return IrohEndpointRuntime(endpoint: endpoint)
+        let includesRoutingHints = switch relayPolicy {
+        case .production: false
+        case .disabled: true
+        }
+        return IrohEndpointRuntime(
+            endpoint: endpoint, includesRoutingHints: includesRoutingHints
+        )
 #else
         throw MeshIrohError.unavailableOnPlatform
 #endif
@@ -106,8 +114,8 @@ public actor IrohEndpointRuntime {
         }
         let ticket = try encodeAddressTicket(
             endpointID: id.rawValue,
-            relayURL: address.relayUrl(),
-            directAddresses: address.directAddresses()
+            relayURL: includesRoutingHints ? address.relayUrl() : nil,
+            directAddresses: includesRoutingHints ? address.directAddresses() : []
         )
         return MeshIrohEndpointAddress(endpointID: id, ticket: ticket)
 #else
