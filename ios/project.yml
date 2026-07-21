@@ -40,6 +40,8 @@ targets:
         product: PharosMeshIroh
       - package: PharosShared
         product: PharosMeshIdentity
+      - package: PharosShared
+        product: PharosMeshReplica
       - package: MarkdownUI
         product: MarkdownUI
       - package: Citadel
@@ -92,6 +94,10 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         CODE_SIGN_ENTITLEMENTS: PharosMobile/PharosMobile.entitlements
+        # The app imports PharosMeshReplica directly. Xcode's explicit module
+        # dependency scanner does not inherit SwiftPM system-library module
+        # maps transitively, so expose CSQLite's module map at the app target.
+        SWIFT_INCLUDE_PATHS: "$(inherited) $(SRCROOT)/../Sources/CSQLite"
       configs:
         # Archive (Release) must sign with the match distribution profile — the
         # Automatic wildcard team profile can't carry the iCloud entitlement.
