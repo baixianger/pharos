@@ -499,8 +499,32 @@ private enum MeshHeadlessCLI {
             var line = try sortedJSON(status)
             line.append(0x0A)
             try FileHandle.standardOutput.write(contentsOf: line)
+            // A server-only Linux replica must also initiate pulls. Replica
+            // synchronization is intentionally pull-based, so merely serving
+            // RPC leaves a headless third device permanently empty while GUI
+            // peers can only pull its empty vector. A staggered seven-second
+            // cadence avoids lock-step reconnects with the apps' five-second
+            // loop; transient duplicate Iroh connections simply retry.
+            try await Task.sleep(for: .seconds(3))
             while !Task.isCancelled {
-                try await Task.sleep(for: .seconds(60))
+                let peers = try await replica.store.trustedDevices(
+                    in: group, membershipEpoch: epoch
+                )
+                for peer in peers {
+                    let transport = IrohMeshTransport(
+                        runtime: runtime,
+                        remote: MeshIrohEndpointAddress(
+                            endpointID: peer.descriptor.endpointID,
+                            ticket: peer.addressTicket
+                        )
+                    )
+                    _ = try? await MeshReplicaSyncSession(
+                        store: replica.store,
+                        client: MeshReplicaRPCClient(transport: transport),
+                        remoteEndpointID: peer.descriptor.endpointID
+                    ).synchronize(group: group, membershipEpoch: epoch)
+                }
+                try await Task.sleep(for: .seconds(7))
             }
             try await runtime.close()
             return 0
