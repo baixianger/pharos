@@ -52,7 +52,7 @@ public actor IrohEndpointRuntime {
 #if canImport(IrohLib)
     private let endpoint: Endpoint
     private var connections: [MeshEndpointID: Connection] = [:]
-    private var servingTask: Task<Void, Never>?
+    private var isServing = false
     private var streamServingTasks: [MeshEndpointID: Task<Void, Never>] = [:]
     private var streamServingGenerations: [MeshEndpointID: UUID] = [:]
     private var requestHandler: MeshIrohRequestHandler?
@@ -112,8 +112,8 @@ public actor IrohEndpointRuntime {
 #endif
     }
 
-    /// Starts accepting the Pharos ALPN. Calling this twice replaces the prior
-    /// accept loop; closing the runtime cancels it and closes the endpoint.
+    /// Starts accepting the Pharos ALPN. Calling this twice updates the handler
+    /// without spawning a second accept loop; closing the endpoint ends the loop.
     public func startServing(_ handler: @escaping MeshIrohRequestHandler) {
 #if canImport(IrohLib)
         requestHandler = handler
@@ -124,10 +124,10 @@ public actor IrohEndpointRuntime {
         where connection.closeReason() == nil {
             beginServingStreams(on: connection, remoteID: remoteID)
         }
-        servingTask?.cancel()
-        servingTask = Task { [weak self] in
-            guard let self else { return }
-            await self.acceptLoop()
+        guard !isServing else { return }
+        isServing = true
+        Task { [weak self] in
+            await self?.acceptLoop()
         }
 #endif
     }
@@ -174,14 +174,13 @@ public actor IrohEndpointRuntime {
 
     public func close() async throws {
 #if canImport(IrohLib)
-        servingTask?.cancel()
-        servingTask = nil
         requestHandler = nil
         for task in streamServingTasks.values { task.cancel() }
         streamServingTasks.removeAll()
         streamServingGenerations.removeAll()
         connections.removeAll()
         try await endpoint.close()
+        isServing = false
 #endif
     }
 
