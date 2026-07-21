@@ -100,9 +100,7 @@ public struct MeshMirroredIdentityStorage: MeshIdentityStorage, Sendable {
     }
 
     public func load() throws -> Data? {
-        let environment = ProcessInfo.processInfo.environment
-        if headlessOnly || environment["SSH_CONNECTION"] != nil ||
-            environment["SSH_TTY"] != nil {
+        if headlessOnly {
             guard let mirrored = try mirror.load() else {
                 throw MeshMirroredIdentityStorageError.headlessBootstrapRequired
             }
