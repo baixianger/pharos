@@ -204,5 +204,10 @@ public enum MeshTransportContractError: Error, Equatable, Sendable {
 /// models to a networking SDK.
 public protocol MeshTransport: Sendable {
     var path: MeshTransportPath { get async }
+    func localAddressTicket() async throws -> String?
     func exchange(_ request: MeshTransportRequest) async throws -> MeshTransportResponse
+}
+
+public extension MeshTransport {
+    func localAddressTicket() async throws -> String? { nil }
 }

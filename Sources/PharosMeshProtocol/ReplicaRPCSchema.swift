@@ -21,6 +21,7 @@ public enum MeshReplicaRPCDisposition: String, Codable, Sendable {
 public struct MeshReplicaRPCHeader: Codable, Equatable, Sendable {
     public static let version = 1
     public static let maximumMetadataBytes = 64 * 1024
+    public static let maximumAddressTicketBytes = 16 * 1024
 
     public var version: Int
     public var requestID: UUID
@@ -28,6 +29,7 @@ public struct MeshReplicaRPCHeader: Codable, Equatable, Sendable {
     public var trustGroupID: MeshTrustGroupID
     public var membershipEpoch: UInt64
     public var disposition: MeshReplicaRPCDisposition
+    public var senderAddressTicket: String?
     public var metadata: Data?
     public var errorCode: String?
 
@@ -35,6 +37,7 @@ public struct MeshReplicaRPCHeader: Codable, Equatable, Sendable {
         version: Int = Self.version, requestID: UUID = UUID(),
         operation: MeshReplicaRPCOperation, trustGroupID: MeshTrustGroupID,
         membershipEpoch: UInt64, disposition: MeshReplicaRPCDisposition,
+        senderAddressTicket: String? = nil,
         metadata: Data? = nil, errorCode: String? = nil
     ) {
         self.version = version
@@ -43,6 +46,7 @@ public struct MeshReplicaRPCHeader: Codable, Equatable, Sendable {
         self.trustGroupID = trustGroupID
         self.membershipEpoch = membershipEpoch
         self.disposition = disposition
+        self.senderAddressTicket = senderAddressTicket
         self.metadata = metadata
         self.errorCode = errorCode
     }
@@ -57,13 +61,24 @@ public struct MeshReplicaRPCHeader: Codable, Equatable, Sendable {
         guard metadata?.count ?? 0 <= Self.maximumMetadataBytes else {
             throw MeshReplicaRPCValidationError.metadataTooLarge
         }
+        if let senderAddressTicket {
+            guard !senderAddressTicket.isEmpty,
+                  senderAddressTicket.utf8.count <= Self.maximumAddressTicketBytes else {
+                throw MeshReplicaRPCValidationError.invalidAddressTicket
+            }
+        }
         switch disposition {
-        case .request, .success:
+        case .request:
             guard errorCode == nil else {
                 throw MeshReplicaRPCValidationError.invalidDisposition
             }
+        case .success:
+            guard errorCode == nil, senderAddressTicket == nil else {
+                throw MeshReplicaRPCValidationError.invalidDisposition
+            }
         case .failure:
-            guard let errorCode, Self.isSafeErrorCode(errorCode), metadata == nil else {
+            guard let errorCode, Self.isSafeErrorCode(errorCode), metadata == nil,
+                  senderAddressTicket == nil else {
                 throw MeshReplicaRPCValidationError.invalidDisposition
             }
         }
@@ -145,6 +160,7 @@ public enum MeshReplicaRPCValidationError: Error, Equatable, Sendable {
     case metadataTooLarge
     case invalidDisposition
     case invalidBlobChunk
+    case invalidAddressTicket
 }
 
 private enum MeshReplicaRPCJSON {

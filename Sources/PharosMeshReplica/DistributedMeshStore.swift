@@ -516,6 +516,28 @@ public actor DistributedMeshStore {
         }
     }
 
+    /// Refreshes only the transient routing hint learned from an already
+    /// authenticated connection. Device ID, endpoint ID, signing key, roles,
+    /// protocol version, and membership epoch remain unchanged.
+    public func refreshTrustedDeviceAddress(
+        in group: MeshTrustGroupID, endpointID: MeshEndpointID,
+        membershipEpoch: UInt64, addressTicket: String
+    ) throws {
+        guard var device = try trustedDevice(
+            in: group, endpointID: endpointID,
+            membershipEpoch: membershipEpoch
+        ) else { throw DistributedMeshStoreError.rpcPeerNotTrusted }
+        device.addressTicket = addressTicket
+        try device.validateBinding()
+        try run(
+            "UPDATE trusted_devices SET envelope=? WHERE trust_group_id=? " +
+                "AND endpoint_id=? AND membership_epoch=?",
+            [.blob(try MeshCanonicalStoreJSON.encode(device)),
+             .text(group.rawValue.uuidString), .text(endpointID.rawValue),
+             .integer(Int64(membershipEpoch))]
+        )
+    }
+
     /// Resolves the authenticated transport identity only when it belongs to
     /// the exact current membership epoch. Old rows remain available for audit
     /// and rollback, but cannot authorize a new RPC after revocation advances

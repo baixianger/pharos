@@ -258,6 +258,10 @@ public struct IrohMeshTransport: MeshTransport, Sendable {
         get async { await runtime.path(to: remote.endpointID) }
     }
 
+    public func localAddressTicket() async throws -> String? {
+        try await runtime.localAddress().ticket
+    }
+
     public func exchange(_ request: MeshTransportRequest) async throws -> MeshTransportResponse {
         try request.validate()
         let race = MeshIrohExchangeRace()

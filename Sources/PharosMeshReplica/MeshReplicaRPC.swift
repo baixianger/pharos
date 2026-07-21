@@ -88,6 +88,17 @@ public struct MeshReplicaRPCServer: Sendable {
                 return try failure(for: header, code: "request-failed")
             }
         }
+        if let ticket = header.senderAddressTicket {
+            do {
+                try await store.refreshTrustedDeviceAddress(
+                    in: header.trustGroupID, endpointID: remoteEndpointID,
+                    membershipEpoch: header.membershipEpoch,
+                    addressTicket: ticket
+                )
+            } catch {
+                return try failure(for: header, code: "address-refresh-failed")
+            }
+        }
 
         do {
             switch header.operation {
@@ -370,6 +381,7 @@ public struct MeshReplicaRPCClient: Sendable {
         let requestHeader = MeshReplicaRPCHeader(
             operation: operation, trustGroupID: group,
             membershipEpoch: membershipEpoch, disposition: .request,
+            senderAddressTicket: try await transport.localAddressTicket(),
             metadata: metadata
         )
         let request = MeshTransportRequest(

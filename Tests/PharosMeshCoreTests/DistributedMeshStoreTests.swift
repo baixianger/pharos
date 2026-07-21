@@ -153,13 +153,21 @@ final class DistributedMeshStoreTests: XCTestCase {
             timestamp: { MeshHybridTimestamp(wallTimeMilliseconds: 2_000) }
         )
         let transport = ReplicaRPCServerTransport(
-            server: server, remoteEndpointID: try controller.endpointID()
+            server: server, remoteEndpointID: try controller.endpointID(),
+            advertisedAddressTicket: "fresh-controller-address-ticket"
         )
         let client = MeshReplicaRPCClient(transport: transport)
         let report = try await MeshReplicaSyncSession(
             store: clientStore, client: client
         ).synchronize(group: fixture.group, membershipEpoch: 1, rangeLimit: 1)
         XCTAssertEqual(report, MeshReplicaSyncReport(eventCount: 1, rangeCount: 1))
+        let refreshedController = try await hostStore.trustedDevice(
+            in: fixture.group, id: controller.deviceID
+        )
+        XCTAssertEqual(
+            refreshedController?.addressTicket,
+            "fresh-controller-address-ticket"
+        )
         let fields = try await clientStore.materializedFields(
             for: entity, in: fixture.group
         )
@@ -1946,8 +1954,13 @@ final class DistributedMeshStoreTests: XCTestCase {
 private struct ReplicaRPCServerTransport: MeshTransport, Sendable {
     let server: MeshReplicaRPCServer
     let remoteEndpointID: MeshEndpointID
+    var advertisedAddressTicket: String? = nil
 
     var path: MeshTransportPath { get async { .local } }
+
+    func localAddressTicket() async throws -> String? {
+        advertisedAddressTicket
+    }
 
     func exchange(_ request: MeshTransportRequest) async throws -> MeshTransportResponse {
         try await server.handle(request, remoteEndpointID: remoteEndpointID)
