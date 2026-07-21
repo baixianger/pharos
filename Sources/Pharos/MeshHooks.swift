@@ -786,9 +786,9 @@ enum MeshHooks {
                                        marker: postToolMarker, matcher: "*")),
         ]
         root["hooks"] = hooks
-        if root["description"] == nil { root["description"] = "Pharos mesh — agent chat delivery + live state" }
+        let removedUnsupportedMetadata = sanitizeCodexRoot(&root)
 
-        if results.allSatisfy({ $0.1 == .unchanged }) {
+        if results.allSatisfy({ $0.1 == .unchanged }), !removedUnsupportedMetadata {
             print("Codex mesh hooks already installed → \(file.path)")
             return 0
         }
@@ -804,6 +804,14 @@ enum MeshHooks {
         print("(Codex PermissionRequest reports blocked; Notification/SessionEnd remain unavailable.)")
         print("(first run: Codex prompts to trust hooks — spawn with --dangerously-bypass-hook-trust)")
         return 0
+    }
+
+    /// Codex parses the root as a strict schema. Earlier Pharos releases added
+    /// this descriptive metadata; remove only our known field and preserve any
+    /// unrelated user-owned keys for forward compatibility.
+    @discardableResult
+    static func sanitizeCodexRoot(_ root: inout [String: Any]) -> Bool {
+        root.removeValue(forKey: "description") != nil
     }
 
     private enum UpsertResult { case installed, updated, unchanged

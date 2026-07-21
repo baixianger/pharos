@@ -1336,6 +1336,19 @@ final class MeshStateMappingTests: XCTestCase {
         XCTAssertNil(codex["hookSpecificOutput"])
     }
 
+    func testCodexHookRootDropsUnsupportedDescriptionOnly() {
+        var root: [String: Any] = [
+            "description": "Pharos mesh",
+            "hooks": ["Stop": []],
+            "futureUserKey": true,
+        ]
+        XCTAssertTrue(MeshHooks.sanitizeCodexRoot(&root))
+        XCTAssertNil(root["description"])
+        XCTAssertNotNil(root["hooks"])
+        XCTAssertEqual(root["futureUserKey"] as? Bool, true)
+        XCTAssertFalse(MeshHooks.sanitizeCodexRoot(&root))
+    }
+
     func testFormMessageRendersQuestionsAndOptions() {
         let toolInput: [String: Any] = [
             "questions": [[
