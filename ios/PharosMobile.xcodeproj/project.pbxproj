@@ -58,7 +58,6 @@
 
 /* Begin PBXFileReference section */
 		01A1958E7B3D76D91A3B1081 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
-		06769821248FC8822C3687C3 /* PharosMobile.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PharosMobile.entitlements; sourceTree = "<group>"; };
 		0D814929863D6BC8982DAD23 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		108EB4DA1F813A618204D5D7 /* IssuesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IssuesView.swift; sourceTree = "<group>"; };
 		15E29A27C4B67A17956B427B /* PharosDemoData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PharosDemoData.swift; sourceTree = "<group>"; };
@@ -150,7 +149,6 @@
 			children = (
 				CEF8FD397F7D9F1C61EA3BAF /* Assets.xcassets */,
 				0D814929863D6BC8982DAD23 /* Info.plist */,
-				06769821248FC8822C3687C3 /* PharosMobile.entitlements */,
 				81DA9594F9E9536D3C2B9D94 /* PharosMobileApp.swift */,
 				55D5CBCEDBF5C7FC0D6EA18A /* PrivacyInfo.xcprivacy */,
 				975035CC2E7DC23DDA260D32 /* Design */,
@@ -542,7 +540,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = PharosMobile/PharosMobile.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
 				INFOPLIST_FILE = PharosMobile/Info.plist;
@@ -566,7 +563,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = PharosMobile/PharosMobile.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_FILE = PharosMobile/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
