@@ -149,20 +149,26 @@ final class DistributedMeshSupport {
     }
 
     func addProject(
-        name: String, githubRemote: String?, notes: String, tags: [String]
+        name: String, githubRemote: String?, notes: String, tags: [String],
+        yolo: Bool, tmux: Bool, playbooks: [RemotePlaybook],
+        milestones: [RemoteMilestone]
     ) async throws {
         try await requireRegistry().addProject(
-            name: name, githubRemote: githubRemote, notes: notes, tags: tags
+            name: name, githubRemote: githubRemote, notes: notes, tags: tags,
+            yolo: yolo, tmux: tmux, playbooks: playbooks,
+            milestones: milestones
         )
     }
 
     func updateProject(
         _ project: RemoteProject, name: String, githubRemote: String?,
-        notes: String, tags: [String]
+        notes: String, tags: [String], yolo: Bool, tmux: Bool,
+        playbooks: [RemotePlaybook], milestones: [RemoteMilestone]
     ) async throws {
         try await requireRegistry().updateProject(
             project, name: name, githubRemote: githubRemote,
-            notes: notes, tags: tags
+            notes: notes, tags: tags, yolo: yolo, tmux: tmux,
+            playbooks: playbooks, milestones: milestones
         )
     }
 
@@ -170,17 +176,63 @@ final class DistributedMeshSupport {
         try await requireRegistry().deleteProject(project)
     }
 
-    func addIssue(to projectName: String, title: String) async throws {
-        try await requireRegistry().addIssue(to: projectName, title: title)
+    func addIssue(
+        to projectName: String, title: String, body: String,
+        status: String, priority: String, labels: [String],
+        milestoneID: String?, parent: Int?,
+        relations: [RemoteIssueRelation],
+        pendingAttachments: [PendingRemoteAttachment]
+    ) async throws {
+        var attachments: [RemoteIssueAttachment] = []
+        for pending in pendingAttachments {
+            let mesh = try await uploadAttachment(
+                data: pending.data, name: pending.name,
+                mediaType: pending.mediaType
+            )
+            attachments.append(RemoteIssueAttachment(
+                id: pending.id.uuidString, storedName: mesh.id,
+                originalName: pending.name, isImage: pending.isImage,
+                byteSize: pending.data.count, meshAttachment: mesh,
+                addedAt: Date()
+            ))
+        }
+        try await requireRegistry().addIssue(
+            to: projectName, title: title, body: body,
+            status: status, priority: priority, labels: labels,
+            milestoneID: milestoneID, parent: parent,
+            relations: relations, attachments: attachments
+        )
     }
 
     func updateIssue(
         _ issue: RemoteIssue, title: String, body: String,
-        status: String, priority: String, labels: [String]
+        status: String, priority: String, labels: [String],
+        milestoneID: String?, parent: Int?,
+        relations: [RemoteIssueRelation],
+        attachments: [RemoteIssueAttachment],
+        pendingAttachments: [PendingRemoteAttachment]
     ) async throws {
+        var uploaded = attachments
+        for pending in pendingAttachments {
+            let mesh = try await uploadAttachment(
+                data: pending.data, name: pending.name,
+                mediaType: pending.mediaType
+            )
+            uploaded.append(RemoteIssueAttachment(
+                id: pending.id.uuidString,
+                storedName: mesh.id,
+                originalName: pending.name,
+                isImage: pending.isImage,
+                byteSize: pending.data.count,
+                meshAttachment: mesh,
+                addedAt: Date()
+            ))
+        }
         try await requireRegistry().updateIssue(
             issue, title: title, body: body, status: status,
-            priority: priority, labels: labels
+            priority: priority, labels: labels,
+            milestoneID: milestoneID, parent: parent,
+            relations: relations, attachments: uploaded
         )
     }
 
@@ -297,6 +349,15 @@ final class DistributedMeshSupport {
             } catch { continue }
         }
         throw MobileDistributedMeshError.attachmentUnavailable
+    }
+
+    func issueAttachmentData(
+        _ attachment: RemoteIssueAttachment
+    ) async throws -> Data {
+        guard let meshAttachment = attachment.meshAttachment else {
+            throw MobileDistributedMeshError.attachmentUnavailable
+        }
+        return try await attachmentData(meshAttachment)
     }
 
     @discardableResult
@@ -423,7 +484,7 @@ private enum MobileDistributedMeshError: LocalizedError {
 /// iOS projection over the shared field-register schema. Entity UUIDs are the
 /// durable identity; project names and issue numbers remain editable display
 /// fields and therefore cannot collide destructively after offline edits.
-private actor MobileDistributedRegistry {
+actor MobileDistributedRegistry {
     private static let deletedField = "_deleted"
     private let replica: MeshLocalReplica
     private let group: MeshTrustGroupID
@@ -453,6 +514,10 @@ private actor MobileDistributedRegistry {
                 githubRemote: try decode("githubRemote", from: fields),
                 tags: try decode("tags", from: fields) ?? [],
                 notes: try decode("notes", from: fields) ?? "",
+                yolo: try decode("yolo", from: fields) ?? true,
+                tmux: try decode("tmux", from: fields) ?? false,
+                playbooks: try decode("playbooks", from: fields) ?? [],
+                milestones: try decode("milestones", from: fields) ?? [],
                 updates: updates.map {
                     RemoteProjectUpdate(
                         id: $0.id.uuidString, body: $0.body,
@@ -482,6 +547,10 @@ private actor MobileDistributedRegistry {
                 labels: try decode("labels", from: fields) ?? [],
                 body: try decode("body", from: fields) ?? "",
                 sortOrder: try decode("sortOrder", from: fields),
+                milestoneID: try decode("milestoneID", from: fields),
+                parent: try decode("parent", from: fields),
+                relations: try decode("relations", from: fields) ?? [],
+                attachments: try decode("attachments", from: fields) ?? [],
                 replicaID: entity.id
             ))
             result[projectID] = project
@@ -503,7 +572,9 @@ private actor MobileDistributedRegistry {
     }
 
     func addProject(
-        name: String, githubRemote: String?, notes: String, tags: [String]
+        name: String, githubRemote: String?, notes: String, tags: [String],
+        yolo: Bool, tmux: Bool, playbooks: [RemotePlaybook],
+        milestones: [RemoteMilestone]
     ) async throws {
         guard !(try await projects()).contains(where: {
             $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
@@ -517,13 +588,13 @@ private actor MobileDistributedRegistry {
             Self.deletedField: try encode(false),
             "name": try encode(name),
             "tags": try encode(tags),
-            "yolo": try encode(true),
-            "tmux": try encode(false),
+            "yolo": try encode(yolo),
+            "tmux": try encode(tmux),
             "addedAt": try encode(Date()),
-            "playbooks": try encode([String]()),
+            "playbooks": try encode(playbooks),
             "notes": try encode(notes.trimmingCharacters(in: .whitespacesAndNewlines)),
             "updates": try encode([MobileProjectUpdatePayload]()),
-            "milestones": try encode([String]()),
+            "milestones": try encode(milestones),
         ], on: entity)
         if let remote = normalized(githubRemote) {
             _ = try await author.setField(
@@ -534,7 +605,8 @@ private actor MobileDistributedRegistry {
 
     func updateProject(
         _ project: RemoteProject, name: String, githubRemote: String?,
-        notes: String, tags: [String]
+        notes: String, tags: [String], yolo: Bool, tmux: Bool,
+        playbooks: [RemotePlaybook], milestones: [RemoteMilestone]
     ) async throws {
         let entity = try await projectEntity(for: project)
         guard !(try await projects()).contains(where: {
@@ -548,7 +620,18 @@ private actor MobileDistributedRegistry {
             "name": try encode(name),
             "notes": try encode(notes.trimmingCharacters(in: .whitespacesAndNewlines)),
             "tags": try encode(tags),
+            "yolo": try encode(yolo),
+            "tmux": try encode(tmux),
+            "playbooks": try encode(playbooks),
+            "milestones": try encode(milestones),
         ], on: entity)
+        let liveMilestones = Set(milestones.map(\.id))
+        for issue in project.issues
+        where issue.milestoneID.map({ !liveMilestones.contains($0) }) == true {
+            _ = try await author.deleteField(
+                "milestoneID", on: try await issueEntity(for: issue)
+            )
+        }
         if let remote = normalized(githubRemote) {
             _ = try await author.setField(
                 "githubRemote", value: try encode(remote), on: entity
@@ -565,7 +648,12 @@ private actor MobileDistributedRegistry {
         )
     }
 
-    func addIssue(to projectName: String, title: String) async throws {
+    func addIssue(
+        to projectName: String, title: String, body: String,
+        status: String, priority: String, labels: [String],
+        milestoneID: String?, parent: Int?,
+        relations: [RemoteIssueRelation], attachments: [RemoteIssueAttachment]
+    ) async throws {
         guard let project = try await projects().first(where: {
             $0.name.localizedCaseInsensitiveCompare(projectName) == .orderedSame
         }), let projectID = project.replicaID.flatMap(UUID.init(uuidString:))
@@ -574,28 +662,89 @@ private actor MobileDistributedRegistry {
             type: .issue, id: UUID().uuidString
         ) else { throw MobileDistributedRegistryError.invalidEntity }
         let number = (project.issues.map(\.number).max() ?? 0) + 1
+        if let milestoneID,
+           !project.milestones.contains(where: { $0.id == milestoneID }) {
+            throw MobileDistributedRegistryError.invalidRelationship
+        }
+        if let parent {
+            guard project.issues.contains(where: { $0.number == parent })
+            else { throw MobileDistributedRegistryError.invalidRelationship }
+        }
+        guard relations.allSatisfy({ relation in
+            project.issues.contains(where: { $0.number == relation.target })
+        }) else { throw MobileDistributedRegistryError.invalidRelationship }
         let now = Date()
         try await set([
             Self.deletedField: try encode(false),
             "projectID": try encode(projectID),
             "number": try encode(number),
             "title": try encode(title),
-            "status": try encode("todo"),
-            "priority": try encode("none"),
-            "body": try encode(""),
+            "status": try encode(status),
+            "priority": try encode(priority),
+            "body": try encode(body),
             "createdAt": try encode(now),
             "updatedAt": try encode(now),
-            "attachments": try encode([String]()),
-            "labels": try encode([String]()),
+            "attachments": try encode(attachments),
+            "labels": try encode(labels),
             "sortOrder": try encode(Double(project.issues.count)),
-            "relations": try encode([String]()),
+            "relations": try encode(relations),
         ], on: entity)
+        if let milestoneID {
+            _ = try await author.setField(
+                "milestoneID", value: try encode(milestoneID), on: entity
+            )
+        }
+        if let parent {
+            _ = try await author.setField(
+                "parent", value: try encode(parent), on: entity
+            )
+        }
+        try await updateInverseRelations(
+            source: number, removing: [], adding: Set(relations), in: project
+        )
     }
 
     func updateIssue(
         _ issue: RemoteIssue, title: String, body: String,
-        status: String, priority: String, labels: [String]
+        status: String, priority: String, labels: [String],
+        milestoneID: String?, parent: Int?,
+        relations: [RemoteIssueRelation], attachments: [RemoteIssueAttachment]
     ) async throws {
+        let project = try await projects().first { project in
+            project.issues.contains(where: { $0.id == issue.id }) ||
+            project.name == issue.project
+        }
+        guard let project,
+              let currentIssue = project.issues.first(where: {
+                $0.id == issue.id || $0.number == issue.number
+              })
+        else { throw MobileDistributedRegistryError.issueNotFound }
+        if let milestoneID,
+           !project.milestones.contains(where: { $0.id == milestoneID }) {
+            throw MobileDistributedRegistryError.invalidRelationship
+        }
+        if let parent {
+            guard parent != currentIssue.number,
+                  project.issues.contains(where: { $0.number == parent }),
+                  !wouldCreateParentCycle(
+                    issueNumber: currentIssue.number, parent: parent,
+                    issues: project.issues
+                  )
+            else { throw MobileDistributedRegistryError.invalidRelationship }
+        }
+        guard relations.allSatisfy({ relation in
+            relation.target != currentIssue.number &&
+            project.issues.contains(where: { $0.number == relation.target })
+        }) else { throw MobileDistributedRegistryError.invalidRelationship }
+        let oldRelations = Set(currentIssue.relations)
+        let newRelations = Set(relations)
+        try await updateInverseRelations(
+            source: currentIssue.number,
+            removing: oldRelations.subtracting(newRelations),
+            adding: newRelations.subtracting(oldRelations),
+            in: project
+        )
+        let entity = try await issueEntity(for: currentIssue)
         try await set([
             Self.deletedField: try encode(false),
             "title": try encode(title),
@@ -603,8 +752,75 @@ private actor MobileDistributedRegistry {
             "status": try encode(status),
             "priority": try encode(priority),
             "labels": try encode(labels),
+            "relations": try encode(relations),
+            "attachments": try encode(attachments),
             "updatedAt": try encode(Date()),
-        ], on: try await issueEntity(for: issue))
+        ], on: entity)
+        if let milestoneID {
+            _ = try await author.setField(
+                "milestoneID", value: try encode(milestoneID), on: entity
+            )
+        } else {
+            _ = try await author.deleteField("milestoneID", on: entity)
+        }
+        if let parent {
+            _ = try await author.setField(
+                "parent", value: try encode(parent), on: entity
+            )
+        } else {
+            _ = try await author.deleteField("parent", on: entity)
+        }
+    }
+
+    private func wouldCreateParentCycle(
+        issueNumber: Int, parent: Int, issues: [RemoteIssue]
+    ) -> Bool {
+        var cursor: Int? = parent
+        var visited = Set<Int>()
+        while let number = cursor, visited.insert(number).inserted {
+            if number == issueNumber { return true }
+            cursor = issues.first(where: { $0.number == number })?.parent
+        }
+        return false
+    }
+
+    private func updateInverseRelations(
+        source: Int, removing: Set<RemoteIssueRelation>,
+        adding: Set<RemoteIssueRelation>, in project: RemoteProject
+    ) async throws {
+        let targetNumbers = Set(removing.map(\.target)).union(adding.map(\.target))
+        for targetNumber in targetNumbers {
+            guard let target = project.issues.first(where: {
+                $0.number == targetNumber
+            }) else { throw MobileDistributedRegistryError.issueNotFound }
+            var targetRelations = target.relations
+            for relation in removing where relation.target == targetNumber {
+                let inverse = RemoteIssueRelation(
+                    kind: inverseRelationKind(relation.kind), target: source
+                )
+                targetRelations.removeAll { $0 == inverse }
+            }
+            for relation in adding where relation.target == targetNumber {
+                let inverse = RemoteIssueRelation(
+                    kind: inverseRelationKind(relation.kind), target: source
+                )
+                if !targetRelations.contains(inverse) {
+                    targetRelations.append(inverse)
+                }
+            }
+            _ = try await author.setField(
+                "relations", value: try encode(targetRelations),
+                on: try await issueEntity(for: target)
+            )
+        }
+    }
+
+    private func inverseRelationKind(_ kind: String) -> String {
+        switch kind {
+        case "blocks": "blocked_by"
+        case "blocked_by": "blocks"
+        default: kind
+        }
     }
 
     func deleteIssue(_ issue: RemoteIssue) async throws {
@@ -715,6 +931,7 @@ private enum MobileDistributedRegistryError: LocalizedError {
     case projectNotFound
     case issueNotFound
     case invalidEntity
+    case invalidRelationship
 
     var errorDescription: String? {
         switch self {
@@ -726,6 +943,8 @@ private enum MobileDistributedRegistryError: LocalizedError {
             "Issue not found. Sync and try again."
         case .invalidEntity:
             "Could not create a valid replicated entity."
+        case .invalidRelationship:
+            "That issue relationship would be invalid or create a cycle."
         }
     }
 }

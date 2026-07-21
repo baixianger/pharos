@@ -1,8 +1,100 @@
 import Foundation
+import PharosMeshProtocol
+import PharosMeshReplica
 import Testing
 @testable import PharosMobile
 
 struct MeshCoreTests {
+    @Test func distributedRegistryPreservesAdvancedProjectAndIssueFields() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "pharos-mobile-registry-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let replica = try MeshLocalReplica.openIsolated(rootURL: root)
+        let group = try await replica.ensureActiveTrustGroup()
+        let registry = MobileDistributedRegistry(replica: replica, group: group)
+        let milestone = RemoteMilestone(
+            id: UUID().uuidString, name: "Release", due: Date(timeIntervalSince1970: 2_000_000_000)
+        )
+        let playbook = RemotePlaybook(
+            id: UUID().uuidString, name: "Verify", command: "swift test"
+        )
+        try await registry.addProject(
+            name: "Pharos", githubRemote: "https://github.com/example/pharos",
+            notes: "Personal control plane", tags: ["ios"],
+            yolo: false, tmux: true, playbooks: [playbook],
+            milestones: [milestone]
+        )
+        try await registry.addIssue(
+            to: "Pharos", title: "Parent", body: "Root work",
+            status: "in_progress", priority: "high", labels: ["mesh"],
+            milestoneID: milestone.id, parent: nil, relations: [], attachments: []
+        )
+        try await registry.addIssue(
+            to: "Pharos", title: "Child", body: "Mobile work",
+            status: "todo", priority: "medium", labels: ["ios"],
+            milestoneID: milestone.id, parent: 1,
+            relations: [RemoteIssueRelation(kind: "blocks", target: 1)],
+            attachments: []
+        )
+
+        var project = try #require((try await registry.projects()).first)
+        #expect(project.yolo == false)
+        #expect(project.tmux == true)
+        #expect(project.playbooks == [playbook])
+        #expect(project.milestones == [milestone])
+        let parent = try #require(project.issues.first { $0.number == 1 })
+        let child = try #require(project.issues.first { $0.number == 2 })
+        #expect(child.parent == 1)
+        #expect(child.relations == [RemoteIssueRelation(kind: "blocks", target: 1)])
+        #expect(parent.relations == [RemoteIssueRelation(kind: "blocked_by", target: 2)])
+
+        try await registry.updateIssue(
+            child, title: child.title, body: child.body,
+            status: child.status, priority: child.priority, labels: child.labels,
+            milestoneID: child.milestoneID, parent: child.parent,
+            relations: [RemoteIssueRelation(kind: "duplicate", target: 1)],
+            attachments: child.attachments
+        )
+        project = try #require((try await registry.projects()).first)
+        #expect(project.issues.first { $0.number == 1 }?.relations == [
+            RemoteIssueRelation(kind: "duplicate", target: 2)
+        ])
+        let changedChild = try #require(project.issues.first { $0.number == 2 })
+        try await registry.updateIssue(
+            changedChild, title: changedChild.title, body: changedChild.body,
+            status: changedChild.status, priority: changedChild.priority,
+            labels: changedChild.labels, milestoneID: changedChild.milestoneID,
+            parent: changedChild.parent, relations: [],
+            attachments: changedChild.attachments
+        )
+        project = try #require((try await registry.projects()).first)
+        #expect(project.issues.first { $0.number == 1 }?.relations.isEmpty == true)
+        #expect(project.issues.first { $0.number == 2 }?.relations.isEmpty == true)
+
+        var rejectedParentCycle = false
+        do {
+            try await registry.updateIssue(
+                parent, title: parent.title, body: parent.body,
+                status: parent.status, priority: parent.priority, labels: parent.labels,
+                milestoneID: parent.milestoneID, parent: 2,
+                relations: parent.relations, attachments: parent.attachments
+            )
+        } catch {
+            rejectedParentCycle = true
+        }
+        #expect(rejectedParentCycle)
+
+        try await registry.updateProject(
+            project, name: project.name, githubRemote: project.githubRemote,
+            notes: project.notes, tags: project.tags, yolo: project.yolo,
+            tmux: project.tmux, playbooks: project.playbooks, milestones: []
+        )
+        project = try #require((try await registry.projects()).first)
+        #expect(project.issues.allSatisfy { $0.milestoneID == nil })
+    }
+
     @Test func extractsUniqueMentions() {
         #expect(MentionParser.targets(in: "hello @claude-rfc021 and @codex_02 then @claude-rfc021")
                 == ["claude-rfc021", "codex_02"])
@@ -21,7 +113,8 @@ struct MeshCoreTests {
     @Test func decodesLegacyMessageWithoutV2Fields() throws {
         let data = Data(#"{"from":"human","room":"dev","text":"hello","ts":1,"to":[]}"#.utf8)
         let message = try JSONDecoder().decode(MeshMessage.self, from: data)
-        #expect(message.id == "legacy|dev|1.0|human")
+        #expect(message.id == nil)
+        #expect(message.stableID == "legacy|dev|1.0|human")
         #expect(message.replyTo == nil)
         #expect(message.attachments == nil)
     }

@@ -3,8 +3,51 @@ import XCTest
 @testable import Pharos
 import PharosMeshCore
 import PharosMeshIdentity
+import PharosMeshProtocol
 
 final class DistributedProjectIssueProjectionTests: XCTestCase {
+    func testSharedPortableCollectionWireDecodesIntoMacModels() throws {
+        let id = UUID()
+        let date = Date(timeIntervalSinceReferenceDate: 123)
+        let mesh = MeshAttachment(
+            id: "blob", name: "proof.png", mimeType: "image/png",
+            byteSize: 4, sha256: String(repeating: "ab", count: 32)
+        )
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+
+        let playbook = try decoder.decode(Playbook.self, from: encoder.encode(
+            MeshProjectPlaybook(
+                id: id.uuidString, name: "Verify", command: "swift test"
+            )
+        ))
+        XCTAssertEqual(playbook.id, id)
+        XCTAssertEqual(playbook.command, "swift test")
+
+        let milestone = try decoder.decode(Milestone.self, from: encoder.encode(
+            MeshProjectMilestone(id: id.uuidString, name: "Release", due: date)
+        ))
+        XCTAssertEqual(milestone.id, id)
+        XCTAssertEqual(milestone.due, date)
+
+        let relation = try decoder.decode(IssueRelation.self, from: encoder.encode(
+            MeshIssueRelationValue(kind: "blocked_by", target: 12)
+        ))
+        XCTAssertEqual(relation.kind, .blockedBy)
+        XCTAssertEqual(relation.target, 12)
+
+        let attachment = try decoder.decode(IssueAttachment.self, from: encoder.encode(
+            MeshIssueAttachmentValue(
+                id: id.uuidString, storedName: "blob",
+                originalName: "proof.png", isImage: true, byteSize: 4,
+                meshAttachment: mesh, addedAt: date
+            )
+        ))
+        XCTAssertEqual(attachment.id, id)
+        XCTAssertEqual(attachment.meshAttachment, mesh)
+        XCTAssertEqual(attachment.addedAt, date)
+    }
+
     func testProjectAndIssueFieldsRoundTripWithoutHostLocalRuntimeState() async throws {
         let fixture = try await Fixture()
         defer { fixture.remove() }

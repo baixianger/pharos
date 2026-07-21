@@ -1,6 +1,7 @@
 import Citadel
 import Crypto
 import Foundation
+import PharosMeshProtocol
 
 enum RemoteActionError: LocalizedError {
     case unsafeValue(String)
@@ -45,6 +46,10 @@ struct RemoteProject: Identifiable, Sendable, Hashable {
     let githubRemote: String?
     let tags: [String]
     var notes: String = ""
+    var yolo: Bool = true
+    var tmux: Bool = false
+    var playbooks: [RemotePlaybook] = []
+    var milestones: [RemoteMilestone] = []
     var issues: [RemoteIssue] = []
     var updates: [RemoteProjectUpdate] = []
     /// Stable replicated entity identity. Legacy Broker payloads leave this
@@ -52,6 +57,9 @@ struct RemoteProject: Identifiable, Sendable, Hashable {
     var replicaID: String? = nil
     var hasLocalPath: Bool { localPath != nil }
 }
+
+typealias RemotePlaybook = MeshProjectPlaybook
+typealias RemoteMilestone = MeshProjectMilestone
 
 struct RemoteProjectUpdate: Identifiable, Sendable, Hashable {
     let id: String
@@ -74,9 +82,24 @@ struct RemoteIssue: Identifiable, Sendable, Hashable {
     /// Manual board ordering set on the desktop; nil when unspecified. Carried
     /// so the iOS list can honor the same ordering within a status group.
     var sortOrder: Double? = nil
+    var milestoneID: String? = nil
+    var parent: Int? = nil
+    var relations: [RemoteIssueRelation] = []
+    var attachments: [RemoteIssueAttachment] = []
     /// Stable replicated entity identity. This prevents two offline devices
     /// that choose the same display number from overwriting one another.
     var replicaID: String? = nil
+}
+
+typealias RemoteIssueRelation = MeshIssueRelationValue
+typealias RemoteIssueAttachment = MeshIssueAttachmentValue
+
+struct PendingRemoteAttachment: Identifiable, Sendable {
+    let id: UUID
+    let data: Data
+    let name: String
+    let mediaType: String
+    let isImage: Bool
 }
 
 enum RemoteCommandBuilder {

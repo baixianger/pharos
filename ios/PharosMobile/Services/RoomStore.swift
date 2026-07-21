@@ -396,16 +396,38 @@ final class RoomStore {
         return RemoteAgentService.parseIssues(payload)
     }
 
-    /// Add a portable project directly to the Broker-owned registry. Host paths
-    /// remain host-local and are intentionally not accepted from iOS.
-    func addProject(name: String, githubRemote: String?, notes: String, tags: [String]) async -> Bool {
+    func issueAttachmentData(
+        _ attachment: RemoteIssueAttachment
+    ) async -> Data? {
+        guard usesDistributedRegistry else {
+            error = "Issue attachments require the distributed Mesh runtime."
+            return nil
+        }
+        do {
+            let data = try await distributedMesh.issueAttachmentData(attachment)
+            error = nil
+            return data
+        } catch {
+            self.error = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// Add a portable project directly to the shared replicated registry. Host
+    /// paths remain host-local and are intentionally not accepted from iOS.
+    func addProject(
+        name: String, githubRemote: String?, notes: String, tags: [String],
+        yolo: Bool = true, tmux: Bool = false,
+        playbooks: [RemotePlaybook] = [], milestones: [RemoteMilestone] = []
+    ) async -> Bool {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return false }
         if usesDistributedRegistry {
             return await distributedMutation {
                 try await self.distributedMesh.addProject(
                     name: trimmedName, githubRemote: githubRemote,
-                    notes: notes, tags: tags
+                    notes: notes, tags: tags, yolo: yolo, tmux: tmux,
+                    playbooks: playbooks, milestones: milestones
                 )
             }
         }
@@ -421,8 +443,8 @@ final class RoomStore {
                 "name": trimmedName,
                 "tags": tags,
                 "notes": notes.trimmingCharacters(in: .whitespacesAndNewlines),
-                "yolo": true,
-                "tmux": false,
+                "yolo": yolo,
+                "tmux": tmux,
                 "playbooks": [],
                 "issues": [],
                 "updates": [],
@@ -436,13 +458,23 @@ final class RoomStore {
         }
     }
 
-    func addIssue(to projectName: String, title: String) async -> Bool {
+    func addIssue(
+        to projectName: String, title: String, body: String = "",
+        status: String = "todo", priority: String = "none",
+        labels: [String] = [], milestoneID: String? = nil,
+        parent: Int? = nil, relations: [RemoteIssueRelation] = [],
+        pendingAttachments: [PendingRemoteAttachment] = []
+    ) async -> Bool {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         if usesDistributedRegistry {
             return await distributedMutation {
                 try await self.distributedMesh.addIssue(
-                    to: projectName, title: trimmed
+                    to: projectName, title: trimmed, body: body,
+                    status: status, priority: priority, labels: labels,
+                    milestoneID: milestoneID, parent: parent,
+                    relations: relations,
+                    pendingAttachments: pendingAttachments
                 )
             }
         }
@@ -459,10 +491,10 @@ final class RoomStore {
                 "id": UUID().uuidString,
                 "number": nextNumber,
                 "title": trimmed,
-                "status": "todo",
-                "priority": "none",
-                "body": "",
-                "labels": [],
+                "status": status,
+                "priority": priority,
+                "body": body,
+                "labels": labels,
                 "attachments": [],
                 "relations": [],
                 "sortOrder": Double(issues.count)
@@ -472,15 +504,24 @@ final class RoomStore {
         }
     }
 
-    func updateIssue(_ issue: RemoteIssue, title: String, body: String,
-                     status: String, priority: String, labels: [String]) async -> Bool {
+    func updateIssue(
+        _ issue: RemoteIssue, title: String, body: String,
+        status: String, priority: String, labels: [String],
+        milestoneID: String?, parent: Int?,
+        relations: [RemoteIssueRelation],
+        attachments: [RemoteIssueAttachment],
+        pendingAttachments: [PendingRemoteAttachment]
+    ) async -> Bool {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { return false }
         if usesDistributedRegistry {
             return await distributedMutation {
                 try await self.distributedMesh.updateIssue(
                     issue, title: trimmedTitle, body: body,
-                    status: status, priority: priority, labels: labels
+                    status: status, priority: priority, labels: labels,
+                    milestoneID: milestoneID, parent: parent,
+                    relations: relations, attachments: attachments,
+                    pendingAttachments: pendingAttachments
                 )
             }
         }
@@ -500,6 +541,10 @@ final class RoomStore {
             issues[issueIndex]["status"] = status
             issues[issueIndex]["priority"] = priority
             issues[issueIndex]["labels"] = labels
+            if let milestoneID { issues[issueIndex]["milestoneID"] = milestoneID }
+            else { issues[issueIndex].removeValue(forKey: "milestoneID") }
+            if let parent { issues[issueIndex]["parent"] = parent }
+            else { issues[issueIndex].removeValue(forKey: "parent") }
             projects[projectIndex]["issues"] = issues
             root["projects"] = projects
         }
@@ -507,17 +552,21 @@ final class RoomStore {
 
     // MARK: Edit / delete existing content
 
-    /// Edit an existing project's portable fields (name, notes, tags, GitHub
-    /// remote). Host-local paths remain device-local and are never touched here.
-    func updateProject(_ original: RemoteProject, name: String, githubRemote: String?,
-                       notes: String, tags: [String]) async -> Bool {
+    /// Edit an existing project's portable fields. Host-local paths remain
+    /// device-local and are never touched here.
+    func updateProject(
+        _ original: RemoteProject, name: String, githubRemote: String?,
+        notes: String, tags: [String], yolo: Bool, tmux: Bool,
+        playbooks: [RemotePlaybook], milestones: [RemoteMilestone]
+    ) async -> Bool {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return false }
         if usesDistributedRegistry {
             return await distributedMutation {
                 try await self.distributedMesh.updateProject(
                     original, name: trimmedName, githubRemote: githubRemote,
-                    notes: notes, tags: tags
+                    notes: notes, tags: tags, yolo: yolo, tmux: tmux,
+                    playbooks: playbooks, milestones: milestones
                 )
             }
         }
@@ -533,6 +582,8 @@ final class RoomStore {
             projects[index]["name"] = trimmedName
             projects[index]["notes"] = notes.trimmingCharacters(in: .whitespacesAndNewlines)
             projects[index]["tags"] = tags
+            projects[index]["yolo"] = yolo
+            projects[index]["tmux"] = tmux
             let remote = githubRemote?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if remote.isEmpty { projects[index].removeValue(forKey: "githubRemote") }
             else { projects[index]["githubRemote"] = remote }
