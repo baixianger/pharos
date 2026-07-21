@@ -1,23 +1,26 @@
 # Iroh dependency provenance
 
-Pharos pins the official [n0-computer/iroh-ffi](https://github.com/n0-computer/iroh-ffi)
-Swift package at `v1.1.0` rather than following a branch or a version range.
+Pharos uses a reviewed fork of
+[n0-computer/iroh-ffi](https://github.com/n0-computer/iroh-ffi), pinned by full
+commit rather than following a branch or version range. The fork retains the
+v1.1.0 API and adds the Linux Swift-package composition needed by Pharos.
 
 ## Reviewed release
 
 | Item | Pinned value |
 |---|---|
-| Release tag | `v1.1.0` |
-| Git commit | `5e451092dba0c1a09ee83ff6e5be37b1152a5c58` |
+| Reviewed upstream release | `v1.1.0` (`5e451092dba0c1a09ee83ff6e5be37b1152a5c58`) |
+| Swift package revision | `bba9072604e001bf32d134940331710d7c972c08` |
+| Linux Rust build revision | `358722a7b30a72e9b0625c8bfdfaf940753a43f7` |
 | Upstream licenses | MIT OR Apache-2.0 |
 | Swift product/module | `IrohLib` |
 | Pharos ALPN | `me.pai.pharos/mesh/1` |
 
-The upstream `Package.swift` pins its release XCFramework URL and checksum. The
-same release exposes source-generated Swift bindings and a documented local
-build path (`cargo make swift-xcframework`), so the binary can be rebuilt and
-compared during a dependency update instead of being accepted as an opaque
-unversioned download.
+The package revision pins its Apple XCFramework URL and checksum. Linux builds
+compile the Rust crate from the separately pinned descendant revision in
+`Dockerfile.mesh-linux`; no unversioned binary is downloaded. The source also
+exposes generated Swift bindings and a documented local XCFramework build path
+(`cargo make swift-xcframework`).
 
 ## Release artifacts
 
@@ -37,10 +40,11 @@ publish an Intel macOS slice; Pharos targets Apple Silicon.
 ## Current integration proof
 
 On 2026-07-20, the iOS simulator app built and linked both arm64 and x86_64
-against the exact `v1.1.0` checkout and the checksum-verified official
-XCFramework. The verification used a disposable copy under `/tmp`, changed
-only that copy's package reference from the exact remote pin to the local
-checkout, and wrote DerivedData under the same temporary directory:
+against the checksum-verified v1.1.0 XCFramework. On 2026-07-21, the pinned fork
+revision passed the 26-test iOS simulator suite, and the Linux descendant was
+built from Rust source and linked into the static-Swift CLI on amd64. The Apple
+source verification used a disposable copy under `/tmp` and wrote DerivedData
+under the same temporary directory:
 
 ```sh
 xcodebuild -project PharosMobile.xcodeproj -scheme PharosMobile \
@@ -51,11 +55,8 @@ xcodebuild -project PharosMobile.xcodeproj -scheme PharosMobile \
 ```
 
 The final result was `** BUILD SUCCEEDED **`, including a second incremental
-build after the bounded-timeout implementation changed. This proves source and
-binary compatibility without letting an Xcode network resolver obscure the
-result. The production manifest remains the exact GitHub pin; remote package
-resolution itself deadlocked in this local Xcode environment, so that resolver
-path is not claimed as verified.
+build after the bounded-timeout implementation changed. The current production
+manifest and Linux Docker build both use exact GitHub revisions.
 
 ## Update gate
 

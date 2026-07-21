@@ -13,6 +13,7 @@ public enum DistributedPairCLI {
     pair accept INVITATION --name NAME [--inviter-name NAME]
     pair redeem INVITATION ACCEPTANCE
     pair list
+    pair revoke DEVICE-ID [--name THIS-DEVICE-NAME]
     """
 
     public static func run(_ args: [String]) async -> Int32 {
@@ -102,6 +103,57 @@ public enum DistributedPairCLI {
                 }
                 return 0
 
+            case "revoke", "remove":
+                guard let rawID = remaining.first,
+                      let uuid = UUID(uuidString: rawID) else {
+                    return usageError("pair revoke DEVICE-ID [--name THIS-DEVICE-NAME]")
+                }
+                guard let group = try replica.activeTrustGroup(),
+                      let epoch = try await replica.store.membershipEpoch(for: group)
+                else { throw PairCLIError.missingMembership }
+                let target = MeshDeviceID(rawValue: uuid)
+                let peers = try await replica.store.trustedDevices(
+                    in: group, membershipEpoch: epoch
+                )
+                guard peers.contains(where: { $0.descriptor.id == target }) else {
+                    throw PairCLIError.deviceNotFound
+                }
+                let runtime = try await bindRuntime(args, replica: replica)
+                defer { Task { try? await runtime.close() } }
+                let address = try await runtime.localAddress()
+                let localMember = MeshPairedDevice(
+                    descriptor: MeshDeviceDescriptor(
+                        id: replica.identity.deviceID,
+                        endpointID: try replica.identity.endpointID(),
+                        displayName: option("--name", in: args)
+                            ?? ProcessInfo.processInfo.hostName,
+                        roles: [.controller, .host, .replica]
+                    ),
+                    signingPublicKey: try replica.identity.signingPublicKeyBytes(),
+                    addressTicket: address.ticket
+                )
+                let survivors = peers.filter { $0.descriptor.id != target }
+                let transition = try MeshMembershipTransitionSigner.sign(
+                    trustGroupID: group, previousEpoch: epoch,
+                    identity: replica.identity, roster: survivors + [localMember]
+                )
+                for peer in survivors {
+                    let transport = IrohMeshTransport(
+                        runtime: runtime,
+                        remote: MeshIrohEndpointAddress(
+                            endpointID: peer.descriptor.endpointID,
+                            ticket: peer.addressTicket
+                        )
+                    )
+                    try? await MeshReplicaRPCClient(transport: transport)
+                        .applyMembershipTransition(transition)
+                }
+                try await replica.store.applyMembershipTransition(
+                    transition, localIdentity: replica.identity
+                )
+                print("revoked\t\(rawID)\tepoch\t\(transition.nextEpoch)")
+                return 0
+
             default:
                 return usageError(usage)
             }
@@ -177,5 +229,6 @@ public enum DistributedPairCLI {
         case invalidDataDirectory
         case invalidRelayPolicy
         case invalidRoles
+        case deviceNotFound
     }
 }

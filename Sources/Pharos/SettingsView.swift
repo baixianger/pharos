@@ -157,6 +157,8 @@ private struct MachinesSettingsTab: View {
     @State private var brokerStatus: BrokerConnectionStatus = .unchecked
     @State private var advertisedEndpoint: String?
     @State private var showsPairingAssistant = false
+    @State private var deviceToRevoke: MeshPairedDevice?
+    @State private var revokeError: String?
 
     var body: some View {
         @Bindable var store = store
@@ -191,6 +193,25 @@ private struct MachinesSettingsTab: View {
             } else if let advertisedEndpoint {
                 PairDeviceSheet(endpoint: advertisedEndpoint)
             }
+        }
+        .alert(
+            "Remove trusted device?",
+            isPresented: Binding(
+                get: { deviceToRevoke != nil },
+                set: { if !$0 { deviceToRevoke = nil } }
+            ),
+            presenting: deviceToRevoke
+        ) { device in
+            Button("Cancel", role: .cancel) { deviceToRevoke = nil }
+            Button("Remove", role: .destructive) {
+                deviceToRevoke = nil
+                Task {
+                    do { try await distributedMesh.revokeDevice(device) }
+                    catch { revokeError = error.localizedDescription }
+                }
+            }
+        } message: { device in
+            Text("\(device.descriptor.displayName) will immediately lose access after the signed membership update reaches your other devices. Use this when a device is lost or being replaced.")
         }
     }
 
@@ -247,10 +268,18 @@ private struct MachinesSettingsTab: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                     }
+                    .contextMenu {
+                        Button("Remove trusted device", role: .destructive) {
+                            deviceToRevoke = device
+                        }
+                    }
                 }
             }
             if let error = distributedMesh.lastSyncError {
                 Text(error).font(.caption).foregroundStyle(.orange)
+            }
+            if let revokeError {
+                Text(revokeError).font(.caption).foregroundStyle(.red)
             }
             Button("Pair a device…", systemImage: "qrcode") {
                 showsPairingAssistant = true

@@ -580,7 +580,7 @@ enum CLI {
       recv [<nick>] --member <id>          drain this session's replicated unread messages
       who                                 list replicated room membership
       attachment put|get …                store/read content-addressed attachments
-      pair invite|accept|redeem|list       manage signed trusted-device pairing
+      pair invite|accept|redeem|list|revoke manage signed trusted-device pairing
       leave <room> <nick|member-id>       leave replicated room membership
       stop <room> <nick|member-id>        send a signed stop to the owning Host
       rename-member <room> <member> <new> rename replicated membership

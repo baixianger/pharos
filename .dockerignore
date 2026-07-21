@@ -4,4 +4,7 @@
 *.app
 *.dmg
 DerivedData
+ios/build
+ios/*.ipa
+ios/*.zip
 Icon.icns

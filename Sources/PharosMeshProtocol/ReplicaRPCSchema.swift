@@ -8,6 +8,7 @@ public enum MeshReplicaRPCOperation: String, Codable, CaseIterable, Sendable {
     case blobChunk = "blob.chunk.v1"
     case hostResource = "host.resource.v1"
     case hostCommand = "host.command.v1"
+    case membershipTransition = "membership.transition.v1"
 }
 
 public enum MeshReplicaRPCDisposition: String, Codable, Sendable {

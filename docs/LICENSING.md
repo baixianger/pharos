@@ -165,11 +165,10 @@ Pharos reads two local directories:
 
 ---
 
-## Default License Placeholder
+## Current License
 
-The `LICENSE` file at the repo root is currently set to **All Rights Reserved**. It is a
-placeholder that matches the current README stance. It can be swapped for any of the
-license texts above without touching source code or build scripts.
+The repository root `LICENSE` is the authoritative MIT License selected in
+2026-06. The alternative models above are retained only as decision history.
 
 ---
 

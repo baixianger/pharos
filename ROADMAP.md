@@ -4,9 +4,9 @@
 coding agents (Claude Code, Codex) across many repos: launch, organize, resume,
 and track agent work — in yolo mode, in parallel, at speed.
 
-> **Status: v0.2 → v1.0 shipped.** All milestone goals below are implemented
-> (build + 22 tests green). A few items need on-device verification or your
-> credentials/decisions — see **Manual follow-ups**.
+> **Status: 0.11.1 / distributed Mesh RC work.** The original macOS milestones
+> are shipped. The current local-first implementation has 299 SwiftPM tests plus
+> 26 iOS tests; release credentials and background iOS delivery remain follow-ups.
 
 ## The core loop
 
@@ -39,7 +39,7 @@ and track agent work — in yolo mode, in parallel, at speed.
 - [x] Sparkle auto-update (dormant until keys configured). *needs EdDSA keys + appcast host*
 - [x] Onboarding + real error states (alerts; launch/clone preflight).
 - [x] Settings depth (terminal/editor/appearance/defaults, folder-scan, agent args, peer, MCP).
-- [x] Tests (22) + CI runs `swift test`. (Strict concurrency blocked only by Sparkle's MainActor isolation — kept Swift 5 mode, documented.)
+- [x] Tests (299) + CI runs `swift test`. (Strict concurrency blocked only by Sparkle's MainActor isolation — kept Swift 5 mode, documented.)
 - [x] Performance: `AsyncSemaphore` caps concurrent git queries to 6 (was ~150 procs on launch).
 - [x] Accessibility: labels on controls; decorative visuals hidden from VoiceOver.
 - [ ] Localization (en/zh) — **deferred** (single-user tool; revisit if distributed).
@@ -51,7 +51,7 @@ and track agent work — in yolo mode, in parallel, at speed.
 
 ### v1.0 — Market
 - [x] Landing page + screenshots (`site/` — drop real PNGs into `site/shots/`).
-- [x] Licensing / pricing decision doc (`docs/LICENSING.md`) + placeholder `LICENSE`. *your call*
+- [x] MIT licensing decision recorded in `LICENSE` and `docs/LICENSING.md`.
 - [x] Cross-project status (open PRs + CI per repo via `gh`).
 
 ## Manual follow-ups (need your input or hardware)
@@ -59,7 +59,7 @@ and track agent work — in yolo mode, in parallel, at speed.
 - **Auto-update:** generate Sparkle EdDSA keys, set `SUPublicEDKey` in `package_app.sh`, host the appcast (`docs/SPARKLE.md`).
 - **Desktop placement & SSH peer:** verify on a multi-Space Mac / with a real `~/.ssh/config` host.
 - **Landing screenshots:** drop real PNGs into `site/shots/x1–x3.png`.
-- **Licensing:** pick an option from `docs/LICENSING.md` (current default: proprietary).
+- **Licensing:** MIT was selected; `LICENSE` and the README badge are authoritative.
 
 ## What's genuinely next (post-v1.0 polish)
 - Cache git/status across launches + debounce refresh.

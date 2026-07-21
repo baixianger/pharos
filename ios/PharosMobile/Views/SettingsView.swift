@@ -14,6 +14,8 @@ struct SettingsView: View {
     @State private var showHostEditor = false
     @State private var showsPairingScanner = false
     @State private var brokerStatus: MobileBrokerConnectionStatus = .unchecked
+    @State private var deviceToRevoke: MeshPairedDevice?
+    @State private var revokeError: String?
     private let meshClient = MeshTCPClient()
 
     var body: some View {
@@ -103,6 +105,25 @@ struct SettingsView: View {
                     }
                 }
             }
+            .alert(
+                "Remove trusted device?",
+                isPresented: Binding(
+                    get: { deviceToRevoke != nil },
+                    set: { if !$0 { deviceToRevoke = nil } }
+                ),
+                presenting: deviceToRevoke
+            ) { device in
+                Button("Cancel", role: .cancel) { deviceToRevoke = nil }
+                Button("Remove", role: .destructive) {
+                    deviceToRevoke = nil
+                    Task {
+                        do { try await distributedMesh.revokeDevice(device) }
+                        catch { revokeError = error.localizedDescription }
+                    }
+                }
+            } message: { device in
+                Text("\(device.descriptor.displayName) will lose Mesh access. Use this for a lost or replaced device.")
+            }
             .onAppear { load() }
             .onChange(of: settings.mesh) { load() }
             .task {
@@ -131,6 +152,13 @@ struct SettingsView: View {
             } else {
                 ForEach(distributedMesh.trustedDevices, id: \.descriptor.id) { device in
                     trustedDeviceRow(device)
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                deviceToRevoke = device
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                        }
                 }
             }
             if !distributedMesh.trustedDevices.isEmpty,
@@ -142,6 +170,9 @@ struct SettingsView: View {
                 Text(lastSyncError)
                     .font(.caption)
                     .foregroundStyle(.orange)
+            }
+            if let revokeError {
+                Text(revokeError).font(.caption).foregroundStyle(.red)
             }
             Button("Sync now", systemImage: "arrow.triangle.2.circlepath") {
                 Task { _ = await distributedMesh.synchronizeOnce() }

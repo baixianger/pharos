@@ -169,6 +169,52 @@ final class DistributedMeshSupport {
         )
     }
 
+    func revokeDevice(_ device: MeshPairedDevice) async throws {
+        guard let runtime, let replica = localReplica,
+              let group = activeTrustGroupID, let address = localAddress,
+              let epoch = try await replica.store.membershipEpoch(for: group)
+        else { throw DistributedMeshSupportError.networkNotReady }
+        let peers = try await replica.store.trustedDevices(
+            in: group, membershipEpoch: epoch
+        )
+        guard peers.contains(where: { $0.descriptor.id == device.descriptor.id }) else {
+            return
+        }
+        let localMember = MeshPairedDevice(
+            descriptor: MeshDeviceDescriptor(
+                id: replica.identity.deviceID,
+                endpointID: try replica.identity.endpointID(),
+                displayName: Host.current().localizedName ?? "This Mac",
+                roles: [.controller, .host, .replica]
+            ),
+            signingPublicKey: try replica.identity.signingPublicKeyBytes(),
+            addressTicket: address.ticket
+        )
+        let survivors = peers.filter { $0.descriptor.id != device.descriptor.id }
+        let transition = try MeshMembershipTransitionSigner.sign(
+            trustGroupID: group, previousEpoch: epoch,
+            identity: replica.identity, roster: survivors + [localMember]
+        )
+        // Best effort before the local CAS. Offline survivors receive the same
+        // signed transition from the retry path in synchronizeOnce().
+        for peer in survivors {
+            let transport = IrohMeshTransport(
+                runtime: runtime,
+                remote: MeshIrohEndpointAddress(
+                    endpointID: peer.descriptor.endpointID,
+                    ticket: peer.addressTicket
+                )
+            )
+            try? await MeshReplicaRPCClient(transport: transport)
+                .applyMembershipTransition(transition)
+        }
+        try await replica.store.applyMembershipTransition(
+            transition, localIdentity: replica.identity
+        )
+        connections.removeValue(forKey: device.descriptor.id)
+        try await refreshTrustedDevices()
+    }
+
     func chatRooms() async throws -> [MeshRoomInfo] {
         try await requireChatRegistry().rooms()
     }
@@ -289,6 +335,9 @@ final class DistributedMeshSupport {
                 in: group, membershipEpoch: epoch
             )
             trustedDevices = peers
+            let pendingTransition = try await replica.store.latestMembershipTransition(
+                for: group
+            )
             var received = 0
             var failedPeers: [String] = []
             for peer in peers {
@@ -300,6 +349,11 @@ final class DistributedMeshSupport {
                     )
                 )
                 do {
+                    if let pendingTransition,
+                       pendingTransition.nextEpoch == epoch {
+                        try? await MeshReplicaRPCClient(transport: transport)
+                            .applyMembershipTransition(pendingTransition)
+                    }
                     let report = try await MeshReplicaSyncSession(
                         store: replica.store,
                         client: MeshReplicaRPCClient(transport: transport),

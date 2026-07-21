@@ -9,10 +9,10 @@ RUN git clone https://github.com/baixianger/iroh-ffi.git /src/iroh-ffi \
 WORKDIR /src/iroh-ffi
 RUN cargo build --locked --release --lib
 
-FROM swift:6.2.4-noble AS pharos-build
+FROM swift:6.2.4-bookworm AS pharos-build
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libsqlite3-dev pkg-config \
+    && apt-get install -y --no-install-recommends libsqlite3-dev pkg-config unzip \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=iroh-build /src/iroh-ffi/target/release/libiroh_ffi.so /usr/local/lib/libiroh_ffi.so
 RUN mkdir -p /usr/local/lib/pkgconfig
@@ -20,9 +20,9 @@ COPY Packaging/iroh-linux.pc /usr/local/lib/pkgconfig/iroh.pc
 ENV LD_LIBRARY_PATH=/usr/local/lib
 WORKDIR /src/pharos
 COPY . .
-RUN swift build -c release --product pharos-mesh
+RUN swift build -c release --product pharos-mesh --static-swift-stdlib
 
-FROM swift:6.2.4-noble
+FROM swift:6.2.4-bookworm
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libsqlite3-0 \

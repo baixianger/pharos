@@ -101,9 +101,9 @@ mode.
 
 ## Phase 2 — identity, pairing, and Iroh connectivity
 
-**State:** started (Iroh transport, durable identity primitives, trust-group
-pairing, and authenticated replica RPC routing present; product endpoint
-lifecycle, CLI diagnostics, revocation UI, and Trusted Devices UI remain pending)
+**State:** complete for the personal-device trust model. Iroh endpoint lifecycle,
+durable identity, signed pairing, authenticated RPC, CLI diagnostics, Trusted
+Devices UI, and signed membership-epoch revocation are present on macOS and iOS.
 
 Implemented on `feat/distributed-iroh`:
 
@@ -139,6 +139,12 @@ Implemented on `feat/distributed-iroh`:
   advances. Tests prove one winner across sixteen actor tasks and eight separate
   SQLite connections, persistence across reopen, v1-to-v2 state preservation,
   and future-schema rejection;
+- SQLite schema v8 records controller-signed, full-roster membership transitions.
+  Applying a transition is an atomic previous-epoch CAS: retained peers move to
+  the next epoch, omitted peers lose authority, identical replay is idempotent,
+  and competing same-epoch transitions fail closed. macOS/iOS UI and
+  `pair revoke` expose the workflow; offline survivors receive the transition
+  before their next ordinary sync;
 - the iOS project consumes `PharosMeshIdentity` and the portable
   `PharosMeshReplica` product; isolated simulator builds compile and link
   Keychain, identity, pairing, Crypto, SQLite, replica persistence, and Iroh for
@@ -302,9 +308,10 @@ order, and redelivers every event. After a full-connect heal, all three replicas
 have byte-identical vectors and canonical materialized state. This complements
 the real loopback-Iroh test without involving any production listener or data.
 
-Product endpoint scheduling, richer room/message/project/issue mutation
-adapters, streaming snapshots larger than a single bounded RPC body, live
-shadow-view comparison, and production network fault drills remain pending.
+Product endpoint scheduling and room/message/project/issue mutation adapters
+are present on macOS and iOS. Streaming snapshots larger than a single bounded
+RPC body, live shadow-view comparison, and broader production network fault
+drills remain pending.
 
 1. Add SQLite/WAL schema for events, author heads, materialized entities, blob
    manifests, peer acknowledgements, membership epochs, and snapshots.
@@ -324,9 +331,9 @@ corrupt or unauthorized events never enter materialized state.
 
 ## Phase 4 — Host authority and distributed commands
 
-**State:** core complete (authenticated Host-local authority, directed Iroh RPC,
-durable receipts, generation gates, and exactly-once claims are present; product
-command lifecycle adapters remain pending)
+**State:** product path complete for current agent actions (authenticated
+Host-local authority, directed Iroh RPC, durable receipts, generation gates,
+exactly-once claims, and stop/spawn lifecycle adapters are present).
 
 Implemented on `feat/distributed-iroh`:
 
@@ -383,12 +390,13 @@ foreground; push improves freshness without becoming correctness-critical.
 
 ## Phase 6 — migration and cutover
 
-Implemented foundation: deterministic signed genesis export/import, SHA-256
-file/blob inventory, durable shadow/distributed/rolled-back state, CAS cutover,
-transaction-enforced distributed write authority, one-command rollback, and
-re-cutover. Still required before a real cutover: production-shaped dry runs,
-live read-only shadow comparison, an external legacy-write freeze, and a full
-release-cycle retention drill.
+Implemented and release-drilled: deterministic signed genesis export/import,
+SHA-256 file/blob inventory, durable shadow/distributed/rolled-back state, CAS
+cutover, transaction-enforced distributed write authority, one-command
+rollback, and re-cutover. `Scripts/test_migration_release_cycle.sh` exercises a
+production-shaped fixture and is enforced in CI; the recorded evidence is in
+`docs/MIGRATION-RELEASE-CYCLE.md`. A real user's cutover still requires a live
+read-only shadow comparison and an operator-controlled legacy-write freeze.
 
 1. Export a signed legacy snapshot plus blob manifest and SHA-256 inventory.
 2. Import it as a deterministic genesis snapshot into a new trust group.

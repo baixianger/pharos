@@ -90,6 +90,33 @@ public struct MeshReplicaRPCServer: Sendable {
             return try failure(for: header, code: "invalid-request")
         }
 
+        // Membership changes are authenticated by their controller signature
+        // and the previous-epoch roster inside the store transaction. Handle
+        // them before current-epoch RPC authorization so an offline survivor
+        // can catch up after another device has already advanced the epoch.
+        if header.operation == .membershipTransition {
+            guard let hostIdentity else {
+                return try failure(for: header, code: "identity-unavailable")
+            }
+            do {
+                let transition: MeshMembershipTransition = try decodeBody(request.body)
+                guard transition.trustGroupID == header.trustGroupID,
+                      transition.previousEpoch == header.membershipEpoch else {
+                    throw MeshReplicaRPCError.invalidBody
+                }
+                try await store.applyMembershipTransition(
+                    transition, localIdentity: hostIdentity
+                )
+                return try success(for: header)
+            } catch let error as MeshMembershipTransitionError {
+                let code = error == .conflictingTransition
+                    ? "membership-transition-conflict" : "membership-transition-invalid"
+                return try failure(for: header, code: code)
+            } catch {
+                return try failure(for: header, code: "membership-transition-failed")
+            }
+        }
+
         do {
             _ = try await store.authorizeReplicaRPCPeer(
                 in: header.trustGroupID, endpointID: remoteEndpointID,
@@ -247,6 +274,8 @@ public struct MeshReplicaRPCServer: Sendable {
                     }
                 }
                 return try success(for: header, body: try MeshReplicaRPCJSON.encode(receipt))
+            case .membershipTransition:
+                preconditionFailure("membership transition handled before current-epoch authorization")
             }
         } catch let error as MeshReplicaRPCError {
             switch error {
@@ -441,6 +470,18 @@ public struct MeshReplicaRPCClient: Sendable {
             throw MeshReplicaRPCError.responseMismatch
         }
         return resource
+    }
+
+    public func applyMembershipTransition(
+        _ transition: MeshMembershipTransition
+    ) async throws {
+        try transition.verifySignature()
+        _ = try await exchange(
+            operation: .membershipTransition,
+            group: transition.trustGroupID,
+            membershipEpoch: transition.previousEpoch,
+            body: try MeshReplicaRPCJSON.encode(transition)
+        )
     }
 
     private func exchange(

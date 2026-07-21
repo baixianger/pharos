@@ -6,7 +6,8 @@ on:
   pull_request:
 
 jobs:
-  build:
+  macos:
+    name: macOS build, test, and package
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
@@ -19,3 +20,75 @@ jobs:
 
       - name: Test
         run: swift test
+
+      - name: Migration cutover, rollback, and re-cutover drill
+        run: Scripts/test_migration_release_cycle.sh
+
+      - name: Package ad-hoc app
+        run: |
+          Scripts/package_app.sh release
+          test -x Pharos.app/Contents/MacOS/Pharos
+          test -x Pharos.app/Contents/Helpers/pharos-mesh
+          codesign --verify --deep --strict Pharos.app
+
+  ios:
+    name: iOS simulator build and test
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build
+        run: |
+          xcodebuild -project ios/PharosMobile.xcodeproj \
+            -scheme PharosMobile \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - name: Test
+        run: |
+          SIMULATOR_ID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          candidates = [d for runtime in devices.values() for d in runtime
+                        if d["isAvailable"] and d["name"].startswith("iPhone")]
+          if not candidates:
+              raise SystemExit("no available iPhone simulator")
+          print(candidates[0]["udid"])
+          ')
+          xcodebuild -project ios/PharosMobile.xcodeproj \
+            -scheme PharosMobile \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            CODE_SIGNING_ALLOWED=NO test
+
+  linux:
+    name: Linux CLI and Debian package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build portable CLI
+        run: |
+          Scripts/build_linux_artifacts.sh amd64 dist/linux-amd64
+
+      - name: Build and inspect Debian package
+        run: |
+          Scripts/package_deb.sh \
+            0.0.0-ci amd64 \
+            dist/linux-amd64/pharos-mesh dist \
+            dist/linux-amd64/libiroh_ffi.so
+          dpkg-deb --info dist/pharos-mesh_0.0.0-ci_amd64.deb
+          dpkg-deb --contents dist/pharos-mesh_0.0.0-ci_amd64.deb
+
+      - name: Install and smoke-test Debian package
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/dist:/packages:ro" debian:bookworm-slim \
+            sh -c 'apt-get update && apt-get install -y /packages/pharos-mesh_0.0.0-ci_amd64.deb && \
+              ldd /usr/bin/pharos-mesh && pharos-mesh --help >/dev/null'

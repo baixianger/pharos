@@ -122,7 +122,7 @@ public struct MeshQuarantinedEvent: Codable, Equatable, Sendable {
 /// One serialized SQLite connection per local replica. No method contacts a
 /// broker or network transport; callers explicitly choose the database URL.
 public actor DistributedMeshStore {
-    public nonisolated static let currentSchemaVersion = 7
+    public nonisolated static let currentSchemaVersion = 8
     private let databaseAddress: UInt
     private let blobDirectoryPath: String
     private var materializationNeedsRebuild: Bool
@@ -159,6 +159,7 @@ public actor DistributedMeshStore {
             try Self.execute(handle, sql: Self.schemaV5)
             try Self.execute(handle, sql: Self.schemaV6)
             try Self.execute(handle, sql: Self.schemaV7)
+            try Self.execute(handle, sql: Self.schemaV8)
             // Schema v2/v3 derived rows are not authoritative for the current
             // materializer. Persist the rebuild requirement inside this same
             // migration transaction so every process observes it; an actor-
@@ -532,6 +533,128 @@ public actor DistributedMeshStore {
             }
             try device.validateBinding()
             return device
+        }
+    }
+
+    /// Atomically installs a controller-signed next-epoch roster. Retained
+    /// peers move to the new epoch, omitted peers remain as inert audit rows,
+    /// and all pending invitations from the previous epoch become unusable.
+    /// Replaying the identical transition is idempotent; a different proposal
+    /// for the same epoch fails closed instead of silently splitting trust.
+    public func applyMembershipTransition(
+        _ transition: MeshMembershipTransition,
+        localIdentity: MeshDeviceIdentity
+    ) throws {
+        try transition.verifySignature()
+        let envelope = try transition.canonicalBytes()
+        try transaction {
+            let current = try membershipEpoch(for: transition.trustGroupID)
+            if current == transition.nextEpoch {
+                let stored: Data? = try queryOne(
+                    "SELECT envelope FROM membership_transitions " +
+                        "WHERE trust_group_id=? AND next_epoch=?",
+                    [.text(transition.trustGroupID.rawValue.uuidString),
+                     .integer(Int64(transition.nextEpoch))]
+                ) {
+                    guard let data = Self.columnData($0, index: 0) else {
+                        throw DistributedMeshStoreError.corruptStoredValue
+                    }
+                    return data
+                }
+                guard stored == envelope else {
+                    throw MeshMembershipTransitionError.conflictingTransition
+                }
+                return
+            }
+            guard current == transition.previousEpoch else {
+                throw DistributedMeshStoreError.membershipEpochMismatch(
+                    expected: current ?? 0, actual: transition.previousEpoch
+                )
+            }
+            let proposedAuthor = transition.roster.first {
+                $0.descriptor.id == transition.authorDeviceID
+            }
+            let localDeviceID = localIdentity.deviceID
+            let localEndpointID = try localIdentity.endpointID()
+            let localSigningPublicKey = try localIdentity.signingPublicKeyBytes()
+            let authorIsLocal =
+                transition.authorDeviceID == localDeviceID &&
+                transition.authorEndpointID == localEndpointID &&
+                proposedAuthor?.signingPublicKey == localSigningPublicKey
+            let authorWasTrustedController: Bool
+            if let currentAuthor = try trustedDevice(
+                in: transition.trustGroupID,
+                endpointID: transition.authorEndpointID,
+                membershipEpoch: transition.previousEpoch
+            ), currentAuthor.descriptor.id == transition.authorDeviceID {
+                authorWasTrustedController =
+                    currentAuthor.descriptor.roles.contains(.controller) &&
+                    currentAuthor.signingPublicKey == proposedAuthor?.signingPublicKey
+            } else {
+                authorWasTrustedController = false
+            }
+            guard authorIsLocal || authorWasTrustedController else {
+                throw MeshMembershipTransitionError.authorNotController
+            }
+            try run(
+                "INSERT INTO membership_transitions(trust_group_id, previous_epoch, " +
+                    "next_epoch, author_device_id, envelope) VALUES(?, ?, ?, ?, ?)",
+                [.text(transition.trustGroupID.rawValue.uuidString),
+                 .integer(Int64(transition.previousEpoch)),
+                 .integer(Int64(transition.nextEpoch)),
+                 .text(transition.authorDeviceID.rawValue.uuidString), .blob(envelope)]
+            )
+            for member in transition.roster where member.descriptor.id != localDeviceID {
+                if let existing = try trustedDeviceMatching(
+                    group: transition.trustGroupID,
+                    deviceID: member.descriptor.id,
+                    endpointID: member.descriptor.endpointID
+                ) {
+                    guard existing.hasSameCryptographicIdentity(as: member) else {
+                        throw MeshMembershipTransitionError.invalidRoster
+                    }
+                    try run(
+                        "UPDATE trusted_devices SET membership_epoch=?, envelope=? " +
+                            "WHERE trust_group_id=? AND device_id=?",
+                        [.integer(Int64(transition.nextEpoch)),
+                         .blob(try MeshCanonicalStoreJSON.encode(member)),
+                         .text(transition.trustGroupID.rawValue.uuidString),
+                         .text(member.descriptor.id.rawValue.uuidString)]
+                    )
+                } else {
+                    try run(
+                        "INSERT INTO trusted_devices(trust_group_id, device_id, endpoint_id, " +
+                            "membership_epoch, envelope) VALUES(?, ?, ?, ?, ?)",
+                        [.text(transition.trustGroupID.rawValue.uuidString),
+                         .text(member.descriptor.id.rawValue.uuidString),
+                         .text(member.descriptor.endpointID.rawValue),
+                         .integer(Int64(transition.nextEpoch)),
+                         .blob(try MeshCanonicalStoreJSON.encode(member))]
+                    )
+                }
+            }
+            try run(
+                "UPDATE membership_epochs SET epoch=? WHERE trust_group_id=?",
+                [.integer(Int64(transition.nextEpoch)),
+                 .text(transition.trustGroupID.rawValue.uuidString)]
+            )
+        }
+    }
+
+    public func latestMembershipTransition(
+        for group: MeshTrustGroupID
+    ) throws -> MeshMembershipTransition? {
+        try queryOne(
+            "SELECT envelope FROM membership_transitions WHERE trust_group_id=? " +
+                "ORDER BY next_epoch DESC LIMIT 1",
+            [.text(group.rawValue.uuidString)]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let transition = try? JSONDecoder().decode(
+                    MeshMembershipTransition.self, from: data
+                  ) else { throw DistributedMeshStoreError.corruptStoredValue }
+            try transition.verifySignature()
+            return transition
         }
     }
 
@@ -3112,6 +3235,17 @@ public actor DistributedMeshStore {
       mode TEXT NOT NULL CHECK(mode IN ('shadow', 'distributed', 'rolled-back')),
       envelope BLOB NOT NULL);
     UPDATE schema_metadata SET version=7;
+    """
+
+    private static let schemaV8 = """
+    CREATE TABLE IF NOT EXISTS membership_transitions(
+      trust_group_id TEXT NOT NULL,
+      previous_epoch INTEGER NOT NULL CHECK(previous_epoch > 0),
+      next_epoch INTEGER NOT NULL CHECK(next_epoch > previous_epoch),
+      author_device_id TEXT NOT NULL,
+      envelope BLOB NOT NULL,
+      PRIMARY KEY(trust_group_id, next_epoch));
+    UPDATE schema_metadata SET version=8;
     """
 }
 
