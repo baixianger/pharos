@@ -68,6 +68,8 @@ public struct MeshEntityType: RawRepresentable, Codable, Hashable, Sendable {
     public static let trustGroup = MeshEntityType(rawValue: "trust-group")!
     public static let project = MeshEntityType(rawValue: "project")!
     public static let issue = MeshEntityType(rawValue: "issue")!
+    public static let projectGroup = MeshEntityType(rawValue: "project-group")!
+    public static let trashItem = MeshEntityType(rawValue: "trash-item")!
     public static let room = MeshEntityType(rawValue: "room")!
     public static let roomMembership = MeshEntityType(rawValue: "room-membership")!
     public static let message = MeshEntityType(rawValue: "message")!

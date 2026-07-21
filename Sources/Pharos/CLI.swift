@@ -41,6 +41,17 @@ enum CLI {
 
         let p = parse(rest)
 
+        if PharosMeshRuntimeMode.usesDistributedMesh,
+           ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] == nil {
+            if DistributedRegistryCLI.handles(command, parsed: p) {
+                return await DistributedRegistryCLI.run(command, parsed: p)
+            }
+            if ["launch", "resume", "playbook", "open", "editor", "reveal", "path", "git", "worktrees", "sessions"].contains(command)
+                || (command == "issue" && p.arg(0) == "start") {
+                await DistributedRegistryCLI.refreshLocalCache()
+            }
+        }
+
         do {
             switch command {
             // Reads

@@ -141,6 +141,84 @@ final class DistributedProjectIssueProjectionTests: XCTestCase {
         XCTAssertEqual(restored.map(\.name), ["Recoverable"])
     }
 
+    func testGroupsAndRecoverableTrashRoundTripAsIndependentEntities() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let project = Project(
+            name: "Recoverable", tags: ["Used"],
+            addedAt: Date(timeIntervalSince1970: 1),
+            issues: [Issue(
+                number: 1, title: "Restore me",
+                activeSession: "host-only", activeSessionHost: "private-host",
+                worktreePath: "/private/worktree"
+            )]
+        )
+        var store = StoreData(
+            projects: [project], groups: ["Empty", "Used"]
+        )
+        let trashID = try XCTUnwrap(
+            store.softDeleteIssue(
+                projectID: project.id, number: 1,
+                now: Date()
+            )
+        )
+        try await fixture.projection.publish(store: store)
+
+        let replicated = try await fixture.projection.materializedStore()
+        XCTAssertEqual(replicated.groups, ["Empty", "Used"])
+        XCTAssertEqual(replicated.projects[0].issues, [])
+        XCTAssertEqual(replicated.trash.map(\.id), [trashID])
+
+        var restored = replicated
+        restored.restoreTrash(trashID)
+        try await fixture.projection.publish(store: restored)
+        let final = try await fixture.projection.materializedStore()
+        XCTAssertTrue(final.trash.isEmpty)
+        XCTAssertEqual(final.projects[0].issues.map(\.title), ["Restore me"])
+        XCTAssertNil(final.projects[0].issues[0].activeSession)
+        XCTAssertNil(final.projects[0].issues[0].activeSessionHost)
+        XCTAssertNil(final.projects[0].issues[0].worktreePath)
+    }
+
+    func testOfflineGroupAndTrashAdditionsConvergeWithoutSetConflicts() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "pharos-metadata-two-replicas-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let group = MeshTrustGroupID()
+        let replicaA = try MeshLocalReplica.openIsolated(
+            rootURL: root.appendingPathComponent("a")
+        )
+        let replicaB = try MeshLocalReplica.openIsolated(
+            rootURL: root.appendingPathComponent("b")
+        )
+        try await replicaA.store.setMembershipEpoch(1, for: group)
+        try await replicaB.store.setMembershipEpoch(1, for: group)
+        let projectionA = DistributedProjectIssueProjection(
+            replica: replicaA, group: group, nowMilliseconds: { 2_000 }
+        )
+        let projectionB = DistributedProjectIssueProjection(
+            replica: replicaB, group: group, nowMilliseconds: { 2_000 }
+        )
+
+        var storeA = StoreData(groups: ["Core"])
+        _ = storeA.softDeleteGroup("Core", now: Date())
+        try await projectionA.publish(store: storeA)
+        try await projectionB.publish(store: StoreData(groups: ["Mobile"]))
+
+        try await copyEvents(from: replicaA, to: replicaB, in: group)
+        try await copyEvents(from: replicaB, to: replicaA, in: group)
+        let resultA = try await projectionA.materializedStore()
+        let resultB = try await projectionB.materializedStore()
+
+        XCTAssertEqual(resultA.projects, resultB.projects)
+        XCTAssertEqual(resultA.groups, resultB.groups)
+        XCTAssertEqual(resultA.trash.map(\.id), resultB.trash.map(\.id))
+        XCTAssertEqual(resultA.groups, ["Mobile"])
+        XCTAssertEqual(resultA.trash.count, 1)
+        XCTAssertEqual(resultA.trash.first?.title, "Core")
+    }
+
     @MainActor
     func testProjectStoreDistributedModeWritesReplicaWithoutTouchingLegacyRegistry() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -193,6 +271,54 @@ final class DistributedProjectIssueProjectionTests: XCTestCase {
                 "distributed-project-cache.json"
             ).path
         ))
+    }
+
+    func testDefaultProjectAndIssueCLIMutatesDistributedReplicaAndTrash() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "pharos-distributed-cli-\(UUID().uuidString)", isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        setenv("PHAROS_DISTRIBUTED_DATA_DIR", root.path, 1)
+        unsetenv("PHAROS_LEGACY_BROKER")
+        unsetenv("PHAROS_REGISTRY")
+        defer { unsetenv("PHAROS_DISTRIBUTED_DATA_DIR") }
+
+        let addProjectStatus = await CLI.run([
+            "add", "CLI Project", "--tag", "Core", "--notes", "portable",
+        ])
+        XCTAssertEqual(addProjectStatus, 0)
+        let addIssueStatus = await CLI.run([
+            "issue", "add", "CLI Project", "Replicated issue",
+            "--priority", "high", "--label", "mesh",
+        ])
+        XCTAssertEqual(addIssueStatus, 0)
+        let updateIssueStatus = await CLI.run([
+            "issue", "status", "CLI Project", "1", "in_progress",
+        ])
+        XCTAssertEqual(updateIssueStatus, 0)
+        let removeIssueStatus = await CLI.run([
+            "issue", "rm", "CLI Project", "1",
+        ])
+        XCTAssertEqual(removeIssueStatus, 0)
+
+        let replica = try MeshLocalReplica.openIsolated(rootURL: root)
+        let group = try await replica.ensureActiveTrustGroup()
+        let projection = DistributedProjectIssueProjection(replica: replica, group: group)
+        let removed = try await projection.materializedStore()
+        XCTAssertEqual(removed.projects.map(\.name), ["CLI Project"])
+        XCTAssertEqual(removed.groups, ["Core"])
+        XCTAssertTrue(removed.projects[0].issues.isEmpty)
+        let trashID = try XCTUnwrap(removed.trash.first?.id)
+
+        let restoreStatus = await CLI.run([
+            "trash", "restore", trashID.uuidString,
+        ])
+        XCTAssertEqual(restoreStatus, 0)
+        let restored = try await projection.materializedStore()
+        XCTAssertTrue(restored.trash.isEmpty)
+        XCTAssertEqual(restored.projects[0].issues[0].status, .inProgress)
+        XCTAssertEqual(restored.projects[0].issues[0].priority, .high)
+        XCTAssertEqual(restored.projects[0].issues[0].labels, ["mesh"])
     }
 
     private final class Fixture {

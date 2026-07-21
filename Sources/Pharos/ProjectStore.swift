@@ -857,17 +857,31 @@ final class ProjectStore {
         usesDistributedRegistry = true
         registrySyncStatus = .connecting
         do {
-            var materialized = try await projection.materializedProjects()
-            if materialized.isEmpty,
+            let cachedGroups = groups
+            let cachedTrash = trash
+            let hadReplicatedMetadata = try await projection.hasReplicatedRegistryMetadata()
+            var materialized = try await projection.materializedStore()
+            if materialized.projects.isEmpty,
                ProcessInfo.processInfo.environment[
                    "PHAROS_DISTRIBUTED_SEED_CACHE"
                ] == "1", !projects.isEmpty {
                 var seed = StoreData(projects: projects)
                 HostLocalProjectPaths.captureAndStrip(&seed)
-                try await projection.publish(projects: seed.projects)
-                materialized = try await projection.materializedProjects()
+                try await projection.publish(store: seed)
+                materialized = try await projection.materializedStore()
             }
-            applyDistributedProjects(materialized)
+            if !hadReplicatedMetadata,
+               !cachedGroups.isEmpty || !cachedTrash.isEmpty {
+                materialized.groups = Array(Set(
+                    materialized.groups + cachedGroups
+                )).sorted {
+                    $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+                }
+                materialized.trash = cachedTrash
+                try await projection.publish(store: materialized)
+                materialized = try await projection.materializedStore()
+            }
+            applyDistributedStore(materialized)
             registrySyncStatus = .synced
         } catch {
             registrySyncStatus = .offline(
@@ -876,13 +890,12 @@ final class ProjectStore {
         }
     }
 
-    private func applyDistributedProjects(_ portable: [Project]) {
-        var store = StoreData(projects: portable)
+    private func applyDistributedStore(_ portable: StoreData) {
+        var store = portable
         HostLocalProjectPaths.apply(to: &store)
         projects = store.projects
-        groups = Array(Set(projects.flatMap(\.tags))).sorted {
-            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
-        }
+        groups = store.groups
+        trash = store.trash
         persistCurrentCache()
     }
 
@@ -933,14 +946,18 @@ final class ProjectStore {
                     _ = await previous?.value
                     guard !Task.isCancelled else { return }
                     do {
-                        try await projection.publish(projects: snapshot)
-                        let materialized = try await projection.materializedProjects()
+                        let portable = StoreData(
+                            projects: snapshot, groups: store.groups,
+                            trash: store.trash
+                        )
+                        try await projection.publish(store: portable)
+                        let materialized = try await projection.materializedStore()
                         guard !Task.isCancelled else { return }
                         await MainActor.run {
                             guard let self,
                                   self.distributedPublishRevision == revision
                             else { return }
-                            self.applyDistributedProjects(materialized)
+                            self.applyDistributedStore(materialized)
                             self.registrySyncStatus = .synced
                         }
                     } catch {
@@ -1076,9 +1093,9 @@ final class ProjectStore {
         if let projection = distributedProjection {
             Task { [weak self] in
                 do {
-                    let projects = try await projection.materializedProjects()
+                    let store = try await projection.materializedStore()
                     await MainActor.run {
-                        self?.applyDistributedProjects(projects)
+                        self?.applyDistributedStore(store)
                         self?.registrySyncStatus = .synced
                     }
                 } catch {

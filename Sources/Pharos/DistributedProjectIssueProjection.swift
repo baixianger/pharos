@@ -54,6 +54,36 @@ struct DistributedProjectIssueProjection: Sendable {
         }
     }
 
+    /// Publishes the complete portable registry. Projects/issues remain
+    /// field-level registers; groups and recoverable trash are independent
+    /// entities so unrelated edits do not contend on one registry JSON blob.
+    func publish(store: StoreData) async throws {
+        try await publish(projects: store.projects)
+        try await publishGroups(store.groups)
+        try await publishTrash(store.trash)
+    }
+
+    func materializedStore() async throws -> StoreData {
+        var store = StoreData(
+            projects: try await materializedProjects(),
+            groups: try await materializedGroups(),
+            trash: try await materializedTrash()
+        )
+        store.ensureGroupsForTags()
+        store.purgeExpiredTrash()
+        return store
+    }
+
+    func hasReplicatedRegistryMetadata() async throws -> Bool {
+        let groups = try await replica.store.materializedEntities(
+            of: .projectGroup, in: group
+        )
+        let trash = try await replica.store.materializedEntities(
+            of: .trashItem, in: group
+        )
+        return !groups.isEmpty || !trash.isEmpty
+    }
+
     func materializedProjects() async throws -> [Project] {
         var projectsByID: [UUID: Project] = [:]
         for entity in try await replica.store.materializedEntities(
@@ -121,6 +151,89 @@ struct DistributedProjectIssueProjection: Sendable {
         }
     }
 
+    private func publishGroups(_ groups: [String]) async throws {
+        let desired = Set(groups.map(Self.normalizedGroupName).filter { !$0.isEmpty })
+        var activeByName: [String: [MeshEntityReference]] = [:]
+        for entity in try await replica.store.materializedEntities(
+            of: .projectGroup, in: group
+        ) {
+            let fields = try await activeFields(for: entity)
+            guard !Self.isDeleted(fields),
+                  let name: String = try Self.decode("name", from: fields)
+            else { continue }
+            activeByName[Self.normalizedGroupName(name), default: []].append(entity)
+        }
+        for name in desired where activeByName[name]?.isEmpty != false {
+            guard let entity = MeshEntityReference(
+                type: .projectGroup, id: UUID().uuidString
+            ) else { continue }
+            try await publish(fields: [
+                Self.deletedField: try Self.encode(false),
+                "name": try Self.encode(groups.first {
+                    Self.normalizedGroupName($0) == name
+                } ?? name),
+            ], on: entity)
+        }
+        for (name, entities) in activeByName where !desired.contains(name) {
+            for entity in entities { try await publishDeletion(on: entity) }
+        }
+    }
+
+    private func materializedGroups() async throws -> [String] {
+        var byNormalizedName: [String: String] = [:]
+        for entity in try await replica.store.materializedEntities(
+            of: .projectGroup, in: group
+        ) {
+            let fields = try await activeFields(for: entity)
+            guard !Self.isDeleted(fields),
+                  let name: String = try Self.decode("name", from: fields),
+                  !Self.normalizedGroupName(name).isEmpty else { continue }
+            let key = Self.normalizedGroupName(name)
+            if byNormalizedName[key] == nil { byNormalizedName[key] = name }
+        }
+        return byNormalizedName.values.sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+    }
+
+    private func publishTrash(_ trash: [TrashedItem]) async throws {
+        let desired = Set(trash.map { $0.id.uuidString })
+        for item in trash {
+            guard let entity = MeshEntityReference(
+                type: .trashItem, id: item.id.uuidString
+            ) else { continue }
+            try await publish(fields: [
+                Self.deletedField: try Self.encode(false),
+                "deletedAt": try Self.encode(item.deletedAt),
+                "payload": try Self.encode(Self.portableTrashPayload(item.payload)),
+            ], on: entity)
+        }
+        for entity in try await replica.store.materializedEntities(
+            of: .trashItem, in: group
+        ) where !desired.contains(entity.id) {
+            try await publishDeletion(on: entity)
+        }
+    }
+
+    private func materializedTrash() async throws -> [TrashedItem] {
+        var result: [TrashedItem] = []
+        for entity in try await replica.store.materializedEntities(
+            of: .trashItem, in: group
+        ) {
+            let fields = try await activeFields(for: entity)
+            guard !Self.isDeleted(fields), let id = UUID(uuidString: entity.id),
+                  let deletedAt: Date = try Self.decode("deletedAt", from: fields),
+                  let payload: TrashPayload = try Self.decode("payload", from: fields)
+            else { continue }
+            result.append(TrashedItem(id: id, deletedAt: deletedAt, payload: payload))
+        }
+        return result.sorted {
+            $0.deletedAt == $1.deletedAt
+                ? $0.id.uuidString < $1.id.uuidString
+                : $0.deletedAt > $1.deletedAt
+        }
+    }
+
     private func publish(
         fields desired: [String: Data], on entity: MeshEntityReference
     ) async throws {
@@ -165,6 +278,35 @@ struct DistributedProjectIssueProjection: Sendable {
     private static func isDeleted(_ fields: [String: Data]) -> Bool {
         guard let value = fields[deletedField] else { return false }
         return (try? JSONDecoder().decode(Bool.self, from: value)) == true
+    }
+
+    private static func normalizedGroupName(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    }
+
+    private static func portableTrashPayload(_ payload: TrashPayload) -> TrashPayload {
+        func portableIssue(_ value: Issue) -> Issue {
+            var issue = value
+            issue.activeSession = nil
+            issue.activeSessionHost = nil
+            issue.worktreePath = nil
+            return issue
+        }
+        switch payload {
+        case .project(var project):
+            project.localPath = nil
+            project.localPaths = [:]
+            project.issues = project.issues.map(portableIssue)
+            return .project(project)
+        case .issue(let projectID, let projectName, let issue):
+            return .issue(
+                projectID: projectID, projectName: projectName,
+                issue: portableIssue(issue)
+            )
+        case .group, .playbook:
+            return payload
+        }
     }
 
     private static func projectFields(_ project: Project) throws -> [String: Data] {
