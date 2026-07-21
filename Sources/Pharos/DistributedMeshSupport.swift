@@ -2,6 +2,15 @@ import Foundation
 import Observation
 import PharosMeshCore
 
+/// Product builds use the signed, device-to-device replica by default. The
+/// legacy Broker path is retained only as an explicit migration diagnostic;
+/// normal launches never need an environment flag to enable the new mesh.
+enum PharosMeshRuntimeMode {
+    static var usesDistributedMesh: Bool {
+        ProcessInfo.processInfo.environment["PHAROS_LEGACY_BROKER"] != "1"
+    }
+}
+
 /// macOS owner of the local-first replica and its identity-addressed Iroh
 /// endpoint. Distributed product mode never opens legacy Broker routing.
 @Observable
@@ -24,7 +33,7 @@ final class DistributedMeshSupport {
     @ObservationIgnored private var attachmentRegistry: DistributedAttachmentRegistry?
 
     var isProductModeEnabled: Bool {
-        ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1"
+        PharosMeshRuntimeMode.usesDistributedMesh
     }
 
     func start() async {

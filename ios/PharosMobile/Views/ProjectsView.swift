@@ -161,7 +161,7 @@ struct ProjectsView: View {
     }
 
     private var isDistributed: Bool {
-        ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1"
+        PharosMeshRuntimeMode.usesDistributedMesh
     }
 }
 
@@ -572,7 +572,7 @@ private struct ProjectDetailHeader: View {
         if activeAgentCount > 0 {
             return activeAgentCount == 1 ? "One agent is working on this project." : "\(activeAgentCount) agents are working on this project."
         }
-        if ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1" {
+        if PharosMeshRuntimeMode.usesDistributedMesh {
             return "Project details, activity, and issues from your signed device replica."
         }
         return "Project details, activity, and issues from your Broker registry."

@@ -1397,6 +1397,24 @@ final class MeshStateMappingTests: XCTestCase {
 }
 
 final class MeshTransportResilienceTests: XCTestCase {
+    func testDisabledAutoSpawnFailsClosedWithoutCreatingLegacySocket() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pharos-no-broker-\(UUID().uuidString)")
+        setenv("PHAROS_MESH_DIR", directory.path, 1)
+        MeshClient.remoteEndpoint = nil
+        MeshClient.allowsLocalDaemonAutoSpawn = false
+        defer {
+            MeshClient.allowsLocalDaemonAutoSpawn = true
+            unsetenv("PHAROS_MESH_DIR")
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let response = MeshClient.send(MeshRequest(cmd: "list"))
+
+        XCTAssertFalse(response.ok)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: MeshPaths.socketPath))
+    }
+
     func testSocketReadTimeoutPreventsHalfOpenNodeLoop() {
         var descriptors: [Int32] = [-1, -1]
         XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors), 0)

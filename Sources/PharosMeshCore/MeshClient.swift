@@ -50,6 +50,11 @@ public enum MeshClient {
     /// returns a clear unsupported error until the Phase 2 adapter is linked.
     nonisolated(unsafe) public static var transportPreference: MeshTransportPreference = .legacy
 
+    /// Product shells can hard-disable the legacy local Broker. This is a
+    /// defense-in-depth boundary: an overlooked legacy read may fail closed,
+    /// but it cannot silently recreate a daemon or Unix socket after cutover.
+    nonisolated(unsafe) public static var allowsLocalDaemonAutoSpawn = true
+
     /// GUI-set remote broker endpoint ("ip:port"), resolved from the peer SSH
     /// host (see MeshRemote). When set, the app dials that broker instead of a
     /// local one and never auto-spawns a daemon. The `PHAROS_MESH_TCP` env var
@@ -101,6 +106,7 @@ public enum MeshClient {
 
     public static func ensureDaemon() {
         if let fd = connectUDS() { close(fd); return }
+        guard allowsLocalDaemonAutoSpawn else { return }
         // Resolve symlinks so a `chat`-symlink invocation spawns the daemon as the
         // REAL binary (argv0 "Pharos", not "chat" — else its args get re-prefixed).
         let exe = (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath()

@@ -822,7 +822,7 @@ final class RoomStore {
     }
 
     private var usesDistributedRegistry: Bool {
-        ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1"
+        PharosMeshRuntimeMode.usesDistributedMesh
     }
 
     private func roomInfo(named name: String) -> MeshRoom? {

@@ -27,6 +27,9 @@ enum PharosMain {
         if ProcessInfo.processInfo.environment["PHAROS_SNAPSHOT"]?.isEmpty == false {
             NSApplication.shared.setActivationPolicy(.accessory)
         }
+        if PharosMeshRuntimeMode.usesDistributedMesh {
+            MeshClient.allowsLocalDaemonAutoSpawn = false
+        }
         PharosApp.main()
     }
 }
@@ -41,9 +44,7 @@ struct PharosApp: App {
 
     init() {
         let prefs = PharosPrefs.shared
-        let distributed = ProcessInfo.processInfo.environment[
-            "PHAROS_DISTRIBUTED"
-        ] == "1"
+        let distributed = PharosMeshRuntimeMode.usesDistributedMesh
         let alreadyConfigured = prefs.bool(forKey: "pharos.hostBroker")
             || !(prefs.string(forKey: "pharos.meshServerEndpoint") ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

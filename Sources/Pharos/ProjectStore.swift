@@ -574,7 +574,7 @@ final class ProjectStore {
     /// it is not portable project data.
     var meshServerEndpoint = "" {
         didSet {
-            if ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1" {
+            if PharosMeshRuntimeMode.usesDistributedMesh {
                 // Distributed product mode must not recreate the legacy dial
                 // marker from an old preference during ProjectStore init.
                 MeshClient.remoteEndpoint = nil
@@ -634,7 +634,7 @@ final class ProjectStore {
     /// Broker-backed cache (plus the `PHAROS_REGISTRY` test override) so the GUI
     /// and CLI agree without treating iCloud or a Host checkout as shared state.
     private var fileURL: URL {
-        if ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1" {
+        if PharosMeshRuntimeMode.usesDistributedMesh {
             return PharosCore.registryURL.deletingLastPathComponent()
                 .appendingPathComponent("distributed-project-cache.json")
         }
@@ -670,9 +670,7 @@ final class ProjectStore {
         } else if let legacy = d.string(forKey: "pharos.peerHost"), !legacy.isEmpty {
             executionHosts = [ExecutionHostProfile(name: legacy, sshHost: legacy)]
         }
-        let distributedMode = ProcessInfo.processInfo.environment[
-            "PHAROS_DISTRIBUTED"
-        ] == "1"
+        let distributedMode = PharosMeshRuntimeMode.usesDistributedMesh
         meshServerEndpoint = distributedMode
             ? ""
             : d.string(forKey: "pharos.meshServerEndpoint") ?? ""

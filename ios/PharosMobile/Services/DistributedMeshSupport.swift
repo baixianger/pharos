@@ -5,6 +5,14 @@ import PharosMeshIroh
 import PharosMeshProtocol
 import PharosMeshReplica
 
+/// PharosMobile opens its signed local replica by default. The old Broker path
+/// remains available only for bounded migration diagnostics.
+enum PharosMeshRuntimeMode {
+    static var usesDistributedMesh: Bool {
+        ProcessInfo.processInfo.environment["PHAROS_LEGACY_BROKER"] != "1"
+    }
+}
+
 /// The iOS target imports the same transport contracts as macOS and the Mesh
 /// CLI and opens the exact same replica schema in its sandbox. Demo mode never
 /// opens storage or networking; the real app binds only identity-addressed Iroh

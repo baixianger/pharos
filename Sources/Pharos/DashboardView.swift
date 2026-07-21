@@ -37,6 +37,7 @@ struct DashboardAgentSession: Hashable, Sendable, Identifiable {
 /// cards, and the recent-activity feed at the bottom. Click anything to jump in.
 struct DashboardView: View {
     @Environment(ProjectStore.self) private var store
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @Binding var selectedProject: Project.ID?
     @Binding var openRoom: String?
     /// Menu-bar deep-link: scroll to a section (issues/agents), then self-clear.
@@ -338,10 +339,46 @@ struct DashboardView: View {
     }
 
     private func loadMesh() {
-        // Recent chatter comes from the BROKER (the source of truth for all
-        // messages) — NOT from reading the local iCloud transcript files. Those
-        // are legacy: reading them off the iCloud store is latency-bound (it
-        // stalled the dashboard's first paint by ~10s) and can serve stale data.
+        if distributedMesh.isProductModeEnabled {
+            Task {
+                do {
+                    let rooms = try await distributedMesh.chatRooms()
+                    var messages: [MeshMsg] = []
+                    var members: [String: MeshMemberInfo] = [:]
+                    for room in rooms {
+                        messages.append(contentsOf: try await distributedMesh
+                            .chatMessages(in: room, limit: 20))
+                        for member in try await distributedMesh.chatMembers(in: room) {
+                            if var existing = members[member.id] {
+                                existing.rooms = Array(
+                                    Set(existing.rooms + [room.name])
+                                ).sorted()
+                                members[member.id] = existing
+                            } else {
+                                members[member.id] = MeshMemberInfo(
+                                    id: member.id, nick: member.nick,
+                                    rooms: [room.name], lastSeen: 0,
+                                    nodeOnline: nil
+                                )
+                            }
+                        }
+                    }
+                    meshMessages = messages.sorted { $0.ts > $1.ts }
+                    meshAgents = Array(members.values)
+                    // Distributed Host controls bind opaque resource IDs on
+                    // the owning device; legacy SSH/tmux discovery is never
+                    // used to infer a command route.
+                    meshAgentSessions = [:]
+                } catch {
+                    meshMessages = []
+                    meshAgents = []
+                    meshAgentSessions = [:]
+                }
+            }
+            return
+        }
+
+        // Explicit legacy diagnostic mode reads recent chatter from the Broker.
         // Everything here is off-main; results publish on the main actor.
         let hostProfiles = store.executionHosts
         Task.detached {

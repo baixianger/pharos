@@ -68,9 +68,7 @@ private struct AppContainer: View {
             // Open the wizard on first run; close it once a Broker is paired.
             .task {
                 await distributedMesh.start()
-                let distributed = ProcessInfo.processInfo.environment[
-                    "PHAROS_DISTRIBUTED"
-                ] == "1"
+                let distributed = PharosMeshRuntimeMode.usesDistributedMesh
                 if !isDemo, !distributed, settings.mesh.host.isEmpty {
                     pairing.showsSetupGuide = true
                 }

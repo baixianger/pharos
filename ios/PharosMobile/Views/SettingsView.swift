@@ -110,7 +110,7 @@ struct SettingsView: View {
     }
 
     private var isDistributed: Bool {
-        ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1"
+        PharosMeshRuntimeMode.usesDistributedMesh
     }
 
     @ViewBuilder
