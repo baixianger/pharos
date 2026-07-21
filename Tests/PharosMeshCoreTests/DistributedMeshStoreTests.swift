@@ -256,6 +256,74 @@ final class DistributedMeshStoreTests: XCTestCase {
         }
     }
 
+    func testControllerSyncBootstrapsCurrentEpochRosterBeforeHistoricalEvents() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let hostStore = try DistributedMeshStore(
+            databaseURL: fixture.directory.appendingPathComponent("roster-host.sqlite")
+        )
+        let joiningStore = try DistributedMeshStore(
+            databaseURL: fixture.directory.appendingPathComponent("roster-joining.sqlite")
+        )
+        try await hostStore.setMembershipEpoch(1, for: fixture.group)
+        try await joiningStore.setMembershipEpoch(1, for: fixture.group)
+        let host = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 10))
+        let joining = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 20))
+        let historicalAuthor = MeshDeviceIdentity.generate(
+            now: Date(timeIntervalSince1970: 30)
+        )
+        try await pairDevice(
+            joining, roles: [.controller, .replica], invitedBy: host,
+            in: fixture.group, store: hostStore
+        )
+        try await pairDevice(
+            historicalAuthor, roles: [.replica], invitedBy: host,
+            in: fixture.group, store: hostStore
+        )
+        try await pairDevice(
+            host, roles: [.controller, .replica], invitedBy: joining,
+            in: fixture.group, store: joiningStore
+        )
+        let entity = MeshEntityReference(type: .project, id: "roster-history")!
+        let mutation = MeshFieldMutation(
+            field: "title", value: Data("Roster History".utf8)
+        )
+        let event = try signedFieldEvent(
+            group: fixture.group, device: historicalAuthor.deviceID,
+            endpoint: try historicalAuthor.endpointID(),
+            key: try Curve25519.Signing.PrivateKey(
+                rawRepresentation: historicalAuthor.irohSecretKeyBytes()
+            ),
+            sequence: 1, timestamp: .init(wallTimeMilliseconds: 1_000),
+            entity: entity, mutation: mutation
+        )
+        _ = try await hostStore.insert(
+            event, authorPublicKey: try historicalAuthor.signingPublicKeyBytes()
+        )
+        let transport = ReplicaRPCServerTransport(
+            server: MeshReplicaRPCServer(store: hostStore, hostIdentity: host),
+            remoteEndpointID: try joining.endpointID()
+        )
+        let report = try await MeshReplicaSyncSession(
+            store: joiningStore,
+            client: MeshReplicaRPCClient(transport: transport),
+            remoteEndpointID: try host.endpointID()
+        ).synchronize(group: fixture.group, membershipEpoch: 1)
+
+        let installedAuthor = try await joiningStore.trustedDevice(
+            in: fixture.group, id: historicalAuthor.deviceID
+        )
+        let materialized = try await joiningStore.materializedFields(
+            for: entity, in: fixture.group
+        )
+        XCTAssertEqual(report.eventCount, 1)
+        XCTAssertEqual(
+            installedAuthor?.signingPublicKey,
+            try historicalAuthor.signingPublicKeyBytes()
+        )
+        XCTAssertEqual(materialized.first?.value, mutation.value)
+    }
+
     func testReplicaRPCClientRejectsMismatchedResponseCorrelation() async throws {
         let client = MeshReplicaRPCClient(transport: MismatchedReplicaRPCTransport())
         do {

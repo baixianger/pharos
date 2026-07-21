@@ -106,10 +106,25 @@ public struct MeshReplicaRPCServer: Sendable {
                 guard request.body == nil, header.metadata == nil else {
                     throw MeshReplicaRPCError.invalidBody
                 }
-                let vector = try await store.syncVector(
+                var vector = try await store.syncVector(
                     for: header.trustGroupID, requestedBy: remoteEndpointID,
                     membershipEpoch: header.membershipEpoch
                 )
+                let peers = try await store.trustedDevices(
+                    in: header.trustGroupID,
+                    membershipEpoch: header.membershipEpoch
+                )
+                vector.trustRoster = peers
+                    .filter { $0.descriptor.endpointID != remoteEndpointID }
+                    .map {
+                        MeshTrustRosterEntry(
+                            descriptor: $0.descriptor,
+                            signingPublicKey: $0.signingPublicKey,
+                            addressTicket: $0.addressTicket
+                        )
+                    }
+                    .sorted { $0.descriptor.endpointID < $1.descriptor.endpointID }
+                try vector.validate()
                 return try success(for: header, body: try MeshReplicaRPCJSON.encode(vector))
 
             case .syncRange:
@@ -450,10 +465,21 @@ public struct MeshReplicaSyncSession: Sendable {
 
     private let store: DistributedMeshStore
     private let client: MeshReplicaRPCClient
+    private let remoteEndpointID: MeshEndpointID?
 
     public init(store: DistributedMeshStore, client: MeshReplicaRPCClient) {
+        self.init(
+            store: store, client: client, remoteEndpointID: nil
+        )
+    }
+
+    public init(
+        store: DistributedMeshStore, client: MeshReplicaRPCClient,
+        remoteEndpointID: MeshEndpointID?
+    ) {
         self.store = store
         self.client = client
+        self.remoteEndpointID = remoteEndpointID
     }
 
     public func synchronize(
@@ -468,6 +494,10 @@ public struct MeshReplicaSyncSession: Sendable {
               remote.membershipEpoch == membershipEpoch else {
             throw MeshReplicaRPCError.responseMismatch
         }
+        try await installControllerRoster(
+            remote.trustRoster,
+            group: group, membershipEpoch: membershipEpoch
+        )
 
         for _ in 0..<Self.maximumRangeRounds {
             let requests = try await store.missingRangeRequests(
@@ -513,6 +543,45 @@ public struct MeshReplicaSyncSession: Sendable {
             }
         }
         throw MeshReplicaRPCError.synchronizationLimitExceeded
+    }
+
+    private func installControllerRoster(
+        _ roster: [MeshTrustRosterEntry]?, group: MeshTrustGroupID,
+        membershipEpoch: UInt64
+    ) async throws {
+        guard let roster, !roster.isEmpty, let remoteEndpointID else { return }
+        guard let controller = try await store.trustedDevice(
+            in: group, endpointID: remoteEndpointID,
+            membershipEpoch: membershipEpoch
+        ), controller.descriptor.roles.contains(.controller) else { return }
+        for entry in roster {
+            let peer = MeshPairedDevice(
+                descriptor: entry.descriptor,
+                signingPublicKey: entry.signingPublicKey,
+                addressTicket: entry.addressTicket
+            )
+            do { try peer.validateBinding() }
+            catch { throw MeshReplicaRPCError.peerNotTrusted }
+            if let existing = try await store.trustedDevice(
+                in: group, id: peer.descriptor.id
+            ) {
+                guard existing.descriptor == peer.descriptor,
+                      existing.signingPublicKey == peer.signingPublicKey else {
+                    throw MeshReplicaRPCError.peerNotTrusted
+                }
+                if existing.addressTicket != peer.addressTicket {
+                    try await store.refreshTrustedDeviceAddress(
+                        in: group, endpointID: peer.descriptor.endpointID,
+                        membershipEpoch: membershipEpoch,
+                        addressTicket: peer.addressTicket
+                    )
+                }
+            } else {
+                try await store.installVerifiedPeer(
+                    peer, in: group, membershipEpoch: membershipEpoch
+                )
+            }
+        }
     }
 }
 

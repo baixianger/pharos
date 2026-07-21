@@ -16,20 +16,52 @@ public struct MeshAuthorSequence: Codable, Equatable, Sendable {
     }
 }
 
+/// Current-epoch trust material relayed by an already-authenticated controller.
+/// The Iroh connection authenticates the controller endpoint; recipients still
+/// validate every endpoint/public-key binding before installing a row.
+public struct MeshTrustRosterEntry: Codable, Equatable, Sendable {
+    public var descriptor: MeshDeviceDescriptor
+    public var signingPublicKey: Data
+    public var addressTicket: String
+
+    public init(
+        descriptor: MeshDeviceDescriptor, signingPublicKey: Data,
+        addressTicket: String
+    ) {
+        self.descriptor = descriptor
+        self.signingPublicKey = signingPublicKey
+        self.addressTicket = addressTicket
+    }
+}
+
 /// A compact anti-entropy summary. Authors are canonicalized by Endpoint ID so
 /// the same logical vector always has the same encoded representation.
 public struct MeshSyncVector: Codable, Equatable, Sendable {
     public static let maximumAuthors = 4_096
+    public static let maximumRosterEntries = 4_096
 
     public var trustGroupID: MeshTrustGroupID
     public var membershipEpoch: UInt64
     public var authors: [MeshAuthorSequence]
+    public var trustRoster: [MeshTrustRosterEntry]?
 
     public init(trustGroupID: MeshTrustGroupID, membershipEpoch: UInt64,
                 authors: [MeshAuthorSequence]) throws {
+        try self.init(
+            trustGroupID: trustGroupID, membershipEpoch: membershipEpoch,
+            authors: authors, trustRoster: nil
+        )
+    }
+
+    public init(trustGroupID: MeshTrustGroupID, membershipEpoch: UInt64,
+                authors: [MeshAuthorSequence],
+                trustRoster: [MeshTrustRosterEntry]?) throws {
         self.trustGroupID = trustGroupID
         self.membershipEpoch = membershipEpoch
         self.authors = authors.sorted { $0.endpointID < $1.endpointID }
+        self.trustRoster = trustRoster?.sorted {
+            $0.descriptor.endpointID < $1.descriptor.endpointID
+        }
         try validate()
     }
 
@@ -39,6 +71,9 @@ public struct MeshSyncVector: Codable, Equatable, Sendable {
         }
         guard authors.count <= Self.maximumAuthors else {
             throw MeshReplicationValidationError.tooManyAuthors
+        }
+        guard (trustRoster?.count ?? 0) <= Self.maximumRosterEntries else {
+            throw MeshReplicationValidationError.tooManyRosterEntries
         }
         var previous: MeshEndpointID?
         var seen: Set<MeshEndpointID> = []
@@ -51,6 +86,24 @@ public struct MeshSyncVector: Codable, Equatable, Sendable {
                 throw MeshReplicationValidationError.authorsNotCanonical
             }
             previous = author.endpointID
+        }
+        previous = nil
+        seen = []
+        var seenDevices: Set<MeshDeviceID> = []
+        for peer in trustRoster ?? [] {
+            guard !peer.signingPublicKey.isEmpty, !peer.addressTicket.isEmpty,
+                  !peer.descriptor.roles.isEmpty else {
+                throw MeshReplicationValidationError.invalidRosterEntry
+            }
+            let endpointID = peer.descriptor.endpointID
+            if !seen.insert(endpointID).inserted ||
+                !seenDevices.insert(peer.descriptor.id).inserted {
+                throw MeshReplicationValidationError.duplicateRosterEntry
+            }
+            if let previous, previous > endpointID {
+                throw MeshReplicationValidationError.rosterNotCanonical
+            }
+            previous = endpointID
         }
     }
 
@@ -196,6 +249,10 @@ public enum MeshReplicationValidationError: Error, Equatable, Sendable {
     case tooManyAuthors
     case duplicateAuthor
     case authorsNotCanonical
+    case tooManyRosterEntries
+    case invalidRosterEntry
+    case duplicateRosterEntry
+    case rosterNotCanonical
     case invalidRangeLimit
     case invalidRangeResponse
     case invalidField

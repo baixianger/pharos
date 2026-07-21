@@ -258,7 +258,8 @@ final class DistributedMeshSupport {
                 do {
                     let report = try await MeshReplicaSyncSession(
                         store: replica.store,
-                        client: MeshReplicaRPCClient(transport: transport)
+                        client: MeshReplicaRPCClient(transport: transport),
+                        remoteEndpointID: peer.descriptor.endpointID
                     ).synchronize(group: group, membershipEpoch: epoch)
                     received += report.eventCount + report.snapshotCount
                     connections[peer.descriptor.id] = MeshConnectionSnapshot(

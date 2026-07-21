@@ -438,7 +438,9 @@ private enum MeshHeadlessCLI {
                     }
                 )
             } else {
-                router = MeshReplicaRPCServer(store: replica.store)
+                router = MeshReplicaRPCServer(
+                    store: replica.store, hostIdentity: replica.identity
+                )
             }
             await runtime.startServing { request, remoteEndpointID in
                 if let pairing = try? MeshTrustPairingRPCRequest.decode(
@@ -525,7 +527,8 @@ private enum MeshHeadlessCLI {
                 )
                 let report = try await MeshReplicaSyncSession(
                     store: replica.store,
-                    client: MeshReplicaRPCClient(transport: transport)
+                    client: MeshReplicaRPCClient(transport: transport),
+                    remoteEndpointID: peer.descriptor.endpointID
                 ).synchronize(group: group, membershipEpoch: epoch)
                 let result = DistributedSyncResult(
                     peerDeviceID: peer.descriptor.id.rawValue.uuidString,
