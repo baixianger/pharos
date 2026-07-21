@@ -21,7 +21,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-crypto", from: "3.0.0"),
         .package(
             url: "https://github.com/baixianger/iroh-ffi",
-            revision: "3419293098201dc4ebd2f6d6d7116736396afc18"
+            revision: "79fae7d416c692e810e0f4c2e5470a7899d5452e"
         ),
     ],
     targets: [
