@@ -21,7 +21,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-crypto", from: "3.0.0"),
         .package(
             url: "https://github.com/baixianger/iroh-ffi",
-            revision: "9e3db2f53e4f4fe1634414ae997f80d9e23db106"
+            revision: "358722a7b30a72e9b0625c8bfdfaf940753a43f7"
         ),
     ],
     targets: [
@@ -42,8 +42,7 @@ let package = Package(
                 "PharosMeshProtocol",
                 .product(
                     name: "IrohLib",
-                    package: "iroh-ffi",
-                    condition: .when(platforms: [.macOS, .iOS])
+                    package: "iroh-ffi"
                 ),
             ],
             path: "Sources/PharosMeshIroh"
