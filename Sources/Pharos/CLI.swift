@@ -214,7 +214,18 @@ enum CLI {
             return 0
         }
         if DistributedAgentCLI.commands.contains(sub), !legacyBrokerEnabled {
-            return await DistributedAgentCLI.run(args)
+            var distributedArgs = args
+            if ["join", "send"].contains(sub),
+               !args.contains("--session"), !args.contains("--member"),
+               let sessionID = DistributedHookCLI.currentSessionID()
+                    ?? MeshHooks.currentSessionID() {
+                distributedArgs += ["--member", sessionID]
+                if sub == "join" {
+                    distributedArgs.removeLast(2)
+                    distributedArgs += ["--session", sessionID]
+                }
+            }
+            return await DistributedAgentCLI.run(distributedArgs)
         }
         if !legacyBrokerEnabled, sub == "unread", args.contains("--hook-stop") {
             return await DistributedHookCLI.run("stop", args: args)
@@ -230,6 +241,9 @@ enum CLI {
         }
         if !legacyBrokerEnabled, sub == "install-hooks" {
             return MeshHooks.installHooks(Array(args.dropFirst()))
+        }
+        if !legacyBrokerEnabled, sub == "spawn" {
+            return await runMeshSpawn(Array(args.dropFirst()))
         }
         if !legacyBrokerEnabled {
             print("error: '\(sub)' belongs to the retired Broker/Node CLI and is unavailable in distributed mode")
@@ -441,44 +455,7 @@ enum CLI {
         case "mark":
             return MeshHooks.mark(a)                // Claude Code state hooks (see MeshHooks)
         case "spawn":
-            // Spawn an agent into a room + confirm it joined (same path the GUI
-            // "add member" uses), locally or on the paired Mac over SSH.
-            guard a.count >= 2 else {
-                print("usage: pharos mesh spawn <room> <nick> [claude|codex] [--host <ssh>] [--cwd <dir> | --project <name>]")
-                return 2
-            }
-            var kind = AgentKind.claude
-            var host: String?
-            var cwd: String?
-            var projectName: String?
-            var i = 2
-            while i < a.count {
-                switch a[i] {
-                case "--host":
-                    guard i + 1 < a.count else { print("error: --host needs an SSH alias or IP"); return 2 }
-                    host = a[i + 1]; i += 2
-                case "--cwd", "--dir":
-                    guard i + 1 < a.count else { print("error: --cwd needs a directory path"); return 2 }
-                    cwd = a[i + 1]; i += 2
-                case "--project":
-                    guard i + 1 < a.count else { print("error: --project needs a project name"); return 2 }
-                    projectName = a[i + 1]; i += 2
-                default:
-                    if let parsed = AgentKind(rawValue: a[i]) { kind = parsed; i += 1 }
-                    else { print("error: expected claude, codex, --host, --cwd, or --project; got '\(a[i])'"); return 2 }
-                }
-            }
-            if cwd != nil, projectName != nil {
-                print("error: use either --cwd or --project, not both"); return 2
-            }
-            let workDir: MeshSpawn.WorkDir = cwd.map { .path($0) } ?? projectName.map { .project($0) } ?? .scratch
-            var final = MeshSpawn.Phase.failed
-            await MeshSpawn.spawn(room: a[0], nick: a[1], kind: kind,
-                                 host: host, workDir: workDir) { p in
-                print("[\(p.phase.rawValue)] \(p.detail)")
-                final = p.phase
-            }
-            return final == .joined ? 0 : 1
+            return await runMeshSpawn(a)
         case "poke":
             guard a.count == 2 else { print("usage: pharos mesh poke <room> <nick>"); return 2 }
             let response = MeshClient.send(MeshRequest(cmd: "poke", room: a[0], nick: a[1]))
@@ -494,6 +471,51 @@ enum CLI {
         default:
             print(legacyMeshUsage); return 2
         }
+    }
+
+    /// Shared local/SSH spawn workflow for both distributed product mode and
+    /// the explicit legacy diagnostic. Confirmation follows the active Mesh
+    /// runtime, so distributed mode reads replicated membership only.
+    private static func runMeshSpawn(_ args: [String]) async -> Int32 {
+        guard args.count >= 2 else {
+            print("usage: pharos mesh spawn <room> <nick> [claude|codex] [--host <ssh>] [--cwd <dir> | --project <name>]")
+            return 2
+        }
+        var kind = AgentKind.claude
+        var host: String?
+        var cwd: String?
+        var projectName: String?
+        var i = 2
+        while i < args.count {
+            switch args[i] {
+            case "--host":
+                guard i + 1 < args.count else { print("error: --host needs an SSH alias or IP"); return 2 }
+                host = args[i + 1]; i += 2
+            case "--cwd", "--dir":
+                guard i + 1 < args.count else { print("error: --cwd needs a directory path"); return 2 }
+                cwd = args[i + 1]; i += 2
+            case "--project":
+                guard i + 1 < args.count else { print("error: --project needs a project name"); return 2 }
+                projectName = args[i + 1]; i += 2
+            default:
+                if let parsed = AgentKind(rawValue: args[i]) { kind = parsed; i += 1 }
+                else { print("error: expected claude, codex, --host, --cwd, or --project; got '\(args[i])'"); return 2 }
+            }
+        }
+        if cwd != nil, projectName != nil {
+            print("error: use either --cwd or --project, not both"); return 2
+        }
+        let workDir: MeshSpawn.WorkDir = cwd.map { .path($0) }
+            ?? projectName.map { .project($0) } ?? .scratch
+        var final = MeshSpawn.Phase.failed
+        await MeshSpawn.spawn(
+            room: args[0], nick: args[1], kind: kind,
+            host: host, workDir: workDir
+        ) { progress in
+            print("[\(progress.phase.rawValue)] \(progress.detail)")
+            final = progress.phase
+        }
+        return final == .joined ? 0 : 1
     }
 
     /// Which coding agent is this CLI running inside? Claude Code exports
@@ -564,6 +586,7 @@ enum CLI {
       mark --hook                         structured lifecycle hook
       session-start [--silent]            record structured session identity
       install-hooks [--project DIR|--user|--codex]
+      spawn <room> <nick> [claude|codex] [--host SSH] [--cwd DIR|--project NAME]
 
     Pair devices from Pharos Settings. There is no Broker endpoint or Host node.
     """

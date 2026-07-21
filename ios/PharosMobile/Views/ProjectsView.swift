@@ -533,7 +533,7 @@ struct ProjectSummaryView: View {
 
     private func reload() async {
         guard let projects = await store.fetchProjectsOverMesh(),
-              let updated = projects.first(where: { $0.name == project.name }) else { return }
+              let updated = projects.first(where: { $0.id == project.id }) else { return }
         project = updated
     }
 }

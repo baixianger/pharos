@@ -439,6 +439,41 @@ public enum DistributedAgentCLIError: LocalizedError, Sendable {
 /// Hook adapter for the new architecture. It consumes only structured hook
 /// JSON, persists Host-local observations, and never reads terminal output.
 public enum DistributedHookCLI {
+    /// Resolve the current coding session from structured hook observations.
+    /// Pane/socket identity is exact when available; the cwd fallback supports
+    /// observations written by the first distributed rollout and only wins
+    /// when one live session matches.
+    public static func currentSessionID(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        rootURL: URL? = nil,
+        currentDirectory: String = FileManager.default.currentDirectoryPath
+    ) -> String? {
+        guard let root = rootURL ?? (try? MeshLocalReplica.defaultRootURL()) else { return nil }
+        let file = root.appendingPathComponent("agent-host-observations-v1.json")
+        guard let data = try? Data(contentsOf: file),
+              let document = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let sessions = document["sessions"] as? [String: Any] else { return nil }
+        let pane = environment["TMUX_PANE"]
+        let socket = environment["TMUX"].flatMap { value in
+            value.split(separator: ",", maxSplits: 1).first.map(String.init)
+        }
+        let cwd = currentDirectory
+        let candidates = sessions.compactMap { id, raw -> (String, Double, Bool, Bool)? in
+            guard let value = raw as? [String: Any],
+                  (value["state"] as? String) != "gone" else { return nil }
+            let exactPane = pane != nil && value["tmuxPane"] as? String == pane
+                && (value["tmuxSocket"] as? String) == socket
+            let exactCWD = value["cwd"] as? String == cwd
+            guard exactPane || exactCWD else { return nil }
+            return (id, value["updatedAt"] as? Double ?? 0, exactPane, exactCWD)
+        }
+        if let exact = candidates.filter(\.2).max(by: { $0.1 < $1.1 }) {
+            return exact.0
+        }
+        let cwdMatches = candidates.filter(\.3)
+        return cwdMatches.count == 1 ? cwdMatches[0].0 : nil
+    }
+
     public static func run(_ mode: String, args: [String]) async -> Int32 {
         do {
             let payload = readHookPayload()
@@ -455,9 +490,6 @@ public enum DistributedHookCLI {
             let agent = DistributedAgentChat(replica: replica, group: group)
             let messages = try await agent.receive(memberID: session)
             guard !messages.isEmpty else {
-                if mode == "post-tool", args.contains("--codex") {
-                    printJSON(["suppressOutput": true])
-                }
                 return 0
             }
             let memberships = try await agent.memberships(memberID: session)
@@ -467,15 +499,14 @@ public enum DistributedHookCLI {
                 postTool: mode == "post-tool"
             )
             if mode == "post-tool" {
-                var value: [String: Any] = [
+                let value: [String: Any] = [
                     "hookSpecificOutput": [
                         "hookEventName": "PostToolUse", "additionalContext": text,
                     ],
                 ]
-                if args.contains("--codex") { value["suppressOutput"] = true }
                 printJSON(value)
             } else if args.contains("--codex") {
-                printJSON(["decision": "block", "reason": text, "suppressOutput": true])
+                printJSON(["decision": "block", "reason": text])
             } else {
                 printJSON([
                     "hookSpecificOutput": [
@@ -527,7 +558,7 @@ public enum DistributedHookCLI {
             document = existing
         }
         var sessions = document["sessions"] as? [String: Any] ?? [:]
-        sessions[session] = [
+        var observation: [String: Any] = [
             "mode": mode,
             "event": payload["hook_event_name"] as? String ?? "SessionStart",
             "state": hookState(payload),
@@ -535,6 +566,14 @@ public enum DistributedHookCLI {
             "cwd": payload["cwd"] as? String ?? FileManager.default.currentDirectoryPath,
             "updatedAt": Date().timeIntervalSince1970,
         ]
+        if let pane = ProcessInfo.processInfo.environment["TMUX_PANE"] {
+            observation["tmuxPane"] = pane
+        }
+        if let value = ProcessInfo.processInfo.environment["TMUX"],
+           let socket = value.split(separator: ",", maxSplits: 1).first {
+            observation["tmuxSocket"] = String(socket)
+        }
+        sessions[session] = observation
         document["sessions"] = sessions
         let data = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
         try data.write(to: file, options: .atomic)

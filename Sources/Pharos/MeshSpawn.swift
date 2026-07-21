@@ -114,7 +114,8 @@ enum MeshSpawn {
         case .path:
             projectID = nil // explicit paths remain an SSH/local rescue path
         }
-        if let projectID, let node = MeshNodeControl.activeNode(for: host) {
+        if !PharosMeshRuntimeMode.usesDistributedMesh,
+           let projectID, let node = MeshNodeControl.activeNode(for: host) {
             let name = sessionName(room: room, nick: nick)
             onProgress(Progress(phase: .booting, detail: "asking Node \(node.host) to start \(kind.rawValue)…"))
             let command = await MeshNodeControl.spawn(
@@ -130,7 +131,7 @@ enum MeshSpawn {
             onProgress(Progress(phase: .joining, detail: "waiting for \(nick) to join \(room)…"))
             for _ in 0..<40 {
                 try? await Task.sleep(for: .seconds(1))
-                if didJoin(room: room, nick: nick) {
+                if await didJoin(room: room, nick: nick) {
                     onProgress(Progress(phase: .joined, detail: "joined \(room) via Node"))
                     return
                 }
@@ -139,9 +140,11 @@ enum MeshSpawn {
             return
         }
         if let host, !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            RemoteLaunch.spawnMeshAgent(room: room, nick: nick, kind: kind,
-                                        host: host.trimmingCharacters(in: .whitespacesAndNewlines),
-                                        workDir: workDir, onProgress: onProgress)
+            await RemoteLaunch.spawnMeshAgent(
+                room: room, nick: nick, kind: kind,
+                host: host.trimmingCharacters(in: .whitespacesAndNewlines),
+                workDir: workDir, onProgress: onProgress
+            )
         } else {
             await spawnLocal(room: room, nick: nick, kind: kind,
                              workDir: workDir, onProgress: onProgress)
@@ -202,7 +205,7 @@ enum MeshSpawn {
         // Confirm it actually joined (~40s).
         for _ in 0..<20 {
             usleep(2_000_000)
-            if didJoin(room: room, nick: nick) {
+            if await didJoin(room: room, nick: nick) {
                 onProgress(Progress(phase: .joined, detail: "joined \(room)")); return
             }
         }
@@ -210,8 +213,24 @@ enum MeshSpawn {
                             detail: "spawned but hasn't joined yet — check: tmux attach -t \(name)"))
     }
 
-    /// True once `nick` is a member of `room` per the broker.
-    static func didJoin(room: String, nick: String) -> Bool {
+    /// True once `nick` is materialized in `room`. Product mode reads the
+    /// shared local replica, so CLI and GUI confirmation never contacts the
+    /// retired Broker. Legacy diagnostic mode keeps its historical probe.
+    static func didJoin(room: String, nick: String) async -> Bool {
+        if PharosMeshRuntimeMode.usesDistributedMesh {
+            do {
+                let replica = try MeshLocalReplica.openDefault(headless: true)
+                let group = try await replica.ensureActiveTrustGroup()
+                let chat = DistributedAgentChat(replica: replica, group: group)
+                return try await chat.rooms().first(where: {
+                    $0.name.localizedCaseInsensitiveCompare(room) == .orderedSame
+                })?.members.contains(where: {
+                    $0.localizedCaseInsensitiveCompare(nick) == .orderedSame
+                }) == true
+            } catch {
+                return false
+            }
+        }
         let rooms = MeshClient.send(MeshRequest(cmd: "list")).rooms ?? []
         return rooms.first { $0.name == room }?.members.contains(nick) ?? false
     }

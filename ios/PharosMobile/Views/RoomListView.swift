@@ -43,7 +43,7 @@ struct RoomListView: View {
                     Label(store.error == nil ? "No rooms yet" : "Chat unavailable",
                           systemImage: store.error == nil ? "bubble.left.and.bubble.right" : "exclamationmark.triangle")
                 } description: {
-                    Text(store.error ?? "Connect to the Mesh Broker in Settings, or create your first room with +.")
+                    Text(store.error ?? emptyMessage)
                 } actions: {
                     if store.error != nil { Button("Try again") { Task { await store.refresh() } } }
                 }
@@ -58,6 +58,13 @@ struct RoomListView: View {
     private var filteredRooms: [MeshRoom] {
         guard !search.isEmpty else { return store.rooms }
         return store.rooms.filter { $0.name.localizedCaseInsensitiveContains(search) }
+    }
+
+    private var emptyMessage: String {
+        if PharosMeshRuntimeMode.usesDistributedMesh {
+            return "Create your first room with +, or pair a trusted device to receive replicated rooms."
+        }
+        return "Connect to the Mesh Broker in Settings, or create your first room with +."
     }
 }
 

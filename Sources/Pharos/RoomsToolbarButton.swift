@@ -94,10 +94,7 @@ struct RoomsToolbarButton: View {
             Spacer(minLength: 8)
             Button { addMemberTo = r; show = false } label: { Image(systemName: "person.badge.plus") }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
-                .disabled(distributedMesh.isProductModeEnabled)
-                .help(distributedMesh.isProductModeEnabled
-                      ? "Distributed Host spawning is being migrated"
-                      : "Add an agent to this room")
+                .help("Add an agent to this room")
             Button { manageMembersIn = r; show = false } label: { Image(systemName: "person.2") }
                 .buttonStyle(.plain).foregroundStyle(.secondary).help("Rename or remove members")
             Button { renameText = r; renaming = r } label: { Image(systemName: "pencil") }

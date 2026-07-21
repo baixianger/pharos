@@ -741,7 +741,7 @@ private struct CLISettingsTab: View {
                         : "Install failed — check ~/.codex/hooks.json (invalid JSON is never overwritten)."
                 }
                 .buttonStyle(.borderedProminent)
-                HelpBadge(text: "Codex ships structured lifecycle hooks: Stop handles unread + stopped, SessionStart records identity, UserPromptSubmit / PostToolUse report busy, and PermissionRequest reports blocked. PostToolUse output is suppressed when there is nothing to show. Codex still lacks Notification/SessionEnd, so idle is unavailable and Node liveness owns gone. Needs a recent Codex build (older ones only have `notify`).")
+                HelpBadge(text: "Codex ships structured lifecycle hooks: Stop handles unread + stopped, SessionStart records identity, UserPromptSubmit / PostToolUse report busy, and PermissionRequest reports blocked. Empty PostToolUse hooks stay silent. Codex still lacks Notification/SessionEnd, so idle is unavailable and Host-local liveness owns gone. Needs a recent Codex build (older ones only have `notify`).")
             }
             if let s = codexHookStatus {
                 Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

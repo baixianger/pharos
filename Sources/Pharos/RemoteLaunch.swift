@@ -253,7 +253,7 @@ enum RemoteLaunch {
     /// Blocking; callers run it off-main.
     static func spawnMeshAgent(room: String, nick: String, kind: AgentKind, host: String,
                                workDir: MeshSpawn.WorkDir = .scratch,
-                               onProgress: @escaping (MeshSpawn.Progress) -> Void) {
+                               onProgress: @escaping (MeshSpawn.Progress) -> Void) async {
         func fail(_ detail: String) {
             onProgress(.init(phase: .failed, detail: detail))
         }
@@ -356,7 +356,7 @@ enum RemoteLaunch {
 
         for _ in 0..<25 {
             pause(2)
-            if MeshSpawn.didJoin(room: room, nick: nick) {
+            if await MeshSpawn.didJoin(room: room, nick: nick) {
                 onProgress(.init(phase: .joined, detail: "joined \(room) from \(host)"))
                 return
             }

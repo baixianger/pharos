@@ -232,7 +232,8 @@ struct AgentDetailView: View {
                 }
             }
 
-            if (member.state ?? "").lowercased() != "gone" {
+            if !PharosMeshRuntimeMode.usesDistributedMesh,
+               (member.state ?? "").lowercased() != "gone" {
                 Section {
                     Button(role: .destructive) {
                         showingStopConfirm = true
@@ -244,7 +245,16 @@ struct AgentDetailView: View {
                     }
                     .disabled(isStopping)
                 } footer: {
-                    Text("Enqueues a stop command on \(member.host ?? "the agent's host"). Requires the host node to be online and a paired Broker.")
+                    Text("Enqueues a stop command on \(member.host ?? "the agent's host"). Requires the host node to be online and explicit legacy diagnostic mode.")
+                }
+            } else if PharosMeshRuntimeMode.usesDistributedMesh {
+                Section {
+                    Label("Stopping remote agents will appear here after this agent advertises a signed Host resource.",
+                          systemImage: "lock.shield")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } footer: {
+                    Text("Pharos does not fall back to Broker, Node, SSH, or inferred tmux routing in distributed mode.")
                 }
             }
         }

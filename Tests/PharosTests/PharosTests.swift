@@ -1332,7 +1332,7 @@ final class MeshStateMappingTests: XCTestCase {
         let codex = MeshHooks.continuationPayload(text: "hello", codex: true)
         XCTAssertEqual(codex["decision"] as? String, "block")
         XCTAssertEqual(codex["reason"] as? String, "hello")
-        XCTAssertEqual(codex["suppressOutput"] as? Bool, true)
+        XCTAssertNil(codex["suppressOutput"])
         XCTAssertNil(codex["hookSpecificOutput"])
     }
 

@@ -722,7 +722,9 @@ struct ManageRoomSheet: View {
                     }
                     .disabled(busy)
                 } footer: {
-                    Text("Deleting removes the room and its membership for everyone. Message history is retained by the Broker.")
+                    Text(PharosMeshRuntimeMode.usesDistributedMesh
+                         ? "Deleting replicates the room removal to every trusted device. Existing signed message events remain in replica history."
+                         : "Deleting removes the room and its membership for everyone. Message history is retained by the Broker.")
                 }
 
                 if let error = store.error {
