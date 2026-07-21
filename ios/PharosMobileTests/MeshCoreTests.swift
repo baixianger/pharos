@@ -156,16 +156,28 @@ struct MeshCoreTests {
                                         in: [one, two]) == nil)
     }
 
-    @Test func rosterAcceptsSameNickInMultipleRooms() {
+    @Test func rosterIndexesStableMemberIdentityAcrossRooms() {
         let older = MeshMember(id: "one", nick: "codex", project: nil, session: nil, host: nil,
                                tmuxPane: nil, state: nil, stateTs: nil, unread: nil, kind: "codex",
                                tailscaleIP: nil, rooms: ["a"], lastSeen: 1, nodeOnline: nil)
         let newer = MeshMember(id: "one", nick: "codex", project: nil, session: nil, host: nil,
                                tmuxPane: nil, state: nil, stateTs: nil, unread: nil, kind: "codex",
                                tailscaleIP: nil, rooms: ["a", "b"], lastSeen: 2, nodeOnline: nil)
-        let index = RosterIndex.byNick([older, newer])
+        let index = RosterIndex.byID([older, newer])
         #expect(index.count == 1)
-        #expect(index["codex"]?.rooms == ["a", "b"])
+        #expect(index["one"]?.rooms == ["a", "b"])
+    }
+
+    @Test func rosterKeepsDuplicateNicksAsSeparateStableIdentities() {
+        let first = MeshMember(
+            id: "session-a", nick: "codex", rooms: ["a"], lastSeen: 1
+        )
+        let second = MeshMember(
+            id: "session-b", nick: "codex", rooms: ["a"], lastSeen: 2
+        )
+        let index = RosterIndex.byID([first, second])
+        #expect(index.count == 2)
+        #expect(RosterIndex.idsByNick(index)["codex"] == Set(["session-a", "session-b"]))
     }
 
     @Test func attachCommandTargetsExactPaneSession() throws {

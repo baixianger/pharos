@@ -171,10 +171,16 @@ public enum MeshSessionState: String, Codable, Sendable {
 public struct MeshReply: Codable, Sendable, Equatable {
     public var messageID: String
     public var from: String
+    /// Stable replicated member identity. Legacy Broker replies omit it and
+    /// retain only the display-name snapshot in `from`.
+    public var authorMemberID: String?
     public var preview: String
     public var ts: Double
-    public init(messageID: String, from: String, preview: String, ts: Double) {
-        self.messageID = messageID; self.from = from; self.preview = preview; self.ts = ts
+    public init(messageID: String, from: String, authorMemberID: String? = nil,
+                preview: String, ts: Double) {
+        self.messageID = messageID; self.from = from
+        self.authorMemberID = authorMemberID
+        self.preview = preview; self.ts = ts
     }
 }
 
@@ -194,30 +200,63 @@ public struct MeshAttachment: Codable, Sendable, Hashable, Identifiable {
 public struct MeshMsg: Codable, Sendable, Equatable, Identifiable {
     public var id: String?
     public var from: String
+    /// Stable replicated member identity. `from` remains the immutable nick
+    /// snapshot used to render history after a member is renamed.
+    public var authorMemberID: String?
     public var room: String
     public var text: String
     public var ts: Double
     public var to: [String]
+    /// Stable recipients corresponding to the display snapshots in `to`.
+    /// Legacy Broker and imported v1 messages omit this field.
+    public var targetMemberIDs: [String]
     public var replyTo: MeshReply?
     public var attachments: [MeshAttachment]?
 
     public init(id: String? = nil, from: String, room: String, text: String, ts: Double,
-                to: [String], replyTo: MeshReply? = nil, attachments: [MeshAttachment]? = nil) {
-        self.id = id; self.from = from; self.room = room; self.text = text; self.ts = ts
-        self.to = to; self.replyTo = replyTo; self.attachments = attachments
+                to: [String], authorMemberID: String? = nil,
+                targetMemberIDs: [String] = [], replyTo: MeshReply? = nil,
+                attachments: [MeshAttachment]? = nil) {
+        self.id = id; self.from = from; self.authorMemberID = authorMemberID
+        self.room = room; self.text = text; self.ts = ts
+        self.to = to; self.targetMemberIDs = targetMemberIDs
+        self.replyTo = replyTo; self.attachments = attachments
     }
 
-    private enum CodingKeys: String, CodingKey { case id, from, room, text, ts, to, replyTo, attachments }
+    private enum CodingKeys: String, CodingKey {
+        case id, from, authorMemberID, room, text, ts, to, targetMemberIDs,
+             replyTo, attachments
+    }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decodeIfPresent(String.self, forKey: .id)
         from = try values.decode(String.self, forKey: .from)
+        authorMemberID = try values.decodeIfPresent(String.self, forKey: .authorMemberID)
         room = try values.decode(String.self, forKey: .room)
         text = try values.decode(String.self, forKey: .text)
         ts = try values.decode(Double.self, forKey: .ts)
         to = try values.decodeIfPresent([String].self, forKey: .to) ?? []
+        targetMemberIDs = try values.decodeIfPresent(
+            [String].self, forKey: .targetMemberIDs
+        ) ?? []
         replyTo = try values.decodeIfPresent(MeshReply.self, forKey: .replyTo)
         attachments = try values.decodeIfPresent([MeshAttachment].self, forKey: .attachments)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encodeIfPresent(id, forKey: .id)
+        try values.encode(from, forKey: .from)
+        try values.encodeIfPresent(authorMemberID, forKey: .authorMemberID)
+        try values.encode(room, forKey: .room)
+        try values.encode(text, forKey: .text)
+        try values.encode(ts, forKey: .ts)
+        try values.encode(to, forKey: .to)
+        if !targetMemberIDs.isEmpty {
+            try values.encode(targetMemberIDs, forKey: .targetMemberIDs)
+        }
+        try values.encodeIfPresent(replyTo, forKey: .replyTo)
+        try values.encodeIfPresent(attachments, forKey: .attachments)
     }
     public var stableID: String { id ?? "legacy|\(room)|\(ts)|\(from)" }
     public var date: Date { Date(timeIntervalSince1970: ts) }
@@ -226,20 +265,37 @@ public struct MeshMsg: Codable, Sendable, Equatable, Identifiable {
 public struct MeshRoomInfo: Codable, Sendable, Equatable, Identifiable, Hashable {
     public var name: String
     public var members: [String]
+    /// Stable membership identities. Legacy Broker responses omit them and
+    /// expose only the display aliases in `members`.
+    public var memberIDs: [String]
     /// Stable distributed entity identity. Legacy Broker responses omit it and
     /// continue to identify rooms by name during rollback.
     public var replicaID: String?
     public var id: String { replicaID ?? name }
-    public init(name: String, members: [String], replicaID: String? = nil) {
-        self.name = name; self.members = members; self.replicaID = replicaID
+    public init(name: String, members: [String], memberIDs: [String] = [],
+                replicaID: String? = nil) {
+        self.name = name; self.members = members
+        self.memberIDs = memberIDs; self.replicaID = replicaID
     }
 
-    private enum CodingKeys: String, CodingKey { case name, members, replicaID }
+    private enum CodingKeys: String, CodingKey { case name, members, memberIDs, replicaID }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         name = try values.decode(String.self, forKey: .name)
         members = try values.decodeIfPresent([String].self, forKey: .members) ?? []
+        memberIDs = try values.decodeIfPresent([String].self, forKey: .memberIDs) ?? []
         replicaID = try values.decodeIfPresent(String.self, forKey: .replicaID)
+    }
+
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(name, forKey: .name)
+        try values.encode(members, forKey: .members)
+        if !memberIDs.isEmpty {
+            try values.encode(memberIDs, forKey: .memberIDs)
+        }
+        try values.encodeIfPresent(replicaID, forKey: .replicaID)
     }
 }
 

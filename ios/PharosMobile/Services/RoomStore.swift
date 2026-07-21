@@ -70,7 +70,7 @@ final class RoomStore {
                         distributedMember($0, room: room.name)
                     })
                 }
-                members = RosterIndex.byNick(allMemberships)
+                members = RosterIndex.byID(allMemberships)
                 if let selectedRoom,
                    !nextRooms.contains(where: { $0.name == selectedRoom }) {
                     self.selectedRoom = nil
@@ -98,7 +98,7 @@ final class RoomStore {
             async let roster = request(MeshRequest(cmd: "who"))
             let (listResponse, rosterResponse) = try await (list, roster)
             let nextRooms = listResponse.rooms ?? []
-            let nextMembers = RosterIndex.byNick(rosterResponse.members ?? [])
+            let nextMembers = RosterIndex.byID(rosterResponse.members ?? [])
             if rooms != nextRooms { rooms = nextRooms }
             if members != nextMembers { members = nextMembers }
             // Drop a selection whose room disappeared, but never force-select a
@@ -265,6 +265,7 @@ final class RoomStore {
                     replyTo: replyTo.map {
                         MeshReply(
                             messageID: $0.stableID, from: $0.from,
+                            authorMemberID: $0.authorMemberID,
                             preview: String($0.text.prefix(160)), ts: $0.ts
                         )
                     }, attachments: attachments
@@ -890,6 +891,29 @@ final class RoomStore {
 
     private func roomInfo(named name: String) -> MeshRoom? {
         rooms.first { $0.name == name }
+    }
+
+    /// Resolve room membership by stable IDs. Legacy Broker rooms carry only
+    /// aliases, so their compatibility path expands an alias to every matching
+    /// member instead of choosing one arbitrarily.
+    func members(in room: MeshRoom) -> [MeshMember] {
+        let resolved: [MeshMember]
+        if !room.memberIDs.isEmpty {
+            resolved = room.memberIDs.compactMap { members[$0] }
+        } else {
+            resolved = room.members.flatMap {
+                RosterIndex.matching(nick: $0, in: members)
+            }
+        }
+        return Dictionary(
+            resolved.map { ($0.id, $0) }, uniquingKeysWith: { current, _ in current }
+        ).values.sorted { $0.id < $1.id }
+    }
+
+    func member(for message: MeshMessage) -> MeshMember? {
+        if let id = message.authorMemberID { return members[id] }
+        let matches = RosterIndex.matching(nick: message.from, in: members)
+        return matches.count == 1 ? matches[0] : nil
     }
 
     private func distributedMember(

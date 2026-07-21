@@ -679,7 +679,7 @@ private enum MeshHeadlessCLI {
         case "room-send":
             guard args.count >= 4 else {
                 return usageError(
-                    "distributed room-send ROOM FROM TEXT [--to NICK,NICK] " +
+                    "distributed room-send ROOM MEMBER-ID TEXT [--to NICK-OR-ID,...] " +
                     "--data-dir ABSOLUTE-PATH"
                 )
             }
@@ -702,7 +702,8 @@ private enum MeshHeadlessCLI {
                 attachments.append(attachment)
             }
             let message = try await chat.send(
-                room: room, from: args[2], text: args[3], to: targets,
+                room: room, fromMemberID: args[2], text: args[3],
+                toMemberIDs: try await chat.memberIDs(in: room, matching: targets),
                 attachments: attachments
             )
             print(String(decoding: try sortedJSON(message), as: UTF8.self))

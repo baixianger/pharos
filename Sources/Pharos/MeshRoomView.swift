@@ -32,6 +32,13 @@ struct MeshRoomView: View {
     @State private var issueRef: IssueRef?
     @State private var loading = false
     private var membersInfo: [String: MeshMemberInfo] { membersInfoByRoom[room] ?? [:] }
+    private func memberInfo(id: String? = nil, nick: String) -> MeshMemberInfo? {
+        if let id, let exact = membersInfo[id] { return exact }
+        let matches = membersInfo.values.filter {
+            $0.nick.localizedCaseInsensitiveCompare(nick) == .orderedSame
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
     @State private var resolving = false
     @State private var resolved = false
     private struct IssueRef: Identifiable { let project: String; let number: Int; var id: String { "\(project)#\(number)" } }
@@ -240,9 +247,12 @@ struct MeshRoomView: View {
     /// right-aligned. The avatar doubles as the member's live status display
     /// (gray = offline/gone, badge dot = busy/blocked/ready).
     private func row(_ m: MeshMsg) -> some View {
-        let mine = m.from == "human"
+        let mine = m.authorMemberID?.hasPrefix("human@") == true ||
+            (m.authorMemberID == nil && m.from == "human")
         return HStack(alignment: .top, spacing: 8) {
-            if mine { Spacer(minLength: 60) } else { avatar(m.from) }
+            if mine { Spacer(minLength: 60) } else {
+                avatar(m.from, memberID: m.authorMemberID)
+            }
             VStack(alignment: mine ? .trailing : .leading, spacing: 3) {
                 // Identity/avatar row — the reply icon lives here, flat, at the
                 // outer edge: right of the header for incoming, left for own.
@@ -275,7 +285,8 @@ struct MeshRoomView: View {
                     }
                 }
             }
-            if mine { avatar(m.from) } else { Spacer(minLength: 60) }
+            if mine { avatar(m.from, memberID: m.authorMemberID) }
+            else { Spacer(minLength: 60) }
         }
         .frame(maxWidth: .infinity, alignment: mine ? .trailing : .leading)
         .contextMenu {
@@ -428,9 +439,10 @@ struct MeshRoomView: View {
     /// Pixel avatar on a per-nick tinted circle. The pose tracks the member's
     /// live state (working/idle/dozing/alarmed/asleep) and the sprite set tracks
     /// its agent kind (Claude → Clawd, Codex → blue robot); gray = gone/unknown.
-    private func avatar(_ nick: String) -> some View {
-        let human = nick == "human"
-        let info = membersInfo[nick]
+    private func avatar(_ nick: String, memberID: String? = nil) -> some View {
+        let human = memberID?.hasPrefix("human@") == true ||
+            (memberID == nil && nick == "human")
+        let info = memberInfo(id: memberID, nick: nick)
         let state = MeshSessionState(rawValue: info?.state ?? "")
         let offline = !human && (info == nil || state == .gone)
         return Circle()
@@ -581,6 +593,7 @@ struct MeshRoomView: View {
         let query = tok.dropFirst().lowercased()
         var pool = membersByRoom[room] ?? []
         for m in messages where !pool.contains(m.from) { pool.append(m.from) }
+        pool = uniqueNicks(pool)
         pool.removeAll { $0 == "human" }
         pool.removeAll { !isLiveMember($0) }
         let hits = query.isEmpty ? pool : pool.filter { $0.lowercased().hasPrefix(query) }
@@ -594,16 +607,28 @@ struct MeshRoomView: View {
     private func isLiveMember(_ nick: String) -> Bool {
         let info = membersInfo
         guard !info.isEmpty else { return true }
-        guard let member = info[nick] else { return false }
-        return MeshSessionState(rawValue: member.state ?? "") != .gone
+        let matches = info.values.filter {
+            $0.nick.localizedCaseInsensitiveCompare(nick) == .orderedSame
+        }
+        return matches.contains {
+            MeshSessionState(rawValue: $0.state ?? "") != .gone
+        }
     }
 
     /// Live, non-human room members shown as one-tap @-mention chips above the
     /// input (mirrors the iOS member strip).
     private var mentionableMembers: [String] {
         var pool = membersByRoom[room] ?? []
+        pool = uniqueNicks(pool)
         pool.removeAll { $0 == "human" || !isLiveMember($0) }
         return pool.sorted()
+    }
+
+    /// One display alias is enough even when it expands to several stable
+    /// member IDs at send time. It also keeps SwiftUI list identity unique.
+    private func uniqueNicks(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.filter { seen.insert($0.lowercased()).inserted }
     }
 
     private func insertMentionChip(_ nick: String) {
@@ -618,7 +643,7 @@ struct MeshRoomView: View {
                 ForEach(mentionableMembers, id: \.self) { nick in
                     Button { insertMentionChip(nick) } label: {
                         HStack(spacing: 5) {
-                            if let dot = Self.statusDot(membersInfo[nick]?.state) {
+                            if let dot = Self.statusDot(memberInfo(nick: nick)?.state) {
                                 Circle().fill(dot).frame(width: 6, height: 6)
                             }
                             Text("@\(nick)").font(.caption)
@@ -669,10 +694,10 @@ struct MeshRoomView: View {
                         Image(systemName: "at").font(.caption).foregroundStyle(.secondary)
                         Text(nick).font(.callout)
                         Spacer(minLength: 0)
-                        if let dot = Self.statusDot(membersInfo[nick]?.state) {
+                        if let dot = Self.statusDot(memberInfo(nick: nick)?.state) {
                             Circle().fill(dot).frame(width: 7, height: 7)
                         }
-                        Text(membersInfo[nick]?.state ?? "offline")
+                        Text(memberInfo(nick: nick)?.state ?? "offline")
                             .font(.caption2).foregroundStyle(.tertiary)
                     }
                     .padding(.horizontal, 8).padding(.vertical, 4)
@@ -827,6 +852,7 @@ struct MeshRoomView: View {
                         replyTo: reply.map {
                             MeshReply(
                                 messageID: $0.stableID, from: $0.from,
+                                authorMemberID: $0.authorMemberID,
                                 preview: String($0.text.prefix(160)), ts: $0.ts
                             )
                         }, attachments: attachments
@@ -887,7 +913,7 @@ struct MeshRoomView: View {
                         nextMembers[roomInfo.name] = roomMembers.map(\.nick)
                         nextInfo[roomInfo.name] = Dictionary(
                             uniqueKeysWithValues: roomMembers.map { member in
-                                (member.nick, MeshMemberInfo(
+                                (member.id, MeshMemberInfo(
                                     id: member.id, nick: member.nick,
                                     state: "gone", rooms: [roomInfo.name],
                                     lastSeen: 0, nodeOnline: nil
@@ -1020,7 +1046,7 @@ struct MeshRoomView: View {
             let roster = MeshClient.send(MeshRequest(cmd: "who")).members ?? []
             var info: [String: [String: MeshMemberInfo]] = [:]
             for member in roster {
-                for room in member.rooms { info[room, default: [:]][member.nick] = member }
+                for room in member.rooms { info[room, default: [:]][member.id] = member }
             }
             let pick = selected.isEmpty || !names.contains(selected) ? (names.first ?? "") : selected
             let msgs: [MeshMsg] = pick.isEmpty ? []

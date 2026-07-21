@@ -16,7 +16,7 @@ struct RoomListView: View {
                         } label: {
                             RoomRow(
                                 room: room,
-                                members: room.members.compactMap { store.members[$0] },
+                                members: store.members(in: room),
                                 isSelected: selection == room.name
                             )
                         }

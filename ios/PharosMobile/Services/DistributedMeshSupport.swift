@@ -344,8 +344,12 @@ final class DistributedMeshSupport {
         _ text: String, in room: MeshRoomInfo, to: [String],
         replyTo: MeshReply? = nil, attachments: [MeshAttachment] = []
     ) async throws -> MeshMsg {
-        try await requireChatRegistry().send(
-            room: room, from: "human", text: text, to: to,
+        let registry = try requireChatRegistry()
+        let author = try await registry.localHumanMember(in: room)
+        let targetMemberIDs = try await registry.memberIDs(in: room, matching: to)
+        return try await registry.send(
+            room: room, fromMemberID: author.id, text: text,
+            toMemberIDs: targetMemberIDs,
             replyTo: replyTo, attachments: attachments
         )
     }

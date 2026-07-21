@@ -33,11 +33,17 @@ public actor DistributedChatRegistry {
         let records = try await roomRecords()
         let memberships = try await membershipRecords()
         return records.map { room in
-            MeshRoomInfo(
+            let roomMemberships = memberships
+                .filter { $0.roomID == room.id }
+                .sorted {
+                    let order = $0.nick.localizedCaseInsensitiveCompare($1.nick)
+                    return order == .orderedSame
+                        ? $0.memberID < $1.memberID : order == .orderedAscending
+                }
+            return MeshRoomInfo(
                 name: room.name,
-                members: memberships
-                    .filter { $0.roomID == room.id }
-                    .map(\.nick).sorted(),
+                members: roomMemberships.map(\.nick),
+                memberIDs: roomMemberships.map(\.memberID),
                 replicaID: room.id
             )
         }.sorted {
@@ -59,6 +65,39 @@ public actor DistributedChatRegistry {
             }
     }
 
+    /// Returns every stable member identity matching a mention token. Exact
+    /// IDs win; a display alias intentionally expands to all matching members
+    /// so duplicate nicks can never be silently collapsed to one recipient.
+    public func memberIDs(
+        in room: MeshRoomInfo, matching aliasesOrIDs: [String]
+    ) async throws -> [String] {
+        let record = try await resolveRoom(room)
+        let members = try await membershipRecords().filter { $0.roomID == record.id }
+        var result = Set<String>()
+        for value in aliasesOrIDs {
+            if let exact = members.first(where: { $0.memberID == value }) {
+                result.insert(exact.memberID)
+                continue
+            }
+            for member in members where
+                member.nick.localizedCaseInsensitiveCompare(value) == .orderedSame {
+                result.insert(member.memberID)
+            }
+        }
+        return result.sorted()
+    }
+
+    /// Stable identity for the human using this replica. Each trusted device
+    /// has its own member ID; `human` is only the shared display alias.
+    public func localHumanMember(in room: MeshRoomInfo) async throws -> DistributedChatMember {
+        let memberID = Self.humanMemberID(deviceID: replica.identity.deviceID)
+        if let existing = try await members(in: room).first(where: { $0.id == memberID }) {
+            return existing
+        }
+        try await join(room: room, nick: "human", memberID: memberID)
+        return DistributedChatMember(id: memberID, nick: "human")
+    }
+
     @discardableResult
     public func createRoom(named rawName: String) async throws -> MeshRoomInfo {
         let name = try Self.validName(rawName)
@@ -76,10 +115,12 @@ public actor DistributedChatRegistry {
             "name": try Self.encode(name),
             "createdAt": try Self.encode(Date().timeIntervalSince1970),
         ], on: entity)
-        try await join(roomID: roomID, nick: "human", memberID: Self.humanMemberID(
-            deviceID: replica.identity.deviceID
-        ))
-        return MeshRoomInfo(name: name, members: ["human"], replicaID: roomID)
+        let humanID = Self.humanMemberID(deviceID: replica.identity.deviceID)
+        try await join(roomID: roomID, nick: "human", memberID: humanID)
+        return MeshRoomInfo(
+            name: name, members: ["human"], memberIDs: [humanID],
+            replicaID: roomID
+        )
     }
 
     public func renameRoom(_ room: MeshRoomInfo, to rawName: String) async throws {
@@ -140,21 +181,36 @@ public actor DistributedChatRegistry {
 
     @discardableResult
     public func send(
-        room: MeshRoomInfo, from: String, text: String,
-        to: [String] = [], replyTo: MeshReply? = nil,
+        room: MeshRoomInfo, fromMemberID: String, text: String,
+        toMemberIDs: [String] = [], replyTo: MeshReply? = nil,
         attachments: [MeshAttachment] = [],
         sentAt: Date = Date()
     ) async throws -> MeshMsg {
         let record = try await resolveRoom(room)
+        let memberships = try await membershipRecords().filter { $0.roomID == record.id }
+        guard let authorMembership = memberships.first(where: {
+            $0.memberID == fromMemberID
+        }) else {
+            throw DistributedChatRegistryError.memberNotFound
+        }
+        let targets = Set(toMemberIDs)
+        let targetMembers = memberships
+            .filter { targets.contains($0.memberID) }
+            .sorted { $0.memberID < $1.memberID }
+        guard targetMembers.count == targets.count else {
+            throw DistributedChatRegistryError.memberNotFound
+        }
         let messageID = UUID().uuidString
         guard let entity = MeshEntityReference(type: .message, id: messageID) else {
             throw DistributedChatRegistryError.invalidEntity
         }
-        let payload = DistributedMessagePayload(
-            version: 1, roomID: record.id, roomName: record.name,
-            from: try Self.validName(from), text: text,
+        let payload = DistributedMessagePayloadV2(
+            version: 2, roomID: record.id, roomName: record.name,
+            authorMemberID: authorMembership.memberID,
+            authorNickSnapshot: authorMembership.nick, text: text,
             timestamp: sentAt.timeIntervalSince1970,
-            targets: Array(Set(to)).sorted(), replyTo: replyTo,
+            targetMemberIDs: targetMembers.map(\.memberID),
+            targetNickSnapshots: targetMembers.map(\.nick), replyTo: replyTo,
             attachments: attachments
         )
         _ = try await author.putImmutable(try Self.encode(payload), on: entity)
@@ -172,7 +228,12 @@ public actor DistributedChatRegistry {
             guard let value = try await replica.store.materializedImmutableValue(
                 for: entity, in: group
             ) else { continue }
-            if let payload = try? Self.decode(DistributedMessagePayload.self, from: value),
+            if let payload = try? Self.decode(DistributedMessagePayloadV2.self, from: value),
+               payload.version == 2, payload.roomID == record.id {
+                result.append(payload.message(id: entity.id, currentRoomName: record.name))
+                continue
+            }
+            if let payload = try? Self.decode(DistributedMessagePayloadV1.self, from: value),
                payload.version == 1, payload.roomID == record.id {
                 result.append(payload.message(id: entity.id, currentRoomName: record.name))
                 continue
@@ -421,7 +482,31 @@ private struct MembershipRecord: Sendable {
     var nick: String
 }
 
-private struct DistributedMessagePayload: Codable, Sendable {
+private struct DistributedMessagePayloadV2: Codable, Sendable {
+    var version: Int
+    var roomID: String
+    var roomName: String
+    var authorMemberID: String
+    var authorNickSnapshot: String
+    var text: String
+    var timestamp: Double
+    var targetMemberIDs: [String]
+    var targetNickSnapshots: [String]
+    var replyTo: MeshReply?
+    var attachments: [MeshAttachment]
+
+    func message(id: String, currentRoomName: String) -> MeshMsg {
+        MeshMsg(
+            id: id, from: authorNickSnapshot, room: currentRoomName, text: text,
+            ts: timestamp, to: targetNickSnapshots,
+            authorMemberID: authorMemberID, targetMemberIDs: targetMemberIDs,
+            replyTo: replyTo,
+            attachments: attachments.isEmpty ? nil : attachments
+        )
+    }
+}
+
+private struct DistributedMessagePayloadV1: Codable, Sendable {
     var version: Int
     var roomID: String
     var roomName: String

@@ -149,7 +149,7 @@ struct ConversationView: View {
         case .message(let id, let message, let showsHeader):
             MessageRow(
                 message: message,
-                member: store.members[message.from],
+                member: store.member(for: message),
                 showsHeader: showsHeader,
                 onReply: {
                     replyingTo = message
@@ -337,9 +337,8 @@ struct ConversationView: View {
     /// be poked, so surfacing it in the mention strip is misleading.
     private var availableMembers: [MeshMember] {
         guard let room = store.rooms.first(where: { $0.name == store.selectedRoom }) else { return [] }
-        return room.members
-            .filter { $0 != "human" }
-            .compactMap { store.members[$0] }
+        return store.members(in: room)
+            .filter { $0.nick != "human" }
             .filter { ($0.state.flatMap(MeshSessionState.init(rawValue:))) != .gone }
             .sorted { $0.nick.localizedCaseInsensitiveCompare($1.nick) == .orderedAscending }
     }
@@ -462,7 +461,10 @@ struct ConversationView: View {
         guard index > 0 else { return true }
         let current = store.messages[index]
         let previous = store.messages[index - 1]
-        return current.from != previous.from || current.date.timeIntervalSince(previous.date) > 5 * 60
+        let currentAuthor = current.authorMemberID ?? "legacy:\(current.from)"
+        let previousAuthor = previous.authorMemberID ?? "legacy:\(previous.from)"
+        return currentAuthor != previousAuthor ||
+            current.date.timeIntervalSince(previous.date) > 5 * 60
     }
 
     private func startsNewDay(at index: Int) -> Bool {
@@ -665,7 +667,7 @@ struct ManageRoomSheet: View {
 
     private var members: [MeshMember] {
         guard let room = store.rooms.first(where: { $0.name == roomName }) else { return [] }
-        return room.members.compactMap { store.members[$0] }
+        return store.members(in: room)
     }
 
     var body: some View {

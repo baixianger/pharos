@@ -84,22 +84,25 @@ public actor DistributedAgentChat {
             membership = only
         }
         let reply = try await reply(for: replyToID, in: membership.room)
+        let targetMemberIDs = try await chat.memberIDs(
+            in: membership.room, matching: targets
+        )
         return try await chat.send(
-            room: membership.room, from: membership.member.nick, text: text,
-            to: targets, replyTo: reply, attachments: attachments
+            room: membership.room, fromMemberID: membership.member.id,
+            text: text, toMemberIDs: targetMemberIDs,
+            replyTo: reply, attachments: attachments
         )
     }
 
     @discardableResult
     public func say(
-        room name: String, nick: String, text: String, targets: [String] = [],
+        room name: String, memberID: String, text: String, targets: [String] = [],
         replyToID: String? = nil, attachments: [MeshAttachment] = []
     ) async throws -> MeshMsg {
-        let room = try await room(named: name)
-        let reply = try await reply(for: replyToID, in: room)
-        return try await chat.send(
-            room: room, from: nick, text: text, to: targets,
-            replyTo: reply, attachments: attachments
+        try await send(
+            text: text, memberID: memberID, roomName: name,
+            targets: targets, replyToID: replyToID,
+            attachments: attachments
         )
     }
 
@@ -140,9 +143,12 @@ public actor DistributedAgentChat {
             let nick = membership.member.nick
             delivered += try await chat.messages(in: membership.room).filter {
                 !alreadySeen.contains($0.stableID) &&
-                $0.from != nick && $0.to.contains(where: {
-                    $0.localizedCaseInsensitiveCompare(nick) == .orderedSame
-                })
+                ($0.authorMemberID.map { $0 != memberID } ?? ($0.from != nick)) &&
+                (!$0.targetMemberIDs.isEmpty
+                    ? $0.targetMemberIDs.contains(memberID)
+                    : $0.to.contains(where: {
+                        $0.localizedCaseInsensitiveCompare(nick) == .orderedSame
+                    }))
             }
         }
         delivered.sort { $0.ts == $1.ts ? $0.stableID < $1.stableID : $0.ts < $1.ts }
@@ -167,6 +173,7 @@ public actor DistributedAgentChat {
         }) else { return nil }
         return MeshReply(
             messageID: message.stableID, from: message.from,
+            authorMemberID: message.authorMemberID,
             preview: message.text, ts: message.ts
         )
     }
@@ -268,12 +275,15 @@ public enum DistributedAgentCLI {
                 _ = try await agent.join(room: args[1], nick: args[2], memberID: memberID)
                 print("joined \(args[1]) as \(args[2])")
             case "say":
-                guard args.count >= 4 else {
-                    return usage("say <room> <nick> <text> [--member ID] [--reply ID] [--attach FILE]")
+                guard args.count >= 4,
+                      let memberID = option("--member", in: args)
+                        ?? ProcessInfo.processInfo.environment["PHAROS_MESH_SESSION"],
+                      !memberID.isEmpty else {
+                    return usage("say <room> <nick> <text> --member ID [--reply ID] [--attach FILE]")
                 }
                 let attachments = try await attachments(in: args, replica: replica, group: group)
                 _ = try await agent.say(
-                    room: args[1], nick: args[2], text: args[3],
+                    room: args[1], memberID: memberID, text: args[3],
                     targets: targets(in: args, text: args[3]),
                     replyToID: option("--reply", in: args), attachments: attachments
                 )

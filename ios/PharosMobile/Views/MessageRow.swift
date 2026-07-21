@@ -164,7 +164,10 @@ struct MessageRow: View {
         .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 13))
     }
 
-    private var isHuman: Bool { message.from == "human" }
+    private var isHuman: Bool {
+        message.authorMemberID?.hasPrefix("human@") == true ||
+            (message.authorMemberID == nil && message.from == "human")
+    }
     private var displayName: String { isHuman ? "You" : message.from }
 
     private var kindLabel: String? {

@@ -30,14 +30,26 @@ enum MentionParser {
 }
 
 enum RosterIndex {
-    /// `who` returns one row per room membership, so an agent joined to several
-    /// rooms legitimately appears more than once. Keep its newest presence row
-    /// instead of using Dictionary(uniqueKeysWithValues:), which traps.
-    static func byNick(_ members: [MeshMember]) -> [String: MeshMember] {
+    /// Stable agent identity is the member/session ID. `who` can return one row
+    /// per room membership, so keep the newest row for the same ID without
+    /// collapsing two different agents that happen to share a nick.
+    static func byID(_ members: [MeshMember]) -> [String: MeshMember] {
         members.reduce(into: [:]) { result, member in
-            if result[member.nick] == nil || member.lastSeen >= result[member.nick]!.lastSeen {
-                result[member.nick] = member
+            if result[member.id] == nil || member.lastSeen >= result[member.id]!.lastSeen {
+                result[member.id] = member
             }
         }
+    }
+
+    /// Display aliases are a secondary multi-index, never an identity map.
+    static func idsByNick(_ membersByID: [String: MeshMember]) -> [String: Set<String>] {
+        membersByID.values.reduce(into: [:]) { result, member in
+            result[member.nick.lowercased(), default: []].insert(member.id)
+        }
+    }
+
+    static func matching(nick: String, in membersByID: [String: MeshMember]) -> [MeshMember] {
+        let ids = idsByNick(membersByID)[nick.lowercased()] ?? []
+        return ids.compactMap { membersByID[$0] }.sorted { $0.id < $1.id }
     }
 }

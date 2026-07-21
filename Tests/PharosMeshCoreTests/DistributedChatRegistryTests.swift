@@ -2,6 +2,8 @@ import Foundation
 import XCTest
 @testable import PharosMeshCore
 import PharosMeshIdentity
+import PharosMeshProtocol
+import PharosMeshReplica
 
 final class DistributedChatRegistryTests: XCTestCase {
     func testAgentDeliveryUsesStableMembershipAndDeviceLocalExactOnceReceipts() async throws {
@@ -15,13 +17,15 @@ final class DistributedChatRegistryTests: XCTestCase {
         _ = try await agent.join(
             room: "pharos-dev", nick: "builder", memberID: "session-stable"
         )
+        let room = try await agent.room(named: "pharos-dev")
+        let human = try await registry.localHumanMember(in: room)
 
         _ = try await agent.say(
-            room: "pharos-dev", nick: "human", text: "direct",
+            room: "pharos-dev", memberID: human.id, text: "direct",
             targets: ["builder"]
         )
         _ = try await agent.say(
-            room: "pharos-dev", nick: "human", text: "ambient"
+            room: "pharos-dev", memberID: human.id, text: "ambient"
         )
 
         let first = try await agent.receive(memberID: "session-stable")
@@ -54,13 +58,16 @@ final class DistributedChatRegistryTests: XCTestCase {
 
         let created = try await chat.createRoom(named: "pharos-dev")
         try await chat.join(room: created, nick: "builder", memberID: "session-1")
+        let human = try await chat.localHumanMember(in: created)
         let first = try await chat.send(
-            room: created, from: "human", text: "ship it",
-            to: ["builder"], sentAt: Date(timeIntervalSince1970: 10)
+            room: created, fromMemberID: human.id, text: "ship it",
+            toMemberIDs: ["session-1"], sentAt: Date(timeIntervalSince1970: 10)
         )
 
         XCTAssertNotNil(created.replicaID)
         XCTAssertNotNil(first.id)
+        XCTAssertEqual(first.authorMemberID, human.id)
+        XCTAssertEqual(first.targetMemberIDs, ["session-1"])
         let joinedRooms = try await chat.rooms()
         XCTAssertEqual(joinedRooms.first?.members, ["builder", "human"])
 
@@ -86,6 +93,58 @@ final class DistributedChatRegistryTests: XCTestCase {
         XCTAssertTrue(deletedRooms.isEmpty)
     }
 
+    func testDuplicateNickAliasesExpandToStableMemberIDsWithoutCollapsing() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let replica = try fixture.replica(named: "duplicate-alias")
+        try await replica.store.setMembershipEpoch(1, for: fixture.group)
+        let chat = DistributedChatRegistry(replica: replica, group: fixture.group)
+        let room = try await chat.createRoom(named: "identity")
+        try await chat.join(room: room, nick: "builder", memberID: "session-a")
+        try await chat.join(room: room, nick: "builder", memberID: "session-b")
+        let human = try await chat.localHumanMember(in: room)
+
+        let targetIDs = try await chat.memberIDs(in: room, matching: ["builder"])
+        XCTAssertEqual(targetIDs, ["session-a", "session-b"])
+        let message = try await chat.send(
+            room: room, fromMemberID: human.id, text: "both builders",
+            toMemberIDs: targetIDs
+        )
+        XCTAssertEqual(message.authorMemberID, human.id)
+        XCTAssertEqual(message.targetMemberIDs, ["session-a", "session-b"])
+        XCTAssertEqual(message.to, ["builder", "builder"])
+
+        try await chat.renameMember(room: room, memberID: "session-a", to: "reviewer")
+        let members = try await chat.members(in: room)
+        XCTAssertEqual(Set(members.map(\.id)), Set([human.id, "session-a", "session-b"]))
+        let history = try await chat.messages(in: room)
+        XCTAssertEqual(history.first?.to, ["builder", "builder"])
+        XCTAssertEqual(history.first?.targetMemberIDs, ["session-a", "session-b"])
+    }
+
+    func testReadsVersionOneMessagePayloadWithoutInventingIdentity() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let replica = try fixture.replica(named: "v1-message")
+        try await replica.store.setMembershipEpoch(1, for: fixture.group)
+        let chat = DistributedChatRegistry(replica: replica, group: fixture.group)
+        let room = try await chat.createRoom(named: "legacy-room")
+        let entity = try XCTUnwrap(MeshEntityReference(type: .message, id: "legacy-v1"))
+        let payload = Data(
+            #"{"attachments":[],"from":"legacy-agent","roomID":"\#(room.replicaID!)","roomName":"legacy-room","targets":["builder"],"text":"old payload","timestamp":42,"version":1}"#.utf8
+        )
+        _ = try await MeshLocalEventAuthor(
+            replica: replica, trustGroupID: fixture.group
+        ).putImmutable(payload, on: entity)
+
+        let messages = try await chat.messages(in: room)
+        let message = try XCTUnwrap(messages.first)
+        XCTAssertEqual(message.from, "legacy-agent")
+        XCTAssertNil(message.authorMemberID)
+        XCTAssertEqual(message.to, ["builder"])
+        XCTAssertTrue(message.targetMemberIDs.isEmpty)
+    }
+
     func testTwoOfflineWritersConvergeRoomRenameAndAppendOnlyMessages() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -102,8 +161,9 @@ final class DistributedChatRegistryTests: XCTestCase {
         )
 
         let created = try await firstChat.createRoom(named: "draft")
+        let firstHuman = try await firstChat.localHumanMember(in: created)
         _ = try await firstChat.send(
-            room: created, from: "human", text: "from first",
+            room: created, fromMemberID: firstHuman.id, text: "from first",
             sentAt: Date(timeIntervalSince1970: 11)
         )
         try await copyEvents(from: first, to: second, group: fixture.group)
@@ -111,12 +171,18 @@ final class DistributedChatRegistryTests: XCTestCase {
         let initialSecondRooms = try await secondChat.rooms()
         let secondRoom = try XCTUnwrap(initialSecondRooms.first)
         try await secondChat.renameRoom(secondRoom, to: "converged")
+        try await secondChat.join(
+            room: secondRoom, nick: "agent-b", memberID: "session-b"
+        )
         _ = try await secondChat.send(
-            room: secondRoom, from: "agent-b", text: "from second",
+            room: secondRoom, fromMemberID: "session-b", text: "from second",
             sentAt: Date(timeIntervalSince1970: 13)
         )
+        try await firstChat.join(
+            room: created, nick: "agent-a", memberID: "session-a"
+        )
         _ = try await firstChat.send(
-            room: created, from: "agent-a", text: "first offline",
+            room: created, fromMemberID: "session-a", text: "first offline",
             sentAt: Date(timeIntervalSince1970: 12)
         )
 
