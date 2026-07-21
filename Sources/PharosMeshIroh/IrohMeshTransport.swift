@@ -100,10 +100,7 @@ public actor IrohEndpointRuntime {
             alpns: [Data(DistributedMeshProtocol.alpn.utf8)],
             relayMode: relayMode
         ))
-        let includesRoutingHints = switch relayPolicy {
-        case .production: false
-        case .disabled: true
-        }
+        let includesRoutingHints = true
         return IrohEndpointRuntime(
             endpoint: endpoint, includesRoutingHints: includesRoutingHints,
             configuredEndpointID: expectedEndpointID
@@ -115,17 +112,15 @@ public actor IrohEndpointRuntime {
 
     public func localAddress() throws -> MeshIrohEndpointAddress {
 #if canImport(IrohLib)
-        if !includesRoutingHints, let id = configuredEndpointID {
-            return MeshIrohEndpointAddress(
-                endpointID: id,
-                ticket: try encodeAddressTicket(
-                    endpointID: id.rawValue, relayURL: nil, directAddresses: []
-                )
-            )
-        }
         let address = endpoint.addr()
-        guard let id = MeshEndpointID(rawValue: stableEndpointID(address.id())) else {
-            throw MeshIrohError.invalidEndpointID
+        let id: MeshEndpointID
+        if let configuredEndpointID {
+            id = configuredEndpointID
+        } else {
+            guard let derived = MeshEndpointID(
+                rawValue: stableEndpointID(address.id())
+            ) else { throw MeshIrohError.invalidEndpointID }
+            id = derived
         }
         let ticket = try encodeAddressTicket(
             endpointID: id.rawValue,
