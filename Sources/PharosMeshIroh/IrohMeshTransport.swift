@@ -53,6 +53,9 @@ public actor IrohEndpointRuntime {
     private let endpoint: Endpoint
     private var connections: [MeshEndpointID: Connection] = [:]
     private var servingTask: Task<Void, Never>?
+    private var streamServingTasks: [MeshEndpointID: Task<Void, Never>] = [:]
+    private var streamServingGenerations: [MeshEndpointID: UUID] = [:]
+    private var requestHandler: MeshIrohRequestHandler?
 
     private init(endpoint: Endpoint) {
         self.endpoint = endpoint
@@ -113,10 +116,18 @@ public actor IrohEndpointRuntime {
     /// accept loop; closing the runtime cancels it and closes the endpoint.
     public func startServing(_ handler: @escaping MeshIrohRequestHandler) {
 #if canImport(IrohLib)
+        requestHandler = handler
+        for task in streamServingTasks.values { task.cancel() }
+        streamServingTasks.removeAll()
+        streamServingGenerations.removeAll()
+        for (remoteID, connection) in connections
+        where connection.closeReason() == nil {
+            beginServingStreams(on: connection, remoteID: remoteID)
+        }
         servingTask?.cancel()
         servingTask = Task { [weak self] in
             guard let self else { return }
-            await self.acceptLoop(handler)
+            await self.acceptLoop()
         }
 #endif
     }
@@ -165,6 +176,10 @@ public actor IrohEndpointRuntime {
 #if canImport(IrohLib)
         servingTask?.cancel()
         servingTask = nil
+        requestHandler = nil
+        for task in streamServingTasks.values { task.cancel() }
+        streamServingTasks.removeAll()
+        streamServingGenerations.removeAll()
         connections.removeAll()
         try await endpoint.close()
 #endif
@@ -173,6 +188,7 @@ public actor IrohEndpointRuntime {
 #if canImport(IrohLib)
     private func connection(to remote: MeshIrohEndpointAddress) async throws -> Connection {
         if let existing = connections[remote.endpointID], existing.closeReason() == nil {
+            beginServingStreams(on: existing, remoteID: remote.endpointID)
             return existing
         }
         let ticket = try EndpointTicket.fromString(str: remote.ticket)
@@ -189,18 +205,22 @@ public actor IrohEndpointRuntime {
             throw MeshIrohError.endpointIdentityMismatch
         }
         connections[remote.endpointID] = connection
+        beginServingStreams(
+            on: connection, remoteID: remote.endpointID,
+            replacingExisting: true
+        )
         return connection
     }
 
-    private func acceptLoop(_ handler: @escaping MeshIrohRequestHandler) async {
+    private func acceptLoop() async {
         while !Task.isCancelled, let incoming = await endpoint.acceptNext() {
             Task { [weak self] in
-                await self?.accept(incoming, handler: handler)
+                await self?.accept(incoming)
             }
         }
     }
 
-    private func accept(_ incoming: Incoming, handler: @escaping MeshIrohRequestHandler) async {
+    private func accept(_ incoming: Incoming) async {
         do {
             let accepting = try await incoming.accept()
             guard try await accepting.alpn() == Data(DistributedMeshProtocol.alpn.utf8) else {
@@ -212,13 +232,53 @@ public actor IrohEndpointRuntime {
                 return
             }
             connections[remoteID] = connection
+            beginServingStreams(
+                on: connection, remoteID: remoteID,
+                replacingExisting: true
+            )
+        } catch {
+            // Connection-local failures end this peer loop. The endpoint accept
+            // loop remains available for a clean reconnect.
+        }
+    }
+
+    private func beginServingStreams(
+        on connection: Connection, remoteID: MeshEndpointID,
+        replacingExisting: Bool = false
+    ) {
+        guard let handler = requestHandler else { return }
+        if replacingExisting {
+            streamServingTasks[remoteID]?.cancel()
+            streamServingTasks[remoteID] = nil
+            streamServingGenerations[remoteID] = nil
+        }
+        guard streamServingTasks[remoteID] == nil else { return }
+        let generation = UUID()
+        streamServingGenerations[remoteID] = generation
+        streamServingTasks[remoteID] = Task { [weak self] in
+            await self?.serveStreams(
+                on: connection, remoteID: remoteID, handler: handler,
+                generation: generation
+            )
+        }
+    }
+
+    private func serveStreams(
+        on connection: Connection, remoteID: MeshEndpointID,
+        handler: @escaping MeshIrohRequestHandler, generation: UUID
+    ) async {
+        do {
             while !Task.isCancelled, connection.closeReason() == nil {
                 let stream = try await connection.acceptBi()
                 try await serve(stream, remoteID: remoteID, handler: handler)
             }
         } catch {
-            // Connection-local failures end this peer loop. The endpoint accept
-            // loop remains available for a clean reconnect.
+            // A closed connection ends only its stream loop. A later dial or
+            // incoming connection installs a new loop for the same endpoint.
+        }
+        if streamServingGenerations[remoteID] == generation {
+            streamServingTasks[remoteID] = nil
+            streamServingGenerations[remoteID] = nil
         }
     }
 

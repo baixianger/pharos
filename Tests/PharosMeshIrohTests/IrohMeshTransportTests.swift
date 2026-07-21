@@ -54,6 +54,58 @@ final class IrohMeshTransportTests: XCTestCase {
         try await server.close()
     }
 
+    func testOneConnectionCarriesRequestsInBothDirections() async throws {
+        let first = try await IrohEndpointRuntime.bind(
+            relayPolicy: .disabled, bindAddress: "127.0.0.1:0"
+        )
+        let second = try await IrohEndpointRuntime.bind(
+            relayPolicy: .disabled, bindAddress: "127.0.0.1:0"
+        )
+        do {
+            await first.startServing { request, _ in
+                MeshTransportResponse(
+                    header: Data("first".utf8), body: request.body
+                )
+            }
+            await second.startServing { request, _ in
+                MeshTransportResponse(
+                    header: Data("second".utf8), body: request.body
+                )
+            }
+            let firstAddress = try await first.localAddress()
+            let secondAddress = try await second.localAddress()
+            let secondToFirst = IrohMeshTransport(
+                runtime: second, remote: firstAddress
+            )
+            let forward = try await secondToFirst.exchange(
+                MeshTransportRequest(
+                    header: Data("forward".utf8),
+                    timeoutMilliseconds: 5_000
+                )
+            )
+            XCTAssertEqual(forward.header, Data("first".utf8))
+
+            // `first` reuses the incoming connection established above. The
+            // initiator must accept reverse streams on that same connection.
+            let firstToSecond = IrohMeshTransport(
+                runtime: first, remote: secondAddress
+            )
+            let reverse = try await firstToSecond.exchange(
+                MeshTransportRequest(
+                    header: Data("reverse".utf8),
+                    timeoutMilliseconds: 5_000
+                )
+            )
+            XCTAssertEqual(reverse.header, Data("second".utf8))
+        } catch {
+            try? await first.close()
+            try? await second.close()
+            throw error
+        }
+        try await first.close()
+        try await second.close()
+    }
+
     func testSecretKeyRestoresStableEndpointIdentityInIsolatedEndpoints() async throws {
         let first = try await IrohEndpointRuntime.bind(
             relayPolicy: .disabled,
