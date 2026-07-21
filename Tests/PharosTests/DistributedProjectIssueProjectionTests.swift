@@ -6,6 +6,18 @@ import PharosMeshIdentity
 import PharosMeshProtocol
 
 final class DistributedProjectIssueProjectionTests: XCTestCase {
+    func testExplicitDefaultDataDirectoryKeepsHeadlessIdentityBackend() throws {
+        let root = try MeshLocalReplica.defaultRootURL()
+        XCTAssertTrue(try MeshLocalReplica.isDefaultRootURL(root))
+        XCTAssertTrue(try MeshLocalReplica.isDefaultRootURL(
+            root.appendingPathComponent("..").appendingPathComponent("v1")
+        ))
+        XCTAssertFalse(try MeshLocalReplica.isDefaultRootURL(
+            FileManager.default.temporaryDirectory
+                .appendingPathComponent("pharos-isolated-(UUID().uuidString)")
+        ))
+    }
+
     func testSharedPortableCollectionWireDecodesIntoMacModels() throws {
         let id = UUID()
         let date = Date(timeIntervalSinceReferenceDate: 123)

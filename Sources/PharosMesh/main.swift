@@ -272,11 +272,13 @@ private enum MeshHeadlessCLI {
         do {
             let replica: MeshLocalReplica
             if let dataDirectory {
-                replica = try MeshLocalReplica.openIsolated(
-                    rootURL: URL(fileURLWithPath: dataDirectory, isDirectory: true)
+                replica = try MeshLocalReplica.openHeadless(
+                    dataDirectory: URL(
+                        fileURLWithPath: dataDirectory, isDirectory: true
+                    )
                 )
             } else {
-                replica = try MeshLocalReplica.openDefault(headless: true)
+                replica = try MeshLocalReplica.openHeadless()
             }
             if migrationCommands.contains(command) {
                 return try await runMigrationCommand(

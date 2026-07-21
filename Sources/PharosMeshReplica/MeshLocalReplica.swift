@@ -54,6 +54,22 @@ public struct MeshLocalReplica: Sendable {
 #endif
     }
 
+    /// Open the CLI replica without letting an explicit spelling of the normal
+    /// data directory switch identity backends. Arbitrary directories remain
+    /// isolated fixtures, but the product directory always uses the same
+    /// headless-safe identity as the GUI, hooks, and launchd services.
+    public static func openHeadless(dataDirectory: URL? = nil) throws -> MeshLocalReplica {
+        guard let dataDirectory else { return try openDefault(headless: true) }
+        if try isDefaultRootURL(dataDirectory) {
+            return try openDefault(headless: true)
+        }
+        return try openIsolated(rootURL: dataDirectory)
+    }
+
+    public static func isDefaultRootURL(_ candidate: URL) throws -> Bool {
+        candidate.standardizedFileURL == (try defaultRootURL()).standardizedFileURL
+    }
+
     /// Explicit test/development entry point. Both identity and database stay
     /// under the supplied root; it never consults Keychain or default paths.
     public static func openIsolated(rootURL: URL) throws -> MeshLocalReplica {
