@@ -272,6 +272,7 @@ struct PairDeviceConfirmation: View {
     @State private var isConnecting = false
     @State private var errorMessage: String?
     @State private var didConnect = false
+    @State private var now = Date()
 
     var body: some View {
         NavigationStack {
@@ -294,13 +295,13 @@ struct PairDeviceConfirmation: View {
                         value: abbreviated(invitation.inviterEndpointID.rawValue)
                     )
                     LabeledContent(
-                        "Expires",
-                        value: Date(
-                            timeIntervalSince1970:
-                                Double(invitation.expiresAtMilliseconds) / 1_000
-                        ),
-                        format: .dateTime.hour().minute().second()
+                        "Pairing code",
+                        value: isExpired
+                            ? "Expired — scan a new code"
+                            : "Expires in \(remainingSeconds / 60):" +
+                                String(format: "%02d", remainingSeconds % 60)
                     )
+                    .foregroundStyle(isExpired ? .orange : .primary)
                     Label(
                         "Endpoint identity verified by signature",
                         systemImage: "checkmark.shield.fill"
@@ -339,6 +340,8 @@ struct PairDeviceConfirmation: View {
                     } label: {
                         if isConnecting {
                             HStack { ProgressView(); Text("Pairing…") }
+                        } else if isExpired {
+                            Text("Code expired")
                         } else {
                             Text(switchesPersonalMesh ? "Switch Mesh and connect" : "Trust and connect")
                         }
@@ -360,11 +363,24 @@ struct PairDeviceConfirmation: View {
                 }
             }
         }
+        .task {
+            while !Task.isCancelled, !didConnect, !isExpired {
+                try? await Task.sleep(for: .seconds(1))
+                now = Date()
+            }
+        }
     }
 
     private var isExpired: Bool {
         invitation.expiresAtMilliseconds <=
-            Int64(Date().timeIntervalSince1970 * 1_000)
+            Int64(now.timeIntervalSince1970 * 1_000)
+    }
+
+    private var remainingSeconds: Int {
+        max(0, Int(
+            Double(invitation.expiresAtMilliseconds) / 1_000 -
+                now.timeIntervalSince1970
+        ))
     }
 
     private var switchesPersonalMesh: Bool {

@@ -7,6 +7,22 @@ import PharosMeshIdentity
 import PharosMeshProtocol
 
 final class DistributedMeshStoreTests: XCTestCase {
+    func testSyncFailurePresentationIsConciseStableAndRecoverable() {
+        XCTAssertNil(MeshSyncFailurePresentation.message(peerNames: []))
+        XCTAssertEqual(
+            MeshSyncFailurePresentation.message(peerNames: ["Home Mac"]),
+            "Couldn't sync with Home Mac. Changes remain saved locally " +
+                "and will retry automatically."
+        )
+        XCTAssertEqual(
+            MeshSyncFailurePresentation.message(
+                peerNames: ["personal-dev", "Home Mac", "Home Mac"]
+            ),
+            "Couldn't sync with 2 devices (Home Mac, personal-dev). Changes " +
+                "remain saved locally and will retry automatically."
+        )
+    }
+
     func testPortableLocalReplicaFactorySharesIdentityAndStoreWithoutLegacyPaths() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

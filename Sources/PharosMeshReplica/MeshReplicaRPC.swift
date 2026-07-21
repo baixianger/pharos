@@ -14,6 +14,23 @@ public enum MeshReplicaRPCError: Error, Equatable, Sendable {
     case synchronizationLimitExceeded
 }
 
+/// Stable, user-facing summary for a bounded sync pass. Transport errors stay
+/// available to diagnostics, while product UI explains the recoverable state
+/// without exposing QUIC implementation details.
+public enum MeshSyncFailurePresentation {
+    public static func message(peerNames: [String]) -> String? {
+        let names = Array(Set(peerNames)).sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+        guard !names.isEmpty else { return nil }
+        let target = names.count == 1
+            ? names[0]
+            : "\(names.count) devices (\(names.joined(separator: ", ")))"
+        return "Couldn't sync with \(target). Changes remain saved locally " +
+            "and will retry automatically."
+    }
+}
+
 public enum MeshHostCommandExecutionOutcome: Equatable, Sendable {
     case executed(Data?)
     case failed(code: String)

@@ -936,7 +936,11 @@ final class RoomStore {
     }
 
     private func supportsAdvancedMessages() async -> Bool {
-        await capabilitySet().contains("mesh-v2")
+        // Replies and attachments are native replicated entities in the
+        // distributed runtime; asking the retired Broker for `mesh-v2` here
+        // incorrectly rejected those sends before reaching the Mesh path.
+        if usesDistributedRegistry { return true }
+        return await capabilitySet().contains("mesh-v2")
     }
 
     private func supportsHistoryPaging() async -> Bool {

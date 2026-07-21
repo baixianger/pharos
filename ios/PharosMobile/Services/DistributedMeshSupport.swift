@@ -378,7 +378,7 @@ final class DistributedMeshSupport {
             )
             trustedDevices = peers
             var received = 0
-            var failures: [String] = []
+            var failedPeers: [String] = []
             for peer in peers {
                 let transport = IrohMeshTransport(
                     runtime: runtime,
@@ -399,14 +399,16 @@ final class DistributedMeshSupport {
                         connected: true, lastChange: Date()
                     )
                 } catch {
-                    failures.append("\(peer.descriptor.displayName): \(error)")
+                    failedPeers.append(peer.descriptor.displayName)
                     connections[peer.descriptor.id] = MeshConnectionSnapshot(
                         peer: peer.descriptor.id, path: .unavailable,
                         connected: false, lastChange: Date()
                     )
                 }
             }
-            lastSyncError = failures.isEmpty ? nil : failures.joined(separator: " · ")
+            lastSyncError = MeshSyncFailurePresentation.message(
+                peerNames: failedPeers
+            )
             if received > 0 { registryRevision += 1 }
             return received
         } catch {
