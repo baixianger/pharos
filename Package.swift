@@ -19,7 +19,10 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
         .package(url: "https://github.com/apple/swift-crypto", from: "3.0.0"),
-        .package(url: "https://github.com/n0-computer/iroh-ffi", exact: "1.1.0"),
+        .package(
+            url: "https://github.com/baixianger/iroh-ffi",
+            revision: "3419293098201dc4ebd2f6d6d7116736396afc18"
+        ),
     ],
     targets: [
         .systemLibrary(

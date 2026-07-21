@@ -174,6 +174,28 @@ final class IrohMeshTransportTests: XCTestCase {
         XCTAssertEqual(restoredID, firstID)
     }
 
+    func testLocalAddressOwnsFFIStringsAfterAllocationChurn() async throws {
+        let runtime = try await IrohEndpointRuntime.bind(
+            relayPolicy: .disabled, bindAddress: "127.0.0.1:0"
+        )
+        let address = try await runtime.localAddress()
+        let expectedEndpointID = String(
+            decoding: Array(address.endpointID.rawValue.utf8), as: UTF8.self
+        )
+        let expectedTicket = String(
+            decoding: Array(address.ticket.utf8), as: UTF8.self
+        )
+        for index in 0..<1_000 {
+            _ = Data(repeating: UInt8(truncatingIfNeeded: index), count: 4_096)
+        }
+
+        XCTAssertEqual(address.endpointID.rawValue.count, 64)
+        XCTAssertEqual(address.endpointID.rawValue, expectedEndpointID)
+        XCTAssertEqual(address.ticket, expectedTicket)
+        XCTAssertTrue(address.ticket.hasPrefix("endpoint"))
+        try await runtime.close()
+    }
+
     func testStoredSigningIdentityIsTheIrohEndpointIdentity() async throws {
         let identity = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 100))
         let runtime = try await IrohEndpointRuntime.bind(

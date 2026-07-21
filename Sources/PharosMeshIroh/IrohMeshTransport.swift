@@ -99,10 +99,13 @@ public actor IrohEndpointRuntime {
 
     public func localAddress() throws -> MeshIrohEndpointAddress {
 #if canImport(IrohLib)
-        guard let id = MeshEndpointID(rawValue: endpoint.id().description) else {
+        guard let id = MeshEndpointID(rawValue: stableEndpointID(endpoint.id())) else {
             throw MeshIrohError.invalidEndpointID
         }
-        let ticket = try EndpointTicket.fromAddr(addr: endpoint.addr()).description
+        let ffiTicket = try EndpointTicket.fromAddr(addr: endpoint.addr()).description
+        // iroh-ffi 1.1.0's generated String lift releases its RustBuffer at
+        // return. Materialize an owned Swift buffer before retaining the value.
+        let ticket = String(decoding: Array(ffiTicket.utf8), as: UTF8.self)
         return MeshIrohEndpointAddress(endpointID: id, ticket: ticket)
 #else
         throw MeshIrohError.unavailableOnPlatform
@@ -198,7 +201,7 @@ public actor IrohEndpointRuntime {
             return existing.connection
         }
         let ticket = try EndpointTicket.fromString(str: remote.ticket)
-        let ticketID = ticket.endpointAddr().id().description
+        let ticketID = stableEndpointID(ticket.endpointAddr().id())
         guard ticketID == remote.endpointID.rawValue else {
             throw MeshIrohError.endpointIdentityMismatch
         }
@@ -206,7 +209,7 @@ public actor IrohEndpointRuntime {
             addr: ticket.endpointAddr(),
             alpn: Data(DistributedMeshProtocol.alpn.utf8)
         )
-        guard connection.remoteId().description == remote.endpointID.rawValue else {
+        guard stableEndpointID(connection.remoteId()) == remote.endpointID.rawValue else {
             try? connection.close(errorCode: 1, reason: Data("identity mismatch".utf8))
             throw MeshIrohError.endpointIdentityMismatch
         }
@@ -230,7 +233,9 @@ public actor IrohEndpointRuntime {
                 return
             }
             let connection = try await accepting.connect()
-            guard let remoteID = MeshEndpointID(rawValue: connection.remoteId().description) else {
+            guard let remoteID = MeshEndpointID(
+                rawValue: stableEndpointID(connection.remoteId())
+            ) else {
                 try? connection.close(errorCode: 2, reason: Data("invalid endpoint id".utf8))
                 return
             }
@@ -249,7 +254,7 @@ public actor IrohEndpointRuntime {
         remoteID: MeshEndpointID,
         initiatedLocally: Bool
     ) -> Connection {
-        let localID = endpoint.id().description
+        let localID = stableEndpointID(endpoint.id())
         let prefersLocalDial = localID < remoteID.rawValue
         if let existing = connections[remoteID],
            existing.connection.closeReason() == nil {
@@ -272,6 +277,10 @@ public actor IrohEndpointRuntime {
             on: candidate, remoteID: remoteID, replacingExisting: true
         )
         return candidate
+    }
+
+    private func stableEndpointID(_ id: EndpointId) -> String {
+        id.toBytes().map { String(format: "%02x", $0) }.joined()
     }
 
     private func beginServingStreams(
