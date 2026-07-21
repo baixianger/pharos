@@ -192,7 +192,7 @@ final class IrohMeshTransportTests: XCTestCase {
         XCTAssertEqual(address.endpointID.rawValue.count, 64)
         XCTAssertEqual(address.endpointID.rawValue, expectedEndpointID)
         XCTAssertEqual(address.ticket, expectedTicket)
-        XCTAssertTrue(address.ticket.hasPrefix("endpoint"))
+        XCTAssertTrue(address.ticket.hasPrefix("pharos-iroh-v1:"))
         try await runtime.close()
     }
 

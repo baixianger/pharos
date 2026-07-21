@@ -26,6 +26,7 @@ public enum MeshIrohError: Error, Equatable, Sendable {
     case unavailableOnPlatform
     case invalidSecretKey
     case invalidEndpointID
+    case invalidAddressTicket
     case endpointIdentityMismatch
     case wrongFrameKind
     case timeout
@@ -99,13 +100,15 @@ public actor IrohEndpointRuntime {
 
     public func localAddress() throws -> MeshIrohEndpointAddress {
 #if canImport(IrohLib)
-        guard let id = MeshEndpointID(rawValue: stableEndpointID(endpoint.id())) else {
+        let address = endpoint.addr()
+        guard let id = MeshEndpointID(rawValue: stableEndpointID(address.id())) else {
             throw MeshIrohError.invalidEndpointID
         }
-        let ffiTicket = try EndpointTicket.fromAddr(addr: endpoint.addr()).description
-        // iroh-ffi 1.1.0's generated String lift releases its RustBuffer at
-        // return. Materialize an owned Swift buffer before retaining the value.
-        let ticket = String(decoding: Array(ffiTicket.utf8), as: UTF8.self)
+        let ticket = try encodeAddressTicket(
+            endpointID: id.rawValue,
+            relayURL: address.relayUrl(),
+            directAddresses: address.directAddresses()
+        )
         return MeshIrohEndpointAddress(endpointID: id, ticket: ticket)
 #else
         throw MeshIrohError.unavailableOnPlatform
@@ -200,13 +203,13 @@ public actor IrohEndpointRuntime {
             beginServingStreams(on: existing.connection, remoteID: remote.endpointID)
             return existing.connection
         }
-        let ticket = try EndpointTicket.fromString(str: remote.ticket)
-        let ticketID = stableEndpointID(ticket.endpointAddr().id())
+        let address = try decodeAddressTicket(remote.ticket)
+        let ticketID = stableEndpointID(address.id())
         guard ticketID == remote.endpointID.rawValue else {
             throw MeshIrohError.endpointIdentityMismatch
         }
         let connection = try await endpoint.connect(
-            addr: ticket.endpointAddr(),
+            addr: address,
             alpn: Data(DistributedMeshProtocol.alpn.utf8)
         )
         guard stableEndpointID(connection.remoteId()) == remote.endpointID.rawValue else {
@@ -281,6 +284,53 @@ public actor IrohEndpointRuntime {
 
     private func stableEndpointID(_ id: EndpointId) -> String {
         id.toBytes().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private struct StoredEndpointAddress: Codable {
+        let version: Int
+        let endpointID: String
+        let relayURL: String?
+        let directAddresses: [String]
+    }
+
+    private func encodeAddressTicket(
+        endpointID: String, relayURL: String?, directAddresses: [String]
+    ) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(StoredEndpointAddress(
+            version: 1, endpointID: endpointID,
+            relayURL: relayURL, directAddresses: directAddresses.sorted()
+        ))
+        return "pharos-iroh-v1:" + data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private func decodeAddressTicket(_ ticket: String) throws -> EndpointAddr {
+        let prefix = "pharos-iroh-v1:"
+        if ticket.hasPrefix(prefix) {
+            var encoded = String(ticket.dropFirst(prefix.count))
+                .replacingOccurrences(of: "-", with: "+")
+                .replacingOccurrences(of: "_", with: "/")
+            encoded += String(repeating: "=", count: (4 - encoded.count % 4) % 4)
+            guard let data = Data(base64Encoded: encoded),
+                  let value = try? JSONDecoder().decode(
+                    StoredEndpointAddress.self, from: data
+                  ), value.version == 1,
+                  let id = try? EndpointId.fromString(s: value.endpointID) else {
+                throw MeshIrohError.invalidAddressTicket
+            }
+            return EndpointAddr(
+                id: id, relayUrl: value.relayURL,
+                addresses: value.directAddresses
+            )
+        }
+        // Existing pairings remain readable during the transition. Every
+        // authenticated RPC response replaces this legacy routing hint with
+        // the sender's current versioned Pharos address ticket.
+        return try EndpointTicket.fromString(str: ticket).endpointAddr()
     }
 
     private func beginServingStreams(
