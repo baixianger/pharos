@@ -11,7 +11,7 @@ Swift-package composition needed by Pharos.
 
 | Item | Pinned value |
 |---|---|
-| MeshKit release | `v0.1.2` |
+| MeshKit release | `v0.2.0` |
 | Reviewed upstream release | `v1.1.0` (`5e451092dba0c1a09ee83ff6e5be37b1152a5c58`) |
 | Swift package release | `v1.1.1` (`bba9072604e001bf32d134940331710d7c972c08`) |
 | Linux Rust build revision | `358722a7b30a72e9b0625c8bfdfaf940753a43f7` |

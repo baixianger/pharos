@@ -5,6 +5,7 @@ import PharosMeshProtocol
 
 public enum MeshIrohRelayPolicy: Sendable {
     case production
+    case custom(urls: [String])
     case disabled
 }
 
@@ -29,10 +30,23 @@ public enum MeshIrohError: Error, Equatable, Sendable {
     case timeout
 }
 
+public struct MeshIrohPeerStatus: Equatable, Sendable {
+    public var endpointID: PharosMeshProtocol.MeshEndpointID
+    public var path: PharosMeshProtocol.MeshTransportPath
+    public var roundTripTimeMilliseconds: UInt64?
+    public var transmittedBytes: Int64
+    public var receivedBytes: Int64
+    public var lostBytes: Int64
+}
+
 public typealias MeshIrohRequestHandler = @Sendable (
     _ request: MeshTransportRequest,
     _ remoteEndpointID: PharosMeshProtocol.MeshEndpointID
 ) async throws -> MeshTransportResponse
+
+public typealias MeshIrohAdmissionPolicy = @Sendable (
+    _ remoteEndpointID: PharosMeshProtocol.MeshEndpointID
+) async -> Bool
 
 public enum MeshIrohAvailability {
     public static var isAvailable: Bool { MeshKitIroh.MeshIrohAvailability.isAvailable }
@@ -51,7 +65,8 @@ public actor IrohEndpointRuntime {
         secretKey: Data? = nil,
         expectedEndpointID: PharosMeshProtocol.MeshEndpointID? = nil,
         relayPolicy: MeshIrohRelayPolicy = .production,
-        bindAddress: String? = nil
+        bindAddress: String? = nil,
+        admissionPolicy: MeshIrohAdmissionPolicy? = nil
     ) async throws -> IrohEndpointRuntime {
         do {
             let expected = try expectedEndpointID.map { value in
@@ -62,14 +77,27 @@ public actor IrohEndpointRuntime {
             }
             let kitRelayPolicy: MeshKitIroh.MeshRelayPolicy = switch relayPolicy {
             case .production: .production
+            case .custom(let urls): .custom(urls: urls)
             case .disabled: .disabled
+            }
+            let kitAdmissionPolicy: MeshKitIroh.MeshAdmissionPolicy?
+            if let admissionPolicy {
+                kitAdmissionPolicy = { remoteID in
+                    guard let converted = PharosMeshProtocol.MeshEndpointID(
+                        rawValue: remoteID.rawValue
+                    ) else { return false }
+                    return await admissionPolicy(converted)
+                }
+            } else {
+                kitAdmissionPolicy = nil
             }
             let endpoint = try await MeshKitIroh.IrohEndpoint.bind(
                 configuration: try configuration(),
                 secretKey: secretKey,
                 expectedEndpointID: expected,
                 relayPolicy: kitRelayPolicy,
-                bindAddress: bindAddress
+                bindAddress: bindAddress,
+                admissionPolicy: kitAdmissionPolicy
             )
             return IrohEndpointRuntime(endpoint: endpoint)
         } catch {
@@ -119,15 +147,27 @@ public actor IrohEndpointRuntime {
         _ request: MeshTransportRequest,
         with remote: MeshIrohEndpointAddress
     ) async throws -> MeshTransportResponse {
+        try await exchange(
+            request,
+            with: remote.endpointID,
+            addressTicket: remote.ticket
+        )
+    }
+
+    public func exchange(
+        _ request: MeshTransportRequest,
+        with remoteEndpointID: PharosMeshProtocol.MeshEndpointID,
+        addressTicket: String? = nil
+    ) async throws -> MeshTransportResponse {
         do {
             guard let endpointID = MeshKit.MeshEndpointID(
-                rawValue: remote.endpointID.rawValue
+                rawValue: remoteEndpointID.rawValue
             ) else { throw MeshIrohError.invalidEndpointID }
             let transport = MeshKitIroh.IrohTransport(
                 endpoint: endpoint,
-                remote: MeshKitIroh.MeshEndpointAddress(
+                target: MeshKitIroh.MeshDialTarget(
                     endpointID: endpointID,
-                    ticket: remote.ticket
+                    addressTicket: addressTicket
                 )
             )
             let response = try await transport.exchange(MeshKit.MeshRequest(
@@ -154,6 +194,35 @@ public actor IrohEndpointRuntime {
         }
     }
 
+    public func status(
+        of remote: PharosMeshProtocol.MeshEndpointID
+    ) async -> MeshIrohPeerStatus? {
+        guard let endpointID = MeshKit.MeshEndpointID(rawValue: remote.rawValue) else {
+            return nil
+        }
+        return Self.mapStatus(await endpoint.status(of: endpointID))
+    }
+
+    public func statusEvents(
+        of remote: PharosMeshProtocol.MeshEndpointID
+    ) async -> AsyncStream<MeshIrohPeerStatus> {
+        guard let endpointID = MeshKit.MeshEndpointID(rawValue: remote.rawValue) else {
+            return AsyncStream { $0.finish() }
+        }
+        let upstream = await endpoint.statusEvents(of: endpointID)
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let task = Task {
+                for await status in upstream {
+                    if let mapped = Self.mapStatus(status) {
+                        continuation.yield(mapped)
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     public func close() async throws {
         do { try await endpoint.close() }
         catch { throw mapIrohError(error) }
@@ -168,19 +237,53 @@ public actor IrohEndpointRuntime {
             frameMagic: 0x50484d31 // PHM1 — preserve existing pairings and peers.
         )
     }
+
+    private static func mapStatus(
+        _ status: MeshKitIroh.MeshPeerStatus
+    ) -> MeshIrohPeerStatus? {
+        guard let endpointID = PharosMeshProtocol.MeshEndpointID(
+            rawValue: status.endpointID.rawValue
+        ) else { return nil }
+        let path: PharosMeshProtocol.MeshTransportPath
+        switch status.path {
+        case .direct: path = .irohDirect
+        case .relay: path = .irohRelay
+        case .unavailable: path = .unavailable
+        }
+        return MeshIrohPeerStatus(
+            endpointID: endpointID,
+            path: path,
+            roundTripTimeMilliseconds: status.roundTripTimeMilliseconds,
+            transmittedBytes: status.transmittedBytes,
+            receivedBytes: status.receivedBytes,
+            lostBytes: status.lostBytes
+        )
+    }
 }
 
 public struct IrohMeshTransport: PharosMeshProtocol.MeshTransport, Sendable {
     private let runtime: IrohEndpointRuntime
-    private let remote: MeshIrohEndpointAddress
+    private let remoteEndpointID: PharosMeshProtocol.MeshEndpointID
+    private let addressTicket: String?
 
     public init(runtime: IrohEndpointRuntime, remote: MeshIrohEndpointAddress) {
         self.runtime = runtime
-        self.remote = remote
+        self.remoteEndpointID = remote.endpointID
+        self.addressTicket = remote.ticket
+    }
+
+    public init(
+        runtime: IrohEndpointRuntime,
+        remoteEndpointID: PharosMeshProtocol.MeshEndpointID,
+        addressTicket: String? = nil
+    ) {
+        self.runtime = runtime
+        self.remoteEndpointID = remoteEndpointID
+        self.addressTicket = addressTicket
     }
 
     public var path: PharosMeshProtocol.MeshTransportPath {
-        get async { await runtime.path(to: remote.endpointID) }
+        get async { await runtime.path(to: remoteEndpointID) }
     }
 
     public func localAddressTicket() async throws -> String? {
@@ -189,7 +292,11 @@ public struct IrohMeshTransport: PharosMeshProtocol.MeshTransport, Sendable {
 
     public func exchange(_ request: MeshTransportRequest) async throws -> MeshTransportResponse {
         try request.validate()
-        return try await runtime.exchange(request, with: remote)
+        return try await runtime.exchange(
+            request,
+            with: remoteEndpointID,
+            addressTicket: addressTicket
+        )
     }
 }
 

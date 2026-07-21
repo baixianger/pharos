@@ -33,12 +33,12 @@ signed event log, trust-group rules, or partitioned Host authority.
 | --- | --- | --- | --- | --- |
 | Persistent Endpoint ID | Stable secret-key restoration | Endpoint ID is bound to the device signing key | **Keep** | Key restoration and mismatch tests on macOS, iOS, and Linux |
 | One Endpoint, multiple ALPN protocols | One endpoint handles one ALPN | One `mesh/1` ALPN carries RPC | **Adopt now** | Add a router-style endpoint API; prove two handlers share one identity and lifecycle |
-| Endpoint-ID-only dialing through address lookup | Requires a serialized address ticket | Trusted rows persist both ID and the latest ticket | **Adopt now** | Add ID-only dialing with discovery and use tickets only as optional fresh hints; test reconnect after stale hints |
+| Endpoint-ID-only dialing through address lookup | Available in MeshKit 0.2 with an optional ticket hint | Trusted rows persist both ID and the latest ticket; transport can now fall back to ID-only dialing | **Adopt now** | Prefer a fresh hint, then discovery; add reconnect-after-stale-hint device tests |
 | Short-lived bootstrap tickets | Typed endpoint ticket | Signed, expiring, single-use Pharos pairing invitation wraps an Iroh ticket | **Keep and clarify** | Redact tickets, show their IP/privacy implications, never treat the Iroh ticket itself as single-use |
-| Live path and endpoint observation | Point-in-time direct/relay snapshot | CLI/UI expose limited current path state | **Adopt now** | Async event stream for path, RTT, home relay, network change, and reconnect state; no IP in normal UI |
+| Live path and endpoint observation | MeshKit 0.2 exposes privacy-safe snapshots and a bounded async status stream | CLI/UI expose limited current path state | **Adopt now** | Consume the stream in UI/doctor; add home-relay and network-change events after the FFI watcher is safe |
 | Configurable discovery | Uses the upstream production preset or isolated bind | Depends on the same preset | **Adopt next** | Public DNS/DHT/local/custom discovery policy; isolated and no-global-discovery tests |
-| Configurable relays | Production or disabled | Production or disabled | **Adopt now** | Public, custom/self-hosted, relay-only privacy, and disabled modes; forced-relay integration test |
-| Pre-handler peer authorization | Handler receives authenticated Endpoint ID | RPC layer checks current trust epoch | **Adopt now** | Optional MeshKit admission closure rejects before protocol work; Pharos keeps operation-level checks |
+| Configurable relays | Production, custom/self-hosted, or disabled | Adapter supports all three; product UI exposes production/disabled | **Adopt now** | Add product self-hosted mode and forced-relay integration test; relay-only remains a separate upstream requirement |
+| Pre-handler peer authorization | MeshKit 0.2 admission closure rejects before request handling | Adapter exposes it; RPC still checks current trust epoch per operation | **Adopt now** | Wire it for normal sync serving while retaining a distinct pairing admission path |
 | QUIC bidirectional streams | One bounded request/response stream | RPC and chunk fetches use the bounded exchange | **Keep** | Retain for commands and anti-entropy; add cancellation and concurrency limits |
 | QUIC unidirectional streams | Not exposed | Not used | **Adopt next** | Streaming attachment transfer and progress without buffering the entire body |
 | QUIC datagrams | Not exposed | Presence is designed but not shipped | **Experimental** | Presence/typing/path hints only, with expiry, size limit, dedupe, and loss tolerance |
@@ -180,6 +180,15 @@ pinned iroh-ffi 1.1.x Swift API:
 Multi-ALPN routing follows once this surface is stable. Gossip, iroh-blobs, and
 iroh-docs remain separate experiments because the currently pinned Swift package
 does not expose their complete protocol APIs.
+
+### Binding limitation discovered during implementation
+
+The generated Swift API exposes `Connection.watchPaths`, but calling it from the
+Swift side of iroh-ffi 1.1.1 currently panics because the synchronous binding
+starts the watcher without an active Tokio reactor. MeshKit must not wrap a
+panic-prone API. Its initial `AsyncStream` status surface therefore uses bounded,
+deduplicated snapshots; native callback adoption is gated on an upstream binding
+whose watcher lifecycle is runtime-safe and covered by an Apple integration test.
 
 ## Official references
 

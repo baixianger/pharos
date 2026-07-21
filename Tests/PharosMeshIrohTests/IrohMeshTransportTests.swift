@@ -34,6 +34,10 @@ final class IrohMeshTransportTests: XCTestCase {
                 )
             }
             let serverAddress = try await server.localAddress()
+            let statusEvents = await client.statusEvents(of: serverAddress.endpointID)
+            var statusIterator = statusEvents.makeAsyncIterator()
+            let initialStatus = await statusIterator.next()
+            XCTAssertEqual(initialStatus?.path, .unavailable)
             let transport = IrohMeshTransport(runtime: client, remote: serverAddress)
             let response = try await transport.exchange(MeshTransportRequest(
                 header: Data(#"{"cmd":"echo"}"#.utf8),
@@ -45,6 +49,24 @@ final class IrohMeshTransportTests: XCTestCase {
             XCTAssertEqual(response.body, Data([0, 1, 2, 255]))
             let path = await transport.path
             XCTAssertEqual(path, .irohDirect)
+            let connectedStatus = await statusIterator.next()
+            XCTAssertEqual(connectedStatus?.endpointID, serverAddress.endpointID)
+            XCTAssertEqual(connectedStatus?.path, .irohDirect)
+
+            // After one ticket-assisted bootstrap, the same authenticated
+            // connection is addressable by stable Endpoint ID alone.
+            let identityOnly = IrohMeshTransport(
+                runtime: client,
+                remoteEndpointID: serverAddress.endpointID
+            )
+            let identityOnlyResponse = try await identityOnly.exchange(
+                MeshTransportRequest(
+                    header: Data(#"{"cmd":"echo"}"#.utf8),
+                    body: Data("identity-only".utf8),
+                    timeoutMilliseconds: 5_000
+                )
+            )
+            XCTAssertEqual(identityOnlyResponse.body, Data("identity-only".utf8))
         } catch {
             try? await client.close()
             try? await server.close()
