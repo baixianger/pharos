@@ -204,8 +204,15 @@ enum CLI {
     /// room/nick/text), not the flag parser. Non-blocking: `say` delivers into the
     /// target's mailbox, the Stop hook surfaces it; `recv` drains without blocking.
     private static func runMesh(_ args: [String]) async -> Int32 {
-        guard let sub = args.first else { print(meshUsage); return 2 }
         let legacyBrokerEnabled = ProcessInfo.processInfo.environment["PHAROS_LEGACY_BROKER"] == "1"
+        guard let sub = args.first else {
+            print(legacyBrokerEnabled ? legacyMeshUsage : distributedMeshUsage)
+            return 0
+        }
+        if !legacyBrokerEnabled, ["help", "--help", "-h"].contains(sub) {
+            print(distributedMeshUsage)
+            return 0
+        }
         if DistributedAgentCLI.commands.contains(sub), !legacyBrokerEnabled {
             return await DistributedAgentCLI.run(args)
         }
@@ -221,8 +228,12 @@ enum CLI {
         if !legacyBrokerEnabled, sub == "session-start" {
             return await DistributedHookCLI.run("session-start", args: args)
         }
-        if ["daemon", "node"].contains(sub), !legacyBrokerEnabled {
-            print("error: the legacy Broker/Node runtime is retired; use distributed sync-serve or set PHAROS_LEGACY_BROKER=1 only for rollback recovery")
+        if !legacyBrokerEnabled, sub == "install-hooks" {
+            return MeshHooks.installHooks(Array(args.dropFirst()))
+        }
+        if !legacyBrokerEnabled {
+            print("error: '\(sub)' belongs to the retired Broker/Node CLI and is unavailable in distributed mode")
+            print(distributedMeshUsage)
             return 1
         }
         let a = Array(args.dropFirst())
@@ -481,7 +492,7 @@ enum CLI {
         case "install-hooks":
             return MeshHooks.installHooks(a)
         default:
-            print(meshUsage); return 2
+            print(legacyMeshUsage); return 2
         }
     }
 
@@ -533,8 +544,32 @@ enum CLI {
         }
     }
 
-    private static let meshUsage = """
-    pharos mesh — agent chat room
+    private static let distributedMeshUsage = """
+    pharos mesh — distributed, local-first agent chat
+      create <room>                       create a replicated room
+      list                                list replicated rooms + members
+      join <room> <nick> --session <id>   join with this agent session
+      history <room> [--limit N]          show replicated history
+      send <text> [@n …] [--room ROOM] [--member ID] [--reply ID] [--attach FILE]
+      say <room> <nick> <text> [@n …] [--reply ID] [--attach FILE]
+      recv [<nick>] --member <id>          drain this session's replicated unread messages
+      who                                 list replicated room membership
+      attachment put|get …                store/read content-addressed attachments
+      leave <room> <nick|member-id>       leave replicated room membership
+      rename-member <room> <member> <new> rename replicated membership
+      rename <room> <new-name>            rename a replicated room
+      delete <room>                       delete a replicated room
+      unread --hook-stop                  structured Claude Stop hook
+      unread --hook-post-tool             structured Claude PostToolUse hook
+      mark --hook                         structured lifecycle hook
+      session-start [--silent]            record structured session identity
+      install-hooks [--project DIR|--user|--codex]
+
+    Pair devices from Pharos Settings. There is no Broker endpoint or Host node.
+    """
+
+    private static let legacyMeshUsage = """
+    pharos mesh — legacy Broker agent chat (rollback only)
       create <room>                       create a room
       list                                list rooms + members
       join   <room> <nick> [--session <id>]   register this pane under a room-local alias
