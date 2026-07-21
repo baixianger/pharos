@@ -236,7 +236,7 @@ public enum DistributedAgentCLI {
                     rootURL: URL(fileURLWithPath: path, isDirectory: true)
                 )
             } else {
-                replica = try MeshLocalReplica.openDefault()
+                replica = try MeshLocalReplica.openDefault(headless: true)
             }
             let group = try await replica.ensureActiveTrustGroup()
             let agent = DistributedAgentChat(replica: replica, group: group)
@@ -444,7 +444,7 @@ public enum DistributedHookCLI {
             let payload = readHookPayload()
             let session = (payload?["session_id"] as? String)
                 ?? ProcessInfo.processInfo.environment["PHAROS_MESH_SESSION"]
-            let replica = try MeshLocalReplica.openDefault()
+            let replica = try MeshLocalReplica.openDefault(headless: true)
             let group = try await replica.ensureActiveTrustGroup()
             if mode == "session-start" || mode == "mark" {
                 try persistObservation(mode: mode, payload: payload ?? [:], session: session, root: replica.rootURL)

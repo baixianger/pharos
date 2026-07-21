@@ -67,7 +67,7 @@ public struct MeshKeychainIdentityStorage: MeshIdentityStorage, Sendable {
 }
 
 #if os(macOS)
-public enum MeshMirroredIdentityStorageError: LocalizedError, Sendable {
+public enum MeshMirroredIdentityStorageError: LocalizedError, Equatable, Sendable {
     case headlessBootstrapRequired
     case identityMismatch
 
@@ -88,15 +88,21 @@ public enum MeshMirroredIdentityStorageError: LocalizedError, Sendable {
 public struct MeshMirroredIdentityStorage: MeshIdentityStorage, Sendable {
     public let keychain: MeshKeychainIdentityStorage
     public let mirror: MeshFileIdentityStorage
+    public let headlessOnly: Bool
 
-    public init(keychain: MeshKeychainIdentityStorage, mirrorURL: URL) {
+    public init(
+        keychain: MeshKeychainIdentityStorage, mirrorURL: URL,
+        headlessOnly: Bool = false
+    ) {
         self.keychain = keychain
         mirror = MeshFileIdentityStorage(fileURL: mirrorURL)
+        self.headlessOnly = headlessOnly
     }
 
     public func load() throws -> Data? {
         let environment = ProcessInfo.processInfo.environment
-        if environment["SSH_CONNECTION"] != nil || environment["SSH_TTY"] != nil {
+        if headlessOnly || environment["SSH_CONNECTION"] != nil ||
+            environment["SSH_TTY"] != nil {
             guard let mirrored = try mirror.load() else {
                 throw MeshMirroredIdentityStorageError.headlessBootstrapRequired
             }

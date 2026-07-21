@@ -276,7 +276,7 @@ private enum MeshHeadlessCLI {
                     rootURL: URL(fileURLWithPath: dataDirectory, isDirectory: true)
                 )
             } else {
-                replica = try MeshLocalReplica.openDefault()
+                replica = try MeshLocalReplica.openDefault(headless: true)
             }
             if migrationCommands.contains(command) {
                 return try await runMigrationCommand(

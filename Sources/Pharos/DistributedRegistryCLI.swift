@@ -272,7 +272,7 @@ enum DistributedRegistryCLI {
         let replica: MeshLocalReplica
         if let path = ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED_DATA_DIR"] {
             replica = try MeshLocalReplica.openIsolated(rootURL: URL(fileURLWithPath: path, isDirectory: true))
-        } else { replica = try MeshLocalReplica.openDefault() }
+        } else { replica = try MeshLocalReplica.openDefault(headless: true) }
         let group = try await replica.ensureActiveTrustGroup()
         return Context(replica: replica, group: group, projection: .init(replica: replica, group: group))
     }

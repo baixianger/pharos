@@ -135,6 +135,39 @@ final class MeshDeviceIdentityTests: XCTestCase {
         XCTAssertEqual(Set(identities.map { $0.irohSecretKeyBytes() }).count, 1)
     }
 
+#if os(macOS)
+    func testExplicitHeadlessMirrorNeverFallsThroughToKeychain() throws {
+        let fixture = try FileFixture()
+        defer { fixture.remove() }
+        let directory = fixture.root.appendingPathComponent("private", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let mirrorURL = directory.appendingPathComponent("headless.json")
+        let storage = MeshMirroredIdentityStorage(
+            keychain: MeshKeychainIdentityStorage(
+                service: "me.pai.pharos.tests.\(UUID().uuidString)",
+                account: "must-not-be-read"
+            ),
+            mirrorURL: mirrorURL, headlessOnly: true
+        )
+
+        XCTAssertThrowsError(try storage.load()) {
+            XCTAssertEqual(
+                $0 as? MeshMirroredIdentityStorageError,
+                .headlessBootstrapRequired
+            )
+        }
+
+        let expected = Data("protected-mirror".utf8)
+        XCTAssertTrue(try MeshFileIdentityStorage(
+            fileURL: mirrorURL
+        ).insertIfAbsent(expected))
+        XCTAssertEqual(try storage.load(), expected)
+    }
+#endif
+
     private final class FileFixture {
         let root: URL
 

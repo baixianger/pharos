@@ -23,7 +23,10 @@ public struct MeshLocalReplica: Sendable {
         self.rootURL = rootURL
     }
 
-    public static func openDefault() throws -> MeshLocalReplica {
+    /// `headless` is explicit because tmux servers routinely outlive and drop
+    /// SSH environment variables. CLI/hooks must never guess that they are a
+    /// GUI process and block on an unavailable login Keychain.
+    public static func openDefault(headless: Bool = false) throws -> MeshLocalReplica {
         let root = try defaultRootURL()
 #if canImport(Security)
         let keychain = MeshKeychainIdentityStorage(
@@ -32,7 +35,8 @@ public struct MeshLocalReplica: Sendable {
 #if os(macOS)
         let storage = MeshMirroredIdentityStorage(
             keychain: keychain,
-            mirrorURL: root.appendingPathComponent("headless-device-identity-v1.json")
+            mirrorURL: root.appendingPathComponent("headless-device-identity-v1.json"),
+            headlessOnly: headless
         )
 #else
         let storage = keychain
