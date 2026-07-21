@@ -379,7 +379,9 @@ private enum MeshHeadlessCLI {
                     displayName: name,
                     inviterDisplayName: option("--inviter-name", in: args) ?? "Inviter"
                 )
-                try replica.adoptActiveTrustGroup(invitation.trustGroupID)
+                try replica.adoptActiveTrustGroup(
+                    invitation.trustGroupID, replacingExisting: true
+                )
                 print(try MeshTrustAcceptanceTicket.encode(acceptance))
                 try await runtime.close()
                 return 0

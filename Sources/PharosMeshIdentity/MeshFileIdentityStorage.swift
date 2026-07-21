@@ -135,6 +135,65 @@ public struct MeshFileIdentityStorage: MeshIdentityStorage, Sendable {
 #endif
     }
 
+    /// Atomically replaces an existing protected value. This is intentionally
+    /// separate from `MeshIdentityStorage`: device identities stay
+    /// insert-only, while small user-selected profiles may opt into explicit
+    /// replacement.
+    public func replace(_ data: Data) throws {
+#if canImport(Darwin) || canImport(Glibc)
+        guard data.count <= Self.maximumBytes else {
+            throw MeshFileIdentityStorageError.oversizedFile
+        }
+        let directory = fileURL.deletingLastPathComponent()
+        try ensurePrivateDirectory(directory)
+
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            _ = try load()
+        }
+
+        let temporary = directory.appendingPathComponent(".identity-\(UUID().uuidString).tmp")
+        let fd = temporary.path.withCString {
+            open($0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        }
+        guard fd >= 0 else {
+            throw MeshFileIdentityStorageError.io(operation: "create", code: errno)
+        }
+        var shouldRemoveTemporary = true
+        defer {
+            _ = close(fd)
+            if shouldRemoveTemporary { temporary.path.withCString { _ = unlink($0) } }
+        }
+
+        var offset = 0
+        while offset < data.count {
+            let count = data.withUnsafeBytes { buffer -> Int in
+                guard let base = buffer.baseAddress else { return 0 }
+                return write(fd, base.advanced(by: offset), data.count - offset)
+            }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw MeshFileIdentityStorageError.io(operation: "write", code: errno)
+            }
+            guard count > 0 else {
+                throw MeshFileIdentityStorageError.io(operation: "short-write", code: 0)
+            }
+            offset += count
+        }
+        guard fsync(fd) == 0 else {
+            throw MeshFileIdentityStorageError.io(operation: "fsync", code: errno)
+        }
+        guard temporary.path.withCString({ source in
+            fileURL.path.withCString { destination in rename(source, destination) }
+        }) == 0 else {
+            throw MeshFileIdentityStorageError.io(operation: "rename", code: errno)
+        }
+        shouldRemoveTemporary = false
+        try syncDirectory(directory)
+#else
+        throw MeshFileIdentityStorageError.unsupportedPlatform
+#endif
+    }
+
 #if canImport(Darwin) || canImport(Glibc)
     private func ensurePrivateDirectory(_ directory: URL) throws {
         if try validatePrivateDirectory(directory, allowMissing: true) { return }

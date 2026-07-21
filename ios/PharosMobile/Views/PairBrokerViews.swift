@@ -294,6 +294,28 @@ struct PairDeviceConfirmation: View {
                     )
                     .foregroundStyle(.green)
                 }
+                Section("Access") {
+                    LabeledContent(
+                        "Permissions",
+                        value: invitation.requestedRoles.map(\.rawValue)
+                            .sorted().formatted()
+                    )
+                    LabeledContent(
+                        "Personal Mesh",
+                        value: abbreviated(
+                            invitation.trustGroupID.rawValue.uuidString
+                        )
+                    )
+                    if switchesPersonalMesh {
+                        Label(
+                            "This iPhone is already using another personal Mesh. " +
+                            "Continuing switches the active Mesh; its existing " +
+                            "local data is kept and is not deleted.",
+                            systemImage: "arrow.triangle.2.circlepath"
+                        )
+                        .foregroundStyle(.orange)
+                    }
+                }
                 if let errorMessage {
                     Section {
                         Text(errorMessage).foregroundStyle(.red)
@@ -306,7 +328,7 @@ struct PairDeviceConfirmation: View {
                         if isConnecting {
                             HStack { ProgressView(); Text("Pairing…") }
                         } else {
-                            Text("Trust and connect")
+                            Text(switchesPersonalMesh ? "Switch Mesh and connect" : "Trust and connect")
                         }
                     }
                     .disabled(isConnecting || isExpired)
@@ -330,6 +352,11 @@ struct PairDeviceConfirmation: View {
     private var isExpired: Bool {
         invitation.expiresAtMilliseconds <=
             Int64(Date().timeIntervalSince1970 * 1_000)
+    }
+
+    private var switchesPersonalMesh: Bool {
+        guard let current = distributedMesh.activeTrustGroupID else { return false }
+        return current != invitation.trustGroupID
     }
 
     private func abbreviated(_ value: String) -> String {

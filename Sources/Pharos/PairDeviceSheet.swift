@@ -11,8 +11,11 @@ struct PairDeviceSheet: View {
     @Environment(DistributedMeshSupport.self) private var distributedMesh
     @Environment(\.dismiss) private var dismiss
     @State private var pairingLink: String?
+    @State private var invitation: MeshTrustInvitation?
     @State private var errorMessage: String?
     @State private var loading = true
+    @State private var initialTrustedDeviceCount = 0
+    @State private var pairedDeviceName: String?
 
     var body: some View {
         VStack(spacing: 18) {
@@ -29,6 +32,14 @@ struct PairDeviceSheet: View {
             if loading {
                 ProgressView("Creating a secure pairing code…")
                     .frame(width: 260, height: 260)
+            } else if let pairedDeviceName {
+                ContentUnavailableView(
+                    "Device connected",
+                    systemImage: "checkmark.circle.fill",
+                    description: Text("\(pairedDeviceName) joined your personal Mesh and can now replicate data.")
+                )
+                .symbolRenderingMode(.multicolor)
+                .frame(width: 300, height: 300)
             } else if let pairingLink, let image = QRCodeRenderer.image(for: pairingLink) {
                 Image(nsImage: image)
                     .interpolation(.none)
@@ -41,9 +52,13 @@ struct PairDeviceSheet: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                 }
-                Text("This code expires in 5 minutes and works once.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                PairingExpiryLabel(expiresAtMilliseconds: invitation?.expiresAtMilliseconds)
+                Label(
+                    "Grants controller and replica access to your personal Mesh",
+                    systemImage: "person.badge.key.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 Button("Copy pairing link", systemImage: "doc.on.doc") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(pairingLink, forType: .string)
@@ -59,16 +74,20 @@ struct PairDeviceSheet: View {
         .frame(width: 420)
         .frame(minHeight: 440)
         .task { await createPairingLink() }
+        .task(id: pairingLink) { await watchForPairedDevice() }
     }
 
     @MainActor
     private func createPairingLink() async {
         loading = true
         errorMessage = nil
+        pairedDeviceName = nil
         if distributedMesh.isProductModeEnabled {
             do {
-                pairingLink = try await distributedMesh.issueInvitation()
-                    .absoluteString
+                initialTrustedDeviceCount = distributedMesh.trustedDevices.count
+                let url = try await distributedMesh.issueInvitation()
+                invitation = try MeshTrustInvitationLink.decode(url)
+                pairingLink = url.absoluteString
                 loading = false
                 return
             } catch {
@@ -91,6 +110,60 @@ struct PairDeviceSheet: View {
             errorMessage = response.error ?? "Update the active Broker to a version that supports pairing."
         }
         loading = false
+    }
+
+    @MainActor
+    private func watchForPairedDevice() async {
+        guard distributedMesh.isProductModeEnabled, pairingLink != nil else { return }
+        while !Task.isCancelled, pairedDeviceName == nil {
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            try? await distributedMesh.refreshTrustedDevices()
+            if distributedMesh.trustedDevices.count > initialTrustedDeviceCount {
+                pairedDeviceName = distributedMesh.trustedDevices.last?.descriptor.displayName
+                    ?? "The new device"
+            }
+        }
+    }
+}
+
+private struct PairingExpiryLabel: View {
+    let expiresAtMilliseconds: Int64?
+
+    var body: some View {
+        if let expiresAtMilliseconds {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                PairingRemainingLabel(
+                    expiration: Date(
+                        timeIntervalSince1970:
+                            Double(expiresAtMilliseconds) / 1_000
+                    ),
+                    now: context.date
+                )
+            }
+        } else {
+            Text("This code expires in 5 minutes and works once.")
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct PairingRemainingLabel: View {
+    let expiration: Date
+    let now: Date
+
+    var body: some View {
+        let seconds = max(0, Int(expiration.timeIntervalSince(now)))
+        Label {
+            if seconds > 0 {
+                Text("Expires in \(seconds / 60):\(seconds % 60, format: .number.precision(.integerLength(2))) · works once")
+            } else {
+                Text("Expired · create a new code")
+            }
+        } icon: {
+            Image(systemName: seconds > 0 ? "timer" : "exclamationmark.triangle.fill")
+        }
+        .foregroundStyle(seconds > 0 ? Color.secondary : Color.orange)
     }
 }
 

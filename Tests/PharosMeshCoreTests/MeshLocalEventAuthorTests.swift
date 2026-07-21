@@ -120,6 +120,32 @@ final class MeshLocalEventAuthorTests: XCTestCase {
         }
     }
 
+    func testExplicitPairingCanReplaceExistingGroupWithoutDeletingIt() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let storage = MeshMemoryIdentityStorage()
+        let replica = try MeshLocalReplica.open(
+            rootURL: fixture.root, identityStorage: storage
+        )
+        try replica.adoptActiveTrustGroup(fixture.group)
+        try await replica.store.setMembershipEpoch(4, for: fixture.group)
+        let replacement = MeshTrustGroupID()
+
+        try replica.adoptActiveTrustGroup(
+            replacement, replacingExisting: true
+        )
+
+        XCTAssertEqual(try replica.activeTrustGroup(), replacement)
+        let originalEpoch = try await replica.store.membershipEpoch(
+            for: fixture.group
+        )
+        XCTAssertEqual(originalEpoch, 4)
+        let reopened = try MeshLocalReplica.open(
+            rootURL: fixture.root, identityStorage: storage
+        )
+        XCTAssertEqual(try reopened.activeTrustGroup(), replacement)
+    }
+
     private final class Fixture {
         let root: URL
         let group = MeshTrustGroupID()

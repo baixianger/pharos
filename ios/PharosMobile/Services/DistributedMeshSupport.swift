@@ -91,7 +91,9 @@ final class DistributedMeshSupport {
             displayName: displayName,
             inviterDisplayName: "Pharos Mac"
         )
-        try replica.adoptActiveTrustGroup(invitation.trustGroupID)
+        try replica.adoptActiveTrustGroup(
+            invitation.trustGroupID, replacingExisting: true
+        )
         activeTrustGroupID = invitation.trustGroupID
         registry = MobileDistributedRegistry(
             replica: replica, group: invitation.trustGroupID

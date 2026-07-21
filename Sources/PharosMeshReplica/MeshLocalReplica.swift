@@ -151,14 +151,21 @@ public struct MeshLocalReplica: Sendable {
     /// Selects a group learned through pairing. Existing selection is never
     /// overwritten implicitly, preventing an unrelated QR scan from silently
     /// moving the device into another trust domain.
-    public func adoptActiveTrustGroup(_ group: MeshTrustGroupID) throws {
+    public func adoptActiveTrustGroup(
+        _ group: MeshTrustGroupID, replacingExisting: Bool = false
+    ) throws {
         let profile = ActiveTrustGroupProfile(version: 1, trustGroupID: group)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let storage = MeshFileIdentityStorage(
             fileURL: rootURL.appendingPathComponent("active-trust-group-v1.json")
         )
-        _ = try storage.insertIfAbsent(try encoder.encode(profile))
+        let encoded = try encoder.encode(profile)
+        if replacingExisting, let existing = try activeTrustGroup(), existing != group {
+            try storage.replace(encoded)
+        } else {
+            _ = try storage.insertIfAbsent(encoded)
+        }
         guard try activeTrustGroup() == group else {
             throw MeshLocalReplicaError.corruptActiveTrustGroup
         }
