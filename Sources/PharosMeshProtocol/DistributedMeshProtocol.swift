@@ -126,6 +126,31 @@ public struct MeshDeviceDescriptor: Codable, Equatable, Identifiable, Sendable {
         self.roles = roles
         self.protocolVersion = protocolVersion
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, endpointID, displayName, roles, protocolVersion
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(MeshDeviceID.self, forKey: .id)
+        endpointID = try container.decode(MeshEndpointID.self, forKey: .endpointID)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        roles = Set(try container.decode([MeshDeviceRole].self, forKey: .roles))
+        protocolVersion = try container.decode(Int.self, forKey: .protocolVersion)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(endpointID, forKey: .endpointID)
+        try container.encode(displayName, forKey: .displayName)
+        try container.encode(
+            roles.sorted { $0.rawValue < $1.rawValue },
+            forKey: .roles
+        )
+        try container.encode(protocolVersion, forKey: .protocolVersion)
+    }
 }
 
 /// A privacy-safe snapshot suitable for Settings, CLI diagnostics, and logs.

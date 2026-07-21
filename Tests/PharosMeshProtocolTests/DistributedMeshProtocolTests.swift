@@ -26,6 +26,25 @@ final class DistributedMeshProtocolTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(MeshDeviceDescriptor.self, from: data), descriptor)
     }
 
+    func testDeviceDescriptorEncodesRolesInCanonicalOrder() throws {
+        let descriptor = MeshDeviceDescriptor(
+            endpointID: MeshEndpointID(rawValue: "endpoint")!,
+            displayName: "Device",
+            roles: [.replica, .controller, .host]
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoder.encode(descriptor))
+                as? [String: Any]
+        )
+        XCTAssertEqual(
+            object["roles"] as? [String],
+            ["controller", "host", "replica"]
+        )
+    }
+
     func testTransportRequestEnforcesBoundsAndDeadline() throws {
         try MeshTransportRequest(header: Data("{}".utf8)).validate()
 

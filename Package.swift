@@ -21,8 +21,8 @@ let package = Package(
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
         .package(url: "https://github.com/apple/swift-crypto", from: "3.0.0"),
         .package(
-            url: "https://github.com/baixianger/iroh-ffi",
-            revision: "bba9072604e001bf32d134940331710d7c972c08"
+            url: "https://github.com/baixianger/MeshKit.git",
+            exact: "0.1.2"
         ),
     ],
     targets: [
@@ -42,8 +42,12 @@ let package = Package(
             dependencies: [
                 "PharosMeshProtocol",
                 .product(
-                    name: "IrohLib",
-                    package: "iroh-ffi"
+                    name: "MeshKit",
+                    package: "MeshKit"
+                ),
+                .product(
+                    name: "MeshKitIroh",
+                    package: "MeshKit"
                 ),
             ],
             path: "Sources/PharosMeshIroh"

@@ -393,7 +393,8 @@ final class DistributedProjectIssueProjectionTests: XCTestCase {
         defer { unsetenv("PHAROS_DISTRIBUTED_DATA_DIR") }
 
         let addProjectStatus = await CLI.run([
-            "add", "CLI Project", "--tag", "Core", "--notes", "portable",
+            "add", "CLI Project", "--path", "/host-only/cli-project",
+            "--tag", "Core", "--notes", "portable",
         ])
         XCTAssertEqual(addProjectStatus, 0)
         let addIssueStatus = await CLI.run([
@@ -415,6 +416,13 @@ final class DistributedProjectIssueProjectionTests: XCTestCase {
         let projection = DistributedProjectIssueProjection(replica: replica, group: group)
         let removed = try await projection.materializedStore()
         XCTAssertEqual(removed.projects.map(\.name), ["CLI Project"])
+        let projectID = removed.projects[0].id
+        defer { HostLocalProjectPaths.set(nil, for: projectID) }
+        XCTAssertNil(removed.projects[0].localPath)
+        XCTAssertEqual(
+            HostLocalProjectPaths.path(for: projectID),
+            "/host-only/cli-project"
+        )
         XCTAssertEqual(removed.groups, ["Core"])
         XCTAssertTrue(removed.projects[0].issues.isEmpty)
         let trashID = try XCTUnwrap(removed.trash.first?.id)

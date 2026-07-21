@@ -1,22 +1,25 @@
 # Iroh dependency provenance
 
-Pharos uses a reviewed fork of
-[n0-computer/iroh-ffi](https://github.com/n0-computer/iroh-ffi), pinned by full
-commit rather than following a branch or version range. The fork retains the
-v1.1.0 API and adds the Linux Swift-package composition needed by Pharos.
+Pharos consumes [MeshKit](https://github.com/baixianger/MeshKit) as its reusable
+Swift transport layer. MeshKit uses a reviewed fork of
+[n0-computer/iroh-ffi](https://github.com/n0-computer/iroh-ffi), pinned to an
+exact SemVer release rather than following a branch or version range. The fork
+retains the upstream v1.1.0 Apple API and artifacts and adds the Linux
+Swift-package composition needed by Pharos.
 
 ## Reviewed release
 
 | Item | Pinned value |
 |---|---|
+| MeshKit release | `v0.1.2` |
 | Reviewed upstream release | `v1.1.0` (`5e451092dba0c1a09ee83ff6e5be37b1152a5c58`) |
-| Swift package revision | `bba9072604e001bf32d134940331710d7c972c08` |
+| Swift package release | `v1.1.1` (`bba9072604e001bf32d134940331710d7c972c08`) |
 | Linux Rust build revision | `358722a7b30a72e9b0625c8bfdfaf940753a43f7` |
 | Upstream licenses | MIT OR Apache-2.0 |
 | Swift product/module | `IrohLib` |
 | Pharos ALPN | `me.pai.pharos/mesh/1` |
 
-The package revision pins its Apple XCFramework URL and checksum. Linux builds
+The package release pins its Apple XCFramework URL and checksum. Linux builds
 compile the Rust crate from the separately pinned descendant revision in
 `Dockerfile.mesh-linux`; no unversioned binary is downloaded. The source also
 exposes generated Swift bindings and a documented local XCFramework build path
@@ -56,7 +59,9 @@ xcodebuild -project PharosMobile.xcodeproj -scheme PharosMobile \
 
 The final result was `** BUILD SUCCEEDED **`, including a second incremental
 build after the bounded-timeout implementation changed. The current production
-manifest and Linux Docker build both use exact GitHub revisions.
+manifest uses exact SemVer releases for MeshKit and the Swift Iroh package. The
+Linux Docker build keeps a separate exact Rust source revision so its native
+library matches the reviewed bindings.
 
 ## Update gate
 
@@ -67,10 +72,11 @@ Before changing the exact version:
 3. build the upstream XCFramework from the tag and inspect all expected slices;
 4. run Pharos protocol, isolated direct-path, forced-relay, iOS simulator, and
    Linux bridge tests;
-5. update the exact `Package.swift` pin, generated Xcode project resolution,
-   and this file in the same commit. The repository intentionally ignores the
-   root SwiftPM `Package.resolved`, so it is verification input rather than a
-   tracked source of truth.
+5. publish a tested MeshKit release, then update the exact MeshKit
+   `Package.swift` pin, generated Xcode project resolution, and this file in the
+   same Pharos commit. The repository intentionally ignores the root SwiftPM
+   `Package.resolved`, so it is verification input rather than tracked source
+   of truth.
 
 No Iroh integration test may read a Pharos production data directory, use a
 configured Broker address, or reuse a persisted production identity. Tests use

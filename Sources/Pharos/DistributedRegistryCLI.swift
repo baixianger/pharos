@@ -47,7 +47,14 @@ enum DistributedRegistryCLI {
                     notes: p.opt("notes") ?? ""
                 )
                 store.projects.append(project)
-                if let path = p.opt("path") { HostLocalProjectPaths.set(path, for: project.id) }
+                // Keep the path on the in-memory project until
+                // captureAndStrip below. That pass persists host-local paths
+                // before removing them from the portable replica snapshot.
+                // Saving only to preferences here would be undone when the
+                // nil in-memory path is captured a few lines later.
+                if let path = p.opt("path") {
+                    store.projects[store.projects.count - 1].localPath = path
+                }
                 store.ensureGroupsForTags(); changed = true
                 print("Added \(name)")
             case "remove":
