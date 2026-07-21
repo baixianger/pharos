@@ -751,6 +751,17 @@ final class RoomStore {
     /// token) and the member's Host node to be online.
     @discardableResult
     func stopAgent(_ member: MeshMember) async -> Bool {
+        if usesDistributedRegistry {
+            do {
+                try await distributedMesh.stopAgent(memberID: member.id)
+                error = nil
+                await refresh()
+                return true
+            } catch {
+                self.error = error.localizedDescription
+                return false
+            }
+        }
         do {
             let nodes = try await request(MeshRequest(cmd: "node-list")).nodes ?? []
             let target = nodes.first { node in

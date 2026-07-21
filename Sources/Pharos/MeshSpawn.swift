@@ -205,8 +205,19 @@ enum MeshSpawn {
         // Confirm it actually joined (~40s).
         for _ in 0..<20 {
             usleep(2_000_000)
-            if await didJoin(room: room, nick: nick) {
-                onProgress(Progress(phase: .joined, detail: "joined \(room)")); return
+            if let member = await joinedMember(room: room, nick: nick) {
+                do {
+                    try await registerLocalHostResource(
+                        memberID: member.id, tmuxSession: name
+                    )
+                    onProgress(Progress(phase: .joined, detail: "joined \(room)"))
+                } catch {
+                    onProgress(Progress(
+                        phase: .failed,
+                        detail: "joined \(room), but Host control registration failed: \(error.localizedDescription)"
+                    ))
+                }
+                return
             }
         }
         onProgress(Progress(phase: .failed,
@@ -217,22 +228,55 @@ enum MeshSpawn {
     /// shared local replica, so CLI and GUI confirmation never contacts the
     /// retired Broker. Legacy diagnostic mode keeps its historical probe.
     static func didJoin(room: String, nick: String) async -> Bool {
+        await joinedMember(room: room, nick: nick) != nil
+    }
+
+    static func joinedMember(
+        room: String, nick: String
+    ) async -> DistributedChatMember? {
         if PharosMeshRuntimeMode.usesDistributedMesh {
             do {
                 let replica = try MeshLocalReplica.openDefault(headless: true)
                 let group = try await replica.ensureActiveTrustGroup()
-                let chat = DistributedAgentChat(replica: replica, group: group)
-                return try await chat.rooms().first(where: {
+                let chat = DistributedChatRegistry(replica: replica, group: group)
+                guard let target = try await chat.rooms().first(where: {
                     $0.name.localizedCaseInsensitiveCompare(room) == .orderedSame
-                })?.members.contains(where: {
-                    $0.localizedCaseInsensitiveCompare(nick) == .orderedSame
-                }) == true
+                }) else { return nil }
+                return try await chat.members(in: target).first(where: {
+                    $0.nick.localizedCaseInsensitiveCompare(nick) == .orderedSame
+                })
             } catch {
-                return false
+                return nil
             }
         }
         let rooms = MeshClient.send(MeshRequest(cmd: "list")).rooms ?? []
-        return rooms.first { $0.name == room }?.members.contains(nick) ?? false
+        guard rooms.first(where: { $0.name == room })?.members.contains(nick) == true else {
+            return nil
+        }
+        return DistributedChatMember(id: nick, nick: nick)
+    }
+
+    private static func registerLocalHostResource(
+        memberID: String, tmuxSession: String
+    ) async throws {
+        guard let resourceID = MeshResourceID(rawValue: memberID) else {
+            throw MeshSpawnControlError.invalidMemberID
+        }
+        let replica = try MeshLocalReplica.openDefault(headless: true)
+        let group = try await replica.ensureActiveTrustGroup()
+        let binding = try DistributedHostResourceBinding(
+            resourceID: resourceID, tmuxSession: tmuxSession, tmuxSocket: nil
+        )
+        try DistributedHostResourceBindings(
+            dataDirectory: replica.rootURL
+        ).save(binding, for: resourceID)
+        _ = try await replica.store.registerHostResource(
+            in: group, on: replica.identity, resourceID: resourceID,
+            allowedActions: [.poke, .stop],
+            at: MeshHybridTimestamp(
+                wallTimeMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            )
+        )
     }
 
     // MARK: tmux drive
@@ -271,4 +315,10 @@ enum MeshSpawn {
         usleep(400_000)
         _ = Shell.run(tmux, ["send-keys", "-t", name, "Enter"])
     }
+}
+
+private enum MeshSpawnControlError: LocalizedError {
+    case invalidMemberID
+
+    var errorDescription: String? { "The agent session ID is not a safe Host resource ID." }
 }

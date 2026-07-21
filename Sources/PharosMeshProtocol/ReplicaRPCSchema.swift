@@ -6,6 +6,7 @@ public enum MeshReplicaRPCOperation: String, Codable, CaseIterable, Sendable {
     case syncAcknowledge = "sync.acknowledge.v1"
     case blobManifest = "blob.manifest.v1"
     case blobChunk = "blob.chunk.v1"
+    case hostResource = "host.resource.v1"
     case hostCommand = "host.command.v1"
 }
 
@@ -119,6 +120,12 @@ public struct MeshBlobChunkRequest: Codable, Equatable, Sendable {
         self.digest = digest
         self.index = index
     }
+}
+
+public struct MeshHostResourceRequest: Codable, Equatable, Sendable {
+    public var resourceID: MeshResourceID
+
+    public init(resourceID: MeshResourceID) { self.resourceID = resourceID }
 }
 
 public struct MeshBlobChunkMetadata: Codable, Equatable, Sendable {

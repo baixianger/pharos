@@ -1,4 +1,6 @@
 import Foundation
+import PharosMeshControl
+import PharosMeshIroh
 import PharosMeshProtocol
 import PharosMeshReplica
 
@@ -223,7 +225,7 @@ public enum DistributedAgentCLI {
     public static let commands: Set<String> = [
         "capabilities", "create", "list", "history", "join", "say", "send",
         "recv", "who", "leave", "rename-member", "rename", "delete", "rm",
-        "attachment",
+        "attachment", "stop",
     ]
 
     public static func run(_ args: [String]) async -> Int32 {
@@ -313,6 +315,26 @@ public enum DistributedAgentCLI {
                     room: args[1], value: option("--member", in: args) ?? args[2], chat: chat
                 )
                 try await agent.leave(room: args[1], memberID: memberID); print("left \(args[1])")
+            case "stop":
+                guard args.count >= 3 else { return usage("stop <room> <nick|member-id> [--member ID]") }
+                let memberID = try await resolveMemberID(
+                    room: args[1], value: option("--member", in: args) ?? args[2], chat: chat
+                )
+                let runtime = try await IrohEndpointRuntime.bind(
+                    secretKey: replica.identity.irohSecretKeyBytes(),
+                    expectedEndpointID: try replica.identity.endpointID()
+                )
+                do {
+                    try await DistributedHostController.stopAgent(
+                        memberID: memberID, runtime: runtime,
+                        replica: replica, group: group
+                    )
+                    try await runtime.close()
+                } catch {
+                    try? await runtime.close()
+                    throw error
+                }
+                print("stopped \(args[2])")
             case "rename-member":
                 guard args.count >= 4 else { return usage("rename-member <room> <nick|member-id> <new-nick> [--member ID]") }
                 let memberID = try await resolveMemberID(

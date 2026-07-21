@@ -434,7 +434,18 @@ private enum MeshHeadlessCLI {
                 router = MeshReplicaRPCServer(
                     store: replica.store, hostIdentity: replica.identity,
                     hostCommandHandler: { command in
-                        await executor.execute(command)
+                        let outcome = await executor.execute(command)
+                        if command.action == .stop,
+                           case .executed = outcome {
+                            _ = try? await replica.store.retireHostResource(
+                                in: command.trustGroupID,
+                                on: replica.identity,
+                                resourceID: command.resourceID,
+                                at: distributedNow()
+                            )
+                            try? executor.bindings.remove(command.resourceID)
+                        }
+                        return outcome
                     }
                 )
             } else {
@@ -1650,6 +1661,7 @@ private enum MeshHeadlessCLI {
       send <text> [@target ...] [--room ROOM] [--member SESSION] [--reply ID] [--attach FILE]
       say <room> <nick> <text> [--member SESSION] [--reply ID] [--attach FILE]
       recv [<nick>] [--member <session-id>]
+      stop <room> <nick|member-id>
       attachment put <file> [--id UUID] [--name DISPLAY-NAME]
       attachment get <id> [--out PATH]
       registry get [--output PATH]

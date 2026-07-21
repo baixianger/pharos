@@ -212,7 +212,16 @@ struct AgentDetailView: View {
                 LabeledContent("Session", value: String(member.id.prefix(8)))
             }
 
-            if let profile = sshProfile {
+            if PharosMeshRuntimeMode.usesDistributedMesh {
+                Section {
+                    Label("Interactive attach stays on the owning Mac.",
+                          systemImage: "rectangle.connected.to.line.below")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } footer: {
+                    Text("The phone uses signed Host commands for lifecycle control and never infers SSH or tmux routing from replicated chat data.")
+                }
+            } else if let profile = sshProfile {
                 Section {
                     Button {
                         terminal = TerminalTarget(member: member, profile: profile)
@@ -232,8 +241,7 @@ struct AgentDetailView: View {
                 }
             }
 
-            if !PharosMeshRuntimeMode.usesDistributedMesh,
-               (member.state ?? "").lowercased() != "gone" {
+            if (member.state ?? "").lowercased() != "gone" {
                 Section {
                     Button(role: .destructive) {
                         showingStopConfirm = true
@@ -245,16 +253,9 @@ struct AgentDetailView: View {
                     }
                     .disabled(isStopping)
                 } footer: {
-                    Text("Enqueues a stop command on \(member.host ?? "the agent's host"). Requires the host node to be online and explicit legacy diagnostic mode.")
-                }
-            } else if PharosMeshRuntimeMode.usesDistributedMesh {
-                Section {
-                    Label("Stopping remote agents will appear here after this agent advertises a signed Host resource.",
-                          systemImage: "lock.shield")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } footer: {
-                    Text("Pharos does not fall back to Broker, Node, SSH, or inferred tmux routing in distributed mode.")
+                    Text(PharosMeshRuntimeMode.usesDistributedMesh
+                         ? "Sends a signed, generation-bound stop command directly to the trusted Host that owns this agent session."
+                         : "Enqueues a stop command on \(member.host ?? "the agent's host"). Requires the host node to be online and explicit legacy diagnostic mode.")
                 }
             }
         }

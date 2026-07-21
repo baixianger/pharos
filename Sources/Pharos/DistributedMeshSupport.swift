@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import PharosMeshControl
 import PharosMeshCore
 
 /// Product builds use the signed, device-to-device replica by default. The
@@ -76,8 +77,31 @@ final class DistributedMeshSupport {
                 expectedEndpointID: try replica.identity.endpointID()
             )
             let address = try await endpoint.localAddress()
+            let executor = DistributedHostCommandExecutor(
+                bindings: DistributedHostResourceBindings(
+                    dataDirectory: replica.rootURL
+                )
+            )
             let router = MeshReplicaRPCServer(
-                store: replica.store, hostIdentity: replica.identity
+                store: replica.store, hostIdentity: replica.identity,
+                hostCommandHandler: { command in
+                    let outcome = await executor.execute(command)
+                    if command.action == .stop,
+                       case .executed = outcome {
+                        _ = try? await replica.store.retireHostResource(
+                            in: command.trustGroupID,
+                            on: replica.identity,
+                            resourceID: command.resourceID,
+                            at: MeshHybridTimestamp(
+                                wallTimeMilliseconds: Int64(
+                                    Date().timeIntervalSince1970 * 1_000
+                                )
+                            )
+                        )
+                        try? executor.bindings.remove(command.resourceID)
+                    }
+                    return outcome
+                }
             )
             await endpoint.startServing { request, remoteEndpointID in
                 if let pairing = try? MeshTrustPairingRPCRequest.decode(
@@ -184,6 +208,17 @@ final class DistributedMeshSupport {
     ) async throws {
         try await requireChatRegistry().renameMember(
             room: room, memberID: memberID, to: nick
+        )
+    }
+
+    func stopAgent(memberID: String) async throws {
+        guard let runtime, let replica = localReplica,
+              let group = activeTrustGroupID else {
+            throw DistributedMeshSupportError.networkNotReady
+        }
+        try await DistributedHostController.stopAgent(
+            memberID: memberID, runtime: runtime,
+            replica: replica, group: group
         )
     }
 

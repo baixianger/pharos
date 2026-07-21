@@ -42,6 +42,8 @@ targets:
         product: PharosMeshIdentity
       - package: PharosShared
         product: PharosMeshReplica
+      - package: PharosShared
+        product: PharosMeshControl
       - package: MarkdownUI
         product: MarkdownUI
       - package: Citadel

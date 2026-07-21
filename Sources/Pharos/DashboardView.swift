@@ -93,6 +93,7 @@ struct DashboardView: View {
                         DashboardAgentsCard(
                             meshAgents: liveMeshAgents,
                             unregisteredSessions: unregisteredSessions,
+                            supportsSignedHostControl: distributedMesh.isProductModeEnabled,
                             onRename: beginRename,
                             onAttachMesh: attachMeshAgent,
                             onStopMesh: { meshAgentToStop = $0 },
@@ -234,10 +235,26 @@ struct DashboardView: View {
     }
 
     private func stopMeshAgent(_ m: MeshMemberInfo) {
-        if let node = MeshNodeControl.activeNode(for: m.tailscaleIP ?? m.host) {
-            let registrations = meshAgents.filter { $0.id == m.id }.flatMap { member in
-                member.rooms.map { (room: $0, nick: member.nick) }
+        let registrations = meshAgents.filter { $0.id == m.id }.flatMap { member in
+            member.rooms.map { (room: $0, nick: member.nick) }
+        }
+        if distributedMesh.isProductModeEnabled {
+            Task {
+                do {
+                    try await distributedMesh.stopAgent(memberID: m.id)
+                    if let error = await removeMeshRegistrations(
+                        registrations, memberID: m.id
+                    ) {
+                        agentActionError = error
+                    }
+                } catch {
+                    agentActionError = error.localizedDescription
+                }
+                loadMesh()
             }
+            return
+        }
+        if let node = MeshNodeControl.activeNode(for: m.tailscaleIP ?? m.host) {
             Task {
                 let command = await MeshNodeControl.stop(node: node, memberID: m.id)
                 if command.state == .succeeded {
@@ -260,9 +277,6 @@ struct DashboardView: View {
         }
         // `who` returns one row per room alias. Closing a session must remove
         // every alias for its immutable id, not only the row the user clicked.
-        let registrations = meshAgents.filter { $0.id == m.id }.flatMap { member in
-            member.rooms.map { (room: $0, nick: member.nick) }
-        }
         Task {
             let result = await Task.detached(priority: .userInitiated) { () -> Result<String, Error> in
                 do { return .success(try RemoteLaunch.kill(pane: pane, host: host, socket: m.tmuxSocket)) }
@@ -651,6 +665,7 @@ struct DashboardView: View {
 private struct DashboardAgentsCard: View {
     let meshAgents: [MeshMemberInfo]
     let unregisteredSessions: [DashboardAgentSession]
+    let supportsSignedHostControl: Bool
     let onRename: (MeshMemberInfo) -> Void
     let onAttachMesh: (MeshMemberInfo) -> Void
     let onStopMesh: (MeshMemberInfo) -> Void
@@ -665,6 +680,7 @@ private struct DashboardAgentsCard: View {
                 ForEach(meshAgents) { member in
                     DashboardMeshAgentRow(
                         member: member,
+                        supportsSignedHostControl: supportsSignedHostControl,
                         onRename: { onRename(member) },
                         onAttach: { onAttachMesh(member) },
                         onStop: { onStopMesh(member) }
@@ -687,6 +703,7 @@ private struct DashboardAgentsCard: View {
 
 private struct DashboardMeshAgentRow: View {
     let member: MeshMemberInfo
+    let supportsSignedHostControl: Bool
     let onRename: () -> Void
     let onAttach: () -> Void
     let onStop: () -> Void
@@ -713,8 +730,8 @@ private struct DashboardMeshAgentRow: View {
             Spacer(minLength: 8)
             Button("Rename", systemImage: "pencil", action: onRename)
                 .labelStyle(.iconOnly).help("Rename agent")
-            if member.tmuxPane != nil {
-                Button("Attach", action: onAttach)
+            if member.tmuxPane != nil || supportsSignedHostControl {
+                if member.tmuxPane != nil { Button("Attach", action: onAttach) }
                 Button("Stop", role: .destructive, action: onStop).foregroundStyle(.red)
             } else {
                 Text("Not in tmux").font(.caption2).foregroundStyle(.tertiary)

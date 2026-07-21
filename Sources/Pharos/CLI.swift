@@ -578,6 +578,7 @@ enum CLI {
       who                                 list replicated room membership
       attachment put|get …                store/read content-addressed attachments
       leave <room> <nick|member-id>       leave replicated room membership
+      stop <room> <nick|member-id>        send a signed stop to the owning Host
       rename-member <room> <member> <new> rename replicated membership
       rename <room> <new-name>            rename a replicated room
       delete <room>                       delete a replicated room
@@ -588,7 +589,8 @@ enum CLI {
       install-hooks [--project DIR|--user|--codex]
       spawn <room> <nick> [claude|codex] [--host SSH] [--cwd DIR|--project NAME]
 
-    Pair devices from Pharos Settings. There is no Broker endpoint or Host node.
+    Pair devices from Pharos Settings. Host control is signed and identity-addressed;
+    there is no Broker endpoint or always-on legacy Node.
     """
 
     private static let legacyMeshUsage = """

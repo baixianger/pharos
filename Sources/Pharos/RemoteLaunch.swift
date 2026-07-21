@@ -356,7 +356,19 @@ enum RemoteLaunch {
 
         for _ in 0..<25 {
             pause(2)
-            if await MeshSpawn.didJoin(room: room, nick: nick) {
+            if let member = await MeshSpawn.joinedMember(room: room, nick: nick) {
+                let registration = ssh(
+                    host,
+                    "pharos-mesh distributed host-resource-register " +
+                        "--resource \(sq(member.id)) --tmux-session \(sq(name)) >/dev/null"
+                )
+                guard registration.ok else {
+                    fail(
+                        "joined \(room), but Host control registration failed on \(host): " +
+                            registration.err.trimmingCharacters(in: .whitespacesAndNewlines)
+                    )
+                    return
+                }
                 onProgress(.init(phase: .joined, detail: "joined \(room) from \(host)"))
                 return
             }

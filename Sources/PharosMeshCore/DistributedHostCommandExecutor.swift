@@ -1,17 +1,18 @@
 import Foundation
-import PharosMeshCore
+import PharosMeshProtocol
+import PharosMeshReplica
 
 /// Host-private routing metadata. Controllers address only the opaque resource
 /// ID and generation; they cannot choose a tmux socket or session in payloads.
-struct DistributedHostResourceBinding: Codable, Equatable, Sendable {
-    static let version = 1
+public struct DistributedHostResourceBinding: Codable, Equatable, Sendable {
+    public static let version = 1
 
-    var schemaVersion: Int
-    var resourceID: String
-    var tmuxSession: String
-    var tmuxSocket: String?
+    public var schemaVersion: Int
+    public var resourceID: String
+    public var tmuxSession: String
+    public var tmuxSocket: String?
 
-    init(resourceID: MeshResourceID, tmuxSession: String, tmuxSocket: String?) throws {
+    public init(resourceID: MeshResourceID, tmuxSession: String, tmuxSocket: String?) throws {
         guard Self.validSession(tmuxSession), Self.validSocket(tmuxSocket) else {
             throw DistributedHostExecutorError.invalidBinding
         }
@@ -21,7 +22,7 @@ struct DistributedHostResourceBinding: Codable, Equatable, Sendable {
         self.tmuxSocket = tmuxSocket
     }
 
-    func validate(for resourceID: MeshResourceID) throws {
+    public func validate(for resourceID: MeshResourceID) throws {
         guard schemaVersion == Self.version, self.resourceID == resourceID.rawValue,
               Self.validSession(tmuxSession), Self.validSocket(tmuxSocket) else {
             throw DistributedHostExecutorError.invalidBinding
@@ -41,14 +42,14 @@ struct DistributedHostResourceBinding: Codable, Equatable, Sendable {
     }
 }
 
-struct DistributedHostResourceBindings: Sendable {
-    let directory: URL
+public struct DistributedHostResourceBindings: Sendable {
+    public let directory: URL
 
-    init(dataDirectory: URL) {
+    public init(dataDirectory: URL) {
         directory = dataDirectory.appendingPathComponent("host-resources-v1", isDirectory: true)
     }
 
-    func save(_ binding: DistributedHostResourceBinding, for resourceID: MeshResourceID) throws {
+    public func save(_ binding: DistributedHostResourceBinding, for resourceID: MeshResourceID) throws {
         try binding.validate(for: resourceID)
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true,
@@ -61,7 +62,7 @@ struct DistributedHostResourceBindings: Sendable {
         )
     }
 
-    func load(_ resourceID: MeshResourceID) throws -> DistributedHostResourceBinding {
+    public func load(_ resourceID: MeshResourceID) throws -> DistributedHostResourceBinding {
         let binding = try JSONDecoder().decode(
             DistributedHostResourceBinding.self,
             from: Data(contentsOf: fileURL(for: resourceID))
@@ -70,7 +71,7 @@ struct DistributedHostResourceBindings: Sendable {
         return binding
     }
 
-    func remove(_ resourceID: MeshResourceID) throws {
+    public func remove(_ resourceID: MeshResourceID) throws {
         let file = fileURL(for: resourceID)
         if FileManager.default.fileExists(atPath: file.path) {
             try FileManager.default.removeItem(at: file)
@@ -83,10 +84,12 @@ struct DistributedHostResourceBindings: Sendable {
     }
 }
 
-struct DistributedHostPokePayload: Codable, Sendable {
-    var text: String
+public struct DistributedHostPokePayload: Codable, Sendable {
+    public var text: String
 
-    func validate() throws {
+    public init(text: String) { self.text = text }
+
+    public func validate() throws {
         guard !text.isEmpty, text.utf8.count <= 16_384,
               !text.unicodeScalars.contains(where: { $0.value == 0 }) else {
             throw DistributedHostExecutorError.invalidPayload
@@ -94,10 +97,14 @@ struct DistributedHostPokePayload: Codable, Sendable {
     }
 }
 
-struct DistributedHostCommandExecutor: Sendable {
-    let bindings: DistributedHostResourceBindings
+public struct DistributedHostCommandExecutor: Sendable {
+    public let bindings: DistributedHostResourceBindings
 
-    func execute(_ command: MeshHostCommand) async -> MeshHostCommandExecutionOutcome {
+    public init(bindings: DistributedHostResourceBindings) {
+        self.bindings = bindings
+    }
+
+    public func execute(_ command: MeshHostCommand) async -> MeshHostCommandExecutionOutcome {
         do {
             let binding = try bindings.load(command.resourceID)
             let executable = try tmuxExecutable()
@@ -169,14 +176,14 @@ struct DistributedHostCommandExecutor: Sendable {
     }
 }
 
-enum DistributedHostExecutorError: Error {
+public enum DistributedHostExecutorError: Error {
     case invalidBinding
     case invalidPayload
     case tmuxUnavailable
     case tmuxSocketUnavailable
     case tmuxCommandFailed
 
-    var failureCode: String {
+    public var failureCode: String {
         switch self {
         case .invalidBinding: "invalid-host-binding"
         case .invalidPayload: "invalid-command-payload"

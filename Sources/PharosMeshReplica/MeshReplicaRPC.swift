@@ -175,6 +175,22 @@ public struct MeshReplicaRPCServer: Sendable {
                     for: header, metadata: try metadata.canonicalBytes(), body: chunk.data
                 )
 
+            case .hostResource:
+                guard let hostIdentity else {
+                    return try failure(for: header, code: "host-unavailable")
+                }
+                let query: MeshHostResourceRequest = try decodeBody(request.body)
+                guard let resource = try await store.hostResource(
+                    in: header.trustGroupID,
+                    hostDeviceID: hostIdentity.deviceID,
+                    resourceID: query.resourceID
+                ), resource.state == .active else {
+                    return try failure(for: header, code: "resource-not-found")
+                }
+                return try success(
+                    for: header, body: try MeshReplicaRPCJSON.encode(resource)
+                )
+
             case .hostCommand:
                 guard let hostIdentity else {
                     return try failure(for: header, code: "host-unavailable")
@@ -387,6 +403,27 @@ public struct MeshReplicaRPCClient: Sendable {
             throw MeshReplicaRPCError.responseMismatch
         }
         return receipt
+    }
+
+    public func hostResource(
+        _ resourceID: MeshResourceID, group: MeshTrustGroupID,
+        membershipEpoch: UInt64
+    ) async throws -> MeshHostResource {
+        let response = try await exchange(
+            operation: .hostResource, group: group,
+            membershipEpoch: membershipEpoch,
+            body: try MeshReplicaRPCJSON.encode(
+                MeshHostResourceRequest(resourceID: resourceID)
+            )
+        )
+        let resource: MeshHostResource = try decodeBody(response.body)
+        try resource.validate()
+        guard resource.trustGroupID == group,
+              resource.resourceID == resourceID,
+              resource.generation > 0 else {
+            throw MeshReplicaRPCError.responseMismatch
+        }
+        return resource
     }
 
     private func exchange(

@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "PharosMeshIdentity", targets: ["PharosMeshIdentity"]),
         .library(name: "PharosMeshIroh", targets: ["PharosMeshIroh"]),
         .library(name: "PharosMeshReplica", targets: ["PharosMeshReplica"]),
+        .library(name: "PharosMeshControl", targets: ["PharosMeshControl"]),
         .library(name: "PharosMeshCore", targets: ["PharosMeshCore"]),
     ],
     dependencies: [
@@ -66,12 +67,22 @@ let package = Package(
             path: "Sources/PharosMeshReplica"
         ),
         .target(
+            name: "PharosMeshControl",
+            dependencies: [
+                "PharosMeshProtocol",
+                "PharosMeshIroh",
+                "PharosMeshReplica",
+            ],
+            path: "Sources/PharosMeshControl"
+        ),
+        .target(
             name: "PharosMeshCore",
             dependencies: [
                 "PharosMeshProtocol",
                 "PharosMeshIdentity",
                 "PharosMeshIroh",
                 "PharosMeshReplica",
+                "PharosMeshControl",
                 "CSQLite",
                 .product(name: "Crypto", package: "swift-crypto"),
             ],

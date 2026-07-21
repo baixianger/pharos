@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import PharosMeshControl
 import PharosMeshIdentity
 import PharosMeshIroh
 import PharosMeshProtocol
@@ -229,6 +230,16 @@ final class DistributedMeshSupport {
 
     func removeMember(_ memberID: String, from room: MeshRoomInfo) async throws {
         try await requireChatRegistry().leave(room: room, memberID: memberID)
+    }
+
+    func stopAgent(memberID: String) async throws {
+        guard let runtime, let replica = localReplica,
+              let group = activeTrustGroupID
+        else { throw MobileDistributedMeshError.networkNotReady }
+        try await DistributedHostController.stopAgent(
+            memberID: memberID, runtime: runtime,
+            replica: replica, group: group
+        )
     }
 
     func renameMember(

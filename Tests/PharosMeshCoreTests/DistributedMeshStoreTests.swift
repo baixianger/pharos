@@ -196,6 +196,13 @@ final class DistributedMeshStoreTests: XCTestCase {
         let fetchedBlob = try await clientStore.blobData(for: manifest.digest)
         XCTAssertEqual(fetchedBlob, blobData)
 
+        let fetchedResource = try await client.hostResource(
+            resourceID, group: fixture.group, membershipEpoch: 1
+        )
+        XCTAssertEqual(fetchedResource.resourceID, resourceID)
+        XCTAssertEqual(fetchedResource.hostDeviceID, host.deviceID)
+        XCTAssertEqual(fetchedResource.generation, 1)
+
         let command = MeshHostCommand(
             trustGroupID: fixture.group, senderDeviceID: controller.deviceID,
             targetHostDeviceID: host.deviceID,
