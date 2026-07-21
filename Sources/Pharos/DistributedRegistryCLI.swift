@@ -150,6 +150,11 @@ enum DistributedRegistryCLI {
             guard let id = p.arg(1).flatMap(UUID.init(uuidString:)) else {
                 throw DistributedRegistryCLIUsageError.message("trash restore <id>")
             }
+            guard store.trash.contains(where: { $0.id == id }) else {
+                throw DistributedRegistryCLIError.notFound(
+                    "trash item \(id.uuidString)"
+                )
+            }
             store.restoreTrash(id); print("Restored \(id.uuidString)"); return true
         case "empty":
             store.trash.removeAll(); print("Emptied Trash"); return true
