@@ -89,26 +89,138 @@ public enum LegacyMeshMigration {
         }
 
         var entries: [LegacyMigrationInventoryEntry] = []
+        var fields: [MeshSnapshotField] = []
         var immutable: [MeshSnapshotImmutable] = []
         var blobs: [LegacyMigrationBlob] = []
-        var seenEntities = Set<String>()
+        var seenFields = Set<String>()
+        var seenImmutableEntities = Set<String>()
         let endpoint = try identity.endpointID()
 
         let registryData = try readRegularFile(registryURL)
         entries.append(inventoryEntry("projects.json", .registry, registryData))
-        guard let projects = try JSONSerialization.jsonObject(with: registryData) as? [[String: Any]]
-        else { throw LegacyMeshMigrationError.malformedRegistry }
+        let legacyIssueAttachments = root.appendingPathComponent(
+            "attachments", isDirectory: true
+        )
+        let registryObject = try JSONSerialization.jsonObject(with: registryData)
+        let projects: [[String: Any]]
+        let groups: [String]
+        let trash: [[String: Any]]
+        if let flatProjects = registryObject as? [[String: Any]] {
+            projects = flatProjects
+            groups = []
+            trash = []
+        } else if let store = registryObject as? [String: Any],
+                  let storeProjects = store["projects"] as? [[String: Any]] {
+            projects = storeProjects
+            groups = store["groups"] as? [String] ?? []
+            trash = store["trash"] as? [[String: Any]] ?? []
+        } else {
+            throw LegacyMeshMigrationError.malformedRegistry
+        }
         var issueCount = 0
         for (index, project) in projects.enumerated() {
             guard let identifier = project["id"] as? String, UUID(uuidString: identifier) != nil else {
                 throw LegacyMeshMigrationError.malformedRegistry
             }
-            issueCount += (project["issues"] as? [Any])?.count ?? 0
-            let value = try canonicalJSONObject(project)
-            try appendImmutable(
-                type: .project, id: identifier, value: value,
+            let issues = project["issues"] as? [[String: Any]] ?? []
+            issueCount += issues.count
+            try appendRegistryFields(
+                type: .project, id: identifier, object: project,
+                allowedFields: [
+                    "name", "githubRemote", "tags", "yolo", "tmux", "addedAt",
+                    "playbooks", "notes", "updates", "milestones",
+                ],
                 sourceKey: "projects.json#\(index)", endpoint: endpoint,
-                to: &immutable, seen: &seenEntities
+                to: &fields, seen: &seenFields
+            )
+            for (issueIndex, issue) in issues.enumerated() {
+                guard let issueID = issue["id"] as? String,
+                      UUID(uuidString: issueID) != nil else {
+                    throw LegacyMeshMigrationError.malformedRegistry
+                }
+                var replicatedIssue = issue
+                replicatedIssue["projectID"] = identifier
+                if var attachments = issue["attachments"] as? [[String: Any]] {
+                    for attachmentIndex in attachments.indices {
+                        guard let attachmentID = attachments[attachmentIndex]["id"] as? String,
+                              UUID(uuidString: attachmentID) != nil,
+                              let storedName = attachments[attachmentIndex]["storedName"] as? String,
+                              !storedName.isEmpty,
+                              let originalName = attachments[attachmentIndex]["originalName"] as? String,
+                              let expectedSize = attachments[attachmentIndex]["byteSize"] as? NSNumber
+                        else { throw LegacyMeshMigrationError.malformedRegistry }
+                        let file = legacyIssueAttachments
+                            .appendingPathComponent(issueID, isDirectory: true)
+                            .appendingPathComponent(storedName)
+                        guard file.standardizedFileURL.path.hasPrefix(
+                            legacyIssueAttachments.standardizedFileURL.path + "/"
+                        ), FileManager.default.fileExists(atPath: file.path) else {
+                            throw LegacyMeshMigrationError.invalidAttachment(attachmentID)
+                        }
+                        let bytes = try readRegularFile(file)
+                        guard bytes.count == expectedSize.intValue else {
+                            throw LegacyMeshMigrationError.invalidAttachment(attachmentID)
+                        }
+                        let digestBytes = Data(SHA256.hash(data: bytes))
+                        let attachment = MeshAttachment(
+                            id: attachmentID, name: originalName,
+                            mimeType: legacyMIMEType(for: storedName),
+                            byteSize: bytes.count, sha256: hex(digestBytes)
+                        )
+                        let relative = "attachments/\(issueID)/\(storedName)"
+                        entries.append(inventoryEntry(relative, .attachmentData, bytes))
+                        let digest = MeshBlobDigest(rawValue: digestBytes)!
+                        blobs.append(LegacyMigrationBlob(
+                            manifest: MeshBlobManifest(
+                                digest: digest, byteSize: UInt64(bytes.count),
+                                mediaType: attachment.mimeType, chunkSize: 1024 * 1024
+                            ),
+                            data: bytes
+                        ))
+                        try appendImmutable(
+                            type: .attachment, id: attachmentID,
+                            value: try LegacyMigrationJSON.encode(attachment),
+                            sourceKey: relative, endpoint: endpoint,
+                            to: &immutable, seen: &seenImmutableEntities
+                        )
+                        attachments[attachmentIndex]["meshAttachment"] =
+                            try JSONSerialization.jsonObject(
+                                with: LegacyMigrationJSON.encode(attachment)
+                            )
+                    }
+                    replicatedIssue["attachments"] = attachments
+                }
+                try appendRegistryFields(
+                    type: .issue, id: issueID, object: replicatedIssue,
+                    allowedFields: [
+                        "projectID", "number", "title", "status", "priority", "body",
+                        "createdAt", "updatedAt", "attachments", "labels", "sortOrder",
+                        "milestoneID", "parent", "relations",
+                    ],
+                    sourceKey: "projects.json#\(index).issues#\(issueIndex)",
+                    endpoint: endpoint, to: &fields, seen: &seenFields
+                )
+            }
+        }
+        for (index, name) in groups.enumerated() {
+            try appendRegistryFields(
+                type: .projectGroup,
+                id: deterministicIdentifier("projects.json#groups#\(index):\(name)"),
+                object: ["name": name], allowedFields: ["name"],
+                sourceKey: "projects.json#groups#\(index)", endpoint: endpoint,
+                to: &fields, seen: &seenFields
+            )
+        }
+        for (index, item) in trash.enumerated() {
+            guard let identifier = item["id"] as? String,
+                  UUID(uuidString: identifier) != nil else {
+                throw LegacyMeshMigrationError.malformedRegistry
+            }
+            try appendRegistryFields(
+                type: .trashItem, id: identifier, object: item,
+                allowedFields: ["deletedAt", "payload"],
+                sourceKey: "projects.json#trash#\(index)", endpoint: endpoint,
+                to: &fields, seen: &seenFields
             )
         }
 
@@ -148,7 +260,7 @@ public enum LegacyMeshMigration {
                         value: try LegacyMigrationJSON.encode(message),
                         sourceKey: "\(relativePath)#\(index)", endpoint: endpoint,
                         timestamp: timestamp(message.ts),
-                        to: &immutable, seen: &seenEntities
+                        to: &immutable, seen: &seenImmutableEntities
                     )
                 }
                 transcripts[room] = messages
@@ -170,7 +282,7 @@ public enum LegacyMeshMigration {
             try appendImmutable(
                 type: .room, id: room, value: try LegacyMigrationJSON.encode(roomState),
                 sourceKey: "room:\(room)", endpoint: endpoint,
-                to: &immutable, seen: &seenEntities
+                to: &immutable, seen: &seenImmutableEntities
             )
         }
 
@@ -206,7 +318,7 @@ public enum LegacyMeshMigration {
                     type: .attachment, id: identifier,
                     value: try LegacyMigrationJSON.encode(attachment),
                     sourceKey: "\(base)/metadata.json", endpoint: endpoint,
-                    to: &immutable, seen: &seenEntities
+                    to: &immutable, seen: &seenImmutableEntities
                 )
             }
         }
@@ -224,9 +336,9 @@ public enum LegacyMeshMigration {
         try appendImmutable(
             type: .trustGroup, id: "legacy-inventory-v1", value: inventoryData,
             sourceKey: "legacy-inventory-v1", endpoint: endpoint,
-            to: &immutable, seen: &seenEntities
+            to: &immutable, seen: &seenImmutableEntities
         )
-        let state = try MeshReplicaState(fields: [], immutableValues: immutable)
+        let state = try MeshReplicaState(fields: fields, immutableValues: immutable)
         let digest = try inventory.digest()
         let genesis = try deterministicGenesis(
             trustGroupID: trustGroupID, membershipEpoch: membershipEpoch,
@@ -330,11 +442,19 @@ public enum LegacyMeshMigration {
         identity: MeshDeviceIdentity, inventoryDigest: Data,
         state: MeshReplicaState
     ) throws -> MeshReplicaSnapshotBundle {
+        let endpoint = try identity.endpointID()
+        var headSeed = Data("legacy-migration-genesis-head-v1".utf8)
+        headSeed.append(inventoryDigest)
+        let virtualGenesisHead = MeshSnapshotAuthorHead(
+            endpointID: endpoint, sequence: 1,
+            eventHash: Data(SHA256.hash(data: headSeed))
+        )
         var snapshot = MeshReplicaSnapshot(
             id: deterministicEventID(inventoryDigest), trustGroupID: trustGroupID,
             membershipEpoch: membershipEpoch, creatorDeviceID: identity.deviceID,
-            creatorEndpointID: try identity.endpointID(),
-            createdAt: .init(wallTimeMilliseconds: 0), authorHeads: [],
+            creatorEndpointID: endpoint,
+            createdAt: .init(wallTimeMilliseconds: 0),
+            authorHeads: [virtualGenesisHead],
             stateDigest: try MeshReplicaSnapshotCrypto.digest(state)
         )
         snapshot.signature = try identity.signature(for: snapshot.canonicalSigningBytes())
@@ -361,8 +481,53 @@ public enum LegacyMeshMigration {
         ))
     }
 
+    private static func appendRegistryFields(
+        type: MeshEntityType, id: String, object: [String: Any],
+        allowedFields: [String], sourceKey: String, endpoint: MeshEndpointID,
+        to fields: inout [MeshSnapshotField], seen: inout Set<String>
+    ) throws {
+        guard let entity = MeshEntityReference(type: type, id: id) else {
+            throw LegacyMeshMigrationError.malformedRegistry
+        }
+        var values: [(String, Any)] = [("_deleted", false)]
+        values += allowedFields.compactMap { field in
+            guard let value = object[field], !(value is NSNull) else { return nil }
+            return (field, value)
+        }
+        for (field, value) in values {
+            let key = "\(type.rawValue)\u{0}\(id)\u{0}\(field)"
+            guard seen.insert(key).inserted else {
+                throw LegacyMeshMigrationError.duplicateEntity(id)
+            }
+            let fieldSource = "\(sourceKey)#\(field)"
+            fields.append(MeshSnapshotField(
+                entity: entity,
+                mutation: MeshFieldMutation(
+                    field: field, value: try canonicalJSONObject(value)
+                ),
+                sourceEventID: deterministicEventID(Data(fieldSource.utf8)),
+                timestamp: .init(wallTimeMilliseconds: 0),
+                authorEndpointID: endpoint
+            ))
+        }
+    }
+
     private static func deterministicIdentifier(_ value: String) -> String {
         hex(SHA256.hash(data: Data(value.utf8)))
+    }
+
+    private static func legacyMIMEType(for name: String) -> String {
+        switch URL(fileURLWithPath: name).pathExtension.lowercased() {
+        case "html", "htm": return "text/html"
+        case "md", "markdown": return "text/markdown"
+        case "txt": return "text/plain"
+        case "json": return "application/json"
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "gif": return "image/gif"
+        case "pdf": return "application/pdf"
+        default: return "application/octet-stream"
+        }
     }
 
     private static func deterministicEventID(_ seed: Data) -> MeshEventID {
@@ -416,10 +581,13 @@ public enum LegacyMeshMigration {
     }
 
     private static func canonicalJSONObject(_ object: Any) throws -> Data {
-        guard JSONSerialization.isValidJSONObject(object) else {
+        do {
+            return try JSONSerialization.data(
+                withJSONObject: object, options: [.sortedKeys, .fragmentsAllowed]
+            )
+        } catch {
             throw LegacyMeshMigrationError.malformedRegistry
         }
-        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 
     private static func timestamp(_ seconds: Double) -> MeshHybridTimestamp {

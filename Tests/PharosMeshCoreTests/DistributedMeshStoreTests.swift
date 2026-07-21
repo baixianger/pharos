@@ -1188,14 +1188,43 @@ final class DistributedMeshStoreTests: XCTestCase {
         )
 
         let projectID = UUID(uuidString: "11111111-1111-4111-8111-111111111111")!
-        let registry = try JSONSerialization.data(withJSONObject: [[
-            "id": projectID.uuidString,
-            "name": "Offline Migration Fixture",
-            "issues": [[
-                "id": "33333333-3333-4333-8333-333333333333",
-                "number": 1, "title": "Verify cutover",
+        let issueID = "33333333-3333-4333-8333-333333333333"
+        let legacyIssueAttachmentID = "55555555-5555-4555-8555-555555555555"
+        let legacyIssueAttachmentName = "legacy-proof.md"
+        let legacyIssueAttachmentBytes = Data("legacy issue attachment".utf8)
+        let legacyIssueAttachmentDirectory = source.appendingPathComponent(
+            "attachments/\(issueID)", isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: legacyIssueAttachmentDirectory, withIntermediateDirectories: true
+        )
+        try legacyIssueAttachmentBytes.write(
+            to: legacyIssueAttachmentDirectory.appendingPathComponent(
+                legacyIssueAttachmentName
+            )
+        )
+        let registry = try JSONSerialization.data(withJSONObject: [
+            "groups": ["personal"],
+            "projects": [[
+                "id": projectID.uuidString,
+                "name": "Offline Migration Fixture",
+                "addedAt": 123.0,
+                "issues": [[
+                    "id": issueID,
+                    "number": 1, "title": "Verify cutover",
+                    "createdAt": 124.0, "updatedAt": 125.0,
+                    "attachments": [[
+                        "id": legacyIssueAttachmentID,
+                        "storedName": legacyIssueAttachmentName,
+                        "originalName": "proof.md",
+                        "byteSize": legacyIssueAttachmentBytes.count,
+                        "isImage": false,
+                        "addedAt": 126.0,
+                    ]],
+                ]],
             ]],
-        ]], options: [.sortedKeys])
+            "trash": [],
+        ], options: [.sortedKeys])
         try registry.write(to: source.appendingPathComponent("projects.json"))
 
         let message = MeshMsg(
@@ -1252,7 +1281,7 @@ final class DistributedMeshStoreTests: XCTestCase {
         XCTAssertEqual(first.inventory.counts.messages, 1)
         XCTAssertEqual(first.inventory.counts.memberships, 1)
         XCTAssertEqual(first.inventory.counts.unreadMessages, 1)
-        XCTAssertEqual(first.inventory.counts.attachments, 1)
+        XCTAssertEqual(first.inventory.counts.attachments, 2)
         try MeshReplicaSnapshotCrypto.verify(
             first.genesis, creatorPublicKey: identity.signingPublicKeyBytes()
         )
@@ -1275,14 +1304,59 @@ final class DistributedMeshStoreTests: XCTestCase {
         )
         XCTAssertEqual(firstShadow, repeatedShadow)
         let project = MeshEntityReference(type: .project, id: projectID.uuidString)!
-        let importedProject = try await target.materializedImmutableValue(
+        let importedProject = try await target.materializedFields(
             for: project, in: fixture.group
         )
-        XCTAssertNotNil(importedProject)
-        let importedBlob = try await target.blobData(
-            for: first.blobs[0].manifest.digest
+        XCTAssertEqual(
+            importedProject.first { $0.field == "name" }?.value,
+            Data("\"Offline Migration Fixture\"".utf8)
         )
-        XCTAssertEqual(importedBlob, attachmentBytes)
+        let issue = MeshEntityReference(
+            type: .issue, id: issueID
+        )!
+        let importedIssue = try await target.materializedFields(
+            for: issue, in: fixture.group
+        )
+        XCTAssertEqual(
+            importedIssue.first { $0.field == "projectID" }?.value,
+            Data("\"\(projectID.uuidString)\"".utf8)
+        )
+        let importedAttachments = try XCTUnwrap(
+            importedIssue.first { $0.field == "attachments" }?.value
+        )
+        let attachmentObjects = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: importedAttachments)
+                as? [[String: Any]]
+        )
+        XCTAssertEqual(
+            (attachmentObjects.first?["meshAttachment"] as? [String: Any])?["id"]
+                as? String,
+            legacyIssueAttachmentID
+        )
+        let groups = try await target.materializedEntities(
+            of: .projectGroup, in: fixture.group
+        )
+        XCTAssertEqual(groups.count, 1)
+        let migrationVector = try await target.syncVector(for: fixture.group)
+        XCTAssertEqual(migrationVector.authors.map(\.sequence), [1])
+        let bootstrap = try await target.syncResponse(for: MeshEventRangeRequest(
+            trustGroupID: fixture.group, membershipEpoch: 1,
+            authorEndpointID: try identity.endpointID(), afterSequence: 0, limit: 256
+        ))
+        XCTAssertEqual(bootstrap.kind, .snapshot)
+        XCTAssertEqual(bootstrap.snapshot, first.genesis)
+        let importedLegacyBlob = try await target.blobData(
+            for: MeshBlobDigest(
+                rawValue: Data(SHA256.hash(data: legacyIssueAttachmentBytes))
+            )!
+        )
+        XCTAssertEqual(importedLegacyBlob, legacyIssueAttachmentBytes)
+        let importedMeshBlob = try await target.blobData(
+            for: MeshBlobDigest(
+                rawValue: Data(SHA256.hash(data: attachmentBytes))
+            )!
+        )
+        XCTAssertEqual(importedMeshBlob, attachmentBytes)
         XCTAssertEqual(firstShadow.mode, .shadow)
     }
 
