@@ -574,6 +574,13 @@ final class ProjectStore {
     /// it is not portable project data.
     var meshServerEndpoint = "" {
         didSet {
+            if ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1" {
+                // Distributed product mode must not recreate the legacy dial
+                // marker from an old preference during ProjectStore init.
+                MeshClient.remoteEndpoint = nil
+                MeshPaths.setDialEndpointFile(nil)
+                return
+            }
             PharosPrefs.shared.set(meshServerEndpoint, forKey: "pharos.meshServerEndpoint")
             let trimmed = meshServerEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
             if meshSplitHostPort(trimmed) != nil {
@@ -663,14 +670,19 @@ final class ProjectStore {
         } else if let legacy = d.string(forKey: "pharos.peerHost"), !legacy.isEmpty {
             executionHosts = [ExecutionHostProfile(name: legacy, sshHost: legacy)]
         }
-        meshServerEndpoint = d.string(forKey: "pharos.meshServerEndpoint") ?? ""
+        let distributedMode = ProcessInfo.processInfo.environment[
+            "PHAROS_DISTRIBUTED"
+        ] == "1"
+        meshServerEndpoint = distributedMode
+            ? ""
+            : d.string(forKey: "pharos.meshServerEndpoint") ?? ""
         if d.object(forKey: "pharos.launchMeshAtLogin") != nil {
             launchMeshAtLogin = d.bool(forKey: "pharos.launchMeshAtLogin")
         }
         meshHubHostID = d.bool(forKey: "pharos.hostBroker") ? HostIdentity.current : nil
         if let endpoint = validMeshServerEndpoint { MeshClient.remoteEndpoint = endpoint }
         load()
-        if ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED"] == "1" {
+        if distributedMode {
             // The local cache is display-only until DistributedMeshSupport
             // attaches the replica. Never dial the legacy Broker in this mode.
             registrySyncStatus = .connecting
