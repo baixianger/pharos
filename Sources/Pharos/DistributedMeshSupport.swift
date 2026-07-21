@@ -72,7 +72,8 @@ final class DistributedMeshSupport {
               activeTrustGroupID != nil else { return }
         do {
             let endpoint = try await IrohEndpointRuntime.bind(
-                secretKey: replica.identity.irohSecretKeyBytes()
+                secretKey: replica.identity.irohSecretKeyBytes(),
+                expectedEndpointID: try replica.identity.endpointID()
             )
             let address = try await endpoint.localAddress()
             let router = MeshReplicaRPCServer(

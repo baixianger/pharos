@@ -58,15 +58,20 @@ public actor IrohEndpointRuntime {
 
     private let endpoint: Endpoint
     private let includesRoutingHints: Bool
+    private let configuredEndpointID: MeshEndpointID?
     private var connections: [MeshEndpointID: PeerConnection] = [:]
     private var isServing = false
     private var streamServingTasks: [MeshEndpointID: Task<Void, Never>] = [:]
     private var streamServingGenerations: [MeshEndpointID: UUID] = [:]
     private var requestHandler: MeshIrohRequestHandler?
 
-    private init(endpoint: Endpoint, includesRoutingHints: Bool) {
+    private init(
+        endpoint: Endpoint, includesRoutingHints: Bool,
+        configuredEndpointID: MeshEndpointID?
+    ) {
         self.endpoint = endpoint
         self.includesRoutingHints = includesRoutingHints
+        self.configuredEndpointID = configuredEndpointID
     }
 #else
     private init() {}
@@ -74,6 +79,7 @@ public actor IrohEndpointRuntime {
 
     public static func bind(
         secretKey: Data? = nil,
+        expectedEndpointID: MeshEndpointID? = nil,
         relayPolicy: MeshIrohRelayPolicy = .production,
         bindAddress: String? = nil
     ) async throws -> IrohEndpointRuntime {
@@ -99,7 +105,8 @@ public actor IrohEndpointRuntime {
         case .disabled: true
         }
         return IrohEndpointRuntime(
-            endpoint: endpoint, includesRoutingHints: includesRoutingHints
+            endpoint: endpoint, includesRoutingHints: includesRoutingHints,
+            configuredEndpointID: expectedEndpointID
         )
 #else
         throw MeshIrohError.unavailableOnPlatform
@@ -108,6 +115,14 @@ public actor IrohEndpointRuntime {
 
     public func localAddress() throws -> MeshIrohEndpointAddress {
 #if canImport(IrohLib)
+        if !includesRoutingHints, let id = configuredEndpointID {
+            return MeshIrohEndpointAddress(
+                endpointID: id,
+                ticket: try encodeAddressTicket(
+                    endpointID: id.rawValue, relayURL: nil, directAddresses: []
+                )
+            )
+        }
         let address = endpoint.addr()
         guard let id = MeshEndpointID(rawValue: stableEndpointID(address.id())) else {
             throw MeshIrohError.invalidEndpointID

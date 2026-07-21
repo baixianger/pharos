@@ -878,6 +878,7 @@ private enum MeshHeadlessCLI {
     ) async throws -> IrohEndpointRuntime {
         try await IrohEndpointRuntime.bind(
             secretKey: replica.identity.irohSecretKeyBytes(),
+            expectedEndpointID: try replica.identity.endpointID(),
             relayPolicy: try distributedRelayPolicy(args),
             bindAddress: option("--bind", in: args)
         )
@@ -1029,6 +1030,7 @@ private enum MeshHeadlessCLI {
     ) async throws -> Int32 {
         let runtime = try await IrohEndpointRuntime.bind(
             secretKey: replica.identity.irohSecretKeyBytes(),
+            expectedEndpointID: try replica.identity.endpointID(),
             relayPolicy: try distributedRelayPolicy(args),
             bindAddress: option("--bind", in: args)
         )
@@ -1078,6 +1080,7 @@ private enum MeshHeadlessCLI {
         }
         let runtime = try await IrohEndpointRuntime.bind(
             secretKey: replica.identity.irohSecretKeyBytes(),
+            expectedEndpointID: try replica.identity.endpointID(),
             relayPolicy: try distributedRelayPolicy(args),
             bindAddress: option("--bind", in: args)
         )
