@@ -170,6 +170,8 @@ advances the signed membership epoch; the omitted key can no longer authenticate
 Keep at least two controller devices. To rotate a device key, pair and verify the
 replacement first, then remove the old device. Checkout paths, SSH keys, tool
 paths, and tmux state remain Host-local. See [ADR-003](docs/ADR-003-LOCAL-FIRST-DISTRIBUTED-MESH.md).
+The Iroh feature and best-practice decisions are tracked in the
+[Iroh capability adoption roadmap](docs/IROH-CAPABILITY-ADOPTION.md).
 
 Pair a phone or another Mac from Settings → **Machines** → **Pair a device**.
 For headless Linux pairing and service commands, see

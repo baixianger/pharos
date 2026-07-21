@@ -67,7 +67,12 @@ public struct MeshLocalReplica: Sendable {
     }
 
     public static func isDefaultRootURL(_ candidate: URL) throws -> Bool {
-        candidate.standardizedFileURL == (try defaultRootURL()).standardizedFileURL
+        guard candidate.isFileURL else { return false }
+        // Foundation URL equality can retain a directory/trailing-slash
+        // distinction even when both values name the same normalized path.
+        // Identity backend selection is a filesystem path decision.
+        return candidate.standardizedFileURL.path ==
+            (try defaultRootURL()).standardizedFileURL.path
     }
 
     /// Explicit test/development entry point. Both identity and database stay
