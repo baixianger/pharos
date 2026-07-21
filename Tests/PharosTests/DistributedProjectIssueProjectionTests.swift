@@ -141,6 +141,60 @@ final class DistributedProjectIssueProjectionTests: XCTestCase {
         XCTAssertEqual(restored.map(\.name), ["Recoverable"])
     }
 
+    func testStaleSnapshotCannotDeleteConcurrentProjectOrIssue() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let staleBaseline = StoreData()
+        let concurrent = Project(
+            name: "Concurrent", addedAt: Date(timeIntervalSince1970: 1),
+            issues: [Issue(number: 1, title: "Keep this issue")]
+        )
+        try await fixture.projection.publish(
+            store: StoreData(projects: [concurrent]),
+            replacing: staleBaseline
+        )
+
+        try await fixture.projection.publish(
+            store: staleBaseline, replacing: staleBaseline
+        )
+
+        let preserved = try await fixture.projection.materializedStore()
+        XCTAssertEqual(preserved.projects.map(\.name), ["Concurrent"])
+        XCTAssertEqual(preserved.projects[0].issues.map(\.title), ["Keep this issue"])
+
+        try await fixture.projection.publish(
+            store: StoreData(), replacing: preserved
+        )
+        let deleted = try await fixture.projection.materializedProjects()
+        XCTAssertTrue(deleted.isEmpty)
+    }
+
+    func testStaleWriterPublishesOnlyFieldsChangedFromItsBaseline() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let baselineProject = Project(
+            name: "Before", addedAt: Date(timeIntervalSince1970: 1),
+            notes: "Before notes"
+        )
+        let baseline = StoreData(projects: [baselineProject])
+        try await fixture.projection.publish(store: baseline)
+
+        var concurrent = baseline
+        concurrent.projects[0].notes = "Concurrent notes"
+        try await fixture.projection.publish(
+            store: concurrent, replacing: baseline
+        )
+        var stale = baseline
+        stale.projects[0].name = "Stale writer renamed"
+        try await fixture.projection.publish(
+            store: stale, replacing: baseline
+        )
+
+        let merged = try await fixture.projection.materializedProjects()
+        XCTAssertEqual(merged[0].name, "Stale writer renamed")
+        XCTAssertEqual(merged[0].notes, "Concurrent notes")
+    }
+
     func testGroupsAndRecoverableTrashRoundTripAsIndependentEntities() async throws {
         let fixture = try await Fixture()
         defer { fixture.remove() }

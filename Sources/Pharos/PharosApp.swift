@@ -78,8 +78,12 @@ struct PharosApp: App {
                         )
                         await distributedMesh.startNetwork()
                         while !Task.isCancelled {
-                            let received = await distributedMesh.synchronizeOnce()
-                            if received > 0 { store.syncRegistryNow() }
+                            _ = await distributedMesh.synchronizeOnce()
+                            // CLI and GUI are independent writers to the same
+                            // local replica. Refresh even without remote events
+                            // so a local CLI edit cannot leave the GUI on a
+                            // stale snapshot until the next network change.
+                            store.syncRegistryNow()
                             try? await Task.sleep(for: .seconds(5))
                         }
                         // Distributed mode owns project/issue persistence and

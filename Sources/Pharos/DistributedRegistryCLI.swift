@@ -28,6 +28,8 @@ enum DistributedRegistryCLI {
             let context = try await context()
             var store = try await context.projection.materializedStore()
             HostLocalProjectPaths.apply(to: &store)
+            var previous = store
+            HostLocalProjectPaths.captureAndStrip(&previous)
             var changed = false
             switch command {
             case "list", "projects":
@@ -98,7 +100,9 @@ enum DistributedRegistryCLI {
             if changed {
                 var portable = store
                 HostLocalProjectPaths.captureAndStrip(&portable)
-                try await context.projection.publish(store: portable)
+                try await context.projection.publish(
+                    store: portable, replacing: previous
+                )
                 store = try await context.projection.materializedStore()
             }
             try writeCache(store)

@@ -491,6 +491,7 @@ final class ProjectStore {
     private var distributedProjection: DistributedProjectIssueProjection?
     private var distributedMeshSupport: DistributedMeshSupport?
     private var distributedPublishTask: Task<Void, Never>?
+    private var distributedBaseline = StoreData()
     /// Monotonic local snapshot generation. Older queued publishes may finish,
     /// but only the newest generation may replace UI state or report `synced`.
     private var distributedPublishRevision: UInt64 = 0
@@ -891,6 +892,7 @@ final class ProjectStore {
     }
 
     private func applyDistributedStore(_ portable: StoreData) {
+        distributedBaseline = portable
         var store = portable
         HostLocalProjectPaths.apply(to: &store)
         projects = store.projects
@@ -941,6 +943,7 @@ final class ProjectStore {
                 distributedPublishRevision &+= 1
                 let revision = distributedPublishRevision
                 let snapshot = store.projects
+                let baseline = distributedBaseline
                 let previous = distributedPublishTask
                 distributedPublishTask = Task { [weak self] in
                     _ = await previous?.value
@@ -950,7 +953,9 @@ final class ProjectStore {
                             projects: snapshot, groups: store.groups,
                             trash: store.trash
                         )
-                        try await projection.publish(store: portable)
+                        try await projection.publish(
+                            store: portable, replacing: baseline
+                        )
                         let materialized = try await projection.materializedStore()
                         guard !Task.isCancelled else { return }
                         await MainActor.run {

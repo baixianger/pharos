@@ -22,6 +22,16 @@ struct DistributedProjectIssueProjection: Sendable {
     }
 
     func publish(projects: [Project]) async throws {
+        try await publishProjects(
+            projects, projectDeletionCandidates: nil,
+            issueDeletionCandidates: nil
+        )
+    }
+
+    private func publishProjects(
+        _ projects: [Project], projectDeletionCandidates: Set<String>?,
+        issueDeletionCandidates: Set<String>?
+    ) async throws {
         let liveProjects = Set(projects.map { $0.id.uuidString })
         let liveIssues = Set(projects.flatMap { $0.issues }.map { $0.id.uuidString })
 
@@ -44,12 +54,14 @@ struct DistributedProjectIssueProjection: Sendable {
         }
         for entity in try await replica.store.materializedEntities(
             of: .project, in: group
-        ) where !liveProjects.contains(entity.id) {
+        ) where projectDeletionCandidates?.contains(entity.id)
+            ?? !liveProjects.contains(entity.id) {
             try await publishDeletion(on: entity)
         }
         for entity in try await replica.store.materializedEntities(
             of: .issue, in: group
-        ) where !liveIssues.contains(entity.id) {
+        ) where issueDeletionCandidates?.contains(entity.id)
+            ?? !liveIssues.contains(entity.id) {
             try await publishDeletion(on: entity)
         }
     }
@@ -61,6 +73,65 @@ struct DistributedProjectIssueProjection: Sendable {
         try await publish(projects: store.projects)
         try await publishGroups(store.groups)
         try await publishTrash(store.trash)
+    }
+
+    /// Publishes one writer's before/after delta. Entities absent from both
+    /// snapshots may have been added concurrently by another process or
+    /// device, so they must never be inferred as deletions.
+    func publish(store: StoreData, replacing previous: StoreData) async throws {
+        let desiredProjectIDs = Set(store.projects.map { $0.id.uuidString })
+        let desiredIssueIDs = Set(store.projects.flatMap(\.issues).map {
+            $0.id.uuidString
+        })
+        let priorProjectIDs = Set(previous.projects.map { $0.id.uuidString })
+        let priorIssueIDs = Set(previous.projects.flatMap(\.issues).map {
+            $0.id.uuidString
+        })
+        let priorProjects = Dictionary(uniqueKeysWithValues: previous.projects.map {
+            ($0.id, $0)
+        })
+        let priorIssues = Dictionary(uniqueKeysWithValues: previous.projects
+            .flatMap { project in project.issues.map { ($0.id, ($0, project.id)) } })
+        for project in store.projects {
+            let entity = MeshEntityReference(
+                type: .project, id: project.id.uuidString
+            )!
+            try await publishChanges(
+                fields: try Self.projectFields(project),
+                replacing: try priorProjects[project.id].map(Self.projectFields),
+                on: entity
+            )
+            for issue in project.issues {
+                let issueEntity = MeshEntityReference(
+                    type: .issue, id: issue.id.uuidString
+                )!
+                let oldFields = try priorIssues[issue.id].map {
+                    try Self.issueFields($0.0, projectID: $0.1)
+                }
+                try await publishChanges(
+                    fields: try Self.issueFields(issue, projectID: project.id),
+                    replacing: oldFields, on: issueEntity
+                )
+            }
+        }
+        try await publishDeletions(
+            of: .project,
+            ids: priorProjectIDs.subtracting(desiredProjectIDs)
+        )
+        try await publishDeletions(
+            of: .issue,
+            ids: priorIssueIDs.subtracting(desiredIssueIDs)
+        )
+        try await publishGroups(
+            store.groups,
+            deletionCandidates: Set(previous.groups.map(Self.normalizedGroupName))
+                .subtracting(store.groups.map(Self.normalizedGroupName))
+        )
+        try await publishTrash(
+            store.trash,
+            deletionCandidates: Set(previous.trash.map { $0.id.uuidString })
+                .subtracting(store.trash.map { $0.id.uuidString })
+        )
     }
 
     func materializedStore() async throws -> StoreData {
@@ -151,7 +222,9 @@ struct DistributedProjectIssueProjection: Sendable {
         }
     }
 
-    private func publishGroups(_ groups: [String]) async throws {
+    private func publishGroups(
+        _ groups: [String], deletionCandidates: Set<String>? = nil
+    ) async throws {
         let desired = Set(groups.map(Self.normalizedGroupName).filter { !$0.isEmpty })
         var activeByName: [String: [MeshEntityReference]] = [:]
         for entity in try await replica.store.materializedEntities(
@@ -174,7 +247,8 @@ struct DistributedProjectIssueProjection: Sendable {
                 } ?? name),
             ], on: entity)
         }
-        for (name, entities) in activeByName where !desired.contains(name) {
+        for (name, entities) in activeByName
+        where deletionCandidates?.contains(name) ?? !desired.contains(name) {
             for entity in entities { try await publishDeletion(on: entity) }
         }
     }
@@ -196,7 +270,9 @@ struct DistributedProjectIssueProjection: Sendable {
         }
     }
 
-    private func publishTrash(_ trash: [TrashedItem]) async throws {
+    private func publishTrash(
+        _ trash: [TrashedItem], deletionCandidates: Set<String>? = nil
+    ) async throws {
         let desired = Set(trash.map { $0.id.uuidString })
         for item in trash {
             guard let entity = MeshEntityReference(
@@ -210,7 +286,7 @@ struct DistributedProjectIssueProjection: Sendable {
         }
         for entity in try await replica.store.materializedEntities(
             of: .trashItem, in: group
-        ) where !desired.contains(entity.id) {
+        ) where deletionCandidates?.contains(entity.id) ?? !desired.contains(entity.id) {
             try await publishDeletion(on: entity)
         }
     }
@@ -252,6 +328,43 @@ struct DistributedProjectIssueProjection: Sendable {
         where field != Self.deletedField && desired[field] == nil &&
                 current[field]?.isDeleted == false {
             _ = try await author.deleteField(field, on: entity)
+        }
+    }
+
+    private func publishChanges(
+        fields desired: [String: Data], replacing previous: [String: Data]?,
+        on entity: MeshEntityReference
+    ) async throws {
+        guard let previous else {
+            try await publish(fields: desired, on: entity)
+            return
+        }
+        let current = Dictionary(
+            uniqueKeysWithValues: try await replica.store.materializedFields(
+                for: entity, in: group
+            ).map { ($0.field, $0) }
+        )
+        for field in desired.keys.sorted()
+        where desired[field] != previous[field] {
+            guard let value = desired[field] else { continue }
+            if current[field]?.isDeleted == false,
+               current[field]?.value == value { continue }
+            _ = try await author.setField(field, value: value, on: entity)
+        }
+        for field in previous.keys.sorted()
+        where desired[field] == nil && current[field]?.isDeleted == false {
+            _ = try await author.deleteField(field, on: entity)
+        }
+    }
+
+    private func publishDeletions(
+        of type: MeshEntityType, ids: Set<String>
+    ) async throws {
+        guard !ids.isEmpty else { return }
+        for entity in try await replica.store.materializedEntities(
+            of: type, in: group
+        ) where ids.contains(entity.id) {
+            try await publishDeletion(on: entity)
         }
     }
 
