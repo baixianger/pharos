@@ -291,6 +291,15 @@ final class DistributedMeshStoreTests: XCTestCase {
             host, roles: [.controller, .replica], invitedBy: joining,
             in: fixture.group, store: joiningStore
         )
+        let storedAuthor = try await hostStore.trustedDevice(
+            in: fixture.group, id: historicalAuthor.deviceID
+        )
+        var localAlias = try XCTUnwrap(storedAuthor)
+        localAlias.descriptor.displayName = "Historical author on this device"
+        localAlias.addressTicket = "stale-local-address-ticket"
+        try await joiningStore.installVerifiedPeer(
+            localAlias, in: fixture.group, membershipEpoch: 1
+        )
         let entity = MeshEntityReference(type: .project, id: "roster-history")!
         let mutation = MeshFieldMutation(
             field: "title", value: Data("Roster History".utf8)
@@ -328,6 +337,11 @@ final class DistributedMeshStoreTests: XCTestCase {
             installedAuthor?.signingPublicKey,
             try historicalAuthor.signingPublicKeyBytes()
         )
+        XCTAssertEqual(
+            installedAuthor?.descriptor.displayName,
+            "Historical author on this device"
+        )
+        XCTAssertEqual(installedAuthor?.addressTicket, "isolated-device-ticket")
         XCTAssertEqual(materialized.first?.value, mutation.value)
     }
 

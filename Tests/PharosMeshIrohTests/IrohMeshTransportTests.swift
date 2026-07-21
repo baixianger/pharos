@@ -125,17 +125,18 @@ final class IrohMeshTransportTests: XCTestCase {
             let firstToSecond = IrohMeshTransport(runtime: first, remote: secondAddress)
             let secondToFirst = IrohMeshTransport(runtime: second, remote: firstAddress)
 
-            async let forward = try? firstToSecond.exchange(MeshTransportRequest(
+            async let forward = firstToSecond.exchange(MeshTransportRequest(
                 header: Data("forward".utf8), timeoutMilliseconds: 1_000
             ))
-            async let reverse = try? secondToFirst.exchange(MeshTransportRequest(
+            async let reverse = secondToFirst.exchange(MeshTransportRequest(
                 header: Data("reverse".utf8), timeoutMilliseconds: 1_000
             ))
-            _ = await (forward, reverse)
+            let initial = try await (forward, reverse)
+            XCTAssertEqual(initial.0.header, Data("second".utf8))
+            XCTAssertEqual(initial.1.header, Data("first".utf8))
             try await Task.sleep(for: .milliseconds(50))
 
-            // The first requests may be on the losing connection. The next
-            // round must reuse the canonical survivor in both directions.
+            // The next round must reuse the canonical survivor in both directions.
             let forwardAgain = try await firstToSecond.exchange(MeshTransportRequest(
                 header: Data("forward-again".utf8), timeoutMilliseconds: 1_000
             ))

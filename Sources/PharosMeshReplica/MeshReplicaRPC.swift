@@ -602,7 +602,17 @@ public struct MeshReplicaSyncSession: Sendable {
             if let existing = try await store.trustedDevice(
                 in: group, id: peer.descriptor.id
             ) {
-                guard existing.descriptor == peer.descriptor,
+                // Display names are local aliases chosen independently by
+                // each inviter (for example "Pharos Mac" versus "Mac mini").
+                // They are not part of the cryptographic device identity and
+                // must not turn a valid transitive roster into a trust error.
+                // Endpoint, key, roles, and protocol version remain strict so
+                // a relayed roster cannot rebind or elevate an existing peer.
+                guard existing.descriptor.id == peer.descriptor.id,
+                      existing.descriptor.endpointID == peer.descriptor.endpointID,
+                      existing.descriptor.roles == peer.descriptor.roles,
+                      existing.descriptor.protocolVersion ==
+                          peer.descriptor.protocolVersion,
                       existing.signingPublicKey == peer.signingPublicKey else {
                     throw MeshReplicaRPCError.peerNotTrusted
                 }

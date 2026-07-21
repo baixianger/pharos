@@ -180,6 +180,30 @@ public actor IrohEndpointRuntime {
     ) async throws -> MeshTransportResponse {
 #if canImport(IrohLib)
         try request.validate()
+        var attempt = 0
+        while true {
+            do {
+                return try await exchangeOnce(request, with: remote)
+            } catch {
+                attempt += 1
+                guard attempt < 3,
+                      Self.isConnectionConvergenceError(error) else { throw error }
+                // Simultaneous peer pulls can briefly open one QUIC connection
+                // in each direction. `install` deterministically keeps one and
+                // closes the other; a short bounded retry uses the survivor.
+                try await Task.sleep(for: .milliseconds(25 * attempt))
+            }
+        }
+#else
+        throw MeshIrohError.unavailableOnPlatform
+#endif
+    }
+
+#if canImport(IrohLib)
+    private func exchangeOnce(
+        _ request: MeshTransportRequest,
+        with remote: MeshIrohEndpointAddress
+    ) async throws -> MeshTransportResponse {
         let connection = try await connection(to: remote)
         let stream = try await connection.openBi()
         let payload = try MeshStreamFrameCodec.encode(MeshStreamFrame(
@@ -195,10 +219,15 @@ public actor IrohEndpointRuntime {
         let response = MeshTransportResponse(header: frame.header, body: frame.body)
         try response.validate()
         return response
-#else
-        throw MeshIrohError.unavailableOnPlatform
-#endif
     }
+
+    private static func isConnectionConvergenceError(_ error: any Error) -> Bool {
+        let description = String(reflecting: error).lowercased()
+        return description.contains("duplicate connection") ||
+            description.contains("superseded connection") ||
+            description.contains("connectionlost(locallyclosed)")
+    }
+#endif
 
     public func path(to remote: MeshEndpointID) -> MeshTransportPath {
 #if canImport(IrohLib)

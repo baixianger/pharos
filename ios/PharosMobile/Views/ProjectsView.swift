@@ -7,6 +7,7 @@ import UIKit
 struct ProjectsView: View {
     @Environment(RoomStore.self) private var store
     @Environment(AppSettings.self) private var settings
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @State private var projects: [RemoteProject] = []
     @State private var loading = false
     @State private var loadError: String?
@@ -74,7 +75,7 @@ struct ProjectsView: View {
                     Task { await load() }
                 }
             }
-            .task { await load() }
+            .task(id: distributedMesh.registryRevision) { await load() }
             .refreshable { await load() }
         }
     }

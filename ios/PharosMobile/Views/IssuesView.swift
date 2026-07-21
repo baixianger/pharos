@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 struct IssuesView: View {
     @Environment(RoomStore.self) private var store
     @Environment(AppSettings.self) private var settings
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @State private var issues: [RemoteIssue] = []
     @State private var loading = false
     @State private var loadError: String?
@@ -75,7 +76,7 @@ struct IssuesView: View {
                     Task { await load() }
                 }
             }
-            .task { await load() }
+            .task(id: distributedMesh.registryRevision) { await load() }
             .refreshable { await load() }
         }
     }

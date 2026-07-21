@@ -38,6 +38,10 @@ final class DistributedMeshSupport {
     private(set) var connections: [MeshDeviceID: MeshConnectionSnapshot] = [:]
     private(set) var trustedDevices: [MeshPairedDevice] = []
     private(set) var lastSyncError: String?
+    /// Advances whenever the local registry becomes available or receives new
+    /// replicated state, allowing already-visible screens to reload without a
+    /// manual retry after startup, pairing, or background synchronization.
+    private(set) var registryRevision = 0
     @ObservationIgnored private var runtime: IrohEndpointRuntime?
     @ObservationIgnored private var registry: MobileDistributedRegistry?
     @ObservationIgnored private var chatRegistry: DistributedChatRegistry?
@@ -64,6 +68,7 @@ final class DistributedMeshSupport {
                 attachmentRegistry = DistributedAttachmentRegistry(
                     replica: replica, group: group
                 )
+                registryRevision += 1
                 try await refreshTrustedDevices()
             }
             try await startNetwork(replica: replica)
@@ -105,6 +110,7 @@ final class DistributedMeshSupport {
         attachmentRegistry = DistributedAttachmentRegistry(
             replica: replica, group: invitation.trustGroupID
         )
+        registryRevision += 1
         let transport = IrohMeshTransport(
             runtime: runtime,
             remote: MeshIrohEndpointAddress(
@@ -384,7 +390,8 @@ final class DistributedMeshSupport {
                 do {
                     let report = try await MeshReplicaSyncSession(
                         store: replica.store,
-                        client: MeshReplicaRPCClient(transport: transport)
+                        client: MeshReplicaRPCClient(transport: transport),
+                        remoteEndpointID: peer.descriptor.endpointID
                     ).synchronize(group: group, membershipEpoch: epoch)
                     received += report.eventCount + report.snapshotCount
                     connections[peer.descriptor.id] = MeshConnectionSnapshot(
@@ -400,6 +407,7 @@ final class DistributedMeshSupport {
                 }
             }
             lastSyncError = failures.isEmpty ? nil : failures.joined(separator: " · ")
+            if received > 0 { registryRevision += 1 }
             return received
         } catch {
             lastSyncError = "Could not read trusted devices: \(error)"
