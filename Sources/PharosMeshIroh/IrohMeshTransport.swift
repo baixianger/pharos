@@ -58,6 +58,7 @@ public actor IrohEndpointRuntime {
 
     private let endpoint: Endpoint
     private let includesRoutingHints: Bool
+    private let waitsForRelay: Bool
     private let configuredEndpointID: MeshEndpointID?
     private var connections: [MeshEndpointID: PeerConnection] = [:]
     private var isServing = false
@@ -67,11 +68,12 @@ public actor IrohEndpointRuntime {
 
     private init(
         endpoint: Endpoint, includesRoutingHints: Bool,
-        configuredEndpointID: MeshEndpointID?
+        configuredEndpointID: MeshEndpointID?, waitsForRelay: Bool
     ) {
         self.endpoint = endpoint
         self.includesRoutingHints = includesRoutingHints
         self.configuredEndpointID = configuredEndpointID
+        self.waitsForRelay = waitsForRelay
     }
 #else
     private init() {}
@@ -101,9 +103,14 @@ public actor IrohEndpointRuntime {
             relayMode: relayMode
         ))
         let includesRoutingHints = true
+        let waitsForRelay = switch relayPolicy {
+        case .production: true
+        case .disabled: false
+        }
         return IrohEndpointRuntime(
             endpoint: endpoint, includesRoutingHints: includesRoutingHints,
-            configuredEndpointID: expectedEndpointID
+            configuredEndpointID: expectedEndpointID,
+            waitsForRelay: waitsForRelay
         )
 #else
         throw MeshIrohError.unavailableOnPlatform
@@ -138,6 +145,12 @@ public actor IrohEndpointRuntime {
         endpoint.secretKey().toBytes()
 #else
         throw MeshIrohError.unavailableOnPlatform
+#endif
+    }
+
+    public func waitUntilOnline() async {
+#if canImport(IrohLib)
+        if waitsForRelay { await endpoint.online() }
 #endif
     }
 

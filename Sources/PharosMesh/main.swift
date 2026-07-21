@@ -876,12 +876,14 @@ private enum MeshHeadlessCLI {
     private static func distributedRuntime(
         _ args: [String], replica: MeshLocalReplica
     ) async throws -> IrohEndpointRuntime {
-        try await IrohEndpointRuntime.bind(
+        let runtime = try await IrohEndpointRuntime.bind(
             secretKey: replica.identity.irohSecretKeyBytes(),
             expectedEndpointID: try replica.identity.endpointID(),
             relayPolicy: try distributedRelayPolicy(args),
             bindAddress: option("--bind", in: args)
         )
+        await runtime.waitUntilOnline()
+        return runtime
     }
 
     private static func activeMembership(

@@ -105,6 +105,11 @@ final class DistributedMeshSupport {
             runtime = endpoint
             localAddress = address
             lastSyncError = nil
+            Task { [weak self] in
+                await endpoint.waitUntilOnline()
+                guard let refreshed = try? await endpoint.localAddress() else { return }
+                self?.localAddress = refreshed
+            }
         } catch {
             lastSyncError = "Could not start distributed Mesh: \(error)"
         }
