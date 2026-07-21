@@ -26,9 +26,17 @@ public struct MeshLocalReplica: Sendable {
     public static func openDefault() throws -> MeshLocalReplica {
         let root = try defaultRootURL()
 #if canImport(Security)
-        let storage = MeshKeychainIdentityStorage(
+        let keychain = MeshKeychainIdentityStorage(
             service: "me.pai.pharos.mesh.identity", account: "device-v1"
         )
+#if os(macOS)
+        let storage = MeshMirroredIdentityStorage(
+            keychain: keychain,
+            mirrorURL: root.appendingPathComponent("headless-device-identity-v1.json")
+        )
+#else
+        let storage = keychain
+#endif
         return try open(rootURL: root, identityStorage: storage)
 #else
         let storage = MeshFileIdentityStorage(

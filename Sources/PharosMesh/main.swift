@@ -9,6 +9,17 @@ private enum MeshHeadlessCLI {
             print(usage)
             return 2
         }
+        let legacyBrokerEnabled = ProcessInfo.processInfo.environment["PHAROS_LEGACY_BROKER"] == "1"
+        if DistributedAgentCLI.commands.contains(command), !legacyBrokerEnabled {
+            return await DistributedAgentCLI.run(args)
+        }
+        if ["serve", "daemon", "node"].contains(command), !legacyBrokerEnabled {
+            let message = "error: the legacy Broker/Node runtime is retired; use " +
+                "distributed sync-serve or set PHAROS_LEGACY_BROKER=1 only for " +
+                "rollback recovery\n"
+            FileHandle.standardError.write(Data(message.utf8))
+            return 1
+        }
         if let endpoint = option("--endpoint", in: args) {
             guard meshSplitHostPort(endpoint) != nil else {
                 return usageError("--endpoint HOST:PORT")

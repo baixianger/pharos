@@ -65,4 +65,66 @@ public struct MeshKeychainIdentityStorage: MeshIdentityStorage, Sendable {
         return value
     }
 }
+
+#if os(macOS)
+public enum MeshMirroredIdentityStorageError: LocalizedError, Sendable {
+    case headlessBootstrapRequired
+    case identityMismatch
+
+    public var errorDescription: String? {
+        switch self {
+        case .headlessBootstrapRequired:
+            "Open the signed Pharos app once in the Mac login session to make its device identity available to the headless CLI."
+        case .identityMismatch:
+            "The protected headless identity does not match Keychain. Restore the device identity backup before continuing."
+        }
+    }
+}
+
+/// Keeps Keychain as the authority for first creation while making the same
+/// device identity usable by SSH/tmux hooks. The mirror is a private,
+/// no-follow, insert-only 0600 file; it has a distinct name from isolated test
+/// identities so an accidental `--data-dir` invocation cannot replace it.
+public struct MeshMirroredIdentityStorage: MeshIdentityStorage, Sendable {
+    public let keychain: MeshKeychainIdentityStorage
+    public let mirror: MeshFileIdentityStorage
+
+    public init(keychain: MeshKeychainIdentityStorage, mirrorURL: URL) {
+        self.keychain = keychain
+        mirror = MeshFileIdentityStorage(fileURL: mirrorURL)
+    }
+
+    public func load() throws -> Data? {
+        let environment = ProcessInfo.processInfo.environment
+        if environment["SSH_CONNECTION"] != nil || environment["SSH_TTY"] != nil {
+            guard let mirrored = try mirror.load() else {
+                throw MeshMirroredIdentityStorageError.headlessBootstrapRequired
+            }
+            return mirrored
+        }
+        let mirrored = try mirror.load()
+        if let authoritative = try keychain.load() {
+            if let mirrored, mirrored != authoritative {
+                throw MeshMirroredIdentityStorageError.identityMismatch
+            }
+            _ = try mirror.insertIfAbsent(authoritative)
+            return authoritative
+        }
+        if let mirrored {
+            _ = try keychain.insertIfAbsent(mirrored)
+            return mirrored
+        }
+        return nil
+    }
+
+    public func insertIfAbsent(_ data: Data) throws -> Bool {
+        let inserted = try keychain.insertIfAbsent(data)
+        guard let authoritative = try keychain.load() else {
+            throw MeshKeychainIdentityStorageError.invalidReturnedData
+        }
+        _ = try mirror.insertIfAbsent(authoritative)
+        return inserted
+    }
+}
+#endif
 #endif

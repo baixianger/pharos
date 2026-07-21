@@ -183,6 +183,26 @@ enum CLI {
     /// target's mailbox, the Stop hook surfaces it; `recv` drains without blocking.
     private static func runMesh(_ args: [String]) async -> Int32 {
         guard let sub = args.first else { print(meshUsage); return 2 }
+        let legacyBrokerEnabled = ProcessInfo.processInfo.environment["PHAROS_LEGACY_BROKER"] == "1"
+        if DistributedAgentCLI.commands.contains(sub), !legacyBrokerEnabled {
+            return await DistributedAgentCLI.run(args)
+        }
+        if !legacyBrokerEnabled, sub == "unread", args.contains("--hook-stop") {
+            return await DistributedHookCLI.run("stop", args: args)
+        }
+        if !legacyBrokerEnabled, sub == "unread", args.contains("--hook-post-tool") {
+            return await DistributedHookCLI.run("post-tool", args: args)
+        }
+        if !legacyBrokerEnabled, sub == "mark", args.contains("--hook") {
+            return await DistributedHookCLI.run("mark", args: args)
+        }
+        if !legacyBrokerEnabled, sub == "session-start" {
+            return await DistributedHookCLI.run("session-start", args: args)
+        }
+        if ["daemon", "node"].contains(sub), !legacyBrokerEnabled {
+            print("error: the legacy Broker/Node runtime is retired; use distributed sync-serve or set PHAROS_LEGACY_BROKER=1 only for rollback recovery")
+            return 1
+        }
         let a = Array(args.dropFirst())
         func report(_ r: MeshResponse) -> Int32 {
             print(r.ok ? (r.note ?? "ok") : "error: \(r.error ?? "?")")

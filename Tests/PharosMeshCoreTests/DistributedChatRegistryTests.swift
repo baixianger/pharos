@@ -4,6 +4,44 @@ import XCTest
 import PharosMeshIdentity
 
 final class DistributedChatRegistryTests: XCTestCase {
+    func testAgentDeliveryUsesStableMembershipAndDeviceLocalExactOnceReceipts() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let replica = try fixture.replica(named: "agent-delivery")
+        try await replica.store.setMembershipEpoch(1, for: fixture.group)
+        let registry = DistributedChatRegistry(replica: replica, group: fixture.group)
+        _ = try await registry.createRoom(named: "pharos-dev")
+        let agent = DistributedAgentChat(replica: replica, group: fixture.group)
+        _ = try await agent.join(
+            room: "pharos-dev", nick: "builder", memberID: "session-stable"
+        )
+
+        _ = try await agent.say(
+            room: "pharos-dev", nick: "human", text: "direct",
+            targets: ["builder"]
+        )
+        _ = try await agent.say(
+            room: "pharos-dev", nick: "human", text: "ambient"
+        )
+
+        let first = try await agent.receive(memberID: "session-stable")
+        XCTAssertEqual(first.map(\.text), ["direct"])
+        let second = try await agent.receive(memberID: "session-stable")
+        XCTAssertTrue(second.isEmpty)
+
+        // Reopening proves the cursor is persisted beside this replica rather
+        // than held in one process or replicated as shared mutable truth.
+        let reopened = DistributedAgentChat(replica: replica, group: fixture.group)
+        let afterReopen = try await reopened.receive(memberID: "session-stable")
+        XCTAssertTrue(afterReopen.isEmpty)
+        let receipt = replica.rootURL.appendingPathComponent("agent-delivery-v1.json")
+        let permissions = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: receipt.path)[.posixPermissions]
+                as? NSNumber
+        )
+        XCTAssertEqual(permissions.intValue & 0o777, 0o600)
+    }
+
     func testRoomLifecycleKeepsImmutableHistoryAcrossRename() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
