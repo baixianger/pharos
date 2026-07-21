@@ -161,58 +161,12 @@ private struct MachinesSettingsTab: View {
     var body: some View {
         @Bindable var store = store
         Form {
-            Section("Project data") {
-                registrySyncStatusView
-                LabeledContent("Offline cache") {
-                    Text(store.dataDirectoryPath.replacingOccurrences(
-                        of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .lineLimit(1).truncationMode(.middle)
-                }
-                LabeledContent("This host") {
-                    Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
-                }
-                Button("Sync now") { store.syncRegistryNow() }
-                    .controlSize(.small)
-                Text("The Mesh Broker is the single source of truth for projects, issues, logs, chat, and attachments. This Mac keeps only an offline cache and Host-specific settings; iCloud is no longer used for live synchronization.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Section("Mesh Broker") {
-                brokerStatusView
-                Toggle("Launch Mesh at Login", isOn: $store.launchMeshAtLogin)
-                    .onChange(of: store.launchMeshAtLogin) { _, _ in
-                        reconcileLoginServices()
-                    }
-                Text(store.isMeshHub
-                     ? "Keeps this Mac's Broker and Host node running after login, independently of the Pharos app."
-                     : "Keeps this Mac's Host node connected to the Broker after login, independently of the Pharos app.")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Text(brokerTarget)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-                    Spacer()
-                    Button("Test again") { Task { await checkBroker() } }
-                        .controlSize(.small)
-                        .disabled(brokerStatus.isChecking || brokerTargetIsInvalid)
-                }
-                Button("Pair iPhone…", systemImage: "qrcode") {
-                    showsPairingAssistant = true
-                }
-                .disabled(
-                    distributedMesh.isProductModeEnabled
-                        ? distributedMesh.localAddress == nil
-                        : advertisedEndpoint == nil || brokerStatus.isChecking
-                )
-                Text("The Broker coordinates rooms, messages, presence, replies, and attachments. It does not execute agent commands; execution machines are configured under Hosts.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            if distributedMesh.isProductModeEnabled {
+                distributedProjectDataSection
+                distributedDevicesSection
+            } else {
+                legacyProjectDataSection
+                legacyBrokerSection
             }
             HostsSettingsSection()
         }
@@ -238,6 +192,141 @@ private struct MachinesSettingsTab: View {
                 PairDeviceSheet(endpoint: advertisedEndpoint)
             }
         }
+    }
+
+    @ViewBuilder
+    private var distributedProjectDataSection: some View {
+        Section("Replicated data") {
+            registrySyncStatusView
+            LabeledContent("Local replica") {
+                Text(store.dataDirectoryPath.replacingOccurrences(
+                    of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            LabeledContent("This host") {
+                Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
+            }
+            Button("Sync now") {
+                Task {
+                    _ = await distributedMesh.synchronizeOnce()
+                    store.syncRegistryNow()
+                }
+            }
+            .controlSize(.small)
+            Text("Projects, issues, rooms, messages, and attachments are signed into a local replica on every trusted device. Concurrent edits merge field by field; no device is a central source of truth.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var distributedDevicesSection: some View {
+        Section("Trusted devices") {
+            distributedStateView
+            if distributedMesh.trustedDevices.isEmpty {
+                Text("No peer devices yet. Pair another Mac or iPhone to replicate your data.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else {
+                ForEach(distributedMesh.trustedDevices, id: \.descriptor.id) { device in
+                    let connection = distributedMesh.connections[device.descriptor.id]
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label(
+                            device.descriptor.displayName,
+                            systemImage: connection?.connected == true
+                                ? "checkmark.circle.fill" : "circle.dashed"
+                        )
+                        .foregroundStyle(connection?.connected == true ? .green : .primary)
+                        Text([
+                            device.descriptor.roles.map(\.rawValue).sorted().joined(separator: ", "),
+                            connection.map { String(describing: $0.path) } ?? "not connected yet",
+                            abbreviated(device.descriptor.id.rawValue.uuidString),
+                        ].joined(separator: " · "))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if let error = distributedMesh.lastSyncError {
+                Text(error).font(.caption).foregroundStyle(.orange)
+            }
+            Button("Pair a device…", systemImage: "qrcode") {
+                showsPairingAssistant = true
+            }
+            .disabled(distributedMesh.localAddress == nil)
+            Text("Pairing codes expire after five minutes and work once. Device identity is its signing key—not an IP address—so direct and relay paths can change without changing trust.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var distributedStateView: some View {
+        switch distributedMesh.state {
+        case .opening:
+            HStack { ProgressView().controlSize(.small); Text("Opening private Mesh…") }
+        case .ready(let deviceID, _):
+            Label("This Mac is ready", systemImage: "checkmark.shield.fill")
+                .foregroundStyle(.green)
+            Text(abbreviated(deviceID.rawValue.uuidString))
+                .font(.caption.monospaced()).foregroundStyle(.secondary)
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private var legacyProjectDataSection: some View {
+        Section("Project data") {
+            registrySyncStatusView
+            LabeledContent("Offline cache") {
+                Text(store.dataDirectoryPath.replacingOccurrences(
+                    of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            LabeledContent("This host") {
+                Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
+            }
+            Button("Sync now") { store.syncRegistryNow() }.controlSize(.small)
+            Text("The legacy Broker is the single source of truth. This diagnostic mode is retained only for migration and rollback testing.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var legacyBrokerSection: some View {
+        Section("Legacy Mesh Broker") {
+            brokerStatusView
+            Toggle("Launch legacy Mesh at Login", isOn: Binding(
+                get: { store.launchMeshAtLogin },
+                set: {
+                    store.launchMeshAtLogin = $0
+                    reconcileLoginServices()
+                }
+            ))
+            HStack {
+                Text(brokerTarget)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                Spacer()
+                Button("Test again") { Task { await checkBroker() } }
+                    .controlSize(.small)
+                    .disabled(brokerStatus.isChecking || brokerTargetIsInvalid)
+            }
+            Button("Pair legacy client…", systemImage: "qrcode") {
+                showsPairingAssistant = true
+            }
+            .disabled(advertisedEndpoint == nil || brokerStatus.isChecking)
+        }
+    }
+
+    private func abbreviated(_ value: String) -> String {
+        value.count > 16 ? "\(value.prefix(8))…\(value.suffix(8))" : value
     }
 
     private func reconcileLoginServices() {
@@ -267,10 +356,12 @@ private struct MachinesSettingsTab: View {
             Label("Connecting to project registry…", systemImage: "arrow.triangle.2.circlepath")
                 .foregroundStyle(.secondary)
         case .synced:
-            Label("Broker registry synced", systemImage: "checkmark.circle.fill")
+            Label(distributedMesh.isProductModeEnabled ? "Local replica ready" : "Broker registry synced",
+                  systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
         case .pending:
-            Label("Saving to Broker…", systemImage: "arrow.up.circle")
+            Label(distributedMesh.isProductModeEnabled ? "Writing signed changes…" : "Saving to Broker…",
+                  systemImage: "arrow.up.circle")
                 .foregroundStyle(.secondary)
         case .offline(let message):
             VStack(alignment: .leading, spacing: 3) {

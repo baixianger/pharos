@@ -1,4 +1,5 @@
 import SwiftUI
+import PharosMeshIdentity
 
 struct SettingsView: View {
     var showsDoneButton = false
@@ -120,27 +121,21 @@ struct SettingsView: View {
                 showsPairingScanner = true
             }
             distributedStateView
-            if distributedMesh.connections.isEmpty {
-                Text("No peer connection has been observed yet.")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(
-                    distributedMesh.connections.values.sorted {
-                        $0.peer.rawValue < $1.peer.rawValue
-                    }, id: \.peer
-                ) { connection in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label(
-                            abbreviated(connection.peer.rawValue.uuidString),
-                            systemImage: connection.connected
-                                ? "checkmark.circle.fill" : "circle.dashed"
-                        )
-                        .foregroundStyle(connection.connected ? .green : .secondary)
-                        Text(String(describing: connection.path))
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
+            if distributedMesh.trustedDevices.isEmpty {
+                ContentUnavailableView {
+                    Label("No trusted peers yet", systemImage: "person.crop.circle.badge.plus")
+                } description: {
+                    Text("On a Mac, choose Settings → Machines → Pair a device, then scan its QR code here.")
                 }
+            } else {
+                ForEach(distributedMesh.trustedDevices, id: \.descriptor.id) { device in
+                    trustedDeviceRow(device)
+                }
+            }
+            if !distributedMesh.trustedDevices.isEmpty,
+               distributedMesh.connections.values.allSatisfy({ !$0.connected }) {
+                Text("Trusted peers are offline. Changes stay on this iPhone and merge when any peer reconnects.")
+                    .foregroundStyle(.secondary)
             }
             if let lastSyncError = distributedMesh.lastSyncError {
                 Text(lastSyncError)
@@ -155,6 +150,26 @@ struct SettingsView: View {
         } footer: {
             Text("Every device stores its own signed replica. No Broker is the source of truth; concurrent field edits converge deterministically after devices reconnect.")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func trustedDeviceRow(_ device: MeshPairedDevice) -> some View {
+        let connection = distributedMesh.connections[device.descriptor.id]
+        VStack(alignment: .leading, spacing: 4) {
+            Label(
+                device.descriptor.displayName,
+                systemImage: connection?.connected == true
+                    ? "checkmark.circle.fill" : "circle.dashed"
+            )
+            .foregroundStyle(connection?.connected == true ? .green : .primary)
+            Text([
+                device.descriptor.roles.map(\.rawValue).sorted().joined(separator: ", "),
+                connection.map { String(describing: $0.path) } ?? "not connected yet",
+                abbreviated(device.descriptor.id.rawValue.uuidString),
+            ].joined(separator: " · "))
+            .font(.caption.monospaced())
+            .foregroundStyle(.secondary)
         }
     }
 

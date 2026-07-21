@@ -35,6 +35,7 @@ final class DistributedMeshSupport {
     private(set) var activeTrustGroupID: MeshTrustGroupID?
     private(set) var localAddress: MeshIrohEndpointAddress?
     private(set) var connections: [MeshDeviceID: MeshConnectionSnapshot] = [:]
+    private(set) var trustedDevices: [MeshPairedDevice] = []
     private(set) var lastSyncError: String?
     @ObservationIgnored private var runtime: IrohEndpointRuntime?
     @ObservationIgnored private var registry: MobileDistributedRegistry?
@@ -62,6 +63,7 @@ final class DistributedMeshSupport {
                 attachmentRegistry = DistributedAttachmentRegistry(
                     replica: replica, group: group
                 )
+                try await refreshTrustedDevices()
             }
             try await startNetwork(replica: replica)
             state = .ready(
@@ -119,7 +121,20 @@ final class DistributedMeshSupport {
         guard confirmation.acceptedDeviceID == replica.identity.deviceID else {
             throw MobileDistributedMeshError.acceptanceMismatch
         }
+        try await refreshTrustedDevices()
         _ = await synchronizeOnce()
+    }
+
+    func refreshTrustedDevices() async throws {
+        guard let replica = localReplica, let group = activeTrustGroupID,
+              let epoch = try await replica.store.membershipEpoch(for: group)
+        else {
+            trustedDevices = []
+            return
+        }
+        trustedDevices = try await replica.store.trustedDevices(
+            in: group, membershipEpoch: epoch
+        )
     }
 
     func projects() async throws -> [RemoteProject] {
@@ -272,6 +287,7 @@ final class DistributedMeshSupport {
             let peers = try await replica.store.trustedDevices(
                 in: group, membershipEpoch: epoch
             )
+            trustedDevices = peers
             var received = 0
             var failures: [String] = []
             for peer in peers {
