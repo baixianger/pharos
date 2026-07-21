@@ -61,6 +61,12 @@ public struct MeshKeychainIdentityStorage: MeshIdentityStorage, Sendable {
             kSecAttrAccount: account,
             kSecAttrSynchronizable: kCFBooleanFalse as Any,
         ]
+#if os(macOS)
+        // The legacy file Keychain can block indefinitely when a GUI launch is
+        // initiated from SSH/tmux. Pharos targets macOS 26, so use the modern
+        // device-local Data Protection Keychain just like iOS.
+        value[kSecUseDataProtectionKeychain] = kCFBooleanTrue
+#endif
         if let accessGroup { value[kSecAttrAccessGroup] = accessGroup }
         return value
     }
