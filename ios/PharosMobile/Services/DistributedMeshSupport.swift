@@ -232,6 +232,15 @@ final class DistributedMeshSupport {
         try await requireChatRegistry().leave(room: room, memberID: memberID)
     }
 
+    func removeMemberFromAllRooms(_ memberID: String) async throws {
+        let registry = try requireChatRegistry()
+        for room in try await registry.rooms() {
+            if try await registry.members(in: room).contains(where: { $0.id == memberID }) {
+                try await registry.leave(room: room, memberID: memberID)
+            }
+        }
+    }
+
     func stopAgent(memberID: String) async throws {
         guard let runtime, let replica = localReplica,
               let group = activeTrustGroupID

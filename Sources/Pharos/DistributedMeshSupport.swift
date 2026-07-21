@@ -226,6 +226,15 @@ final class DistributedMeshSupport {
         try await requireChatRegistry().leave(room: room, memberID: memberID)
     }
 
+    func removeChatMemberFromAllRooms(_ memberID: String) async throws {
+        let registry = try requireChatRegistry()
+        for room in try await registry.rooms() {
+            if try await registry.members(in: room).contains(where: { $0.id == memberID }) {
+                try await registry.leave(room: room, memberID: memberID)
+            }
+        }
+    }
+
     func uploadChatAttachment(
         data: Data, name: String, mediaType: String
     ) async throws -> MeshAttachment {

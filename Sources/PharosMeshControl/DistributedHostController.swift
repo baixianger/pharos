@@ -28,9 +28,25 @@ public enum DistributedHostController {
             )
             let client = MeshReplicaRPCClient(transport: transport)
             do {
-                let resource = try await client.hostResource(
-                    resourceID, group: group, membershipEpoch: epoch
-                )
+                let resource: MeshHostResource
+                do {
+                    resource = try await client.hostResource(
+                        resourceID, group: group, membershipEpoch: epoch
+                    )
+                } catch {
+                    // A Host may have restarted since its last replicated
+                    // address ticket. One bounded sync refreshes both peers'
+                    // current tickets and retries the resource lookup; users
+                    // must never need to run `distributed sync` manually
+                    // before a lifecycle command.
+                    _ = try await MeshReplicaSyncSession(
+                        store: replica.store, client: client,
+                        remoteEndpointID: peer.descriptor.endpointID
+                    ).synchronize(group: group, membershipEpoch: epoch)
+                    resource = try await client.hostResource(
+                        resourceID, group: group, membershipEpoch: epoch
+                    )
+                }
                 guard resource.hostDeviceID == peer.descriptor.id,
                       resource.hostEndpointID == peer.descriptor.endpointID,
                       resource.allowedActions.contains(.stop) else { continue }

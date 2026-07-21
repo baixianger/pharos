@@ -242,11 +242,7 @@ struct DashboardView: View {
             Task {
                 do {
                     try await distributedMesh.stopAgent(memberID: m.id)
-                    if let error = await removeMeshRegistrations(
-                        registrations, memberID: m.id
-                    ) {
-                        agentActionError = error
-                    }
+                    try await distributedMesh.removeChatMemberFromAllRooms(m.id)
                 } catch {
                     agentActionError = error.localizedDescription
                 }

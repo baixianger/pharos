@@ -754,6 +754,7 @@ final class RoomStore {
         if usesDistributedRegistry {
             do {
                 try await distributedMesh.stopAgent(memberID: member.id)
+                try await distributedMesh.removeMemberFromAllRooms(member.id)
                 error = nil
                 await refresh()
                 return true

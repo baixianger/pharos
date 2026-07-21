@@ -334,6 +334,11 @@ public enum DistributedAgentCLI {
                     try? await runtime.close()
                     throw error
                 }
+                for joinedRoom in try await chat.rooms() {
+                    if try await chat.members(in: joinedRoom).contains(where: { $0.id == memberID }) {
+                        try await chat.leave(room: joinedRoom, memberID: memberID)
+                    }
+                }
                 print("stopped \(args[2])")
             case "rename-member":
                 guard args.count >= 4 else { return usage("rename-member <room> <nick|member-id> <new-nick> [--member ID]") }
