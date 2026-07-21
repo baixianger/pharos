@@ -73,7 +73,8 @@ struct PharosApp: App {
                        let replica = distributedMesh.localReplica,
                        let group = distributedMesh.activeTrustGroupID {
                         await store.activateDistributedRegistry(
-                            replica: replica, group: group
+                            replica: replica, group: group,
+                            meshSupport: distributedMesh
                         )
                         await distributedMesh.startNetwork()
                         while !Task.isCancelled {

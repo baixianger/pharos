@@ -2,6 +2,7 @@ import SwiftUI
 import Observation
 import AppKit
 import PharosMeshCore
+import UniformTypeIdentifiers
 @preconcurrency import UserNotifications
 
 /// On-disk shape of the registry.
@@ -447,8 +448,9 @@ enum RegistrySyncStatus: Equatable {
     case conflict(String)
 }
 
-/// Owns the in-memory project view. The Broker is authoritative; Application
-/// Support is a device-local cache used for startup and temporary offline use.
+/// Owns the in-memory project view. Product mode projects signed field changes
+/// into the local distributed replica; Application Support remains the startup
+/// cache and the explicit legacy diagnostic path.
 @MainActor
 @Observable
 final class ProjectStore {
@@ -487,6 +489,7 @@ final class ProjectStore {
     private(set) var registrySyncStatus: RegistrySyncStatus = .connecting
     private var registrySync: BrokerRegistrySync?
     private var distributedProjection: DistributedProjectIssueProjection?
+    private var distributedMeshSupport: DistributedMeshSupport?
     private var distributedPublishTask: Task<Void, Never>?
     /// Monotonic local snapshot generation. Older queued publishes may finish,
     /// but only the newest generation may replace UI state or report `synced`.
@@ -843,12 +846,14 @@ final class ProjectStore {
     // MARK: Persistence
 
     func activateDistributedRegistry(
-        replica: MeshLocalReplica, group: MeshTrustGroupID
+        replica: MeshLocalReplica, group: MeshTrustGroupID,
+        meshSupport: DistributedMeshSupport? = nil
     ) async {
         let projection = DistributedProjectIssueProjection(
             replica: replica, group: group
         )
         distributedProjection = projection
+        distributedMeshSupport = meshSupport
         usesDistributedRegistry = true
         registrySyncStatus = .connecting
         do {
@@ -1222,6 +1227,42 @@ final class ProjectStore {
     func addAttachments(_ projectID: Project.ID, number: Int, urls: [URL]) {
         guard let issue = project(projectID)?.issues.first(where: { $0.number == number }) else { return }
         let issueID = issue.id
+        if usesDistributedRegistry, let mesh = distributedMeshSupport {
+            Task {
+                for url in urls {
+                    do {
+                        let (data, mediaType) = try await Task.detached {
+                            let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+                            let mediaType = UTType(filenameExtension: url.pathExtension)?
+                                .preferredMIMEType ?? "application/octet-stream"
+                            return (data, mediaType)
+                        }.value
+                        let reference = try await mesh.uploadChatAttachment(
+                            data: data, name: url.lastPathComponent,
+                            mediaType: mediaType
+                        )
+                        let attachment = try await Task.detached {
+                            try AttachmentStore.add(
+                                fileAt: url, toIssue: issueID,
+                                distributedReference: reference
+                            )
+                        }.value
+                        mutateStore {
+                            _ = $0.updateIssue(
+                                projectID: projectID, number: number
+                            ) { $0.attachments.append(attachment) }
+                        }
+                    } catch {
+                        reportError(
+                            "Couldn't attach \(url.lastPathComponent): " +
+                            error.localizedDescription
+                        )
+                    }
+                }
+                _ = await mesh.synchronizeOnce()
+            }
+            return
+        }
         var added: [IssueAttachment] = []
         for url in urls {
             if let a = try? AttachmentStore.add(fileAt: url, toIssue: issueID) { added.append(a) }
@@ -1230,6 +1271,32 @@ final class ProjectStore {
         guard !added.isEmpty else { return }
         mutateStore {
             _ = $0.updateIssue(projectID: projectID, number: number) { $0.attachments.append(contentsOf: added) }
+        }
+    }
+
+    /// Returns a device-local URL, lazily fetching verified distributed bytes
+    /// from any trusted online peer when this device only has the metadata.
+    func ensureAttachmentAvailable(
+        issueID: UUID, attachment: IssueAttachment
+    ) async -> URL? {
+        let localURL = AttachmentStore.fileURL(attachment, issueID: issueID)
+        if FileManager.default.fileExists(atPath: localURL.path) { return localURL }
+        guard usesDistributedRegistry,
+              let reference = attachment.meshAttachment,
+              let mesh = distributedMeshSupport else { return nil }
+        do {
+            let data = try await mesh.chatAttachmentData(reference)
+            return try await Task.detached {
+                try AttachmentStore.storeDistributedData(
+                    data, for: attachment, issueID: issueID
+                )
+            }.value
+        } catch {
+            reportError(
+                "Couldn't fetch \(attachment.originalName): " +
+                error.localizedDescription
+            )
+            return nil
         }
     }
 

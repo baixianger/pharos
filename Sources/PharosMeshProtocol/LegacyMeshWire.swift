@@ -178,7 +178,7 @@ public struct MeshReply: Codable, Sendable, Equatable {
     }
 }
 
-public struct MeshAttachment: Codable, Sendable, Equatable, Identifiable {
+public struct MeshAttachment: Codable, Sendable, Hashable, Identifiable {
     public var id: String
     public var name: String
     public var mimeType: String

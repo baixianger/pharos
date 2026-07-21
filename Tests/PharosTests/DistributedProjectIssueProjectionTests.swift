@@ -8,6 +8,11 @@ final class DistributedProjectIssueProjectionTests: XCTestCase {
     func testProjectAndIssueFieldsRoundTripWithoutHostLocalRuntimeState() async throws {
         let fixture = try await Fixture()
         defer { fixture.remove() }
+        let attachmentReference = MeshAttachment(
+            id: "distributed-attachment", name: "proof.txt",
+            mimeType: "text/plain", byteSize: 5,
+            sha256: String(repeating: "ab", count: 32)
+        )
         let issue = Issue(
             number: 7, title: "Move registry", status: .inProgress,
             priority: .high, body: "Use signed fields",
@@ -15,7 +20,11 @@ final class DistributedProjectIssueProjectionTests: XCTestCase {
             updatedAt: Date(timeIntervalSince1970: 20),
             activeSession: "pharos-secret-session",
             activeSessionHost: "private-host", worktreePath: "/private/worktree",
-            labels: ["mesh"], sortOrder: 2.5
+            attachments: [IssueAttachment(
+                storedName: "proof.txt", originalName: "proof.txt",
+                isImage: false, byteSize: 5,
+                meshAttachment: attachmentReference
+            )], labels: ["mesh"], sortOrder: 2.5
         )
         let project = Project(
             name: "Distributed Pharos", localPath: "/private/checkout",
@@ -38,6 +47,10 @@ final class DistributedProjectIssueProjectionTests: XCTestCase {
         XCTAssertEqual(restored[0].issues.count, 1)
         XCTAssertEqual(restored[0].issues[0].title, issue.title)
         XCTAssertEqual(restored[0].issues[0].status, issue.status)
+        XCTAssertEqual(
+            restored[0].issues[0].attachments.first?.meshAttachment,
+            attachmentReference
+        )
         XCTAssertNil(restored[0].issues[0].activeSession)
         XCTAssertNil(restored[0].issues[0].activeSessionHost)
         XCTAssertNil(restored[0].issues[0].worktreePath)
