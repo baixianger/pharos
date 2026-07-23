@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 /// `openRoom`, so switching here only affects this tab.
 struct RoomsToolbarButton: View {
     @Binding var openRoom: String?
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @State private var rooms: [String] = []
     @State private var show = false
     @State private var opening = false
@@ -92,7 +93,8 @@ struct RoomsToolbarButton: View {
                 .foregroundStyle(r == openRoom ? Color.primary : .primary)
             Spacer(minLength: 8)
             Button { addMemberTo = r; show = false } label: { Image(systemName: "person.badge.plus") }
-                .buttonStyle(.plain).foregroundStyle(.secondary).help("Add an agent to this room")
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .help("Add an agent to this room")
             Button { manageMembersIn = r; show = false } label: { Image(systemName: "person.2") }
                 .buttonStyle(.plain).foregroundStyle(.secondary).help("Rename or remove members")
             Button { renameText = r; renaming = r } label: { Image(systemName: "pencil") }
@@ -125,7 +127,10 @@ struct RoomsToolbarButton: View {
     }
 
     private func fetchRooms() async -> [String] {
-        await Task.detached {
+        if distributedMesh.isProductModeEnabled {
+            return (try? await distributedMesh.chatRooms().map(\.name).sorted()) ?? []
+        }
+        return await Task.detached {
             (MeshClient.send(MeshRequest(cmd: "list")).rooms ?? []).map(\.name).sorted()
         }.value
     }
@@ -140,7 +145,19 @@ struct RoomsToolbarButton: View {
         let n = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !n.isEmpty else { return }
         newName = ""
-        Task.detached { _ = MeshClient.send(MeshRequest(cmd: "create", room: n)) }
+        if distributedMesh.isProductModeEnabled {
+            Task {
+                do {
+                    _ = try await distributedMesh.createChatRoom(named: n)
+                    _ = await distributedMesh.synchronizeOnce()
+                    rooms = await fetchRooms()
+                } catch {
+                    rooms.removeAll { $0 == n }
+                }
+            }
+        } else {
+            Task.detached { _ = MeshClient.send(MeshRequest(cmd: "create", room: n)) }
+        }
         if !rooms.contains(n) { rooms.append(n); rooms.sort() }   // optimistic
         openRoom = n; show = false                                // open it in this tab
     }
@@ -148,7 +165,16 @@ struct RoomsToolbarButton: View {
     private func rename(_ old: String, to newName: String) {
         let n = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !n.isEmpty, n != old else { return }
-        Task.detached { _ = MeshClient.send(MeshRequest(cmd: "rename", room: old, text: n)) }
+        if distributedMesh.isProductModeEnabled {
+            Task {
+                guard let target = try? await distributedRoom(named: old) else { return }
+                try? await distributedMesh.renameChatRoom(target, to: n)
+                _ = await distributedMesh.synchronizeOnce()
+                rooms = await fetchRooms()
+            }
+        } else {
+            Task.detached { _ = MeshClient.send(MeshRequest(cmd: "rename", room: old, text: n)) }
+        }
         if let i = rooms.firstIndex(of: old) { rooms[i] = n; rooms.sort() }   // optimistic
         if openRoom == old { openRoom = n }
     }
@@ -156,7 +182,23 @@ struct RoomsToolbarButton: View {
     private func deleteRoom(_ r: String) {
         rooms.removeAll { $0 == r }
         if openRoom == r { openRoom = rooms.first ?? "" }
-        Task.detached { _ = MeshClient.send(MeshRequest(cmd: "delete", room: r)) }
+        if distributedMesh.isProductModeEnabled {
+            Task {
+                guard let target = try? await distributedRoom(named: r) else { return }
+                try? await distributedMesh.deleteChatRoom(target)
+                _ = await distributedMesh.synchronizeOnce()
+                rooms = await fetchRooms()
+            }
+        } else {
+            Task.detached { _ = MeshClient.send(MeshRequest(cmd: "delete", room: r)) }
+        }
+    }
+
+    private func distributedRoom(named name: String) async throws -> MeshRoomInfo {
+        guard let room = try await distributedMesh.chatRooms().first(where: {
+            $0.name == name
+        }) else { throw DistributedRoomsToolbarError.roomNotFound }
+        return room
     }
 }
 
@@ -165,6 +207,7 @@ struct RoomsToolbarButton: View {
 struct ManageRoomMembersSheet: View {
     let room: String
     @Environment(\.dismiss) private var dismiss
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @State private var members: [MeshMemberInfo] = []
     @State private var loading = true
     @State private var memberToRename: MeshMemberInfo?
@@ -213,6 +256,9 @@ struct ManageRoomMembersSheet: View {
         .padding(18)
         .frame(width: 430, height: 330)
         .task { await reload() }
+        .onChange(of: distributedMesh.presenceRevision) { _, _ in
+            Task { await reload() }
+        }
         .alert("Rename member", isPresented: Binding(get: { memberToRename != nil },
                                                       set: { if !$0 { memberToRename = nil } }),
                presenting: memberToRename) { member in
@@ -239,6 +285,19 @@ struct ManageRoomMembersSheet: View {
     }
 
     private func reload() async {
+        if distributedMesh.isProductModeEnabled {
+            do {
+                guard let target = try await distributedMesh.chatRooms().first(where: {
+                    $0.name == room
+                }) else { throw DistributedRoomsToolbarError.roomNotFound }
+                members = try await distributedMesh.chatMemberInfos(in: target)
+                loading = false
+            } catch {
+                self.error = error.localizedDescription
+                loading = false
+            }
+            return
+        }
         let roster = await Task.detached {
             MeshClient.send(MeshRequest(cmd: "who")).members ?? []
         }.value
@@ -251,6 +310,19 @@ struct ManageRoomMembersSheet: View {
         guard !newName.isEmpty else { return }
         memberToRename = nil
         Task {
+            if distributedMesh.isProductModeEnabled {
+                do {
+                    guard let target = try await distributedMesh.chatRooms().first(where: {
+                        $0.name == room
+                    }) else { throw DistributedRoomsToolbarError.roomNotFound }
+                    try await distributedMesh.renameChatMember(
+                        member.id, in: target, to: newName
+                    )
+                    _ = await distributedMesh.synchronizeOnce()
+                    await reload()
+                } catch { self.error = error.localizedDescription }
+                return
+            }
             let response = await Task.detached {
                 MeshClient.send(MeshRequest(cmd: "rename-member", room: room, nick: member.nick,
                                             memberID: member.id, text: newName))
@@ -262,6 +334,17 @@ struct ManageRoomMembersSheet: View {
     private func remove(_ member: MeshMemberInfo) {
         memberToRemove = nil
         Task {
+            if distributedMesh.isProductModeEnabled {
+                do {
+                    guard let target = try await distributedMesh.chatRooms().first(where: {
+                        $0.name == room
+                    }) else { throw DistributedRoomsToolbarError.roomNotFound }
+                    try await distributedMesh.removeChatMember(member.id, from: target)
+                    _ = await distributedMesh.synchronizeOnce()
+                    await reload()
+                } catch { self.error = error.localizedDescription }
+                return
+            }
             let response = await Task.detached {
                 MeshClient.send(MeshRequest(cmd: "leave", room: room, nick: member.nick,
                                             memberID: member.id))
@@ -278,6 +361,13 @@ struct ManageRoomMembersSheet: View {
         case .gone: .gray.opacity(0.4)
         case nil: .gray
         }
+    }
+}
+
+private enum DistributedRoomsToolbarError: LocalizedError {
+    case roomNotFound
+    var errorDescription: String? {
+        "Room not found in the local replica. Sync and try again."
     }
 }
 

@@ -1,6 +1,8 @@
 import SwiftUI
 import Observation
 import AppKit
+import PharosMeshCore
+import UniformTypeIdentifiers
 @preconcurrency import UserNotifications
 
 /// On-disk shape of the registry.
@@ -446,8 +448,9 @@ enum RegistrySyncStatus: Equatable {
     case conflict(String)
 }
 
-/// Owns the in-memory project view. The Broker is authoritative; Application
-/// Support is a device-local cache used for startup and temporary offline use.
+/// Owns the in-memory project view. Product mode projects signed field changes
+/// into the local distributed replica; Application Support remains the startup
+/// cache and the explicit legacy diagnostic path.
 @MainActor
 @Observable
 final class ProjectStore {
@@ -484,7 +487,15 @@ final class ProjectStore {
     private var meshSnapshotPolling = false
     var lastError: String?
     private(set) var registrySyncStatus: RegistrySyncStatus = .connecting
-    private var registrySync: BrokerRegistrySync!
+    private var registrySync: BrokerRegistrySync?
+    private var distributedProjection: DistributedProjectIssueProjection?
+    private var distributedMeshSupport: DistributedMeshSupport?
+    private var distributedPublishTask: Task<Void, Never>?
+    private var distributedBaseline = StoreData()
+    /// Monotonic local snapshot generation. Older queued publishes may finish,
+    /// but only the newest generation may replace UI state or report `synced`.
+    private var distributedPublishRevision: UInt64 = 0
+    private(set) var usesDistributedRegistry = false
     var terminal: TerminalApp = .ghostty {
         didSet { PharosPrefs.shared.set(terminal.rawValue, forKey: "pharos.terminal") }
     }
@@ -567,6 +578,13 @@ final class ProjectStore {
     /// it is not portable project data.
     var meshServerEndpoint = "" {
         didSet {
+            if PharosMeshRuntimeMode.usesDistributedMesh {
+                // Distributed product mode must not recreate the legacy dial
+                // marker from an old preference during ProjectStore init.
+                MeshClient.remoteEndpoint = nil
+                MeshPaths.setDialEndpointFile(nil)
+                return
+            }
             PharosPrefs.shared.set(meshServerEndpoint, forKey: "pharos.meshServerEndpoint")
             let trimmed = meshServerEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
             if meshSplitHostPort(trimmed) != nil {
@@ -619,7 +637,13 @@ final class ProjectStore {
     /// The registry file. Resolved from the shared `DataLocation` (honoring the
     /// Broker-backed cache (plus the `PHAROS_REGISTRY` test override) so the GUI
     /// and CLI agree without treating iCloud or a Host checkout as shared state.
-    private var fileURL: URL { PharosCore.registryURL }
+    private var fileURL: URL {
+        if PharosMeshRuntimeMode.usesDistributedMesh {
+            return PharosCore.registryURL.deletingLastPathComponent()
+                .appendingPathComponent("distributed-project-cache.json")
+        }
+        return PharosCore.registryURL
+    }
     private var pollTask: Task<Void, Never>?
     /// Last modification date of projects.json we've observed/written, used by the
     /// external-edit watcher to avoid reloading our own saves in a loop.
@@ -650,26 +674,41 @@ final class ProjectStore {
         } else if let legacy = d.string(forKey: "pharos.peerHost"), !legacy.isEmpty {
             executionHosts = [ExecutionHostProfile(name: legacy, sshHost: legacy)]
         }
-        meshServerEndpoint = d.string(forKey: "pharos.meshServerEndpoint") ?? ""
+        let distributedMode = PharosMeshRuntimeMode.usesDistributedMesh
+        meshServerEndpoint = distributedMode
+            ? ""
+            : d.string(forKey: "pharos.meshServerEndpoint") ?? ""
         if d.object(forKey: "pharos.launchMeshAtLogin") != nil {
             launchMeshAtLogin = d.bool(forKey: "pharos.launchMeshAtLogin")
         }
         meshHubHostID = d.bool(forKey: "pharos.hostBroker") ? HostIdentity.current : nil
         if let endpoint = validMeshServerEndpoint { MeshClient.remoteEndpoint = endpoint }
-        registrySync = BrokerRegistrySync(revision: d.string(forKey: "pharos.registryRevision")) { [weak self] event in
-            Task { @MainActor in self?.handleRegistryEvent(event) }
-        }
         load()
-        if d.bool(forKey: "pharos.registryPending"),
-           let payload = try? String(contentsOf: fileURL, encoding: .utf8) {
-            registrySyncStatus = .pending
-            registrySync.submit(payload)
-        } else if let snapshot = registrySync.bootstrap(), applyRegistryPayload(snapshot.payload) {
-            d.set(snapshot.revision, forKey: "pharos.registryRevision")
-            registrySyncStatus = .synced
-            persistCurrentCache()
+        if distributedMode {
+            // The local cache is display-only until DistributedMeshSupport
+            // attaches the replica. Never dial the legacy Broker in this mode.
+            registrySyncStatus = .connecting
         } else {
-            registrySyncStatus = .offline("Using the last local cache until the Broker reconnects.")
+            let sync = BrokerRegistrySync(
+                revision: d.string(forKey: "pharos.registryRevision")
+            ) { [weak self] event in
+                Task { @MainActor in self?.handleRegistryEvent(event) }
+            }
+            registrySync = sync
+            if d.bool(forKey: "pharos.registryPending"),
+               let payload = try? String(contentsOf: fileURL, encoding: .utf8) {
+                registrySyncStatus = .pending
+                sync.submit(payload)
+            } else if let snapshot = sync.bootstrap(),
+                      applyRegistryPayload(snapshot.payload) {
+                d.set(snapshot.revision, forKey: "pharos.registryRevision")
+                registrySyncStatus = .synced
+                persistCurrentCache()
+            } else {
+                registrySyncStatus = .offline(
+                    "Using the last local cache until the Broker reconnects."
+                )
+            }
         }
         // Migrate the old local preference without carrying it in project data.
         if d.bool(forKey: "pharos.hostMesh") {
@@ -677,10 +716,18 @@ final class ProjectStore {
             setMeshHub(true)
         }
         lastFileMtime = fileModificationDate()
-        refreshRunningAgents()
-        requestNotificationAuthorizationIfNeeded()
-        startPolling()
-        startFileWatch()
+        if ProcessInfo.processInfo.environment[
+            "PHAROS_DISABLE_NOTIFICATIONS"
+        ] != "1" {
+            requestNotificationAuthorizationIfNeeded()
+        }
+        if ProcessInfo.processInfo.environment[
+            "PHAROS_DISABLE_BACKGROUND_TASKS"
+        ] != "1" {
+            refreshRunningAgents()
+            startPolling()
+        }
+        if registrySync != nil { startFileWatch() }
     }
 
     // MARK: External-edit watcher (live registry sync)
@@ -694,7 +741,7 @@ final class ProjectStore {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard let self, !Task.isCancelled else { return }
-                self.registrySync.retryAndRefresh()
+                self.registrySync?.retryAndRefresh()
                 self.reloadIfChangedExternally()
             }
         }
@@ -799,6 +846,61 @@ final class ProjectStore {
 
     // MARK: Persistence
 
+    func activateDistributedRegistry(
+        replica: MeshLocalReplica, group: MeshTrustGroupID,
+        meshSupport: DistributedMeshSupport? = nil
+    ) async {
+        let projection = DistributedProjectIssueProjection(
+            replica: replica, group: group
+        )
+        distributedProjection = projection
+        distributedMeshSupport = meshSupport
+        usesDistributedRegistry = true
+        registrySyncStatus = .connecting
+        do {
+            let cachedGroups = groups
+            let cachedTrash = trash
+            let hadReplicatedMetadata = try await projection.hasReplicatedRegistryMetadata()
+            var materialized = try await projection.materializedStore()
+            if materialized.projects.isEmpty,
+               ProcessInfo.processInfo.environment[
+                   "PHAROS_DISTRIBUTED_SEED_CACHE"
+               ] == "1", !projects.isEmpty {
+                var seed = StoreData(projects: projects)
+                HostLocalProjectPaths.captureAndStrip(&seed)
+                try await projection.publish(store: seed)
+                materialized = try await projection.materializedStore()
+            }
+            if !hadReplicatedMetadata,
+               !cachedGroups.isEmpty || !cachedTrash.isEmpty {
+                materialized.groups = Array(Set(
+                    materialized.groups + cachedGroups
+                )).sorted {
+                    $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+                }
+                materialized.trash = cachedTrash
+                try await projection.publish(store: materialized)
+                materialized = try await projection.materializedStore()
+            }
+            applyDistributedStore(materialized)
+            registrySyncStatus = .synced
+        } catch {
+            registrySyncStatus = .offline(
+                "Could not open the distributed project replica: \(error)"
+            )
+        }
+    }
+
+    private func applyDistributedStore(_ portable: StoreData) {
+        distributedBaseline = portable
+        var store = portable
+        HostLocalProjectPaths.apply(to: &store)
+        projects = store.projects
+        groups = store.groups
+        trash = store.trash
+        persistCurrentCache()
+    }
+
     func load() {
         guard let data = try? Data(contentsOf: fileURL) else { return }
         _ = applyRegistryData(data)
@@ -836,9 +938,49 @@ final class ProjectStore {
         HostLocalProjectPaths.captureAndStrip(&store)
         if let data = try? encoder.encode(store) {
             writeCache(data)
+            if usesDistributedRegistry, let projection = distributedProjection {
+                registrySyncStatus = .pending
+                distributedPublishRevision &+= 1
+                let revision = distributedPublishRevision
+                let snapshot = store.projects
+                let baseline = distributedBaseline
+                let previous = distributedPublishTask
+                distributedPublishTask = Task { [weak self] in
+                    _ = await previous?.value
+                    guard !Task.isCancelled else { return }
+                    do {
+                        let portable = StoreData(
+                            projects: snapshot, groups: store.groups,
+                            trash: store.trash
+                        )
+                        try await projection.publish(
+                            store: portable, replacing: baseline
+                        )
+                        let materialized = try await projection.materializedStore()
+                        guard !Task.isCancelled else { return }
+                        await MainActor.run {
+                            guard let self,
+                                  self.distributedPublishRevision == revision
+                            else { return }
+                            self.applyDistributedStore(materialized)
+                            self.registrySyncStatus = .synced
+                        }
+                    } catch {
+                        await MainActor.run {
+                            guard let self,
+                                  self.distributedPublishRevision == revision
+                            else { return }
+                            self.registrySyncStatus = .offline(
+                                "Local changes are queued in the distributed replica: \(error)"
+                            )
+                        }
+                    }
+                }
+                return
+            }
             PharosPrefs.shared.set(true, forKey: "pharos.registryPending")
             registrySyncStatus = .pending
-            registrySync.submit(String(decoding: data, as: UTF8.self))
+            registrySync?.submit(String(decoding: data, as: UTF8.self))
         }
     }
 
@@ -888,7 +1030,7 @@ final class ProjectStore {
                 PharosPrefs.shared.set(remote.revision, forKey: "pharos.registryRevision")
                 persistCurrentCache()
             }
-            registrySync.acceptRemoteAfterConflict()
+            registrySync?.acceptRemoteAfterConflict()
             PharosPrefs.shared.set(false, forKey: "pharos.registryPending")
             registrySyncStatus = .conflict(file.path)
             reportError("Another client changed project data first. The Broker version was loaded and your local edit was preserved at \(file.path).")
@@ -953,7 +1095,25 @@ final class ProjectStore {
 
     func syncRegistryNow() {
         registrySyncStatus = .connecting
-        registrySync.retryAndRefresh()
+        if let projection = distributedProjection {
+            Task { [weak self] in
+                do {
+                    let store = try await projection.materializedStore()
+                    await MainActor.run {
+                        self?.applyDistributedStore(store)
+                        self?.registrySyncStatus = .synced
+                    }
+                } catch {
+                    await MainActor.run {
+                        self?.registrySyncStatus = .offline(
+                            "Could not read the distributed replica: \(error)"
+                        )
+                    }
+                }
+            }
+        } else {
+            registrySync?.retryAndRefresh()
+        }
     }
     func contains(name: String) -> Bool { projects.contains { $0.name == name } }
     func contains(remote: String) -> Bool { projects.contains { $0.githubRemote == remote } }
@@ -1089,6 +1249,42 @@ final class ProjectStore {
     func addAttachments(_ projectID: Project.ID, number: Int, urls: [URL]) {
         guard let issue = project(projectID)?.issues.first(where: { $0.number == number }) else { return }
         let issueID = issue.id
+        if usesDistributedRegistry, let mesh = distributedMeshSupport {
+            Task {
+                for url in urls {
+                    do {
+                        let (data, mediaType) = try await Task.detached {
+                            let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+                            let mediaType = UTType(filenameExtension: url.pathExtension)?
+                                .preferredMIMEType ?? "application/octet-stream"
+                            return (data, mediaType)
+                        }.value
+                        let reference = try await mesh.uploadChatAttachment(
+                            data: data, name: url.lastPathComponent,
+                            mediaType: mediaType
+                        )
+                        let attachment = try await Task.detached {
+                            try AttachmentStore.add(
+                                fileAt: url, toIssue: issueID,
+                                distributedReference: reference
+                            )
+                        }.value
+                        mutateStore {
+                            _ = $0.updateIssue(
+                                projectID: projectID, number: number
+                            ) { $0.attachments.append(attachment) }
+                        }
+                    } catch {
+                        reportError(
+                            "Couldn't attach \(url.lastPathComponent): " +
+                            error.localizedDescription
+                        )
+                    }
+                }
+                _ = await mesh.synchronizeOnce()
+            }
+            return
+        }
         var added: [IssueAttachment] = []
         for url in urls {
             if let a = try? AttachmentStore.add(fileAt: url, toIssue: issueID) { added.append(a) }
@@ -1097,6 +1293,32 @@ final class ProjectStore {
         guard !added.isEmpty else { return }
         mutateStore {
             _ = $0.updateIssue(projectID: projectID, number: number) { $0.attachments.append(contentsOf: added) }
+        }
+    }
+
+    /// Returns a device-local URL, lazily fetching verified distributed bytes
+    /// from any trusted online peer when this device only has the metadata.
+    func ensureAttachmentAvailable(
+        issueID: UUID, attachment: IssueAttachment
+    ) async -> URL? {
+        let localURL = AttachmentStore.fileURL(attachment, issueID: issueID)
+        if FileManager.default.fileExists(atPath: localURL.path) { return localURL }
+        guard usesDistributedRegistry,
+              let reference = attachment.meshAttachment,
+              let mesh = distributedMeshSupport else { return nil }
+        do {
+            let data = try await mesh.chatAttachmentData(reference)
+            return try await Task.detached {
+                try AttachmentStore.storeDistributedData(
+                    data, for: attachment, issueID: issueID
+                )
+            }.value
+        } catch {
+            reportError(
+                "Couldn't fetch \(attachment.originalName): " +
+                error.localizedDescription
+            )
+            return nil
         }
     }
 

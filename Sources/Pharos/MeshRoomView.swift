@@ -15,6 +15,7 @@ struct MeshRoomView: View {
     /// picked yet (reload seeds the first).
     @Binding var room: String
     @Environment(ProjectStore.self) private var store
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @State private var rooms: [String] = []
     @State private var membersByRoom: [String: [String]] = [:]
     @State private var membersInfoByRoom: [String: [String: MeshMemberInfo]] = [:]
@@ -31,6 +32,19 @@ struct MeshRoomView: View {
     @State private var issueRef: IssueRef?
     @State private var loading = false
     private var membersInfo: [String: MeshMemberInfo] { membersInfoByRoom[room] ?? [:] }
+    private func memberInfo(id: String? = nil, nick: String) -> MeshMemberInfo? {
+        if let id, let exact = membersInfo[id] { return exact }
+        let matches = membersInfo.values.filter {
+            $0.nick.localizedCaseInsensitiveCompare(nick) == .orderedSame
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+    private func memberStatusLabel(_ info: MeshMemberInfo?) -> String {
+        guard let info else { return "Presence unknown" }
+        if info.state == MeshSessionState.gone.rawValue { return "Offline" }
+        guard let state = info.state, !state.isEmpty else { return "Presence unknown" }
+        return state.capitalized
+    }
     @State private var resolving = false
     @State private var resolved = false
     private struct IssueRef: Identifiable { let project: String; let number: Int; var id: String { "\(project)#\(number)" } }
@@ -42,15 +56,23 @@ struct MeshRoomView: View {
         // navigationTitle painted ~7s late on a freshly created window tab).
         // Drop image/PDF files anywhere on the room to attach them (like "+"),
         // instead of the field's default of inserting the file path as text.
-        .dropDestination(for: URL.self) { urls, _ in acceptDroppedFiles(urls) }
+        .dropDestination(for: URL.self) { urls, _ in
+            _ = acceptDroppedFiles(urls)
+        }
         .task(id: brokerRouteID) { await resolveRemote() }   // resolve transport BEFORE first load
         .task(id: brokerRouteID + "|events") { await watchEvents() }
         .onReceive(recoveryTick) { _ in reload() }
+        .onChange(of: distributedMesh.presenceRevision) { _, _ in reload() }
         .task(id: room) {
             // Rapid switches can leave several detached history reads in
             // flight. Only the room still visible may update the transcript.
             let requested = room
-            let loaded = await Self.history(requested)
+            let loaded: [MeshMsg]
+            if distributedMesh.isProductModeEnabled {
+                loaded = await distributedHistory(requested)
+            } else {
+                loaded = await Self.history(requested)
+            }
             guard !Task.isCancelled, room == requested else { return }
             messages = loaded
         }
@@ -232,9 +254,12 @@ struct MeshRoomView: View {
     /// right-aligned. The avatar doubles as the member's live status display
     /// (gray = offline/gone, badge dot = busy/blocked/ready).
     private func row(_ m: MeshMsg) -> some View {
-        let mine = m.from == "human"
+        let mine = m.authorMemberID?.hasPrefix("human@") == true ||
+            (m.authorMemberID == nil && m.from == "human")
         return HStack(alignment: .top, spacing: 8) {
-            if mine { Spacer(minLength: 60) } else { avatar(m.from) }
+            if mine { Spacer(minLength: 60) } else {
+                avatar(m.from, memberID: m.authorMemberID)
+            }
             VStack(alignment: mine ? .trailing : .leading, spacing: 3) {
                 // Identity/avatar row — the reply icon lives here, flat, at the
                 // outer edge: right of the header for incoming, left for own.
@@ -267,7 +292,8 @@ struct MeshRoomView: View {
                     }
                 }
             }
-            if mine { avatar(m.from) } else { Spacer(minLength: 60) }
+            if mine { avatar(m.from, memberID: m.authorMemberID) }
+            else { Spacer(minLength: 60) }
         }
         .frame(maxWidth: .infinity, alignment: mine ? .trailing : .leading)
         .contextMenu {
@@ -420,9 +446,10 @@ struct MeshRoomView: View {
     /// Pixel avatar on a per-nick tinted circle. The pose tracks the member's
     /// live state (working/idle/dozing/alarmed/asleep) and the sprite set tracks
     /// its agent kind (Claude → Clawd, Codex → blue robot); gray = gone/unknown.
-    private func avatar(_ nick: String) -> some View {
-        let human = nick == "human"
-        let info = membersInfo[nick]
+    private func avatar(_ nick: String, memberID: String? = nil) -> some View {
+        let human = memberID?.hasPrefix("human@") == true ||
+            (memberID == nil && nick == "human")
+        let info = memberInfo(id: memberID, nick: nick)
         let state = MeshSessionState(rawValue: info?.state ?? "")
         let offline = !human && (info == nil || state == .gone)
         return Circle()
@@ -463,7 +490,7 @@ struct MeshRoomView: View {
                         .offset(x: 1, y: 1)
                 }
             }
-            .help(human ? "you" : "\(nick) — \(info?.state ?? "offline")")
+            .help(human ? "you" : "\(nick) — \(memberStatusLabel(info))")
     }
 
     /// Human input. `@nick` delivers to that agent: it surfaces via the unread
@@ -573,6 +600,7 @@ struct MeshRoomView: View {
         let query = tok.dropFirst().lowercased()
         var pool = membersByRoom[room] ?? []
         for m in messages where !pool.contains(m.from) { pool.append(m.from) }
+        pool = uniqueNicks(pool)
         pool.removeAll { $0 == "human" }
         pool.removeAll { !isLiveMember($0) }
         let hits = query.isEmpty ? pool : pool.filter { $0.lowercased().hasPrefix(query) }
@@ -586,16 +614,28 @@ struct MeshRoomView: View {
     private func isLiveMember(_ nick: String) -> Bool {
         let info = membersInfo
         guard !info.isEmpty else { return true }
-        guard let member = info[nick] else { return false }
-        return MeshSessionState(rawValue: member.state ?? "") != .gone
+        let matches = info.values.filter {
+            $0.nick.localizedCaseInsensitiveCompare(nick) == .orderedSame
+        }
+        return matches.contains {
+            MeshSessionState(rawValue: $0.state ?? "") != .gone
+        }
     }
 
     /// Live, non-human room members shown as one-tap @-mention chips above the
     /// input (mirrors the iOS member strip).
     private var mentionableMembers: [String] {
         var pool = membersByRoom[room] ?? []
+        pool = uniqueNicks(pool)
         pool.removeAll { $0 == "human" || !isLiveMember($0) }
         return pool.sorted()
+    }
+
+    /// One display alias is enough even when it expands to several stable
+    /// member IDs at send time. It also keeps SwiftUI list identity unique.
+    private func uniqueNicks(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.filter { seen.insert($0.lowercased()).inserted }
     }
 
     private func insertMentionChip(_ nick: String) {
@@ -610,7 +650,7 @@ struct MeshRoomView: View {
                 ForEach(mentionableMembers, id: \.self) { nick in
                     Button { insertMentionChip(nick) } label: {
                         HStack(spacing: 5) {
-                            if let dot = Self.statusDot(membersInfo[nick]?.state) {
+                            if let dot = Self.statusDot(memberInfo(nick: nick)?.state) {
                                 Circle().fill(dot).frame(width: 6, height: 6)
                             }
                             Text("@\(nick)").font(.caption)
@@ -661,10 +701,10 @@ struct MeshRoomView: View {
                         Image(systemName: "at").font(.caption).foregroundStyle(.secondary)
                         Text(nick).font(.callout)
                         Spacer(minLength: 0)
-                        if let dot = Self.statusDot(membersInfo[nick]?.state) {
+                        if let dot = Self.statusDot(memberInfo(nick: nick)?.state) {
                             Circle().fill(dot).frame(width: 7, height: 7)
                         }
-                        Text(membersInfo[nick]?.state ?? "offline")
+                        Text(memberStatusLabel(memberInfo(nick: nick)))
                             .font(.caption2).foregroundStyle(.tertiary)
                     }
                     .padding(.horizontal, 8).padding(.vertical, 4)
@@ -699,6 +739,29 @@ struct MeshRoomView: View {
     /// Upload one file as a pending attachment — shared by the "+" button and
     /// drag-and-drop, so a dropped file behaves exactly like a chosen one.
     private func uploadFile(at url: URL) {
+        if distributedMesh.isProductModeEnabled {
+            uploadingAttachment = true
+            Task {
+                do {
+                    let (data, mediaType) = try await Task.detached {
+                        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+                        let type = try? url.resourceValues(
+                            forKeys: [.contentTypeKey]
+                        ).contentType
+                        return (data, type?.preferredMIMEType ?? "application/octet-stream")
+                    }.value
+                    let attachment = try await distributedMesh.uploadChatAttachment(
+                        data: data, name: url.lastPathComponent, mediaType: mediaType
+                    )
+                    _ = await distributedMesh.synchronizeOnce()
+                    pendingAttachments.append(attachment)
+                } catch {
+                    addNotices([error.localizedDescription])
+                }
+                uploadingAttachment = false
+            }
+            return
+        }
         uploadingAttachment = true
         Task {
             let result = await Task.detached { () -> Result<MeshAttachment, Error> in
@@ -731,6 +794,32 @@ struct MeshRoomView: View {
     }
 
     private func openAttachment(_ attachment: MeshAttachment) {
+        if distributedMesh.isProductModeEnabled {
+            Task {
+                do {
+                    let data = try await distributedMesh.chatAttachmentData(attachment)
+                    let url = try await Task.detached { () throws -> URL in
+                        let directory = FileManager.default.temporaryDirectory
+                            .appendingPathComponent(
+                                "PharosMeshAttachments", isDirectory: true
+                            )
+                            .appendingPathComponent(attachment.id, isDirectory: true)
+                        try FileManager.default.createDirectory(
+                            at: directory, withIntermediateDirectories: true
+                        )
+                        let destination = directory.appendingPathComponent(
+                            attachment.name
+                        )
+                        try data.write(to: destination, options: .atomic)
+                        return destination
+                    }.value
+                    NSWorkspace.shared.open(url)
+                } catch {
+                    addNotices([error.localizedDescription])
+                }
+            }
+            return
+        }
         Task {
             let result = await Task.detached { () -> Result<URL, Error> in
                 let directory = FileManager.default.temporaryDirectory
@@ -762,6 +851,31 @@ struct MeshRoomView: View {
         let mentions = MeshHooks.parseTextMentions(text)
         let to = mentions.isEmpty ? nil : mentions
         Task {
+            if distributedMesh.isProductModeEnabled {
+                do {
+                    let target = try await distributedRoom(named: r)
+                    _ = try await distributedMesh.sendChatMessage(
+                        text, in: target, to: mentions,
+                        replyTo: reply.map {
+                            MeshReply(
+                                messageID: $0.stableID, from: $0.from,
+                                authorMemberID: $0.authorMemberID,
+                                preview: String($0.text.prefix(160)), ts: $0.ts
+                            )
+                        }, attachments: attachments
+                    )
+                    _ = await distributedMesh.synchronizeOnce()
+                    messages = try await distributedMesh.chatMessages(
+                        in: target, limit: 200
+                    )
+                } catch {
+                    draft = text
+                    replyingTo = reply
+                    pendingAttachments = attachments
+                    addNotices([error.localizedDescription])
+                }
+                return
+            }
             let result = await Task.detached { () -> (sent: Bool, notes: [String]) in
                 if reply != nil || !attachments.isEmpty {
                     let capabilities = MeshClient.send(MeshRequest(cmd: "capabilities"))
@@ -774,7 +888,7 @@ struct MeshRoomView: View {
                 request.attachments = attachments.isEmpty ? nil : attachments
                 let resp = MeshClient.send(request)
                 if !resp.ok { return (false, [resp.error ?? "Message could not be sent."]) }
-                return (true, [])
+                return (true, resp.note.map { [$0] } ?? [])
             }.value
             if !result.sent {
                 draft = text
@@ -794,6 +908,36 @@ struct MeshRoomView: View {
         loading = true
         let selected = room
         Task {
+            if distributedMesh.isProductModeEnabled {
+                defer { loading = false }
+                do {
+                    let roomInfos = try await distributedMesh.chatRooms()
+                    let names = roomInfos.map(\.name)
+                    var nextMembers: [String: [String]] = [:]
+                    var nextInfo: [String: [String: MeshMemberInfo]] = [:]
+                    for roomInfo in roomInfos {
+                        let roomMembers = try await distributedMesh.chatMemberInfos(in: roomInfo)
+                        nextMembers[roomInfo.name] = roomMembers.map(\.nick)
+                        nextInfo[roomInfo.name] = Dictionary(
+                            uniqueKeysWithValues: roomMembers.map { member in
+                                (member.id, member)
+                            }
+                        )
+                    }
+                    guard !Task.isCancelled else { return }
+                    rooms = names
+                    membersByRoom = nextMembers
+                    membersInfoByRoom = nextInfo
+                    guard room == selected else { return }
+                    let picked = selected.isEmpty || !names.contains(selected)
+                        ? (names.first ?? "") : selected
+                    room = picked
+                    messages = picked.isEmpty ? [] : await distributedHistory(picked)
+                } catch {
+                    addNotices([error.localizedDescription])
+                }
+                return
+            }
             let snap = await Self.fetch(selected: selected)
             loading = false
             // Remote broker unreachable (e.g. peer daemon died) → re-bootstrap.
@@ -815,6 +959,14 @@ struct MeshRoomView: View {
     /// authoritative, so every event simply triggers the existing snapshot
     /// reload and a 30-second recovery poll covers disconnections.
     private func watchEvents() async {
+        if distributedMesh.isProductModeEnabled {
+            while !Task.isCancelled {
+                _ = await distributedMesh.synchronizeOnce()
+                reload()
+                try? await Task.sleep(for: .seconds(2))
+            }
+            return
+        }
         while !Task.isCancelled && !resolved {
             try? await Task.sleep(for: .milliseconds(100))
         }
@@ -848,6 +1000,13 @@ struct MeshRoomView: View {
     private func resolveRemote() async {
         guard !resolving else { return }
         resolving = true
+        if distributedMesh.isProductModeEnabled {
+            MeshClient.remoteEndpoint = nil
+            resolving = false
+            resolved = true
+            reload()
+            return
+        }
         if let endpoint = store.validMeshServerEndpoint {
             MeshClient.remoteEndpoint = endpoint
             MeshPaths.setDialEndpointFile(endpoint)
@@ -891,7 +1050,7 @@ struct MeshRoomView: View {
             let roster = MeshClient.send(MeshRequest(cmd: "who")).members ?? []
             var info: [String: [String: MeshMemberInfo]] = [:]
             for member in roster {
-                for room in member.rooms { info[room, default: [:]][member.nick] = member }
+                for room in member.rooms { info[room, default: [:]][member.id] = member }
             }
             let pick = selected.isEmpty || !names.contains(selected) ? (names.first ?? "") : selected
             let msgs: [MeshMsg] = pick.isEmpty ? []
@@ -906,6 +1065,36 @@ struct MeshRoomView: View {
         return await Task.detached {
             MeshClient.send(MeshRequest(cmd: "history", room: room, limit: 200)).messages ?? []
         }.value
+    }
+
+    private func distributedRoom(named name: String) async throws -> MeshRoomInfo {
+        guard let room = try await distributedMesh.chatRooms().first(where: {
+            $0.name == name
+        }) else { throw DistributedChatViewError.roomNotFound }
+        return room
+    }
+
+    private func distributedHistory(_ name: String) async -> [MeshMsg] {
+        guard !name.isEmpty else { return [] }
+        do {
+            let target = try await distributedRoom(named: name)
+            return try await distributedMesh.chatMessages(
+                in: target, limit: 200
+            )
+        } catch {
+            return []
+        }
+    }
+}
+
+private enum DistributedChatViewError: LocalizedError {
+    case roomNotFound
+
+    var errorDescription: String? {
+        switch self {
+        case .roomNotFound:
+            "Room not found in the local replica. Sync and try again."
+        }
     }
 }
 

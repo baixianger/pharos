@@ -1,6 +1,7 @@
 import Citadel
 import Crypto
 import Foundation
+import PharosMeshProtocol
 
 enum RemoteActionError: LocalizedError {
     case unsafeValue(String)
@@ -39,16 +40,26 @@ enum SpawnWorkDir: Equatable, Sendable {
 
 /// A project as reported by `pharos list --json` on the target host.
 struct RemoteProject: Identifiable, Sendable, Hashable {
-    var id: String { name }
+    var id: String { replicaID ?? name }
     let name: String
     let localPath: String?
     let githubRemote: String?
     let tags: [String]
     var notes: String = ""
+    var yolo: Bool = true
+    var tmux: Bool = false
+    var playbooks: [RemotePlaybook] = []
+    var milestones: [RemoteMilestone] = []
     var issues: [RemoteIssue] = []
     var updates: [RemoteProjectUpdate] = []
+    /// Stable replicated entity identity. Legacy Broker payloads leave this
+    /// nil and retain the historical name-derived identity.
+    var replicaID: String? = nil
     var hasLocalPath: Bool { localPath != nil }
 }
+
+typealias RemotePlaybook = MeshProjectPlaybook
+typealias RemoteMilestone = MeshProjectMilestone
 
 struct RemoteProjectUpdate: Identifiable, Sendable, Hashable {
     let id: String
@@ -59,7 +70,7 @@ struct RemoteProjectUpdate: Identifiable, Sendable, Hashable {
 
 /// One issue aggregated from `pharos issue list <project> --json` across projects.
 struct RemoteIssue: Identifiable, Sendable, Hashable {
-    var id: String { "\(project)#\(number)" }
+    var id: String { replicaID ?? "\(project)#\(number)" }
     let project: String
     let number: Int
     let title: String
@@ -71,6 +82,24 @@ struct RemoteIssue: Identifiable, Sendable, Hashable {
     /// Manual board ordering set on the desktop; nil when unspecified. Carried
     /// so the iOS list can honor the same ordering within a status group.
     var sortOrder: Double? = nil
+    var milestoneID: String? = nil
+    var parent: Int? = nil
+    var relations: [RemoteIssueRelation] = []
+    var attachments: [RemoteIssueAttachment] = []
+    /// Stable replicated entity identity. This prevents two offline devices
+    /// that choose the same display number from overwriting one another.
+    var replicaID: String? = nil
+}
+
+typealias RemoteIssueRelation = MeshIssueRelationValue
+typealias RemoteIssueAttachment = MeshIssueAttachmentValue
+
+struct PendingRemoteAttachment: Identifiable, Sendable {
+    let id: UUID
+    let data: Data
+    let name: String
+    let mediaType: String
+    let isImage: Bool
 }
 
 enum RemoteCommandBuilder {
@@ -147,6 +176,14 @@ enum RemoteCommandBuilder {
         // fight over the smallest size and redraw continuously (the "flushing"
         // screen); a single client renders at one stable size.
         return "export PATH=\(path):$PATH; s=$(\(tmux) display-message -p -t '\(pane)' '#{session_name}') || exit 31; exec \(tmux) attach-session -d -t \"=$s\""
+    }
+
+    static func attach(resourceID: String) throws -> String {
+        guard MeshResourceID(rawValue: resourceID) != nil else {
+            throw RemoteActionError.unsafeValue(resourceID)
+        }
+        return "export PATH=\(path):$PATH; exec pharos mesh attach-local " +
+            singleQuoted(resourceID)
     }
 
     private static func safe(_ value: String) -> Bool {

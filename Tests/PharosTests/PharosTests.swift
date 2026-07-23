@@ -235,6 +235,47 @@ final class AgentKindCommandTests: XCTestCase {
         )
     }
 
+    func testMeshSpawnDoesNotMistakeTrustCursorOrBypassFlagForReadyComposer() {
+        XCTAssertEqual(
+            MeshSpawn.bootScreenState("""
+            codex --dangerously-bypass-hook-trust
+            Do you trust the contents of this directory?
+            › 1. Yes, continue
+            """),
+            .submitInterstitial
+        )
+        XCTAssertEqual(
+            MeshSpawn.bootScreenState(
+                "codex --dangerously-bypass-hook-trust\nstarting…"
+            ),
+            .waiting
+        )
+    }
+
+    func testMeshSpawnRecognizesRealCodexComposer() {
+        XCTAssertEqual(
+            MeshSpawn.bootScreenState("""
+            permissions: YOLO mode
+            › Find and fix a bug in @filename
+            /tmp/project · Full Access · Context 0% used
+            """),
+            .ready
+        )
+    }
+
+    func testMeshSpawnSkipsLaunchTimeCodexUpdateInsteadOfRunningHomebrew() {
+        XCTAssertEqual(
+            MeshSpawn.bootScreenState("""
+            Update available! 0.144.6 -> 0.145.0
+            › 1. Update now (runs `brew upgrade --cask codex`)
+              2. Skip
+              3. Skip until next version
+            Press enter to continue
+            """),
+            .skipUpdate
+        )
+    }
+
     func testCodexResolverIncludesDesktopAppAndVersionManagerShims() {
         let paths = LaunchService.agentExecutableCandidates(.codex, home: "/Users/tester")
         XCTAssertTrue(paths.contains("/Applications/Codex.app/Contents/Resources/codex"))
@@ -614,6 +655,31 @@ final class CLIParseTests: XCTestCase {
         XCTAssertTrue(CLI.isCommand("--help"))
         XCTAssertFalse(CLI.isCommand("-psn_0_12345")) // LaunchServices GUI arg
         XCTAssertFalse(CLI.isCommand("--mcp"))         // handled before isCommand
+    }
+
+    func testOnlyNetworkedMeshCommandsTakeExclusiveGUIRuntime() {
+        XCTAssertTrue(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+            meshArguments: ["pair", "invite"]
+        ))
+        XCTAssertTrue(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+            meshArguments: ["pair", "revoke", UUID().uuidString]
+        ))
+        XCTAssertTrue(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+            meshArguments: ["presence"]
+        ))
+        XCTAssertTrue(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+            meshArguments: ["stop", "room", "member"]
+        ))
+
+        XCTAssertFalse(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+            meshArguments: ["pair", "list"]
+        ))
+        XCTAssertFalse(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+            meshArguments: ["presence", "--local"]
+        ))
+        XCTAssertFalse(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+            meshArguments: ["send", "hello", "--member", "session"]
+        ))
     }
 }
 
@@ -1332,8 +1398,21 @@ final class MeshStateMappingTests: XCTestCase {
         let codex = MeshHooks.continuationPayload(text: "hello", codex: true)
         XCTAssertEqual(codex["decision"] as? String, "block")
         XCTAssertEqual(codex["reason"] as? String, "hello")
-        XCTAssertEqual(codex["suppressOutput"] as? Bool, true)
+        XCTAssertNil(codex["suppressOutput"])
         XCTAssertNil(codex["hookSpecificOutput"])
+    }
+
+    func testCodexHookRootDropsUnsupportedDescriptionOnly() {
+        var root: [String: Any] = [
+            "description": "Pharos mesh",
+            "hooks": ["Stop": []],
+            "futureUserKey": true,
+        ]
+        XCTAssertTrue(MeshHooks.sanitizeCodexRoot(&root))
+        XCTAssertNil(root["description"])
+        XCTAssertNotNil(root["hooks"])
+        XCTAssertEqual(root["futureUserKey"] as? Bool, true)
+        XCTAssertFalse(MeshHooks.sanitizeCodexRoot(&root))
     }
 
     func testFormMessageRendersQuestionsAndOptions() {
@@ -1397,6 +1476,24 @@ final class MeshStateMappingTests: XCTestCase {
 }
 
 final class MeshTransportResilienceTests: XCTestCase {
+    func testDisabledAutoSpawnFailsClosedWithoutCreatingLegacySocket() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pharos-no-broker-\(UUID().uuidString)")
+        setenv("PHAROS_MESH_DIR", directory.path, 1)
+        MeshClient.remoteEndpoint = nil
+        MeshClient.allowsLocalDaemonAutoSpawn = false
+        defer {
+            MeshClient.allowsLocalDaemonAutoSpawn = true
+            unsetenv("PHAROS_MESH_DIR")
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let response = MeshClient.send(MeshRequest(cmd: "list"))
+
+        XCTAssertFalse(response.ok)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: MeshPaths.socketPath))
+    }
+
     func testSocketReadTimeoutPreventsHalfOpenNodeLoop() {
         var descriptors: [Int32] = [-1, -1]
         XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors), 0)
@@ -2007,6 +2104,53 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         XCTAssertEqual(broker.process(MeshRequest(cmd: "node-list")).nodes?.map(\.id), ["node-1"])
     }
 
+    func testExplicitNodeIdentityRoutesPokeAcrossLocalizedHostMismatchWithoutTailscale() throws {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "node-heartbeat", memberID: "node-1",
+                                                 host: "xiangs-mac-mini.local")).ok)
+        var join = MeshRequest(cmd: "join", room: "mobile-dev", nick: "beiou-vi",
+                               session: "session-1", host: "Xiang’s Mac mini",
+                               tmuxPane: "%16", kind: "codex")
+        join.nodeID = "node-1"
+        XCTAssertTrue(broker.process(join).ok)
+
+        let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
+        let member = try XCTUnwrap(roster.first { $0.nick == "beiou-vi" })
+        XCTAssertEqual(member.nodeID, "node-1")
+        XCTAssertEqual(member.nodeOnline, true)
+
+        let sent = broker.process(MeshRequest(cmd: "say", room: "mobile-dev", nick: "human",
+                                              text: "@beiou-vi review", to: ["beiou-vi"]))
+        XCTAssertTrue(sent.ok)
+        XCTAssertNil(sent.note)
+        let command = try XCTUnwrap(broker.process(
+            MeshRequest(cmd: "node-command-list", nodeID: "node-1")
+        ).commands?.first)
+        let payload = try XCTUnwrap(command.payload?.data(using: .utf8))
+        XCTAssertEqual(try JSONDecoder().decode(MeshNodePokePayload.self, from: payload).memberID,
+                       "session-1")
+    }
+
+    func testExplicitNodeIdentityDoesNotFallBackToAHostLookalikeAndReportsUnroutablePoke() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "node-heartbeat", memberID: "wrong-node",
+                                                 host: "same-host")).ok)
+        var join = MeshRequest(cmd: "join", room: "dev", nick: "agent",
+                               session: "session-1", host: "same-host",
+                               tmuxPane: "%1", kind: "codex")
+        join.nodeID = "expected-node"
+        XCTAssertTrue(broker.process(join).ok)
+
+        let sent = broker.process(MeshRequest(cmd: "say", room: "dev", nick: "human",
+                                              text: "@agent hello", to: ["agent"]))
+        XCTAssertTrue(sent.ok)
+        XCTAssertEqual(sent.members?.first?.nodeOnline, false)
+        XCTAssertTrue(sent.note?.contains("@agent") == true)
+        XCTAssertTrue(broker.process(
+            MeshRequest(cmd: "node-command-list", nodeID: "wrong-node")
+        ).commands?.isEmpty == true)
+    }
+
     func testManualPokeRequiresHostNodeAndPublishesDurableCommand() throws {
         let broker = MeshBroker()
         XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "dev", nick: "agent",
@@ -2501,6 +2645,26 @@ final class MeshBroadcastTests: XCTestCase {
 }
 
 final class RemoteLaunchTmuxIdentityTests: XCTestCase {
+    func testRemoteAgentPrefersManagedCLIOverStaleUserLocalSymlink() {
+        let command = RemoteLaunch.preferredPathExport
+        let managed = try! XCTUnwrap(command.range(of: "/opt/homebrew/bin"))
+        let userLocal = try! XCTUnwrap(command.range(of: "$HOME/.local/bin"))
+
+        XCTAssertLessThan(managed.lowerBound, userLocal.lowerBound)
+        XCTAssertTrue(command.hasPrefix("export PATH="))
+    }
+
+    func testRemoteMeshHelperPrefersCurrentSystemAppBundle() {
+        XCTAssertEqual(
+            RemoteLaunch.remoteMeshHelperCandidates(home: "/Users/test").first,
+            "/Applications/Pharos.app/Contents/Helpers/pharos-mesh"
+        )
+        XCTAssertTrue(
+            RemoteLaunch.remoteMeshHelperCandidates(home: "/Users/test")
+                .contains("/Users/test/Applications/Pharos.app/Contents/Helpers/pharos-mesh")
+        )
+    }
+
     func testRemoteInteractiveShellFallsBackWhenForwardedTerminfoIsMissing() {
         let command = RemoteLaunch.terminalSafeRemoteShell("exec tmux attach -t '=agent'")
 

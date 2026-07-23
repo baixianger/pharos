@@ -3,499 +3,260 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Pharos — Your vibe coding project manager</title>
-  <meta name="description" content="Pharos is mission control for AI coding agents. See every project, launch Claude Code or Codex into any repo, resume sessions, and run agents in parallel via git worktrees." />
+  <title>Pharos – Mission Control for AI Coding Agents</title>
+  <meta name="description" content="Pharos is a native macOS app for people running AI coding agents across many repos: projects, issues, progress log, one-click agent launch, and a mesh chat room where agents talk to each other." />
   <meta property="og:title" content="Pharos — Your vibe coding project manager" />
-  <meta property="og:description" content="macOS 26 app. SwiftUI + Liquid Glass. One ⌘K palette away." />
+  <meta property="og:description" content="Mission control for Claude Code & Codex — across every repo, all at once. macOS + iOS companion." />
   <meta property="og:type" content="website" />
-  <link rel="icon" type="image/png" href="icon.png" />
-  <link rel="stylesheet" href="style.css" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg: #f2f4f8;
+      --panel: #ffffff;
+      --ink: #16202e;
+      --muted: #46556a;
+      --faint: #8a94a6;
+      --accent: #1f6fd6;
+      --line: #dde3ec;
+      --header-bg: #0b1420;
+      --header-ink: #eef4fc;
+      --header-muted: #9fb2ca;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b1420;
+        --panel: #121e2e;
+        --ink: #e8eef7;
+        --muted: #aab8cc;
+        --faint: #64748c;
+        --accent: #4d9dff;
+        --line: #1e2c40;
+      }
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--header-bg);
+      color: var(--header-ink);
+      padding: 56px 32px 48px;
+    }
+    .header-inner {
+      max-width: 1100px; margin: 0 auto;
+      display: flex; align-items: center; gap: 28px; flex-wrap: wrap;
+    }
+    .app-icon {
+      width: 96px; height: 96px; border-radius: 22px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.4);
+    }
+    .header-text { flex: 1; min-width: 260px; }
+    h1 { font-size: clamp(1.8rem, 5vw, 2.6rem); margin-bottom: 8px; }
+    .tagline { color: var(--header-muted); font-size: 1.02rem; line-height: 1.6; max-width: 640px; }
+    .tagline strong { color: var(--header-ink); }
+    .platform-badges { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+    .platform-badges span {
+      font-size: 0.78rem; letter-spacing: 0.04em;
+      border: 1px solid rgba(255,255,255,0.22); border-radius: 999px;
+      padding: 5px 12px; color: var(--header-muted);
+    }
+
+    /* ── Main two-column layout ── */
+    .content-wrap {
+      max-width: 1100px; margin: 0 auto;
+      padding: 56px 32px;
+      display: grid; grid-template-columns: 5fr 6fr;
+      gap: 56px; align-items: start;
+    }
+    .content-left { display: flex; flex-direction: column; gap: 44px; }
+    h2 { font-size: 1.25rem; font-weight: 700; margin-bottom: 14px; }
+    ul.features { list-style: none; display: grid; gap: 11px; }
+    ul.features li {
+      background: var(--panel); border: 1px solid var(--line);
+      border-radius: 12px; padding: 15px 19px;
+      font-size: 0.93rem; line-height: 1.55; color: var(--muted);
+    }
+    ul.features li strong { display: block; margin-bottom: 2px; color: var(--ink); }
+    .support {
+      background: var(--panel); border: 1px solid var(--line);
+      border-radius: 14px; padding: 22px; text-align: center;
+      font-size: 0.93rem; line-height: 1.65; color: var(--muted);
+    }
+    .support a { color: var(--accent); text-decoration: none; font-weight: 600; }
+    .privacy-note { font-size: 0.87rem; color: var(--faint); line-height: 1.6; }
+    .privacy-note a { color: var(--accent); text-decoration: none; }
+
+    /* ── Right: screenshot carousel (landscape, macOS) ── */
+    .content-right {
+      position: sticky; top: 40px;
+      display: flex; flex-direction: column; align-items: center; gap: 16px;
+    }
+    .carousel-frame {
+      position: relative; width: 100%;
+      aspect-ratio: 1360 / 850;
+      border-radius: 14px; overflow: hidden;
+      border: 1px solid var(--line);
+      box-shadow: 0 22px 56px rgba(0,0,0,0.3);
+      background: #0b1420;
+    }
+    .carousel-frame img {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      object-fit: cover; transition: opacity 0.5s ease; opacity: 0;
+    }
+    .carousel-frame img.active { opacity: 1; }
+    .carousel-caption { font-size: 0.84rem; color: var(--faint); min-height: 1.3em; }
+    .carousel-dots { display: flex; gap: 8px; align-items: center; }
+    .dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--faint); cursor: pointer; border: none;
+      transition: background 0.2s, transform 0.2s; padding: 0;
+    }
+    .dot.active { background: var(--accent); transform: scale(1.3); }
+
+    .get-it {
+      display: inline-block; margin-top: 4px;
+      background: var(--accent); color: #fff;
+      text-decoration: none; font-weight: 600; font-size: 0.95rem;
+      padding: 12px 22px; border-radius: 12px;
+    }
+
+    /* ── Footer ── */
+    footer {
+      text-align: center; padding: 26px 24px;
+      font-size: 0.8rem; color: var(--faint);
+      border-top: 1px solid var(--line); line-height: 1.7;
+    }
+    footer a { color: var(--faint); }
+
+    @media (max-width: 860px) {
+      .content-wrap { grid-template-columns: 1fr; gap: 44px; padding: 44px 22px; }
+      .content-right { position: static; }
+      header { padding: 44px 22px 36px; }
+    }
+  </style>
 </head>
 <body>
 
-<!-- ─── Mobile overlay menu ────────────────────────────── -->
-<div class="nav-mobile-overlay" id="mobileMenu" role="dialog" aria-modal="true" aria-label="Navigation menu">
-  <a href="#loop" onclick="closeMenu()">The Loop</a>
-  <a href="#features" onclick="closeMenu()">Features</a>
-  <a href="#screenshots" onclick="closeMenu()">Screenshots</a>
-  <a href="#" onclick="closeMenu()">Download</a>
-</div>
-
-<!-- ─── Navbar ─────────────────────────────────────────── -->
-<div class="nav-wrap">
-  <nav role="navigation" aria-label="Main navigation">
-    <a class="nav-logo" href="#" aria-label="Pharos home">
-      <img src="icon.png" alt="Pharos lighthouse icon" />
-      <span class="nav-logo-text">Pharos</span>
-    </a>
-
-    <ul class="nav-links" role="list">
-      <li><a href="#loop">The Loop</a></li>
-      <li><a href="#features">Features</a></li>
-      <li><a href="#screenshots">Screenshots</a></li>
-    </ul>
-
-    <a class="nav-cta desktop" href="#" aria-label="Download Pharos for macOS">
-      Download
-      <span class="icon-wrap" aria-hidden="true">↓</span>
-    </a>
-
-    <button class="nav-burger" id="burgerBtn" aria-label="Open navigation menu" aria-expanded="false" aria-controls="mobileMenu">
-      <span></span>
-      <span></span>
-    </button>
-  </nav>
-</div>
-
-<!-- ─── Hero ───────────────────────────────────────────── -->
-<section class="hero" aria-label="Hero">
-  <!-- Background orbs -->
-  <div class="orb orb-1" aria-hidden="true"></div>
-  <div class="orb orb-2" aria-hidden="true"></div>
-
-  <span class="hero-eyebrow" aria-label="New release">
-    <span style="width:6px;height:6px;border-radius:50%;background:#3b9eff;box-shadow:0 0 6px #3b9eff;" aria-hidden="true"></span>
-    Now Available · macOS 26
-  </span>
-
-  <!-- Lighthouse icon — double-bezel -->
-  <div class="hero-icon-wrap" aria-hidden="true">
-    <div class="hero-icon-outer">
-      <div class="hero-icon-inner">
-        <img src="icon.png" alt="" />
+  <header>
+    <div class="header-inner">
+      <img class="app-icon" src="icon.png" alt="Pharos lighthouse icon" />
+      <div class="header-text">
+        <h1>Pharos</h1>
+        <p class="tagline"><strong>Your vibe coding project manager.</strong>
+        Mission control for people running AI coding agents — Claude Code and Codex —
+        across every repo, all at once.</p>
+        <div class="platform-badges">
+          <span>macOS 26 · Apple Silicon</span>
+          <span>iPhone &amp; iPad companion</span>
+          <span>MIT licensed</span>
+        </div>
       </div>
     </div>
-  </div>
+  </header>
 
-  <h1 class="hero-title">Pharos</h1>
+  <div class="content-wrap">
 
-  <p class="hero-tagline">
-    <strong>Your vibe coding project manager.</strong><br />
-    Mission control for Claude Code &amp; Codex — across every repo, all at once.
-  </p>
-
-  <div class="hero-actions">
-    <a class="btn-primary" href="#" role="button" aria-label="Download Pharos for macOS">
-      Download for macOS
-      <span class="icon-wrap" aria-hidden="true">↓</span>
-    </a>
-    <a class="btn-ghost" href="#features" role="button">
-      Explore features
-    </a>
-  </div>
-
-  <div class="hero-badge" role="note" aria-label="System requirements">
-    <span class="dot" aria-hidden="true"></span>
-    macOS 26 · Apple Silicon
-  </div>
-</section>
-
-<!-- ─── Core Loop ───────────────────────────────────────── -->
-<section class="loop-section" id="loop" aria-labelledby="loop-heading">
-  <div class="container">
-    <div class="loop-header reveal">
-      <span class="section-eyebrow">How it works</span>
-      <h2 class="section-title" id="loop-heading">The core loop</h2>
-      <p class="section-sub">
-        Four steps from zero to agent — then back around, endlessly.
-      </p>
-    </div>
-
-    <div class="loop-row reveal">
-      <div class="loop-step">
-        <div class="loop-step-num">01</div>
-        <div class="loop-step-icon" aria-hidden="true">👁</div>
-        <div class="loop-step-title">See your projects</div>
-        <p class="loop-step-desc">Watchlist sidebar groups all your repos with live git status and commit activity at a glance.</p>
+    <div class="content-left">
+      <div>
+        <h2>Features</h2>
+        <ul class="features">
+          <li>
+            <strong>Every project in one place</strong>
+            Add local folders and GitHub repos, group them, and watch live git status
+            and commit activity at a glance.
+          </li>
+          <li>
+            <strong>One-click agent launch</strong>
+            Fire Claude Code or Codex into any repo — YOLO mode, tmux, or your
+            favourite terminal — and resume past sessions.
+          </li>
+          <li>
+            <strong>Issues wired into the agent loop</strong>
+            Priorities, labels, milestones and attachments. Starting an issue links the
+            agent session, and a progress-log update is posted when the agent finishes.
+          </li>
+          <li>
+            <strong>Mesh chat for agents</strong>
+            Shared rooms where your agents coordinate with @mentions and poke-to-wake —
+            across this Mac, paired Macs, a Linux broker, and your iPhone.
+          </li>
+          <li>
+            <strong>Your data stays yours</strong>
+            Everything lives on your own devices and servers, moving only over your own
+            SSH/Tailscale network. No hosted service, no accounts, no analytics.
+          </li>
+        </ul>
       </div>
-      <div class="loop-step">
-        <div class="loop-step-num">02</div>
-        <div class="loop-step-icon" aria-hidden="true">⚡</div>
-        <div class="loop-step-title">Launch an agent</div>
-        <p class="loop-step-desc">One ⌘K command fires Claude Code or Codex into any repo — yolo, tmux, or your favourite terminal &amp; editor.</p>
+
+      <div>
+        <h2>Get Pharos</h2>
+        <div class="support">
+          <p>Pharos for macOS ships as a notarized direct download.<br />
+          Find it on <a href="https://github.com/baixianger/pharos">GitHub</a>
+          or email <a href="mailto:crea.bai@gmail.com">crea.bai@gmail.com</a>.</p>
+        </div>
       </div>
-      <div class="loop-step">
-        <div class="loop-step-num">03</div>
-        <div class="loop-step-icon" aria-hidden="true">↺</div>
-        <div class="loop-step-title">Resume a session</div>
-        <p class="loop-step-desc">Full session browser with timestamps. One click puts you right back where the agent left off.</p>
+
+      <p class="privacy-note">Pharos runs no hosted service and collects nothing about
+      you. Read the full <a href="privacy.html">privacy policy</a>.</p>
+    </div>
+
+    <div class="content-right">
+      <div class="carousel-frame" id="carousel-screen">
+        <img src="shots/dashboard.png" alt="Pharos dashboard — all projects, issues and agents" class="active" />
+        <img src="shots/chat.png" alt="Mesh chat rooms with live agent status" />
+        <img src="shots/project.png" alt="Per-project view — actions, git status, notes" />
       </div>
-      <div class="loop-step">
-        <div class="loop-step-num">04</div>
-        <div class="loop-step-icon" aria-hidden="true">⫶</div>
-        <div class="loop-step-title">Run them in parallel</div>
-        <p class="loop-step-desc">Git worktree manager spins up isolated branches so multiple agents never step on each other.</p>
-      </div>
+      <div class="carousel-dots" id="carousel-dots"></div>
+      <span class="carousel-caption" id="carousel-caption"></span>
     </div>
+
   </div>
-</section>
 
-<!-- ─── Features Bento Grid ────────────────────────────── -->
-<section class="features-section" id="features" aria-labelledby="features-heading">
-  <div class="container">
-    <div class="features-header reveal">
-      <span class="section-eyebrow">Capabilities</span>
-      <h2 class="section-title" id="features-heading">Everything you need,<br />nothing you don't.</h2>
-    </div>
+  <footer>
+    <p>&copy; 2026 Pai &nbsp;·&nbsp; MIT License &nbsp;·&nbsp;
+    <a href="privacy.html">Privacy Policy</a> &nbsp;·&nbsp;
+    <a href="https://github.com/baixianger/pharos">GitHub</a></p>
+  </footer>
 
-    <div class="bento" role="list">
+  <script>
+    const slides = Array.from(document.querySelectorAll('#carousel-screen img'));
+    const dotsEl = document.getElementById('carousel-dots');
+    const captionEl = document.getElementById('carousel-caption');
+    let current = 0, timer;
 
-      <!-- 1. Sidebar watchlist — wide card -->
-      <article class="bento-card bento-c8 glow-blue reveal reveal-d1" role="listitem">
-        <div class="bento-inner">
-          <div class="bento-card-eyebrow">Watchlist</div>
-          <h3 class="bento-card-title">Sidebar project groups</h3>
-          <p class="bento-card-desc">Organise repos into named groups. Git status indicators and commit-activity sparklines update live.</p>
+    slides.forEach((_, i) => {
+      const btn = document.createElement('button');
+      btn.className = 'dot' + (i === 0 ? ' active' : '');
+      btn.setAttribute('aria-label', 'Slide ' + (i + 1));
+      btn.onclick = () => goTo(i);
+      dotsEl.appendChild(btn);
+    });
 
-          <div class="sidebar-mockup" aria-label="Sidebar preview" aria-hidden="true">
-            <div class="sidebar-group">Work</div>
-            <div class="sidebar-item active">
-              <span class="sidebar-dot dot-green"></span> pharos
-            </div>
-            <div class="sidebar-item">
-              <span class="sidebar-dot dot-yellow"></span> acme-api
-            </div>
-            <div class="sidebar-group">Personal</div>
-            <div class="sidebar-item">
-              <span class="sidebar-dot dot-blue"></span> brainstorm
-            </div>
-            <div class="sidebar-item">
-              <span class="sidebar-dot dot-muted"></span> dotfiles
-            </div>
-            <div class="sidebar-item">
-              <span class="sidebar-dot dot-muted"></span> homelab
-            </div>
-          </div>
-        </div>
-      </article>
-
-      <!-- 2. Session browser — narrow card -->
-      <article class="bento-card bento-c4 glow-teal reveal reveal-d2" role="listitem">
-        <div class="bento-inner">
-          <div class="bento-card-eyebrow">Session Browser</div>
-          <h3 class="bento-card-title">One-click resume</h3>
-          <p class="bento-card-desc">Every agent session is catalogued. Resume any past conversation instantly.</p>
-
-          <div class="session-list" aria-label="Session list" aria-hidden="true">
-            <div class="session-item">
-              <span class="session-agent-badge badge-claude">Claude</span>
-              <div class="session-meta">
-                <div class="session-name">Refactor auth module</div>
-                <div class="session-time">2h ago · pharos</div>
-              </div>
-              <span class="session-resume">Resume →</span>
-            </div>
-            <div class="session-item">
-              <span class="session-agent-badge badge-codex">Codex</span>
-              <div class="session-meta">
-                <div class="session-name">Fix flaky tests</div>
-                <div class="session-time">Yesterday · acme-api</div>
-              </div>
-              <span class="session-resume">Resume →</span>
-            </div>
-            <div class="session-item">
-              <span class="session-agent-badge badge-claude">Claude</span>
-              <div class="session-meta">
-                <div class="session-name">Add MCP server</div>
-                <div class="session-time">2d ago · brainstorm</div>
-              </div>
-              <span class="session-resume">Resume →</span>
-            </div>
-          </div>
-        </div>
-      </article>
-
-      <!-- 3. Git worktrees — medium card -->
-      <article class="bento-card bento-c5 glow-teal reveal reveal-d1" role="listitem">
-        <div class="bento-inner">
-          <div class="bento-card-eyebrow">Worktrees</div>
-          <h3 class="bento-card-title">Agents that never collide</h3>
-          <p class="bento-card-desc">Spin up isolated git worktrees per agent. Each branch is its own sandbox.</p>
-
-          <div class="worktree-visual" aria-label="Worktree overview" aria-hidden="true">
-            <div class="wt-branch active">
-              <span style="font-size:0.65rem;opacity:0.5">⎇</span>
-              feat/new-sidebar
-              <span class="wt-badge running">● Running</span>
-            </div>
-            <div class="wt-branch active">
-              <span style="font-size:0.65rem;opacity:0.5">⎇</span>
-              feat/mcp-server
-              <span class="wt-badge running">● Running</span>
-            </div>
-            <div class="wt-branch">
-              <span style="font-size:0.65rem;opacity:0.5">⎇</span>
-              chore/cleanup
-              <span class="wt-badge idle">Idle</span>
-            </div>
-          </div>
-        </div>
-      </article>
-
-      <!-- 4. Launch modes — medium card -->
-      <article class="bento-card bento-c7 glow-blue reveal reveal-d2" role="listitem">
-        <div class="bento-inner">
-          <div class="bento-card-eyebrow">Launch Modes</div>
-          <h3 class="bento-card-title">Your workflow, your call</h3>
-          <p class="bento-card-desc">Fire agents into yolo mode, tmux panes, iTerm2, Ghostty, Cursor — wherever you live.</p>
-
-          <div class="launch-strip" aria-label="Available launch modes" aria-hidden="true">
-            <span class="launch-pill active">⚡ Yolo</span>
-            <span class="launch-pill active">⬛ tmux</span>
-            <span class="launch-pill">🖥 iTerm2</span>
-            <span class="launch-pill">👻 Ghostty</span>
-            <span class="launch-pill">✦ Cursor</span>
-            <span class="launch-pill">⌥ VS Code</span>
-          </div>
-        </div>
-      </article>
-
-      <!-- 5. Command palette — narrow tall card -->
-      <article class="bento-card bento-c3 glow-purple reveal reveal-d3" role="listitem">
-        <div class="bento-inner">
-          <div class="bento-card-eyebrow">Palette</div>
-          <h3 class="bento-card-title">⌘K everything</h3>
-          <p class="bento-card-desc">Global command palette &amp; menu-bar quick launch. Never leave the keyboard.</p>
-
-          <div class="kbd-visual" aria-hidden="true">
-            <span class="kbd">⌘</span>
-            <span style="font-size:0.7rem;color:var(--text-dim)">+</span>
-            <span class="kbd">K</span>
-          </div>
-        </div>
-      </article>
-
-      <!-- 6. Heatmap — wide card -->
-      <article class="bento-card bento-c9 glow-blue reveal reveal-d1" role="listitem">
-        <div class="bento-inner">
-          <div class="bento-card-eyebrow">Activity</div>
-          <h3 class="bento-card-title">Commit heatmap &amp; git drift</h3>
-          <p class="bento-card-desc">Visual commit-activity heatmap per repo. Spot which projects have been sleeping.</p>
-
-          <div class="heatmap-visual" id="heatmap" aria-label="Commit activity heatmap" aria-hidden="true">
-            <!-- generated by JS -->
-          </div>
-        </div>
-      </article>
-
-      <!-- 7. MCP server — card -->
-      <article class="bento-card bento-c6 glow-teal reveal reveal-d2" role="listitem">
-        <div class="bento-inner">
-          <div class="bento-card-eyebrow">MCP Server</div>
-          <h3 class="bento-card-title">Let other agents drive Pharos</h3>
-          <p class="bento-card-desc">Expose Pharos as an MCP server. Your orchestrator agents can launch and inspect sessions programmatically.</p>
-
-          <div class="mcp-visual" aria-label="MCP topology diagram" aria-hidden="true">
-            <div class="mcp-node center">Pharos MCP</div>
-            <div class="mcp-line"></div>
-            <div class="mcp-nodes-row">
-              <div class="mcp-node leaf">Claude Code</div>
-              <div class="mcp-node leaf">Codex</div>
-              <div class="mcp-node leaf">Custom Agent</div>
-            </div>
-          </div>
-        </div>
-      </article>
-
-      <!-- 8. Multi-machine git drift — card -->
-      <article class="bento-card bento-c6 glow-purple reveal reveal-d3" role="listitem">
-        <div class="bento-inner">
-          <div class="bento-card-eyebrow">SSH Sync</div>
-          <h3 class="bento-card-title">Multi-machine git drift</h3>
-          <p class="bento-card-desc">See unpushed commits and branch divergence across all your machines over SSH — without a cloud backend.</p>
-
-          <div class="worktree-visual" style="margin-top:1rem;" aria-hidden="true">
-            <div class="wt-branch active">
-              <span style="font-size:0.65rem;opacity:0.5">💻</span>
-              MacBook Pro · main ↑2
-              <span class="wt-badge running">In sync</span>
-            </div>
-            <div class="wt-branch">
-              <span style="font-size:0.65rem;opacity:0.5">🖥</span>
-              Mac Studio · main ↓4
-              <span class="wt-badge idle">Behind</span>
-            </div>
-          </div>
-        </div>
-      </article>
-
-    </div><!-- /bento -->
-  </div>
-</section>
-
-<!-- ─── Screenshots ─────────────────────────────────────── -->
-<section class="shots-section" id="screenshots" aria-labelledby="shots-heading">
-  <div class="container">
-    <div class="shots-header reveal">
-      <span class="section-eyebrow">Preview</span>
-      <h2 class="section-title" id="shots-heading">Built for macOS 26,<br />feels right at home.</h2>
-      <p class="section-sub" style="margin-top:0.75rem;">
-        SwiftUI Liquid Glass. Designed to disappear into your workflow.
-      </p>
-    </div>
-
-    <div class="shots-row">
-
-      <!-- Screenshot 1 -->
-      <!-- drop real screenshot PNG here: site/shots/x1.png -->
-      <figure class="shot-outer reveal reveal-d1">
-        <div class="shot-inner">
-          <div class="shot-window">
-            <div class="shot-chrome" aria-hidden="true">
-              <span class="shot-chrome-dot dot-red"></span>
-              <span class="shot-chrome-dot dot-amber"></span>
-              <span class="shot-chrome-dot dot-go"></span>
-            </div>
-            <div class="shot-body">
-              <div>
-                <div style="font-size:1.5rem;margin-bottom:0.5rem;" aria-hidden="true">👁</div>
-                Project Watchlist
-                <div style="margin-top:0.35rem;font-size:0.65rem;opacity:0.4;">site/shots/x1.png</div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <figcaption class="shot-label">Project watchlist &amp; git status</figcaption>
-      </figure>
-
-      <!-- Screenshot 2 -->
-      <!-- drop real screenshot PNG here: site/shots/x2.png -->
-      <figure class="shot-outer reveal reveal-d2">
-        <div class="shot-inner">
-          <div class="shot-window">
-            <div class="shot-chrome" aria-hidden="true">
-              <span class="shot-chrome-dot dot-red"></span>
-              <span class="shot-chrome-dot dot-amber"></span>
-              <span class="shot-chrome-dot dot-go"></span>
-            </div>
-            <div class="shot-body">
-              <div>
-                <div style="font-size:1.5rem;margin-bottom:0.5rem;" aria-hidden="true">⌘</div>
-                Command Palette
-                <div style="margin-top:0.35rem;font-size:0.65rem;opacity:0.4;">site/shots/x2.png</div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <figcaption class="shot-label">⌘K command palette</figcaption>
-      </figure>
-
-      <!-- Screenshot 3 -->
-      <!-- drop real screenshot PNG here: site/shots/x3.png -->
-      <figure class="shot-outer reveal reveal-d3">
-        <div class="shot-inner">
-          <div class="shot-window">
-            <div class="shot-chrome" aria-hidden="true">
-              <span class="shot-chrome-dot dot-red"></span>
-              <span class="shot-chrome-dot dot-amber"></span>
-              <span class="shot-chrome-dot dot-go"></span>
-            </div>
-            <div class="shot-body">
-              <div>
-                <div style="font-size:1.5rem;margin-bottom:0.5rem;" aria-hidden="true">⫶</div>
-                Parallel Agents
-                <div style="margin-top:0.35rem;font-size:0.65rem;opacity:0.4;">site/shots/x3.png</div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <figcaption class="shot-label">Parallel agents via worktrees</figcaption>
-      </figure>
-
-    </div>
-  </div>
-</section>
-
-<!-- ─── Footer ─────────────────────────────────────────── -->
-<footer>
-  <div class="container">
-    <div class="footer-inner">
-      <div class="footer-brand">
-        <img src="icon.png" alt="Pharos icon" />
-        <span>Pharos</span>
-      </div>
-      <p class="footer-copy">© 2026 Pai · Built with SwiftUI + Liquid Glass</p>
-      <a class="footer-link" href="https://github.com/pai" aria-label="GitHub (placeholder link)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>
-        </svg>
-        GitHub
-      </a>
-    </div>
-  </div>
-</footer>
-
-<!-- ─── Vanilla JS ───────────────────────────────────────── -->
-<script>
-  // ── Hamburger / mobile menu ────────────────────────────
-  const burger = document.getElementById('burgerBtn');
-  const menu   = document.getElementById('mobileMenu');
-
-  function openMenu() {
-    burger.classList.add('open');
-    menu.classList.add('open');
-    burger.setAttribute('aria-expanded', 'true');
-    document.body.style.overflow = 'hidden';
-  }
-
-  function closeMenu() {
-    burger.classList.remove('open');
-    menu.classList.remove('open');
-    burger.setAttribute('aria-expanded', 'false');
-    document.body.style.overflow = '';
-  }
-
-  burger.addEventListener('click', () => {
-    const isOpen = menu.classList.contains('open');
-    isOpen ? closeMenu() : openMenu();
-  });
-
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeMenu();
-  });
-
-  // ── Scroll-reveal with IntersectionObserver ─────────────
-  const revealEls = document.querySelectorAll('.reveal');
-  const observer  = new IntersectionObserver(
-    (entries) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting) {
-          entry.target.classList.add('visible');
-          observer.unobserve(entry.target);
-        }
-      });
-    },
-    { threshold: 0.08, rootMargin: '0px 0px -40px 0px' }
-  );
-  revealEls.forEach((el) => observer.observe(el));
-
-  // ── Heatmap generation ─────────────────────────────────
-  (function buildHeatmap() {
-    const container = document.getElementById('heatmap');
-    if (!container) return;
-
-    // 7 rows × 24 cols = 168 cells
-    const weights = [0, 0, 0, 0, 1, 1, 1, 2, 2, 3, 4]; // skewed to sparse
-    const classes = ['', 'h1', 'h2', 'h3', 'h4'];
-
-    const totalCells = 7 * 24;
-    const frag = document.createDocumentFragment();
-
-    for (let i = 0; i < totalCells; i++) {
-      const cell = document.createElement('div');
-      cell.className = 'heatmap-cell';
-      // add some deterministic "realistic" pattern
-      const seed = ((i * 2654435761) ^ (i >> 5)) >>> 0;
-      const pick = weights[seed % weights.length];
-      if (pick > 0) cell.classList.add(classes[pick]);
-      frag.appendChild(cell);
+    function render() {
+      captionEl.textContent = slides[current].alt;
     }
-    container.appendChild(frag);
-  })();
-</script>
 
+    function goTo(n) {
+      slides[current].classList.remove('active');
+      dotsEl.children[current].classList.remove('active');
+      current = (n + slides.length) % slides.length;
+      slides[current].classList.add('active');
+      dotsEl.children[current].classList.add('active');
+      render();
+      resetTimer();
+    }
+
+    function resetTimer() {
+      clearInterval(timer);
+      timer = setInterval(() => goTo(current + 1), 3600);
+    }
+
+    render();
+    resetTimer();
+  </script>
 </body>
 </html>

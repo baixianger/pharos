@@ -107,7 +107,7 @@ struct ConversationView: View {
             // scrolled up. ScrollViewReader works in untransformed layout space,
             // where the newest cell is the layout-top (offset 0), so anchor .top.
             .onChange(of: scrollBottomTick) {
-                guard let last = store.messages.last?.id else { return }
+                guard let last = store.messages.last?.stableID else { return }
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
                     proxy.scrollTo(last, anchor: .top)
                 }
@@ -133,9 +133,9 @@ struct ConversationView: View {
         var cells: [TranscriptCell] = []
         for (index, message) in store.messages.enumerated() {
             if startsNewDay(at: index) {
-                cells.append(.divider(id: "day-\(message.id)", date: message.date))
+                cells.append(.divider(id: "day-\(message.stableID)", date: message.date))
             }
-            cells.append(.message(id: message.id, message: message,
+            cells.append(.message(id: message.stableID, message: message,
                                   showsHeader: startsMessageGroup(at: index)))
         }
         return cells
@@ -149,7 +149,7 @@ struct ConversationView: View {
         case .message(let id, let message, let showsHeader):
             MessageRow(
                 message: message,
-                member: store.members[message.from],
+                member: store.member(for: message),
                 showsHeader: showsHeader,
                 onReply: {
                     replyingTo = message
@@ -337,9 +337,8 @@ struct ConversationView: View {
     /// be poked, so surfacing it in the mention strip is misleading.
     private var availableMembers: [MeshMember] {
         guard let room = store.rooms.first(where: { $0.name == store.selectedRoom }) else { return [] }
-        return room.members
-            .filter { $0 != "human" }
-            .compactMap { store.members[$0] }
+        return store.members(in: room)
+            .filter { $0.nick != "human" }
             .filter { ($0.state.flatMap(MeshSessionState.init(rawValue:))) != .gone }
             .sorted { $0.nick.localizedCaseInsensitiveCompare($1.nick) == .orderedAscending }
     }
@@ -462,7 +461,10 @@ struct ConversationView: View {
         guard index > 0 else { return true }
         let current = store.messages[index]
         let previous = store.messages[index - 1]
-        return current.from != previous.from || current.date.timeIntervalSince(previous.date) > 5 * 60
+        let currentAuthor = current.authorMemberID ?? "legacy:\(current.from)"
+        let previousAuthor = previous.authorMemberID ?? "legacy:\(previous.from)"
+        return currentAuthor != previousAuthor ||
+            current.date.timeIntervalSince(previous.date) > 5 * 60
     }
 
     private func startsNewDay(at index: Int) -> Bool {
@@ -665,7 +667,7 @@ struct ManageRoomSheet: View {
 
     private var members: [MeshMember] {
         guard let room = store.rooms.first(where: { $0.name == roomName }) else { return [] }
-        return room.members.compactMap { store.members[$0] }
+        return store.members(in: room)
     }
 
     var body: some View {
@@ -722,7 +724,9 @@ struct ManageRoomSheet: View {
                     }
                     .disabled(busy)
                 } footer: {
-                    Text("Deleting removes the room and its membership for everyone. Message history is retained by the Broker.")
+                    Text(PharosMeshRuntimeMode.usesDistributedMesh
+                         ? "Deleting replicates the room removal to every trusted device. Existing signed message events remain in replica history."
+                         : "Deleting removes the room and its membership for everyone. Message history is retained by the Broker.")
                 }
 
                 if let error = store.error {

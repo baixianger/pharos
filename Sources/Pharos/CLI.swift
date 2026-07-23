@@ -35,11 +35,33 @@ enum CLI {
             printUsage(); return 0
         case "version", "--version", "-v":
             print("pharos \(version)"); return 0
+        case "identity" where rest.first == "bootstrap":
+            do {
+                let replica = try MeshLocalReplica.openDefault(headless: false)
+                print("identity ready\t\(replica.identity.deviceID.rawValue.uuidString)")
+                return 0
+            } catch {
+                FileHandle.standardError.write(
+                    Data("error: identity bootstrap failed: \(error)\n".utf8)
+                )
+                return 1
+            }
         default:
             break
         }
 
         let p = parse(rest)
+
+        if PharosMeshRuntimeMode.usesDistributedMesh,
+           ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] == nil {
+            if DistributedRegistryCLI.handles(command, parsed: p) {
+                return await DistributedRegistryCLI.run(command, parsed: p)
+            }
+            if ["launch", "resume", "playbook", "open", "editor", "reveal", "path", "git", "worktrees", "sessions"].contains(command)
+                || (command == "issue" && p.arg(0) == "start") {
+                await DistributedRegistryCLI.refreshLocalCache()
+            }
+        }
 
         do {
             switch command {
@@ -182,9 +204,76 @@ enum CLI {
     /// room/nick/text), not the flag parser. Non-blocking: `say` delivers into the
     /// target's mailbox, the Stop hook surfaces it; `recv` drains without blocking.
     private static func runMesh(_ args: [String]) async -> Int32 {
-        guard let sub = args.first else { print(meshUsage); return 2 }
+        let legacyBrokerEnabled = ProcessInfo.processInfo.environment["PHAROS_LEGACY_BROKER"] == "1"
+        guard let sub = args.first else {
+            print(legacyBrokerEnabled ? legacyMeshUsage : distributedMeshUsage)
+            return 0
+        }
+        if !legacyBrokerEnabled, ["help", "--help", "-h"].contains(sub) {
+            print(distributedMeshUsage)
+            return 0
+        }
+        if sub == "pair", !legacyBrokerEnabled {
+            let operation = {
+                await DistributedPairCLI.run(Array(args.dropFirst()))
+            }
+            if MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+                meshArguments: args
+            ) {
+                return await MacMeshRuntimeCoordinator.run(operation)
+            }
+            return await operation()
+        }
+        if DistributedAgentCLI.commands.contains(sub), !legacyBrokerEnabled {
+            var distributedArgs = args
+            if ["join", "send"].contains(sub),
+               !args.contains("--session"), !args.contains("--member"),
+               let sessionID = DistributedHookCLI.currentSessionID()
+                    ?? MeshHooks.currentSessionID() {
+                distributedArgs += ["--member", sessionID]
+                if sub == "join" {
+                    distributedArgs.removeLast(2)
+                    distributedArgs += ["--session", sessionID]
+                }
+            }
+            let operation = {
+                await DistributedAgentCLI.run(distributedArgs)
+            }
+            if MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+                meshArguments: distributedArgs
+            ) {
+                return await MacMeshRuntimeCoordinator.run(operation)
+            }
+            return await operation()
+        }
+        if !legacyBrokerEnabled, sub == "unread", args.contains("--hook-stop") {
+            return await DistributedHookCLI.run("stop", args: args)
+        }
+        if !legacyBrokerEnabled, sub == "unread", args.contains("--hook-post-tool") {
+            return await DistributedHookCLI.run("post-tool", args: args)
+        }
+        if !legacyBrokerEnabled, sub == "mark", args.contains("--hook") {
+            return await DistributedHookCLI.run("mark", args: args)
+        }
+        if !legacyBrokerEnabled, sub == "session-start" {
+            return await DistributedHookCLI.run("session-start", args: args)
+        }
+        if !legacyBrokerEnabled, sub == "install-hooks" {
+            return MeshHooks.installHooks(Array(args.dropFirst()))
+        }
+        if !legacyBrokerEnabled, sub == "spawn" {
+            return await runMeshSpawn(Array(args.dropFirst()))
+        }
+        if !legacyBrokerEnabled {
+            print("error: '\(sub)' belongs to the retired Broker/Node CLI and is unavailable in distributed mode")
+            print(distributedMeshUsage)
+            return 1
+        }
         let a = Array(args.dropFirst())
-        func report(_ r: MeshResponse) -> Int32 { print(r.ok ? "ok" : "error: \(r.error ?? "?")"); return r.ok ? 0 : 1 }
+        func report(_ r: MeshResponse) -> Int32 {
+            print(r.ok ? (r.note ?? "ok") : "error: \(r.error ?? "?")")
+            return r.ok ? 0 : 1
+        }
         func printMessages(_ messages: [MeshMsg], empty: String) {
             if messages.isEmpty { print(empty) }
             for message in messages {
@@ -233,14 +322,16 @@ enum CLI {
             var kind: String?
             if let i = a.firstIndex(of: "--kind"), i + 1 < a.count { kind = a[i + 1] }
             kind = kind ?? detectAgentKind(env)
-            let r = MeshClient.send(MeshRequest(cmd: "join", room: a[0], nick: a[1],
-                                                project: FileManager.default.currentDirectoryPath,
-                                                session: session,
-                                                host: HostIdentity.current,
-                                                tmuxPane: pane,
-                                                tmuxSocket: socket,
-                                                kind: kind,
-                                                tailscaleIP: detectTailscaleIP()))
+            var request = MeshRequest(cmd: "join", room: a[0], nick: a[1],
+                                      project: FileManager.default.currentDirectoryPath,
+                                      session: session,
+                                      host: HostIdentity.current,
+                                      tmuxPane: pane,
+                                      tmuxSocket: socket,
+                                      kind: kind,
+                                      tailscaleIP: detectTailscaleIP())
+            request.nodeID = MeshNodeIdentity.current
+            let r = MeshClient.send(request)
             guard r.ok else { return report(r) }
             print("joined \(a[0]) as \(a[1])")
             let history = r.messages ?? []
@@ -383,44 +474,7 @@ enum CLI {
         case "mark":
             return MeshHooks.mark(a)                // Claude Code state hooks (see MeshHooks)
         case "spawn":
-            // Spawn an agent into a room + confirm it joined (same path the GUI
-            // "add member" uses), locally or on the paired Mac over SSH.
-            guard a.count >= 2 else {
-                print("usage: pharos mesh spawn <room> <nick> [claude|codex] [--host <ssh>] [--cwd <dir> | --project <name>]")
-                return 2
-            }
-            var kind = AgentKind.claude
-            var host: String?
-            var cwd: String?
-            var projectName: String?
-            var i = 2
-            while i < a.count {
-                switch a[i] {
-                case "--host":
-                    guard i + 1 < a.count else { print("error: --host needs an SSH alias or IP"); return 2 }
-                    host = a[i + 1]; i += 2
-                case "--cwd", "--dir":
-                    guard i + 1 < a.count else { print("error: --cwd needs a directory path"); return 2 }
-                    cwd = a[i + 1]; i += 2
-                case "--project":
-                    guard i + 1 < a.count else { print("error: --project needs a project name"); return 2 }
-                    projectName = a[i + 1]; i += 2
-                default:
-                    if let parsed = AgentKind(rawValue: a[i]) { kind = parsed; i += 1 }
-                    else { print("error: expected claude, codex, --host, --cwd, or --project; got '\(a[i])'"); return 2 }
-                }
-            }
-            if cwd != nil, projectName != nil {
-                print("error: use either --cwd or --project, not both"); return 2
-            }
-            let workDir: MeshSpawn.WorkDir = cwd.map { .path($0) } ?? projectName.map { .project($0) } ?? .scratch
-            var final = MeshSpawn.Phase.failed
-            await MeshSpawn.spawn(room: a[0], nick: a[1], kind: kind,
-                                 host: host, workDir: workDir) { p in
-                print("[\(p.phase.rawValue)] \(p.detail)")
-                final = p.phase
-            }
-            return final == .joined ? 0 : 1
+            return await runMeshSpawn(a)
         case "poke":
             guard a.count == 2 else { print("usage: pharos mesh poke <room> <nick>"); return 2 }
             let response = MeshClient.send(MeshRequest(cmd: "poke", room: a[0], nick: a[1]))
@@ -434,8 +488,53 @@ enum CLI {
         case "install-hooks":
             return MeshHooks.installHooks(a)
         default:
-            print(meshUsage); return 2
+            print(legacyMeshUsage); return 2
         }
+    }
+
+    /// Shared local/SSH spawn workflow for both distributed product mode and
+    /// the explicit legacy diagnostic. Confirmation follows the active Mesh
+    /// runtime, so distributed mode reads replicated membership only.
+    private static func runMeshSpawn(_ args: [String]) async -> Int32 {
+        guard args.count >= 2 else {
+            print("usage: pharos mesh spawn <room> <nick> [claude|codex] [--host <ssh>] [--cwd <dir> | --project <name>]")
+            return 2
+        }
+        var kind = AgentKind.claude
+        var host: String?
+        var cwd: String?
+        var projectName: String?
+        var i = 2
+        while i < args.count {
+            switch args[i] {
+            case "--host":
+                guard i + 1 < args.count else { print("error: --host needs an SSH alias or IP"); return 2 }
+                host = args[i + 1]; i += 2
+            case "--cwd", "--dir":
+                guard i + 1 < args.count else { print("error: --cwd needs a directory path"); return 2 }
+                cwd = args[i + 1]; i += 2
+            case "--project":
+                guard i + 1 < args.count else { print("error: --project needs a project name"); return 2 }
+                projectName = args[i + 1]; i += 2
+            default:
+                if let parsed = AgentKind(rawValue: args[i]) { kind = parsed; i += 1 }
+                else { print("error: expected claude, codex, --host, --cwd, or --project; got '\(args[i])'"); return 2 }
+            }
+        }
+        if cwd != nil, projectName != nil {
+            print("error: use either --cwd or --project, not both"); return 2
+        }
+        let workDir: MeshSpawn.WorkDir = cwd.map { .path($0) }
+            ?? projectName.map { .project($0) } ?? .scratch
+        var final = MeshSpawn.Phase.failed
+        await MeshSpawn.spawn(
+            room: args[0], nick: args[1], kind: kind,
+            host: host, workDir: workDir
+        ) { progress in
+            print("[\(progress.phase.rawValue)] \(progress.detail)")
+            final = progress.phase
+        }
+        return final == .joined ? 0 : 1
     }
 
     /// Which coding agent is this CLI running inside? Claude Code exports
@@ -486,8 +585,38 @@ enum CLI {
         }
     }
 
-    private static let meshUsage = """
-    pharos mesh — agent chat room
+    private static let distributedMeshUsage = """
+    pharos mesh — distributed, local-first agent chat
+      create <room>                       create a replicated room
+      list                                list replicated rooms + members
+      join <room> <nick> --session <id>   join with this agent session
+      claim --member <session-id>         bind this exact tmux pane to an existing agent
+      history <room> [--limit N]          show replicated history
+      send <text> [@n …] [--room ROOM] [--member ID] [--reply ID] [--attach FILE]
+      say <room> <nick> <text> [@n …] [--reply ID] [--attach FILE]
+      recv [<nick>] --member <id>          drain this session's replicated unread messages
+      who                                 list replicated room membership
+      attachment put|get …                store/read content-addressed attachments
+      pair invite|accept|redeem|list|revoke manage signed trusted-device pairing
+      leave <room> <nick|member-id>       leave replicated room membership
+      stop <room> <nick|member-id>        send a signed stop to the owning Host
+      attach-local <member-id>            SSH-only: attach via Host-private tmux binding
+      rename-member <room> <member> <new> rename replicated membership
+      rename <room> <new-name>            rename a replicated room
+      delete <room>                       delete a replicated room
+      unread --hook-stop                  structured Claude Stop hook
+      unread --hook-post-tool             structured Claude PostToolUse hook
+      mark --hook                         structured lifecycle hook
+      session-start [--silent]            record structured session identity
+      install-hooks [--project DIR|--user|--codex]
+      spawn <room> <nick> [claude|codex] [--host SSH] [--cwd DIR|--project NAME]
+
+    Pair devices from Pharos Settings. Host control is signed and identity-addressed;
+    there is no Broker endpoint or always-on legacy Node.
+    """
+
+    private static let legacyMeshUsage = """
+    pharos mesh — legacy Broker agent chat (rollback only)
       create <room>                       create a room
       list                                list rooms + members
       join   <room> <nick> [--session <id>]   register this pane under a room-local alias
@@ -736,7 +865,10 @@ enum CLI {
 
     // MARK: Misc
 
-    private static var version: String { "0.8.0" }
+    private static var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+            as? String ?? "2.0.0"
+    }
 
     private static func prettyJSON(_ obj: Any) -> String {
         guard
@@ -809,13 +941,14 @@ enum CLI {
           trash restore <id>           Restore a soft-deleted item
           trash empty                  Permanently purge the Trash
 
-        MULTI-MACHINE (Broker-owned project data; paths stay on each Host)
+        MULTI-MACHINE (distributed project data; paths stay on each device)
           host                         Show this machine's host key
           path <project>               Show THIS Host's local folder
           path <project> <path>        Set THIS machine's local folder for a project
           path <project> --clear       Forget this machine's local folder
 
         OTHER
+          identity bootstrap           Initialize the signed Keychain identity mirror
           help, version
 
         Add --json to any READ command for machine-readable output.

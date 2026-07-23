@@ -429,6 +429,7 @@ enum MeshNode {
     }
 
     static func owns(_ member: MeshMemberInfo) -> Bool {
+        if let owner = member.nodeID, !owner.isEmpty { return owner == nodeID }
         if let remoteIP = member.tailscaleIP, !remoteIP.isEmpty,
            let localIP = tailscaleIP, !localIP.isEmpty {
             return remoteIP == localIP
@@ -482,17 +483,7 @@ enum MeshNode {
         return value.isEmpty ? "this-host" : value
     }
 
-    private static let nodeID: String = {
-        let directory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".pharos", isDirectory: true)
-        let file = directory.appendingPathComponent("mesh-node-id")
-        if let value = try? String(contentsOf: file, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty { return value }
-        let value = UUID().uuidString.lowercased()
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try? Data((value + "\n").utf8).write(to: file, options: .atomic)
-        return value
-    }()
+    private static let nodeID = MeshNodeIdentity.current
 
     /// Cached: the getter is consulted on every heartbeat and every ownership
     /// check, and the underlying probe shells out to the tailscale CLI. The

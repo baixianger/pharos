@@ -153,66 +153,34 @@ private struct ProjectsSettingsTab: View {
 
 private struct MachinesSettingsTab: View {
     @Environment(ProjectStore.self) private var store
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @State private var brokerStatus: BrokerConnectionStatus = .unchecked
     @State private var advertisedEndpoint: String?
     @State private var showsPairingAssistant = false
+    @State private var showsJoinMeshAssistant = false
+    @State private var showsLeaveOptions = false
+    @State private var deviceToRevoke: MeshPairedDevice?
+    @State private var revokeError: String?
+    @State private var lifecycleError: String?
 
     var body: some View {
         @Bindable var store = store
         Form {
-            Section("Project data") {
-                registrySyncStatusView
-                LabeledContent("Offline cache") {
-                    Text(store.dataDirectoryPath.replacingOccurrences(
-                        of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .lineLimit(1).truncationMode(.middle)
-                }
-                LabeledContent("This host") {
-                    Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
-                }
-                Button("Sync now") { store.syncRegistryNow() }
-                    .controlSize(.small)
-                Text("The Mesh Broker is the single source of truth for projects, issues, logs, chat, and attachments. This Mac keeps only an offline cache and Host-specific settings; iCloud is no longer used for live synchronization.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Section("Mesh Broker") {
-                brokerStatusView
-                Toggle("Launch Mesh at Login", isOn: $store.launchMeshAtLogin)
-                    .onChange(of: store.launchMeshAtLogin) { _, _ in
-                        reconcileLoginServices()
-                    }
-                Text(store.isMeshHub
-                     ? "Keeps this Mac's Broker and Host node running after login, independently of the Pharos app."
-                     : "Keeps this Mac's Host node connected to the Broker after login, independently of the Pharos app.")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Text(brokerTarget)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-                    Spacer()
-                    Button("Test again") { Task { await checkBroker() } }
-                        .controlSize(.small)
-                        .disabled(brokerStatus.isChecking || brokerTargetIsInvalid)
-                }
-                Button("Pair iPhone…", systemImage: "qrcode") {
-                    showsPairingAssistant = true
-                }
-                .disabled(advertisedEndpoint == nil || brokerStatus.isChecking)
-                Text("The Broker coordinates rooms, messages, presence, replies, and attachments. It does not execute agent commands; execution machines are configured under Hosts.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            if distributedMesh.isProductModeEnabled {
+                distributedProjectDataSection
+                distributedDevicesSection
+            } else {
+                legacyProjectDataSection
+                legacyBrokerSection
             }
             HostsSettingsSection()
         }
         .formStyle(.grouped)
         .task(id: store.meshServerEndpoint) {
+            if distributedMesh.isProductModeEnabled {
+                store.syncRegistryNow()
+                return
+            }
             let configuredEndpoint = store.validMeshServerEndpoint
             advertisedEndpoint = await Task.detached {
                 if let configuredEndpoint { return configuredEndpoint }
@@ -223,10 +191,283 @@ private struct MachinesSettingsTab: View {
             if !brokerTargetIsInvalid { store.syncRegistryNow() }
         }
         .sheet(isPresented: $showsPairingAssistant) {
-            if let advertisedEndpoint {
+            if distributedMesh.isProductModeEnabled {
+                PairDeviceSheet(endpoint: "")
+            } else if let advertisedEndpoint {
                 PairDeviceSheet(endpoint: advertisedEndpoint)
             }
         }
+        .sheet(isPresented: $showsJoinMeshAssistant) {
+            JoinMeshSheet().environment(distributedMesh)
+        }
+        .alert(
+            "Remove trusted device?",
+            isPresented: Binding(
+                get: { deviceToRevoke != nil },
+                set: { if !$0 { deviceToRevoke = nil } }
+            ),
+            presenting: deviceToRevoke
+        ) { device in
+            Button("Cancel", role: .cancel) { deviceToRevoke = nil }
+            Button("Remove", role: .destructive) {
+                deviceToRevoke = nil
+                Task {
+                    do { try await distributedMesh.revokeDevice(device) }
+                    catch { revokeError = error.localizedDescription }
+                }
+            }
+        } message: { device in
+            Text("\(device.descriptor.displayName) will immediately lose access after the signed membership update reaches your other devices. Use this when a device is lost or being replaced.")
+        }
+        .confirmationDialog(
+            "Leave this personal Mesh?",
+            isPresented: $showsLeaveOptions,
+            titleVisibility: .visible
+        ) {
+            Button("Remove this Mac from Mesh", role: .destructive) {
+                Task {
+                    do {
+                        _ = try await distributedMesh.leaveCurrentMesh(
+                            displayName: Host.current().localizedName ?? "This Mac"
+                        )
+                    } catch {
+                        lifecycleError = error.localizedDescription
+                    }
+                }
+            }
+            Button("Disconnect and archive locally") {
+                Task {
+                    do { _ = try await distributedMesh.archiveCurrentMesh() }
+                    catch { lifecycleError = error.localizedDescription }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Leaving publishes a signed self-removal and requires another online Mesh admin device. Disconnecting only archives this Mac locally; revoke it later from another admin device.")
+        }
+    }
+
+    @ViewBuilder
+    private var distributedProjectDataSection: some View {
+        Section("Replicated data") {
+            registrySyncStatusView
+            LabeledContent("Local replica") {
+                Text(store.dataDirectoryPath.replacingOccurrences(
+                    of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            LabeledContent("This host") {
+                Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
+            }
+            Button("Sync now") {
+                Task {
+                    _ = await distributedMesh.synchronizeOnce()
+                    store.syncRegistryNow()
+                }
+            }
+            .controlSize(.small)
+            .disabled(distributedMesh.activeTrustGroupID == nil)
+            Text("Projects, issues, rooms, messages, and attachments are signed into a local replica on every trusted device. Concurrent edits merge field by field; no device is a central source of truth.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var distributedDevicesSection: some View {
+        Section("Trusted devices") {
+            distributedStateView
+            LabeledContent("Mesh admins") {
+                Text("\(distributedMesh.meshAdminCount)")
+                    .font(.caption.monospaced())
+            }
+            if distributedMesh.trustedDevices.isEmpty {
+                if distributedMesh.activeTrustGroupID == nil {
+                    Text("This Mac is disconnected. Join a Mesh to resume replication.")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    Text("No peer devices yet. Pair another Mac or iPhone to replicate your data.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+            } else {
+                ForEach(distributedMesh.trustedDevices, id: \.descriptor.id) { device in
+                    let connection = distributedMesh.connections[device.descriptor.id]
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 8) {
+                            Label(
+                                device.descriptor.displayName,
+                                systemImage: connection?.connected == true
+                                    ? "checkmark.circle.fill" : "circle.dashed"
+                            )
+                            .foregroundStyle(connection?.connected == true ? .green : .primary)
+                            if device.descriptor.roles.contains(.controller) {
+                                Text("Mesh Admin")
+                                    .font(.caption2.weight(.semibold))
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(.tint.opacity(0.12), in: Capsule())
+                            }
+                            if localDeviceID == device.descriptor.id {
+                                Text("This Mac")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Text([
+                            device.descriptor.roles.map(\.rawValue).sorted().joined(separator: ", "),
+                            connection.map { String(describing: $0.path) } ?? "not connected yet",
+                            abbreviated(device.descriptor.id.rawValue.uuidString),
+                        ].joined(separator: " · "))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                    }
+                    .contextMenu {
+                        Button("Remove trusted device", role: .destructive) {
+                            deviceToRevoke = device
+                        }
+                        .disabled(!distributedMesh.isLocalMeshAdmin)
+                    }
+                }
+            }
+            if !distributedMesh.membershipAudit.isEmpty {
+                Divider()
+                LabeledContent("Membership audit") {
+                    Text("\(distributedMesh.membershipAudit.count) signed updates")
+                        .font(.caption.monospaced())
+                }
+                ForEach(Array(distributedMesh.membershipAudit.suffix(3).reversed())) { entry in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(entry.removedDevices.isEmpty
+                             ? "Roster updated"
+                             : "Removed " + entry.removedDevices.map {
+                                $0.descriptor.displayName
+                             }.joined(separator: ", "))
+                        Text(
+                            "epoch \(entry.previousEpoch)→\(entry.nextEpoch) · " +
+                            "admin \(abbreviated(entry.authorDeviceID.rawValue.uuidString)) · " +
+                            "sha256 \(String(entry.transitionSHA256.prefix(12)))…"
+                        )
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if let error = distributedMesh.lastSyncError {
+                Text(error).font(.caption).foregroundStyle(.orange)
+            }
+            if let revokeError {
+                Text(revokeError).font(.caption).foregroundStyle(.red)
+            }
+            Button("Invite a device…", systemImage: "qrcode") {
+                lifecycleError = nil
+                showsPairingAssistant = true
+            }
+            .disabled(
+                distributedMesh.activeTrustGroupID == nil ||
+                    distributedMesh.localAddress == nil ||
+                    !distributedMesh.isLocalMeshAdmin
+            )
+            Button(joinMeshButtonTitle, systemImage: "link.badge.plus") {
+                lifecycleError = nil
+                showsJoinMeshAssistant = true
+            }
+            Button("Leave this Mesh…", systemImage: "rectangle.portrait.and.arrow.right") {
+                lifecycleError = nil
+                showsLeaveOptions = true
+            }
+            .foregroundStyle(.red)
+            .disabled(distributedMesh.activeTrustGroupID == nil)
+            if let lifecycleError {
+                Text(lifecycleError).font(.caption).foregroundStyle(.red)
+            }
+            Text("Pairing codes expire after five minutes and work once. Device identity is its signing key—not an IP address—so direct and relay paths can change without changing trust.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var localDeviceID: MeshDeviceID? {
+        guard case .ready(let deviceID, _) = distributedMesh.state else { return nil }
+        return deviceID
+    }
+
+    @ViewBuilder
+    private var distributedStateView: some View {
+        switch distributedMesh.state {
+        case .opening:
+            HStack { ProgressView().controlSize(.small); Text("Opening private Mesh…") }
+        case .ready(let deviceID, _):
+            if distributedMesh.activeTrustGroupID == nil {
+                Label("This Mac is ready to join a Mesh", systemImage: "link.badge.plus")
+                    .foregroundStyle(.secondary)
+            } else {
+                Label("This Mac is connected", systemImage: "checkmark.shield.fill")
+                    .foregroundStyle(.green)
+            }
+            Text(abbreviated(deviceID.rawValue.uuidString))
+                .font(.caption.monospaced()).foregroundStyle(.secondary)
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private var legacyProjectDataSection: some View {
+        Section("Project data") {
+            registrySyncStatusView
+            LabeledContent("Offline cache") {
+                Text(store.dataDirectoryPath.replacingOccurrences(
+                    of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            LabeledContent("This host") {
+                Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
+            }
+            Button("Sync now") { store.syncRegistryNow() }.controlSize(.small)
+            Text("The legacy Broker is the single source of truth. This diagnostic mode is retained only for migration and rollback testing.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var legacyBrokerSection: some View {
+        Section("Legacy Mesh Broker") {
+            brokerStatusView
+            Toggle("Launch legacy Mesh at Login", isOn: Binding(
+                get: { store.launchMeshAtLogin },
+                set: {
+                    store.launchMeshAtLogin = $0
+                    reconcileLoginServices()
+                }
+            ))
+            HStack {
+                Text(brokerTarget)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                Spacer()
+                Button("Test again") { Task { await checkBroker() } }
+                    .controlSize(.small)
+                    .disabled(brokerStatus.isChecking || brokerTargetIsInvalid)
+            }
+            Button("Pair legacy client…", systemImage: "qrcode") {
+                showsPairingAssistant = true
+            }
+            .disabled(advertisedEndpoint == nil || brokerStatus.isChecking)
+        }
+    }
+
+    private var joinMeshButtonTitle: LocalizedStringResource {
+        distributedMesh.activeTrustGroupID == nil
+            ? "Join a Mesh…" : "Join another Mesh…"
+    }
+
+    private func abbreviated(_ value: String) -> String {
+        value.count > 16 ? "\(value.prefix(8))…\(value.suffix(8))" : value
     }
 
     private func reconcileLoginServices() {
@@ -256,10 +497,12 @@ private struct MachinesSettingsTab: View {
             Label("Connecting to project registry…", systemImage: "arrow.triangle.2.circlepath")
                 .foregroundStyle(.secondary)
         case .synced:
-            Label("Broker registry synced", systemImage: "checkmark.circle.fill")
+            Label(distributedMesh.isProductModeEnabled ? "Local replica ready" : "Broker registry synced",
+                  systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
         case .pending:
-            Label("Saving to Broker…", systemImage: "arrow.up.circle")
+            Label(distributedMesh.isProductModeEnabled ? "Writing signed changes…" : "Saving to Broker…",
+                  systemImage: "arrow.up.circle")
                 .foregroundStyle(.secondary)
         case .offline(let message):
             VStack(alignment: .leading, spacing: 3) {
@@ -507,7 +750,31 @@ private struct CLISettingsTab: View {
         guard let exec = Bundle.main.executablePath else { return "Couldn't locate the Pharos binary." }
         let fm = FileManager.default
         let home = NSHomeDirectory()
-        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "\(home)/.local/bin", "\(home)/bin"] {
+        let directories = [
+            "/opt/homebrew/bin", "/usr/local/bin",
+            "\(home)/.local/bin", "\(home)/bin",
+        ]
+
+        // Repair every existing Pharos-owned link, not just the first writable
+        // PATH directory. A stale ~/.local/bin link can outrank a freshly
+        // installed /opt/homebrew/bin link and launch an older mesh schema.
+        var repaired: [String] = []
+        for dir in directories where fm.isWritableFile(atPath: dir) {
+            let dest = "\(dir)/\(name)"
+            guard let target = try? fm.destinationOfSymbolicLink(atPath: dest),
+                  target.contains("Pharos.app/Contents/MacOS/Pharos")
+            else { continue }
+            do {
+                try fm.removeItem(atPath: dest)
+                try fm.createSymbolicLink(atPath: dest, withDestinationPath: exec)
+                repaired.append(dest.replacingOccurrences(of: home, with: "~"))
+            } catch { continue }
+        }
+        if !repaired.isEmpty {
+            return "Updated → \(repaired.joined(separator: ", "))"
+        }
+
+        for dir in directories {
             if !fm.fileExists(atPath: dir) {
                 guard dir.hasPrefix(home) else { continue }
                 try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -639,7 +906,7 @@ private struct CLISettingsTab: View {
                         : "Install failed — check ~/.codex/hooks.json (invalid JSON is never overwritten)."
                 }
                 .buttonStyle(.borderedProminent)
-                HelpBadge(text: "Codex ships structured lifecycle hooks: Stop handles unread + stopped, SessionStart records identity, UserPromptSubmit / PostToolUse report busy, and PermissionRequest reports blocked. PostToolUse output is suppressed when there is nothing to show. Codex still lacks Notification/SessionEnd, so idle is unavailable and Node liveness owns gone. Needs a recent Codex build (older ones only have `notify`).")
+                HelpBadge(text: "Codex ships structured lifecycle hooks: Stop handles unread + stopped, SessionStart records identity, UserPromptSubmit / PostToolUse report busy, and PermissionRequest reports blocked. Empty PostToolUse hooks stay silent. Codex still lacks Notification/SessionEnd, so idle is unavailable and Host-local liveness owns gone. Needs a recent Codex build (older ones only have `notify`).")
             }
             if let s = codexHookStatus {
                 Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

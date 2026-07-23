@@ -22,11 +22,12 @@ struct RootView: View {
                     }
                 }
         } detail: {
-            if settings.mesh.host.isEmpty {
+            if !PharosMeshRuntimeMode.usesDistributedMesh,
+               settings.mesh.host.isEmpty {
                 ContentUnavailableView {
                     Label("Connect to your Mesh", systemImage: "network")
                 } description: {
-                    Text("Add the Tailscale address of the Mac hosting Pharos Mesh.")
+                    Text("Add the private address of the Mac hosting the legacy Mesh Broker.")
                 } actions: {
                     Button("Open Settings") { sheet = .settings }
                 }

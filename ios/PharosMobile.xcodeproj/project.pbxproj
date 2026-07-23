@@ -12,8 +12,11 @@
 		063098014D093CA920129E61 /* RemoteTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DA45AD4654541D589FEEB66 /* RemoteTerminalView.swift */; };
 		21EBC372DF68B81FB01D02AF /* RemoteAgentService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C295516F5D699D1341EA7107 /* RemoteAgentService.swift */; };
 		2537BAA7933A64F0C5567C83 /* IssuesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 108EB4DA1F813A618204D5D7 /* IssuesView.swift */; };
-		33916FD4B450BD27167CF39F /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = A54D94D0351119125653A006 /* Citadel */; };
-		3892FC8A0153F79BF6892042 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = FBB848C5DA78F0E0BC6EFE38 /* MarkdownUI */; };
+		2EB44B108D96F3D2C8DDDD03 /* PharosMeshControl in Frameworks */ = {isa = PBXBuildFile; productRef = F13815C0C46901A2F7A8FE6F /* PharosMeshControl */; };
+		33916FD4B450BD27167CF39F /* PharosMeshIroh in Frameworks */ = {isa = PBXBuildFile; productRef = 441DFE3DAB4D60445046B4FB /* PharosMeshIroh */; };
+		3892FC8A0153F79BF6892042 /* PharosMeshProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = 43A361B1B1D4AFE67432EEAE /* PharosMeshProtocol */; };
+		3E1BFE32C777914C9A5B9A4A /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 0D9BD0AD6FE2B9D70C3D9B01 /* SwiftTerm */; };
+		40B71C51DB873AE5D67923CF /* PharosMeshLifecycle in Frameworks */ = {isa = PBXBuildFile; productRef = 40A056865698A993BF92EFD6 /* PharosMeshLifecycle */; };
 		41485D117469E6B2E9D6AD25 /* PharosMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81DA9594F9E9536D3C2B9D94 /* PharosMobileApp.swift */; };
 		42E05B3FB61CF671E6AC0F71 /* RoomStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4943F19EA86159D3DD4EB0F4 /* RoomStore.swift */; };
 		43CA04A4567DCD22C1E8CC64 /* PharosDemoData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15E29A27C4B67A17956B427B /* PharosDemoData.swift */; };
@@ -22,19 +25,24 @@
 		5C851F7438B59E50BCA92FD6 /* RoomListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B98C9EA551F79B1E2F610EA /* RoomListView.swift */; };
 		7237CCB3A61A6ABC7F4C450C /* MeshTCPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FF7F26A2AD53C1C21F2EC36 /* MeshTCPClient.swift */; };
 		726C04B3396A0C926F18D327 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01A1958E7B3D76D91A3B1081 /* SettingsView.swift */; };
-		7F1BDE768D8B320243656FC4 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 0D9BD0AD6FE2B9D70C3D9B01 /* SwiftTerm */; };
+		7F1BDE768D8B320243656FC4 /* PharosMeshReplica in Frameworks */ = {isa = PBXBuildFile; productRef = F8CF35A14A5A5F31E7858D6B /* PharosMeshReplica */; };
+		7F8EEF6A8A0C7D30BBEDA244 /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = A54D94D0351119125653A006 /* Citadel */; };
 		8A4176112EC9BE6DD5675C1E /* InteractiveSSHSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B67BDD4799E7DC5921C9DB99 /* InteractiveSSHSession.swift */; };
+		993A42F73B773831BA8D8D77 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 33073278C4DDB3F29B160300 /* NIOSSH */; };
 		9B6D4E0AE776436E597FEFC0 /* ProjectsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC48202BA5281EFE1A847C38 /* ProjectsView.swift */; };
 		9D785850F4EF8B8D7347834C /* PairingLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56D8039FCBC9DCEF0AFD7C6E /* PairingLink.swift */; };
 		A011AB606225E6F999109A5D /* IPadWorkspaceShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F2817C51018E7CAF0BF7175 /* IPadWorkspaceShell.swift */; };
 		A3405FB84FF614549626759D /* SpawnAgentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6F859A1C7BBEF2D3E51676E /* SpawnAgentView.swift */; };
+		A79816367EB04ECBFC5B5CAC /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = FBB848C5DA78F0E0BC6EFE38 /* MarkdownUI */; };
 		AA12F39CAE6DF825E4BEC04C /* PharosMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27F4A3C6DE1C3611722ACCF5 /* PharosMarkdown.swift */; };
+		B89BF532FCFAF1DFA9F83902 /* DistributedMeshSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAC0C5B8D36E940BAEF10CBD /* DistributedMeshSupport.swift */; };
 		BB37FC0CD279985FDD3C308E /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 537B4E9606BB15A32FAAD5D8 /* MainTabView.swift */; };
-		BD5DC191A71E8E7DD8250F97 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 33073278C4DDB3F29B160300 /* NIOSSH */; };
+		BD5DC191A71E8E7DD8250F97 /* PharosMeshIdentity in Frameworks */ = {isa = PBXBuildFile; productRef = 895BFACB2690C2FF4BAD849D /* PharosMeshIdentity */; };
 		BE73222196B7CEA31537C685 /* MeshCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F305FE3168CE78B5488D59 /* MeshCoreTests.swift */; };
 		C7EE7ADECDA5DD123AC8D4D4 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 55D5CBCEDBF5C7FC0D6EA18A /* PrivacyInfo.xcprivacy */; };
 		C9C3004119D3EFAEE3ACCE22 /* MeshWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = B453916340D05CCF7CC4D244 /* MeshWire.swift */; };
 		CB38873AB506856E74CBAA34 /* AgentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C964FEBE89EF146AD7C6AF4 /* AgentsView.swift */; };
+		D294AE84EC105B7134558BE1 /* InviteDeviceSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 716A62DA1898E3A629BE94E2 /* InviteDeviceSheet.swift */; };
 		D2B1822CAB067921E37324FA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CEF8FD397F7D9F1C61EA3BAF /* Assets.xcassets */; };
 		DCD21D275D0668C3890A6C7C /* PairBrokerViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9330688B2F8752D883096C6D /* PairBrokerViews.swift */; };
 		DD62AC67C8371A27078C66E4 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B59AA89BEDF3EEEE53EA9CD /* RootView.swift */; };
@@ -53,12 +61,12 @@
 
 /* Begin PBXFileReference section */
 		01A1958E7B3D76D91A3B1081 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
-		06769821248FC8822C3687C3 /* PharosMobile.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PharosMobile.entitlements; sourceTree = "<group>"; };
 		0D814929863D6BC8982DAD23 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		108EB4DA1F813A618204D5D7 /* IssuesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IssuesView.swift; sourceTree = "<group>"; };
 		15E29A27C4B67A17956B427B /* PharosDemoData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PharosDemoData.swift; sourceTree = "<group>"; };
 		1B98C9EA551F79B1E2F610EA /* RoomListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomListView.swift; sourceTree = "<group>"; };
 		27F4A3C6DE1C3611722ACCF5 /* PharosMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PharosMarkdown.swift; sourceTree = "<group>"; };
+		48FEFE9F6767D55A8CFA1C36 /* pharos */ = {isa = PBXFileReference; lastKnownFileType = folder; name = pharos; path = ..; sourceTree = SOURCE_ROOT; };
 		4943F19EA86159D3DD4EB0F4 /* RoomStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomStore.swift; sourceTree = "<group>"; };
 		4C964FEBE89EF146AD7C6AF4 /* AgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsView.swift; sourceTree = "<group>"; };
 		4F69EBEAE42D0113CD39B2BC /* PharosMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PharosMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -68,6 +76,7 @@
 		56D8039FCBC9DCEF0AFD7C6E /* PairingLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingLink.swift; sourceTree = "<group>"; };
 		5F2817C51018E7CAF0BF7175 /* IPadWorkspaceShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPadWorkspaceShell.swift; sourceTree = "<group>"; };
 		6B59AA89BEDF3EEEE53EA9CD /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		716A62DA1898E3A629BE94E2 /* InviteDeviceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InviteDeviceSheet.swift; sourceTree = "<group>"; };
 		81DA9594F9E9536D3C2B9D94 /* PharosMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PharosMobileApp.swift; sourceTree = "<group>"; };
 		8FF7F26A2AD53C1C21F2EC36 /* MeshTCPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshTCPClient.swift; sourceTree = "<group>"; };
 		9330688B2F8752D883096C6D /* PairBrokerViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairBrokerViews.swift; sourceTree = "<group>"; };
@@ -84,6 +93,7 @@
 		E6F859A1C7BBEF2D3E51676E /* SpawnAgentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpawnAgentView.swift; sourceTree = "<group>"; };
 		F1E1516DF727C7F92AC7FC01 /* PharosMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PharosMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F4EEE4B12F0CADE232BED280 /* SSHIdentityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHIdentityStore.swift; sourceTree = "<group>"; };
+		FAC0C5B8D36E940BAEF10CBD /* DistributedMeshSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DistributedMeshSupport.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -91,10 +101,16 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				3892FC8A0153F79BF6892042 /* MarkdownUI in Frameworks */,
-				33916FD4B450BD27167CF39F /* Citadel in Frameworks */,
-				BD5DC191A71E8E7DD8250F97 /* NIOSSH in Frameworks */,
-				7F1BDE768D8B320243656FC4 /* SwiftTerm in Frameworks */,
+				3892FC8A0153F79BF6892042 /* PharosMeshProtocol in Frameworks */,
+				33916FD4B450BD27167CF39F /* PharosMeshIroh in Frameworks */,
+				BD5DC191A71E8E7DD8250F97 /* PharosMeshIdentity in Frameworks */,
+				7F1BDE768D8B320243656FC4 /* PharosMeshReplica in Frameworks */,
+				2EB44B108D96F3D2C8DDDD03 /* PharosMeshControl in Frameworks */,
+				40B71C51DB873AE5D67923CF /* PharosMeshLifecycle in Frameworks */,
+				A79816367EB04ECBFC5B5CAC /* MarkdownUI in Frameworks */,
+				7F8EEF6A8A0C7D30BBEDA244 /* Citadel in Frameworks */,
+				993A42F73B773831BA8D8D77 /* NIOSSH in Frameworks */,
+				3E1BFE32C777914C9A5B9A4A /* SwiftTerm in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -114,6 +130,7 @@
 			isa = PBXGroup;
 			children = (
 				4F8616B8D4E2B61B13853142 /* AppSettings.swift */,
+				FAC0C5B8D36E940BAEF10CBD /* DistributedMeshSupport.swift */,
 				B67BDD4799E7DC5921C9DB99 /* InteractiveSSHSession.swift */,
 				8FF7F26A2AD53C1C21F2EC36 /* MeshTCPClient.swift */,
 				15E29A27C4B67A17956B427B /* PharosDemoData.swift */,
@@ -138,7 +155,6 @@
 			children = (
 				CEF8FD397F7D9F1C61EA3BAF /* Assets.xcassets */,
 				0D814929863D6BC8982DAD23 /* Info.plist */,
-				06769821248FC8822C3687C3 /* PharosMobile.entitlements */,
 				81DA9594F9E9536D3C2B9D94 /* PharosMobileApp.swift */,
 				55D5CBCEDBF5C7FC0D6EA18A /* PrivacyInfo.xcprivacy */,
 				975035CC2E7DC23DDA260D32 /* Design */,
@@ -152,6 +168,7 @@
 		5ED7FA7864B70891041DD0C7 = {
 			isa = PBXGroup;
 			children = (
+				9E1BA697E8C0B68A4E378658 /* Packages */,
 				5A0210FDFA6699D3DF1CF1C6 /* PharosMobile */,
 				6734775EC3F565C2FBA0048A /* PharosMobileTests */,
 				15912F71DF5197646F2A6257 /* Products */,
@@ -180,6 +197,7 @@
 			children = (
 				4C964FEBE89EF146AD7C6AF4 /* AgentsView.swift */,
 				CE66DE546D2C518478A6D7D4 /* ConversationView.swift */,
+				716A62DA1898E3A629BE94E2 /* InviteDeviceSheet.swift */,
 				5F2817C51018E7CAF0BF7175 /* IPadWorkspaceShell.swift */,
 				108EB4DA1F813A618204D5D7 /* IssuesView.swift */,
 				537B4E9606BB15A32FAAD5D8 /* MainTabView.swift */,
@@ -193,6 +211,14 @@
 				E6F859A1C7BBEF2D3E51676E /* SpawnAgentView.swift */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		9E1BA697E8C0B68A4E378658 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				48FEFE9F6767D55A8CFA1C36 /* pharos */,
+			);
+			name = Packages;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -230,6 +256,12 @@
 			);
 			name = PharosMobile;
 			packageProductDependencies = (
+				43A361B1B1D4AFE67432EEAE /* PharosMeshProtocol */,
+				441DFE3DAB4D60445046B4FB /* PharosMeshIroh */,
+				895BFACB2690C2FF4BAD849D /* PharosMeshIdentity */,
+				F8CF35A14A5A5F31E7858D6B /* PharosMeshReplica */,
+				F13815C0C46901A2F7A8FE6F /* PharosMeshControl */,
+				40A056865698A993BF92EFD6 /* PharosMeshLifecycle */,
 				FBB848C5DA78F0E0BC6EFE38 /* MarkdownUI */,
 				A54D94D0351119125653A006 /* Citadel */,
 				33073278C4DDB3F29B160300 /* NIOSSH */,
@@ -271,6 +303,7 @@
 				468EED3D16F94086E4B1A362 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
 				DCB7839BC0D9A436EA205C25 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
 				5AC04BA37B3D7D14A4234E6D /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+				E76CAA80A0E364C7C3B2DFD7 /* XCLocalSwiftPackageReference ".." */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 15912F71DF5197646F2A6257 /* Products */;
@@ -311,8 +344,10 @@
 				CB38873AB506856E74CBAA34 /* AgentsView.swift in Sources */,
 				0316280B840B9C132048F298 /* AppSettings.swift in Sources */,
 				F734C7FF9F1D8085C013CDD0 /* ConversationView.swift in Sources */,
+				B89BF532FCFAF1DFA9F83902 /* DistributedMeshSupport.swift in Sources */,
 				A011AB606225E6F999109A5D /* IPadWorkspaceShell.swift in Sources */,
 				8A4176112EC9BE6DD5675C1E /* InteractiveSSHSession.swift in Sources */,
+				D294AE84EC105B7134558BE1 /* InviteDeviceSheet.swift in Sources */,
 				2537BAA7933A64F0C5567C83 /* IssuesView.swift in Sources */,
 				BB37FC0CD279985FDD3C308E /* MainTabView.swift in Sources */,
 				7237CCB3A61A6ABC7F4C450C /* MeshTCPClient.swift in Sources */,
@@ -399,7 +434,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 128;
+				CURRENT_PROJECT_VERSION = 235;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = TN7ZDD72P2;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -413,7 +448,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.0.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -460,7 +495,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 128;
+				CURRENT_PROJECT_VERSION = 235;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = TN7ZDD72P2;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -480,7 +515,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.0.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -515,7 +550,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = PharosMobile/PharosMobile.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
 				INFOPLIST_FILE = PharosMobile/Info.plist;
@@ -529,6 +563,7 @@
 				PROVISIONING_PROFILE_SPECIFIER = "match AppStore me.pai.pharos.mobile";
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/../Sources/CSQLite";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
@@ -538,7 +573,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = PharosMobile/PharosMobile.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				INFOPLIST_FILE = PharosMobile/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -550,6 +584,7 @@
 				PRODUCT_NAME = PharosMobile;
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/../Sources/CSQLite";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
@@ -585,6 +620,13 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		E76CAA80A0E364C7C3B2DFD7 /* XCLocalSwiftPackageReference ".." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ..;
+		};
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
 		1DE2516A5FD7C6EB99CAAD6C /* XCRemoteSwiftPackageReference "Citadel" */ = {
@@ -632,10 +674,34 @@
 			package = DCB7839BC0D9A436EA205C25 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
 			productName = NIOSSH;
 		};
+		40A056865698A993BF92EFD6 /* PharosMeshLifecycle */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PharosMeshLifecycle;
+		};
+		43A361B1B1D4AFE67432EEAE /* PharosMeshProtocol */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PharosMeshProtocol;
+		};
+		441DFE3DAB4D60445046B4FB /* PharosMeshIroh */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PharosMeshIroh;
+		};
+		895BFACB2690C2FF4BAD849D /* PharosMeshIdentity */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PharosMeshIdentity;
+		};
 		A54D94D0351119125653A006 /* Citadel */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 1DE2516A5FD7C6EB99CAAD6C /* XCRemoteSwiftPackageReference "Citadel" */;
 			productName = Citadel;
+		};
+		F13815C0C46901A2F7A8FE6F /* PharosMeshControl */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PharosMeshControl;
+		};
+		F8CF35A14A5A5F31E7858D6B /* PharosMeshReplica */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PharosMeshReplica;
 		};
 		FBB848C5DA78F0E0BC6EFE38 /* MarkdownUI */ = {
 			isa = XCSwiftPackageProductDependency;

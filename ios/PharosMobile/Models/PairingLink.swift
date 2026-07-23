@@ -1,5 +1,14 @@
 import Foundation
 import Observation
+import PharosMeshProtocol
+
+struct PendingDeviceInvitation: Identifiable {
+    let invitation: MeshTrustInvitation
+    var id: String {
+        invitation.trustGroupID.rawValue.uuidString + ":" +
+            invitation.inviterDeviceID.rawValue.uuidString
+    }
+}
 
 struct PairingLink: Sendable, Equatable, Identifiable {
     var version: Int
@@ -42,14 +51,23 @@ struct PairingLink: Sendable, Equatable, Identifiable {
 @MainActor
 final class PairingCoordinator {
     var pending: PairingLink?
+    var pendingDevice: PendingDeviceInvitation?
     var errorMessage: String?
     var showsError = false
-    /// Drives the broker-setup wizard cover. Auto-shown on first run (no
-    /// broker) and re-openable from Settings; the wizard's close button and a
-    /// successful pairing both clear it.
+    /// Drives the personal-Mesh setup cover. It is auto-shown until this
+    /// device creates or joins a trust group and remains reopenable later.
     var showsSetupGuide = false
 
     func receive(_ url: URL) {
+        if let invitation = try? MeshTrustInvitationLink.decode(url) {
+            errorMessage = nil
+            // Device confirmation has one app-level presenter. Close the
+            // onboarding cover before publishing the pending invitation so
+            // SwiftUI never tries to stack the same sheet from two levels.
+            showsSetupGuide = false
+            pendingDevice = PendingDeviceInvitation(invitation: invitation)
+            return
+        }
         guard let invitation = PairingLink(url: url), !invitation.isExpired else {
             errorMessage = "This pairing code is invalid or has expired."
             showsError = true
@@ -60,7 +78,14 @@ final class PairingCoordinator {
     }
 
     func receive(_ value: String) {
-        guard let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let invitation = try? MeshTrustInvitationTicket.decode(trimmed) {
+            errorMessage = nil
+            showsSetupGuide = false
+            pendingDevice = PendingDeviceInvitation(invitation: invitation)
+            return
+        }
+        guard let url = URL(string: trimmed) else {
             errorMessage = "The scanned QR code is not a Pharos pairing link."
             showsError = true
             return

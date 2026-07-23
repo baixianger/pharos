@@ -132,12 +132,14 @@ enum MeshHooks {
         let env = ProcessInfo.processInfo.environment
         let pane = env["TMUX"] != nil ? env["TMUX_PANE"] : nil
         let socket = RemoteLaunch.tmuxSocket(fromEnvironmentValue: env["TMUX"])
-        MeshClient.sendIfUp(MeshRequest(cmd: "mark", nick: nick, project: cwd,
-                                        session: session,
-                                        host: HostIdentity.current,
-                                        tmuxPane: pane, tmuxSocket: socket,
-                                        state: state.rawValue,
-                                        stateReason: reason))
+        var request = MeshRequest(cmd: "mark", nick: nick, project: cwd,
+                                  session: session,
+                                  host: HostIdentity.current,
+                                  tmuxPane: pane, tmuxSocket: socket,
+                                  state: state.rawValue,
+                                  stateReason: reason)
+        request.nodeID = MeshNodeIdentity.current
+        MeshClient.sendIfUp(request)
     }
 
     /// Stop-hook body. Every failure path returns 0 with no output: a broken or
@@ -382,33 +384,28 @@ enum MeshHooks {
         let memberArg = memberID.map { " --member \($0)" } ?? ""
         lines.append("When you reach a natural pause, pick them up with `pharos mesh recv \(n)\(memberArg)` "
                      + "and reply in the room if a response is expected.")
-        var payload: [String: Any] = [
+        let payload: [String: Any] = [
             "hookSpecificOutput": [
                 "hookEventName": "PostToolUse",
                 "additionalContext": lines.joined(separator: "\n"),
             ]
         ]
-        if codex { payload["suppressOutput"] = true }
         if let d = try? JSONSerialization.data(withJSONObject: payload) {
             print(String(decoding: d, as: UTF8.self))
         }
         return 0
     }
 
-    /// Codex supports `suppressOutput` on command-hook output. Emit it even
-    /// when there is no unread message so the all-tools heartbeat does not add
-    /// a completed hook cell after every tool invocation.
+    /// Empty PostToolUse output is accepted by both Claude and Codex. Recent
+    /// Codex builds reject the formerly supported `suppressOutput` key.
     private static func finishPostTool(codex: Bool) -> Int32 {
-        guard codex else { return 0 }
-        if let d = try? JSONSerialization.data(withJSONObject: ["suppressOutput": true]) {
-            print(String(decoding: d, as: UTF8.self))
-        }
+        _ = codex
         return 0
     }
 
     /// Continue the agent with unread room context. Claude now has a first-class
     /// non-error Stop feedback form. Codex's Stop schema intentionally remains
-    /// top-level `decision:block`, with `suppressOutput` hiding hook chrome.
+    /// top-level `decision:block`.
     private static func emitContinuation(nick: String, memberID: String?, messages: [MeshMsg],
                                          codex: Bool) {
         var perRoom: [String: Int] = [:]
@@ -431,7 +428,7 @@ enum MeshHooks {
     /// Stop output schemas despite sharing the same event name.
     static func continuationPayload(text: String, codex: Bool) -> [String: Any] {
         codex
-            ? ["decision": "block", "reason": text, "suppressOutput": true]
+            ? ["decision": "block", "reason": text]
             : ["hookSpecificOutput": ["hookEventName": "Stop", "additionalContext": text]]
     }
 
@@ -634,9 +631,11 @@ enum MeshHooks {
         guard !sessionID.isEmpty, let pane = environment["TMUX_PANE"], !pane.isEmpty,
               environment["TMUX"] != nil else { return }
         let socket = RemoteLaunch.tmuxSocket(fromEnvironmentValue: environment["TMUX"])
-        MeshClient.sendIfUp(MeshRequest(cmd: "rebind", project: cwd, session: sessionID,
-                                        host: HostIdentity.current,
-                                        tmuxPane: pane, tmuxSocket: socket))
+        var request = MeshRequest(cmd: "rebind", project: cwd, session: sessionID,
+                                  host: HostIdentity.current,
+                                  tmuxPane: pane, tmuxSocket: socket)
+        request.nodeID = MeshNodeIdentity.current
+        MeshClient.sendIfUp(request)
     }
 
     static func currentSessionID(
@@ -787,9 +786,9 @@ enum MeshHooks {
                                        marker: postToolMarker, matcher: "*")),
         ]
         root["hooks"] = hooks
-        if root["description"] == nil { root["description"] = "Pharos mesh — agent chat delivery + live state" }
+        let removedUnsupportedMetadata = sanitizeCodexRoot(&root)
 
-        if results.allSatisfy({ $0.1 == .unchanged }) {
+        if results.allSatisfy({ $0.1 == .unchanged }), !removedUnsupportedMetadata {
             print("Codex mesh hooks already installed → \(file.path)")
             return 0
         }
@@ -805,6 +804,14 @@ enum MeshHooks {
         print("(Codex PermissionRequest reports blocked; Notification/SessionEnd remain unavailable.)")
         print("(first run: Codex prompts to trust hooks — spawn with --dangerously-bypass-hook-trust)")
         return 0
+    }
+
+    /// Codex parses the root as a strict schema. Earlier Pharos releases added
+    /// this descriptive metadata; remove only our known field and preserve any
+    /// unrelated user-owned keys for forward compatibility.
+    @discardableResult
+    static func sanitizeCodexRoot(_ root: inout [String: Any]) -> Bool {
+        root.removeValue(forKey: "description") != nil
     }
 
     private enum UpsertResult { case installed, updated, unchanged

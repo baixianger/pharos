@@ -1,170 +1,137 @@
-# Pharos Mesh Headless Architecture
+# Pharos Mesh on Linux
 
-Pharos Mesh can run as an independent Linux service. The Broker owns durable
-portable project and chat data; macOS, iOS, and coding-agent CLIs are clients.
-
-```text
-Mac app ────────┐
-iPhone app ─────┼── Tailscale TCP ── pharos-mesh ── JSONL transcripts
-Agent CLI ──────┘                         ├───────── attachment blobs
-                                         ├───────── projects.json + backups
-                                         └───────── presence/unread state
-                                                   │ event cursor
-                    tmux agents ◀── pharos node ◀──┘
-```
-
-## Boundary
-
-`PharosMeshCore` contains the portable wire protocol, TCP/UDS transport,
-broker, transcript persistence, reply resolution, and attachment storage.
-`pharos-mesh` is the portable executable. The `Pharos` executable remains a
-macOS product because project launching, AppKit, Finder, and Keychain are not
-server responsibilities. `pharos-mesh node` is a separate per-user Host worker:
-it receives constrained Poke events and controls only registered tmux panes
-owned by that user.
-
-The headless Broker owns `projects.json` as opaque portable data. Reads carry a
-SHA-256 revision; writes require that revision and fail on conflicts. It does
-not launch agents or store/resolve Host checkout paths.
-
-Broker machines and execution Hosts are separate concepts. A Linux server may
-run only the Broker, while macOS or Linux execution Hosts run a per-user node.
-The node connects outward to the Broker, so execution Hosts expose no inbound
-port. SSH may be used to install or repair a Host, but it is never a message
-delivery fallback. Installing the Broker package does not grant it arbitrary
-shell access to those Hosts. See
-[`ADR-001-BROKER-AND-HOSTS.md`](ADR-001-BROKER-AND-HOSTS.md).
-
-## Protocol v2
-
-- `capabilities` identifies the current protocol generation and optional
-  features to user interfaces.
-- Every new message receives a UUID. A deterministic legacy key keeps old JSONL
-  rows quoteable without rewriting history.
-- A reply stores both the original message ID and a short immutable snapshot, so
-  it remains useful when the original is outside the client's history window.
-- Attachments are uploaded before `say`; the message references verified
-  metadata only.
-- `registry-get` and `registry-put` implement compare-and-swap project storage
-  (`registry-cas-v1`). Every accepted change backs up the prior snapshot.
-
-## Attachment transport
-
-Control frames remain newline-delimited JSON. `attachment-put` sends one JSON
-header followed by exactly `byteSize` raw bytes. `attachment-get` returns one
-JSON header followed by the raw bytes. This avoids Base64 expansion and the
-mobile client's ordinary 4 MiB JSON response limit.
-
-The broker enforces a 25 MiB limit, verifies SHA-256 before committing, writes
-atomically, rejects path traversal, and stores:
+Linux participates as a normal device in the local-first trust group. It owns a
+signed SQLite replica and Iroh identity, synchronizes in both directions, and
+can keep serving while either Mac is offline. It is not a global writer or a
+trusted network perimeter.
 
 ```text
-<data-dir>/mesh/attachments/<attachment-id>/metadata.json
-<data-dir>/mesh/attachments/<attachment-id>/data
+Mac replica ──┐
+iOS replica ──┼── encrypted Iroh direct/relay paths ── Linux replica
+Mac replica ──┘                                      signed SQLite + blobs
 ```
 
-## Linux service
+Every mutation is signed by its author. Membership is an epoch-scoped signed
+roster; deterministic merge rules resolve concurrent offline writes. Iroh relay
+operators can observe connection metadata but not Pharos payload plaintext.
 
-Example foreground invocation:
+## Install
 
-```bash
-pharos-mesh serve \
-  --bind 100.78.109.51:47800 \
+GitHub Releases publish `amd64` and `arm64` Debian packages. Each package
+contains the Swift CLI and the pinned Rust `libiroh_ffi.so` used to build it.
+
+```sh
+sudo apt install ./pharos-mesh_VERSION_ARCH.deb
+```
+
+Installation deliberately leaves `pharos-mesh.service` disabled. This prevents
+an upgrade from restarting the retired TCP Broker or silently creating a new,
+unrelated trust group.
+
+## Pair or initialize
+
+To make this Linux machine the first device in a new personal group:
+
+```sh
+sudo -u pharos-mesh pharos-mesh distributed init \
   --data-dir /var/lib/pharos-mesh
 ```
 
-Only bind a Tailscale address. The current transport relies on the tailnet as
-its trust boundary and does not contain application-level authentication.
+Normally, pair it into the existing group instead. Create an invitation on an
+existing controller, then accept it on Linux while an admin quorum is online.
+The accepting command completes the certified membership transition:
 
-From another tailnet device, verify the service directly:
-
-```bash
-pharos-mesh capabilities --endpoint 100.78.109.51:47800
+```sh
+pharos-mesh distributed device-invite --data-dir ABSOLUTE-PATH
+pharos-mesh distributed device-accept INVITATION --name linux \
+  --data-dir /var/lib/pharos-mesh
 ```
 
-## Host node
+Pairing secrets are bearer credentials: transfer them privately and do not put
+them in shell history, logs, or tickets. The macOS and iOS pairing screens use
+the same signed protocol.
 
-Install the node as the same user that owns the tmux sessions:
+After the Linux identity has an active membership, start its service:
 
-```bash
-pharos-mesh node install --endpoint 100.78.109.51:47800
+```sh
+sudo systemctl enable --now pharos-mesh.service
+sudo systemctl status pharos-mesh.service
 ```
 
-On macOS this installs `~/Library/LaunchAgents/me.pai.pharos.mesh-node.plist`.
-On Linux it installs and enables a user systemd unit. The Debian package also
-ships `pharos-mesh-node.service` under the systemd user-unit directory.
+The service runs:
 
-The node keeps an outbound, cursor-based event subscription to the Broker. A
-Poke is accepted only when its Tailscale IP/Host identity matches, the exact
-tmux pane and socket are still present, the expected Codex/Claude process is in
-that pane's process tree, and the composer is visibly idle. It never accepts an
-arbitrary shell command from Mesh.
-
-Foreground macOS/iOS clients use the same Broker-held event requests and keep a
-low-frequency snapshot refresh for reconnect recovery. iOS background delivery
-still requires APNs because the operating system suspends private TCP sessions.
-
-Suggested systemd hardening:
-
-```ini
-[Service]
-User=pharos-mesh
-Environment=PHAROS_MESH_BIND=100.78.109.51:47800
-ExecStart=/usr/local/bin/pharos-mesh serve --bind ${PHAROS_MESH_BIND} --data-dir /var/lib/pharos-mesh
-Restart=on-failure
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ReadWritePaths=/var/lib/pharos-mesh
+```sh
+pharos-mesh distributed sync-serve \
+  --data-dir /var/lib/pharos-mesh --relay production
 ```
 
-The repository includes a complete unit at `Deploy/pharos-mesh.service` and an
-environment-file example. `47800` matches the desktop client's existing Mesh
-port, so moving from a Mac hub does not require a protocol-specific port change.
+No public TCP bind or Tailscale address is required. Direct paths are preferred;
+the configured Iroh relay is the connectivity fallback.
 
-## Debian and Ubuntu installation
+## Container
 
-Release automation publishes signed `amd64` and `arm64` packages to the Pharos
-APT repository. Configure it once:
+`Dockerfile.mesh-linux` builds the pinned Rust FFI library, links the Swift
+executable against it, and copies both into the runtime image:
 
-```bash
-curl -fsSL https://baixianger.github.io/pharos/apt/pharos.asc \
-  | sudo gpg --dearmor -o /usr/share/keyrings/pharos-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/pharos-archive-keyring.gpg] https://baixianger.github.io/pharos/apt stable main" \
-  | sudo tee /etc/apt/sources.list.d/pharos.list
-sudo apt update
-sudo apt install pharos-mesh
+```sh
+docker build -f Dockerfile.mesh-linux -t pharos-mesh .
+docker run --rm -v pharos-data:/data pharos-mesh \
+  distributed init --data-dir /data
+docker run -d --name pharos-mesh --restart unless-stopped \
+  -v pharos-data:/data pharos-mesh
 ```
 
-Repository signing-key fingerprint:
-`4FF9 7A0C 8CE2 921B 1C43 A105 63AD D441 9E1D CB73`.
+Initialize only for a brand-new group. For an existing group, perform the
+pairing handshake against the same persistent volume before starting the
+long-running container.
 
-The package starts on `127.0.0.1:47800`. To accept tailnet clients, set this
-host's Tailscale IPv4 in `/etc/pharos-mesh.env` and restart the service:
+## Host command boundary
 
-```bash
-sudo systemctl restart pharos-mesh
+`distributed sync-serve --host` additionally enables explicitly registered,
+generation-bound host resources such as a tmux pane. Run that mode as the user
+who owns those resources, never as the system service's `DynamicUser`. Commands
+are signed, deadline-bound, replay-protected, and restricted to registered
+actions; arbitrary remote shell execution is not part of Mesh.
+
+On macOS, an Agent becomes controllable only after Pharos verifies its exact
+live tmux seat. Normal structured hooks do this automatically. To adopt a
+pre-2.0 session that already joined a room, run this **inside that Agent's own
+tmux pane**:
+
+```sh
+pharos mesh claim --member <stable-session-id> --kind codex
 ```
 
-The package preserves `/etc/pharos-mesh.env` and `/var/lib/pharos-mesh` across
-upgrades.
+`claim` does not search by nick, cwd, host name, or tmux session name. It reads
+the current pane and socket, resolves the live tmux session ID, creation time,
+and pane PID, and refuses duplicate or mismatched claims. A session without
+this proof remains visible as presence-only/Unmanaged: it may be removed from
+the replicated roster, but it cannot be poked, attached, or stopped remotely.
 
-## Reliability and operations
+Every stop re-verifies the complete seat fingerprint immediately before
+`kill-session`. The Host then durably finishes its signed receipt, retires the
+Host resource, removes the private binding and observation, and removes the
+Agent from all room rosters. An accepted/executing stop is retried after a Host
+restart; if the old seat is already gone or has been replaced, recovery treats
+only the old resource as gone and never targets the replacement.
 
-- Back up the whole data directory, not only `projects.json`.
-- The Broker keeps the newest 200 automatic registry versions under
-  `<data-dir>/registry-backups/`.
-- Transcripts and attachments are durable; unread mailboxes are runtime state.
-- Uploads are checksum-verified and atomically committed.
-- A room delete removes its transcript. Attachment garbage collection is a
-  separate future task so a mistaken delete cannot immediately destroy files.
+## Backup, recovery, and migration
 
-## Tradeoffs and future revisions
+- Back up the whole `/var/lib/pharos-mesh` directory while the service is
+  stopped, including the SQLite database, identity, and blob directory.
+- Keep at least two controller devices. A surviving controller can pair a
+  replacement and revoke a lost device by advancing the signed membership
+  epoch.
+- Key rotation is pair-new, verify synchronization, then revoke-old.
+- The legacy TCP Broker and Node require `PHAROS_LEGACY_BROKER=1` and exist only
+  for an explicit migration rollback. They are not installed as active Linux
+  services.
+- See `MIGRATION-RELEASE-CYCLE.md` for the tested backup, import, cutover,
+  rollback, and re-cutover procedure.
 
-- The single broker is intentionally simple and sufficient for a personal
-  tailnet. It is not horizontally replicated.
-- The current server trusts Tailscale membership. Add per-device tokens or mTLS
-  before exposing it beyond a private tailnet.
-- Large-file resumable uploads, thumbnail generation, retention policies,
-  full-text search, and multi-broker replication should be revisited only if
-  usage outgrows the personal 25 MiB/file model.
+## Release verification
+
+CI builds the pinned Rust library and Swift CLI for Linux, packages both into a
+Debian archive, installs the archive in a clean Debian container, checks dynamic
+link resolution, and runs the CLI. `Scripts/build_linux_artifacts.sh` reproduces
+the same build locally on a Docker-capable host.
