@@ -178,6 +178,8 @@ the third current admin online and retry the intended change to safely choose
 one proposal.
 The Iroh feature and best-practice decisions are tracked in the
 [Iroh capability adoption roadmap](docs/IROH-CAPABILITY-ADOPTION.md).
+To learn the underlying Rust syntax and run a real two-endpoint experiment,
+open the [Rust + Iroh Jupyter tutorial](tutorials/iroh-rust-notebook/README.md).
 
 On first launch, choose **Create personal Mesh** or open a signed invitation
 from another device. To add a device later, open Settings → **Machines** →
