@@ -35,10 +35,13 @@ enum PharosMain {
 }
 
 struct PharosApp: App {
+    @NSApplicationDelegateAdaptor(PharosApplicationDelegate.self)
+    private var applicationDelegate
     @Environment(\.openWindow) private var openWindow
     @State private var store = ProjectStore()
     @State private var distributedMesh = DistributedMeshSupport()
     @State private var showsBrokerSetup: Bool
+    @State private var pendingMeshInvitation: PendingMacMeshInvitation?
     // Owns the Sparkle update lifecycle for the app's lifetime.
     private let updaterController = UpdaterController()
 
@@ -55,41 +58,31 @@ struct PharosApp: App {
 
     var body: some Scene {
         WindowGroup("Pharos") {
-            Group {
-                if showsBrokerSetup {
-                    BrokerSetupOnboardingView {
-                        showsBrokerSetup = false
-                    }
-                } else {
-                    ContentView()
-                }
-            }
+            PharosRootView(showsBrokerSetup: $showsBrokerSetup)
                 .environment(store)
                 .environment(distributedMesh)
                 .preferredColorScheme(store.appearance.colorScheme)
+                .onOpenURL { url in
+                    guard distributedMesh.isProductModeEnabled,
+                          let invitation = try? MeshTrustInvitationLink.decode(url)
+                    else { return }
+                    pendingMeshInvitation = PendingMacMeshInvitation(
+                        invitation: invitation
+                    )
+                }
+                .sheet(item: $pendingMeshInvitation) { pending in
+                    JoinMeshSheet(invitation: pending.invitation)
+                        .environment(distributedMesh)
+                }
                 .task {
-                    await distributedMesh.start()
-                    if distributedMesh.isProductModeEnabled,
-                       let replica = distributedMesh.localReplica,
-                       let group = distributedMesh.activeTrustGroupID {
-                        await store.activateDistributedRegistry(
-                            replica: replica, group: group,
-                            meshSupport: distributedMesh
-                        )
-                        await distributedMesh.startNetwork()
-                        while !Task.isCancelled {
-                            _ = await distributedMesh.synchronizeOnce()
-                            // CLI and GUI are independent writers to the same
-                            // local replica. Refresh even without remote events
-                            // so a local CLI edit cannot leave the GUI on a
-                            // stale snapshot until the next network change.
-                            store.syncRegistryNow()
-                            try? await Task.sleep(for: .seconds(5))
+                    if distributedMesh.isProductModeEnabled {
+                        applicationDelegate.shutdownDistributedMesh = {
+                            await distributedMesh.shutdownApplicationRuntime()
                         }
-                        // Distributed mode owns project/issue persistence and
-                        // never starts, dials, or repairs the legacy Broker.
+                        distributedMesh.ensureApplicationRuntime(store: store)
                         return
                     }
+                    await distributedMesh.start()
                     // This mesh bootstrap is app-global state — run it once, not
                     // for every window/tab. Re-running it per tab re-dialed the
                     // broker and blocked the main thread, so a new tab's title
@@ -198,7 +191,46 @@ struct PharosApp: App {
             MenuBarView(store: store)
         } label: {
             Image(nsImage: LighthouseIcon.menuBar)
+                // The menu-bar label exists even when macOS restores no main
+                // window, so it is the reliable application-lifetime anchor
+                // for the decentralized endpoint.
+                .task {
+                    distributedMesh.ensureApplicationRuntime(store: store)
+                }
         }
         .menuBarExtraStyle(.menu)
+    }
+}
+
+private struct PharosRootView: View {
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
+    @Binding var showsBrokerSetup: Bool
+
+    var body: some View {
+        if distributedMesh.isProductModeEnabled {
+            switch distributedMesh.state {
+            case .opening:
+                ProgressView("Opening your private Mesh…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .ready:
+                if distributedMesh.activeTrustGroupID == nil {
+                    MeshSetupView()
+                } else {
+                    ContentView()
+                }
+            case .failed(let message):
+                ContentUnavailableView(
+                    "Private Mesh unavailable",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(message)
+                )
+            }
+        } else if showsBrokerSetup {
+            BrokerSetupOnboardingView {
+                showsBrokerSetup = false
+            }
+        } else {
+            ContentView()
+        }
     }
 }

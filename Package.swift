@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "PharosMeshIroh", targets: ["PharosMeshIroh"]),
         .library(name: "PharosMeshReplica", targets: ["PharosMeshReplica"]),
         .library(name: "PharosMeshControl", targets: ["PharosMeshControl"]),
+        .library(name: "PharosMeshLifecycle", targets: ["PharosMeshLifecycle"]),
         .library(name: "PharosMeshCore", targets: ["PharosMeshCore"]),
     ],
     dependencies: [
@@ -22,7 +23,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-crypto", from: "3.0.0"),
         .package(
             url: "https://github.com/baixianger/MeshKit.git",
-            exact: "0.2.0"
+            exact: "0.2.1"
         ),
     ],
     targets: [
@@ -74,10 +75,21 @@ let package = Package(
             name: "PharosMeshControl",
             dependencies: [
                 "PharosMeshProtocol",
+                "PharosMeshIdentity",
                 "PharosMeshIroh",
                 "PharosMeshReplica",
             ],
             path: "Sources/PharosMeshControl"
+        ),
+        .target(
+            name: "PharosMeshLifecycle",
+            dependencies: [
+                "PharosMeshProtocol",
+                "PharosMeshIdentity",
+                "PharosMeshIroh",
+                "PharosMeshReplica",
+            ],
+            path: "Sources/PharosMeshLifecycle"
         ),
         .target(
             name: "PharosMeshCore",
@@ -87,6 +99,7 @@ let package = Package(
                 "PharosMeshIroh",
                 "PharosMeshReplica",
                 "PharosMeshControl",
+                "PharosMeshLifecycle",
                 "CSQLite",
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
@@ -96,6 +109,7 @@ let package = Package(
             name: "Pharos",
             dependencies: [
                 "PharosMeshCore",
+                "PharosMeshLifecycle",
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/Pharos",
@@ -113,7 +127,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "PharosMesh",
-            dependencies: ["PharosMeshCore"],
+            dependencies: ["PharosMeshCore", "PharosMeshLifecycle"],
             path: "Sources/PharosMesh"
         ),
         .testTarget(
@@ -131,7 +145,8 @@ let package = Package(
         .testTarget(
             name: "PharosMeshIrohTests",
             dependencies: [
-                "PharosMeshIroh", "PharosMeshIdentity", "PharosMeshReplica",
+                "PharosMeshIroh", "PharosMeshIdentity", "PharosMeshLifecycle",
+                "PharosMeshReplica",
             ],
             path: "Tests/PharosMeshIrohTests"
         ),

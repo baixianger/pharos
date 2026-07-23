@@ -256,6 +256,9 @@ struct ManageRoomMembersSheet: View {
         .padding(18)
         .frame(width: 430, height: 330)
         .task { await reload() }
+        .onChange(of: distributedMesh.presenceRevision) { _, _ in
+            Task { await reload() }
+        }
         .alert("Rename member", isPresented: Binding(get: { memberToRename != nil },
                                                       set: { if !$0 { memberToRename = nil } }),
                presenting: memberToRename) { member in
@@ -287,12 +290,7 @@ struct ManageRoomMembersSheet: View {
                 guard let target = try await distributedMesh.chatRooms().first(where: {
                     $0.name == room
                 }) else { throw DistributedRoomsToolbarError.roomNotFound }
-                members = try await distributedMesh.chatMembers(in: target).map {
-                    MeshMemberInfo(
-                        id: $0.id, nick: $0.nick, state: "gone",
-                        rooms: [room], lastSeen: 0, nodeOnline: nil
-                    )
-                }
+                members = try await distributedMesh.chatMemberInfos(in: target)
                 loading = false
             } catch {
                 self.error = error.localizedDescription

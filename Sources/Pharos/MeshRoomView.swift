@@ -39,6 +39,12 @@ struct MeshRoomView: View {
         }
         return matches.count == 1 ? matches[0] : nil
     }
+    private func memberStatusLabel(_ info: MeshMemberInfo?) -> String {
+        guard let info else { return "Presence unknown" }
+        if info.state == MeshSessionState.gone.rawValue { return "Offline" }
+        guard let state = info.state, !state.isEmpty else { return "Presence unknown" }
+        return state.capitalized
+    }
     @State private var resolving = false
     @State private var resolved = false
     private struct IssueRef: Identifiable { let project: String; let number: Int; var id: String { "\(project)#\(number)" } }
@@ -56,6 +62,7 @@ struct MeshRoomView: View {
         .task(id: brokerRouteID) { await resolveRemote() }   // resolve transport BEFORE first load
         .task(id: brokerRouteID + "|events") { await watchEvents() }
         .onReceive(recoveryTick) { _ in reload() }
+        .onChange(of: distributedMesh.presenceRevision) { _, _ in reload() }
         .task(id: room) {
             // Rapid switches can leave several detached history reads in
             // flight. Only the room still visible may update the transcript.
@@ -483,7 +490,7 @@ struct MeshRoomView: View {
                         .offset(x: 1, y: 1)
                 }
             }
-            .help(human ? "you" : "\(nick) — \(info?.state ?? "offline")")
+            .help(human ? "you" : "\(nick) — \(memberStatusLabel(info))")
     }
 
     /// Human input. `@nick` delivers to that agent: it surfaces via the unread
@@ -697,7 +704,7 @@ struct MeshRoomView: View {
                         if let dot = Self.statusDot(memberInfo(nick: nick)?.state) {
                             Circle().fill(dot).frame(width: 7, height: 7)
                         }
-                        Text(memberInfo(nick: nick)?.state ?? "offline")
+                        Text(memberStatusLabel(memberInfo(nick: nick)))
                             .font(.caption2).foregroundStyle(.tertiary)
                     }
                     .padding(.horizontal, 8).padding(.vertical, 4)
@@ -909,18 +916,15 @@ struct MeshRoomView: View {
                     var nextMembers: [String: [String]] = [:]
                     var nextInfo: [String: [String: MeshMemberInfo]] = [:]
                     for roomInfo in roomInfos {
-                        let roomMembers = try await distributedMesh.chatMembers(in: roomInfo)
+                        let roomMembers = try await distributedMesh.chatMemberInfos(in: roomInfo)
                         nextMembers[roomInfo.name] = roomMembers.map(\.nick)
                         nextInfo[roomInfo.name] = Dictionary(
                             uniqueKeysWithValues: roomMembers.map { member in
-                                (member.id, MeshMemberInfo(
-                                    id: member.id, nick: member.nick,
-                                    state: "gone", rooms: [roomInfo.name],
-                                    lastSeen: 0, nodeOnline: nil
-                                ))
+                                (member.id, member)
                             }
                         )
                     }
+                    guard !Task.isCancelled else { return }
                     rooms = names
                     membersByRoom = nextMembers
                     membersInfoByRoom = nextInfo

@@ -4,9 +4,10 @@
 coding agents (Claude Code, Codex) across many repos: launch, organize, resume,
 and track agent work — in yolo mode, in parallel, at speed.
 
-> **Status: 0.11.1 / distributed Mesh RC work.** The original macOS milestones
-> are shipped. The current local-first implementation has 299 SwiftPM tests plus
-> 26 iOS tests; release credentials and background iOS delivery remain follow-ups.
+> **Status: 2.0.0 / distributed Mesh release candidate.** Broker mode is
+> rollback-only. The local-first implementation has 357 SwiftPM tests plus 28
+> iOS tests, and build 235 is installed on both production Macs; release
+> credentials and background iOS delivery remain follow-ups.
 
 ## The core loop
 
@@ -202,3 +203,33 @@ matters is which **agent / session / worktree** is working an item.
 - [x] **Dashboard entry in the sidebar.** A "Dashboard" row pinned at the top of
   the sidebar (selected when no project is) — the obvious entry point to the
   overview, alongside the toolbar button.
+
+### v2.0 — Local-first P2P Mesh
+
+- [x] **No central Broker.** Signed SQLite replicas synchronize over
+  identity-addressed Iroh direct/relay paths; membership is an epoch-scoped,
+  quorum-certified roster.
+- [x] **Stable Agent identity.** Room membership, mentions, presence, Host
+  resources, receipts, and tmux control use the same session/resource ID. Nicks,
+  cwd, host names, and computer names are labels only.
+- [x] **Host-local reconciliation.** Structured hooks and `pharos mesh claim`
+  grant control only from an exact live tmux socket+pane. Binding v2 fingerprints
+  the tmux session ID, creation time, pane ID, and pane PID; duplicates, stale
+  v1 bindings, and replacement sessions fail closed.
+- [x] **Capability-aware lifecycle UI.** macOS and iOS distinguish Stop
+  (verified owning Host), Remove from Mesh (replicated roster only), Repair
+  (local proof), and SSH→tmux Attach (same LAN/Tailscale boundary).
+- [x] **Durable cross-Host Stop.** The Host journals accepted/executing/executed
+  receipts, replays unfinished stops after restart, retires the resource,
+  removes private binding/observation state, and removes the Agent from every
+  room. A stopped resource cannot target a replacement tmux seat.
+- [x] **Production topology.** Mac mini, home-ts, Linux, and physical iPhone
+  retain one trust group; real chat, offline convergence, controller quorum,
+  lifecycle presence, conflict handling, SSH attach, and real macOS/iOS
+  cross-Host Stop are recorded in
+  `docs/PRODUCTION-VALIDATION-2026-07-23.md`.
+- [ ] **iOS background freshness.** Suspension remains an OS boundary; durable
+  state catches up on foreground. Privacy-preserving APNs wake is a post-2.0
+  enhancement, not a correctness dependency.
+- [ ] **Native Iroh PTY relay.** Remote terminal currently uses Mesh identity
+  plus SSH/Tailscale. A bounded audited PTY protocol remains research.

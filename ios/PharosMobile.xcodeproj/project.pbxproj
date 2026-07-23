@@ -15,7 +15,8 @@
 		2EB44B108D96F3D2C8DDDD03 /* PharosMeshControl in Frameworks */ = {isa = PBXBuildFile; productRef = F13815C0C46901A2F7A8FE6F /* PharosMeshControl */; };
 		33916FD4B450BD27167CF39F /* PharosMeshIroh in Frameworks */ = {isa = PBXBuildFile; productRef = 441DFE3DAB4D60445046B4FB /* PharosMeshIroh */; };
 		3892FC8A0153F79BF6892042 /* PharosMeshProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = 43A361B1B1D4AFE67432EEAE /* PharosMeshProtocol */; };
-		40B71C51DB873AE5D67923CF /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = FBB848C5DA78F0E0BC6EFE38 /* MarkdownUI */; };
+		3E1BFE32C777914C9A5B9A4A /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 0D9BD0AD6FE2B9D70C3D9B01 /* SwiftTerm */; };
+		40B71C51DB873AE5D67923CF /* PharosMeshLifecycle in Frameworks */ = {isa = PBXBuildFile; productRef = 40A056865698A993BF92EFD6 /* PharosMeshLifecycle */; };
 		41485D117469E6B2E9D6AD25 /* PharosMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81DA9594F9E9536D3C2B9D94 /* PharosMobileApp.swift */; };
 		42E05B3FB61CF671E6AC0F71 /* RoomStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4943F19EA86159D3DD4EB0F4 /* RoomStore.swift */; };
 		43CA04A4567DCD22C1E8CC64 /* PharosDemoData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15E29A27C4B67A17956B427B /* PharosDemoData.swift */; };
@@ -25,14 +26,14 @@
 		7237CCB3A61A6ABC7F4C450C /* MeshTCPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FF7F26A2AD53C1C21F2EC36 /* MeshTCPClient.swift */; };
 		726C04B3396A0C926F18D327 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01A1958E7B3D76D91A3B1081 /* SettingsView.swift */; };
 		7F1BDE768D8B320243656FC4 /* PharosMeshReplica in Frameworks */ = {isa = PBXBuildFile; productRef = F8CF35A14A5A5F31E7858D6B /* PharosMeshReplica */; };
-		7F8EEF6A8A0C7D30BBEDA244 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 33073278C4DDB3F29B160300 /* NIOSSH */; };
+		7F8EEF6A8A0C7D30BBEDA244 /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = A54D94D0351119125653A006 /* Citadel */; };
 		8A4176112EC9BE6DD5675C1E /* InteractiveSSHSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B67BDD4799E7DC5921C9DB99 /* InteractiveSSHSession.swift */; };
-		993A42F73B773831BA8D8D77 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 0D9BD0AD6FE2B9D70C3D9B01 /* SwiftTerm */; };
+		993A42F73B773831BA8D8D77 /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 33073278C4DDB3F29B160300 /* NIOSSH */; };
 		9B6D4E0AE776436E597FEFC0 /* ProjectsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC48202BA5281EFE1A847C38 /* ProjectsView.swift */; };
 		9D785850F4EF8B8D7347834C /* PairingLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56D8039FCBC9DCEF0AFD7C6E /* PairingLink.swift */; };
 		A011AB606225E6F999109A5D /* IPadWorkspaceShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F2817C51018E7CAF0BF7175 /* IPadWorkspaceShell.swift */; };
 		A3405FB84FF614549626759D /* SpawnAgentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6F859A1C7BBEF2D3E51676E /* SpawnAgentView.swift */; };
-		A79816367EB04ECBFC5B5CAC /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = A54D94D0351119125653A006 /* Citadel */; };
+		A79816367EB04ECBFC5B5CAC /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = FBB848C5DA78F0E0BC6EFE38 /* MarkdownUI */; };
 		AA12F39CAE6DF825E4BEC04C /* PharosMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27F4A3C6DE1C3611722ACCF5 /* PharosMarkdown.swift */; };
 		B89BF532FCFAF1DFA9F83902 /* DistributedMeshSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAC0C5B8D36E940BAEF10CBD /* DistributedMeshSupport.swift */; };
 		BB37FC0CD279985FDD3C308E /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 537B4E9606BB15A32FAAD5D8 /* MainTabView.swift */; };
@@ -41,6 +42,7 @@
 		C7EE7ADECDA5DD123AC8D4D4 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 55D5CBCEDBF5C7FC0D6EA18A /* PrivacyInfo.xcprivacy */; };
 		C9C3004119D3EFAEE3ACCE22 /* MeshWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = B453916340D05CCF7CC4D244 /* MeshWire.swift */; };
 		CB38873AB506856E74CBAA34 /* AgentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C964FEBE89EF146AD7C6AF4 /* AgentsView.swift */; };
+		D294AE84EC105B7134558BE1 /* InviteDeviceSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 716A62DA1898E3A629BE94E2 /* InviteDeviceSheet.swift */; };
 		D2B1822CAB067921E37324FA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CEF8FD397F7D9F1C61EA3BAF /* Assets.xcassets */; };
 		DCD21D275D0668C3890A6C7C /* PairBrokerViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9330688B2F8752D883096C6D /* PairBrokerViews.swift */; };
 		DD62AC67C8371A27078C66E4 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B59AA89BEDF3EEEE53EA9CD /* RootView.swift */; };
@@ -74,6 +76,7 @@
 		56D8039FCBC9DCEF0AFD7C6E /* PairingLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingLink.swift; sourceTree = "<group>"; };
 		5F2817C51018E7CAF0BF7175 /* IPadWorkspaceShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPadWorkspaceShell.swift; sourceTree = "<group>"; };
 		6B59AA89BEDF3EEEE53EA9CD /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		716A62DA1898E3A629BE94E2 /* InviteDeviceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InviteDeviceSheet.swift; sourceTree = "<group>"; };
 		81DA9594F9E9536D3C2B9D94 /* PharosMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PharosMobileApp.swift; sourceTree = "<group>"; };
 		8FF7F26A2AD53C1C21F2EC36 /* MeshTCPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshTCPClient.swift; sourceTree = "<group>"; };
 		9330688B2F8752D883096C6D /* PairBrokerViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairBrokerViews.swift; sourceTree = "<group>"; };
@@ -103,10 +106,11 @@
 				BD5DC191A71E8E7DD8250F97 /* PharosMeshIdentity in Frameworks */,
 				7F1BDE768D8B320243656FC4 /* PharosMeshReplica in Frameworks */,
 				2EB44B108D96F3D2C8DDDD03 /* PharosMeshControl in Frameworks */,
-				40B71C51DB873AE5D67923CF /* MarkdownUI in Frameworks */,
-				A79816367EB04ECBFC5B5CAC /* Citadel in Frameworks */,
-				7F8EEF6A8A0C7D30BBEDA244 /* NIOSSH in Frameworks */,
-				993A42F73B773831BA8D8D77 /* SwiftTerm in Frameworks */,
+				40B71C51DB873AE5D67923CF /* PharosMeshLifecycle in Frameworks */,
+				A79816367EB04ECBFC5B5CAC /* MarkdownUI in Frameworks */,
+				7F8EEF6A8A0C7D30BBEDA244 /* Citadel in Frameworks */,
+				993A42F73B773831BA8D8D77 /* NIOSSH in Frameworks */,
+				3E1BFE32C777914C9A5B9A4A /* SwiftTerm in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -193,6 +197,7 @@
 			children = (
 				4C964FEBE89EF146AD7C6AF4 /* AgentsView.swift */,
 				CE66DE546D2C518478A6D7D4 /* ConversationView.swift */,
+				716A62DA1898E3A629BE94E2 /* InviteDeviceSheet.swift */,
 				5F2817C51018E7CAF0BF7175 /* IPadWorkspaceShell.swift */,
 				108EB4DA1F813A618204D5D7 /* IssuesView.swift */,
 				537B4E9606BB15A32FAAD5D8 /* MainTabView.swift */,
@@ -256,6 +261,7 @@
 				895BFACB2690C2FF4BAD849D /* PharosMeshIdentity */,
 				F8CF35A14A5A5F31E7858D6B /* PharosMeshReplica */,
 				F13815C0C46901A2F7A8FE6F /* PharosMeshControl */,
+				40A056865698A993BF92EFD6 /* PharosMeshLifecycle */,
 				FBB848C5DA78F0E0BC6EFE38 /* MarkdownUI */,
 				A54D94D0351119125653A006 /* Citadel */,
 				33073278C4DDB3F29B160300 /* NIOSSH */,
@@ -341,6 +347,7 @@
 				B89BF532FCFAF1DFA9F83902 /* DistributedMeshSupport.swift in Sources */,
 				A011AB606225E6F999109A5D /* IPadWorkspaceShell.swift in Sources */,
 				8A4176112EC9BE6DD5675C1E /* InteractiveSSHSession.swift in Sources */,
+				D294AE84EC105B7134558BE1 /* InviteDeviceSheet.swift in Sources */,
 				2537BAA7933A64F0C5567C83 /* IssuesView.swift in Sources */,
 				BB37FC0CD279985FDD3C308E /* MainTabView.swift in Sources */,
 				7237CCB3A61A6ABC7F4C450C /* MeshTCPClient.swift in Sources */,
@@ -427,7 +434,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 128;
+				CURRENT_PROJECT_VERSION = 235;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = TN7ZDD72P2;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -441,7 +448,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.0.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -488,7 +495,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 128;
+				CURRENT_PROJECT_VERSION = 235;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = TN7ZDD72P2;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -508,7 +515,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 2.0.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -666,6 +673,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = DCB7839BC0D9A436EA205C25 /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
 			productName = NIOSSH;
+		};
+		40A056865698A993BF92EFD6 /* PharosMeshLifecycle */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PharosMeshLifecycle;
 		};
 		43A361B1B1D4AFE67432EEAE /* PharosMeshProtocol */ = {
 			isa = XCSwiftPackageProductDependency;

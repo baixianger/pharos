@@ -23,14 +23,19 @@ public struct MeshTrustRosterEntry: Codable, Equatable, Sendable {
     public var descriptor: MeshDeviceDescriptor
     public var signingPublicKey: Data
     public var addressTicket: String
+    /// The epoch at which this binding last participated. Current entries use
+    /// the vector epoch; older values carry only verification material for
+    /// historical events and never authorize current RPCs.
+    public var membershipEpoch: UInt64?
 
     public init(
         descriptor: MeshDeviceDescriptor, signingPublicKey: Data,
-        addressTicket: String
+        addressTicket: String, membershipEpoch: UInt64? = nil
     ) {
         self.descriptor = descriptor
         self.signingPublicKey = signingPublicKey
         self.addressTicket = addressTicket
+        self.membershipEpoch = membershipEpoch
     }
 }
 
@@ -92,7 +97,9 @@ public struct MeshSyncVector: Codable, Equatable, Sendable {
         var seenDevices: Set<MeshDeviceID> = []
         for peer in trustRoster ?? [] {
             guard !peer.signingPublicKey.isEmpty, !peer.addressTicket.isEmpty,
-                  !peer.descriptor.roles.isEmpty else {
+                  !peer.descriptor.roles.isEmpty,
+                  (peer.membershipEpoch ?? membershipEpoch) > 0,
+                  (peer.membershipEpoch ?? membershipEpoch) <= membershipEpoch else {
                 throw MeshReplicationValidationError.invalidRosterEntry
             }
             let endpointID = peer.descriptor.endpointID
@@ -175,7 +182,8 @@ public struct MeshEventRangeResponse: Codable, Equatable, Sendable {
             var expected = request.afterSequence + 1
             for event in events {
                 guard event.trustGroupID == request.trustGroupID,
-                      event.membershipEpoch == request.membershipEpoch,
+                      event.membershipEpoch > 0,
+                      event.membershipEpoch <= request.membershipEpoch,
                       event.authorEndpointID == request.authorEndpointID,
                       event.authorSequence == expected else {
                     throw MeshReplicationValidationError.invalidRangeResponse
@@ -189,7 +197,8 @@ public struct MeshEventRangeResponse: Codable, Equatable, Sendable {
             try snapshot.snapshot.validate()
             try snapshot.state.validate()
             guard snapshot.snapshot.trustGroupID == request.trustGroupID,
-                  snapshot.snapshot.membershipEpoch == request.membershipEpoch,
+                  snapshot.snapshot.membershipEpoch > 0,
+                  snapshot.snapshot.membershipEpoch <= request.membershipEpoch,
                   snapshot.snapshot.authorHeads.contains(where: {
                       $0.endpointID == request.authorEndpointID &&
                           $0.sequence > request.afterSequence

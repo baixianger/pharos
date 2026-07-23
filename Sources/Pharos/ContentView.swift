@@ -7,6 +7,14 @@ import SwiftUI
 /// Only touched from the main actor (`onAppear`), so the unchecked access is safe.
 private nonisolated(unsafe) var launchCountedThisProcess = false
 
+enum ContentRouteState {
+    /// Child room views load asynchronously. Once their parent route is nil,
+    /// a late child write is stale and must not reopen Chat Rooms.
+    static func applyingRoomWrite(current: String?, next: String) -> String? {
+        current == nil ? nil : next
+    }
+}
+
 /// Routes menu-bar requests (surface nav + specific project/room deep-links)
 /// into the main window's split-view selection. Bundled as one modifier so
 /// ContentView's body stays within the type-checker's budget.
@@ -89,7 +97,16 @@ struct ContentView: View {
             SettingsView(initialTab: t)   // snapshot mode: Settings inline in the detail pane
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if openRoom != nil {
-            MeshRoomView(room: Binding(get: { openRoom ?? "" }, set: { openRoom = $0 }))
+            MeshRoomView(room: Binding(
+                get: { openRoom ?? "" },
+                // An async room reload may finish after the user navigates to
+                // Dashboard. Never let that stale child write resurrect chat.
+                set: { nextRoom in
+                    openRoom = ContentRouteState.applyingRoomWrite(
+                        current: openRoom, next: nextRoom
+                    )
+                }
+            ))
         } else if let id = selectedProject, store.project(id) != nil {
             ProjectDetailView(projectID: id)
         } else {

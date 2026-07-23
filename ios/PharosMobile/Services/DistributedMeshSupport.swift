@@ -3,6 +3,7 @@ import Observation
 import PharosMeshControl
 import PharosMeshIdentity
 import PharosMeshIroh
+import PharosMeshLifecycle
 import PharosMeshProtocol
 import PharosMeshReplica
 
@@ -11,6 +12,23 @@ import PharosMeshReplica
 enum PharosMeshRuntimeMode {
     static var usesDistributedMesh: Bool {
         ProcessInfo.processInfo.environment["PHAROS_LEGACY_BROKER"] != "1"
+    }
+}
+
+@MainActor
+final class MobileMeshStartupGate {
+    private var isRunning = false
+
+    func run(_ operation: () async -> Void) async {
+        if isRunning {
+            while isRunning {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            return
+        }
+        isRunning = true
+        defer { isRunning = false }
+        await operation()
     }
 }
 
@@ -37,15 +55,40 @@ final class DistributedMeshSupport {
     private(set) var localAddress: MeshIrohEndpointAddress?
     private(set) var connections: [MeshDeviceID: MeshConnectionSnapshot] = [:]
     private(set) var trustedDevices: [MeshPairedDevice] = []
+    private(set) var membershipAudit: [MeshMembershipAuditEntry] = []
     private(set) var lastSyncError: String?
+    private(set) var presenceDiagnostics: [MeshDeviceID: String] = [:]
+    var isLocalMeshAdmin: Bool {
+        guard let localReplica else { return false }
+        return (try? localReplica.activeRoles().contains(.controller)) == true
+    }
+
+    var meshAdminCount: Int {
+        trustedDevices.filter { $0.descriptor.roles.contains(.controller) }.count +
+            (isLocalMeshAdmin ? 1 : 0)
+    }
     /// Advances whenever the local registry becomes available or receives new
     /// replicated state, allowing already-visible screens to reload without a
     /// manual retry after startup, pairing, or background synchronization.
     private(set) var registryRevision = 0
     @ObservationIgnored private var runtime: IrohEndpointRuntime?
+    /// Scene startup and an immediately tapped onboarding action can both ask
+    /// to open the replica. Keep that re-entrant MainActor work single-flight
+    /// so a stale second open cannot overwrite freshly created Mesh state.
+    @ObservationIgnored private let startupGate = MobileMeshStartupGate()
     @ObservationIgnored private var registry: MobileDistributedRegistry?
     @ObservationIgnored private var chatRegistry: DistributedChatRegistry?
     @ObservationIgnored private var attachmentRegistry: DistributedAttachmentRegistry?
+    @ObservationIgnored private var remotePresenceByHost:
+        [MeshDeviceID: [String: MobileAgentPresence]] = [:]
+    @ObservationIgnored private var remotePresenceGenerationByHost:
+        [MeshDeviceID: Int64] = [:]
+    @ObservationIgnored private var remotePresenceExpirationByHost:
+        [MeshDeviceID: Int64] = [:]
+    @ObservationIgnored private var membershipCatchUpTask: Task<Void, Never>?
+    @ObservationIgnored private var synchronizationTasksInFlight = 0
+    @ObservationIgnored private let peerSynchronizationGate =
+        MobilePeerSynchronizationGate()
     private let isDemo: Bool
 
     init(demo: Bool = false) {
@@ -55,84 +98,197 @@ final class DistributedMeshSupport {
 
     func start() async {
         guard !isDemo, localReplica == nil else { return }
-        state = .opening
-        do {
-            let replica = try await Task.detached {
-                try MeshLocalReplica.openDefault()
-            }.value
-            localReplica = replica
-            activeTrustGroupID = try replica.activeTrustGroup()
-            if let group = activeTrustGroupID {
-                registry = MobileDistributedRegistry(replica: replica, group: group)
-                chatRegistry = DistributedChatRegistry(replica: replica, group: group)
-                attachmentRegistry = DistributedAttachmentRegistry(
-                    replica: replica, group: group
+        await startupGate.run { [self] in
+            guard localReplica == nil else { return }
+            state = .opening
+            do {
+                let replica = try await Task.detached {
+                    try MeshLocalReplica.openDefault()
+                }.value
+                localReplica = replica
+                activeTrustGroupID = try replica.activeTrustGroup()
+                if let group = activeTrustGroupID {
+                    registry = MobileDistributedRegistry(replica: replica, group: group)
+                    chatRegistry = DistributedChatRegistry(replica: replica, group: group)
+                    attachmentRegistry = DistributedAttachmentRegistry(
+                        replica: replica, group: group
+                    )
+                    registryRevision += 1
+                    try await refreshTrustedDevices()
+                }
+                try await startNetwork(replica: replica)
+                state = .ready(
+                    deviceID: replica.identity.deviceID,
+                    endpointID: try replica.identity.endpointID()
                 )
-                registryRevision += 1
-                try await refreshTrustedDevices()
+            } catch {
+                state = .failed(String(describing: error))
             }
+        }
+    }
+
+    /// Restores the identity-addressed endpoint after a transient bind failure
+    /// or an iOS foreground transition. The scene's convergence loop calls
+    /// this idempotently; an already-running endpoint is untouched.
+    func ensureNetworkRunning() async {
+        guard !isDemo else { return }
+        if localReplica == nil {
+            await start()
+            return
+        }
+        guard runtime == nil, let replica = localReplica else { return }
+        do {
             try await startNetwork(replica: replica)
             state = .ready(
                 deviceID: replica.identity.deviceID,
                 endpointID: try replica.identity.endpointID()
             )
+            lastSyncError = nil
         } catch {
-            state = .failed(String(describing: error))
+            lastSyncError = "Could not start private Mesh: \(error)"
         }
     }
 
     func accept(
-        _ invitation: MeshTrustInvitation, displayName: String
+        _ invitation: MeshTrustInvitation,
+        displayName: String,
+        existingGroupDisposition: MeshExistingGroupDisposition = .archive
     ) async throws {
         try await waitUntilNetworkReady()
         guard let replica = localReplica, let runtime,
               let localAddress else {
             throw MobileDistributedMeshError.networkNotReady
         }
-        let service = MeshTrustPairingService(
-            identity: replica.identity, invitationStore: replica.store
-        )
-        let acceptance = try await service.acceptAndTrustInviter(
-            invitation,
-            acceptingAddressTicket: localAddress.ticket,
-            displayName: displayName,
-            inviterDisplayName: "Pharos Mac"
-        )
-        try replica.adoptActiveTrustGroup(
-            invitation.trustGroupID, replacingExisting: true
-        )
-        activeTrustGroupID = invitation.trustGroupID
-        registry = MobileDistributedRegistry(
-            replica: replica, group: invitation.trustGroupID
-        )
-        chatRegistry = DistributedChatRegistry(
-            replica: replica, group: invitation.trustGroupID
-        )
-        attachmentRegistry = DistributedAttachmentRegistry(
-            replica: replica, group: invitation.trustGroupID
-        )
-        registryRevision += 1
-        let transport = IrohMeshTransport(
-            runtime: runtime,
-            remote: MeshIrohEndpointAddress(
-                endpointID: invitation.inviterEndpointID,
-                ticket: invitation.inviterAddressTicket
+        let current = try replica.activeTrustGroup()
+        if let current, current != invitation.trustGroupID,
+           existingGroupDisposition == .leave {
+            _ = try await MeshTrustGroupLifecycle.leaveCurrentMesh(
+                replica: replica,
+                runtime: runtime,
+                localAddress: localAddress,
+                displayName: displayName
             )
-        )
-        let request = MeshTrustPairingRPCRequest(
-            invitation: invitation, acceptance: acceptance
-        )
-        let response = try await transport.exchange(
-            MeshTransportRequest(
-                header: try request.encoded(), timeoutMilliseconds: 15_000
-            )
-        )
-        let confirmation = try MeshTrustPairingRPCResponse.decode(response.header)
-        guard confirmation.acceptedDeviceID == replica.identity.deviceID else {
-            throw MobileDistributedMeshError.acceptanceMismatch
+            activeTrustGroupID = nil
+            clearActiveGroupState()
         }
+        let group = try await MeshTrustGroupLifecycle.join(
+            invitation,
+            replica: replica,
+            runtime: runtime,
+            localAddress: localAddress,
+            displayName: displayName,
+            inviterDisplayName: "Inviting device",
+            replacingExisting: current != nil
+        )
+        activeTrustGroupID = group
+        configureRegistries(replica: replica, group: group)
         try await refreshTrustedDevices()
-        _ = await synchronizeOnce()
+        await restartNetwork(replica: replica)
+        // Pairing is complete once the certified membership is durable and
+        // this endpoint has restarted under the new trust group. Do not keep
+        // the confirmation sheet blocked on a full first sync: an offline
+        // phone or laptop can consume its background timeout while the normal
+        // foreground convergence loop continues safely.
+        scheduleSynchronization()
+    }
+
+    func createPersonalMesh() async throws -> MeshTrustGroupID {
+        if localReplica == nil { await start() }
+        guard let replica = localReplica else {
+            if case .failed(let message) = state {
+                throw MobileDistributedMeshError.startupFailed(message)
+            }
+            throw MobileDistributedMeshError.networkNotReady
+        }
+        let group = try await MeshTrustGroupLifecycle.createPersonalMesh(
+            replica: replica
+        )
+        activeTrustGroupID = group
+        configureRegistries(replica: replica, group: group)
+        try await refreshTrustedDevices()
+        await restartNetwork(replica: replica)
+        return group
+    }
+
+    func issueInvitation() async throws -> URL {
+        guard let replica = localReplica, let group = activeTrustGroupID,
+              let address = localAddress,
+              let epoch = try await replica.store.membershipEpoch(for: group)
+        else { throw MobileDistributedMeshError.networkNotReady }
+        guard try replica.activeRoles().contains(.controller) else {
+            throw MobileDistributedMeshError.administratorRequired
+        }
+        let invitation = try await MeshTrustPairingService(
+            identity: replica.identity,
+            invitationStore: replica.store
+        ).issueInvitation(
+            trustGroupID: group,
+            membershipEpoch: epoch,
+            inviterAddressTicket: address.ticket,
+            inviterRoles: try replica.activeRoles(),
+            requestedRoles: [.controller, .host, .replica]
+        )
+        return try MeshTrustInvitationLink.encode(invitation)
+    }
+
+    @discardableResult
+    func archiveCurrentMesh() async throws -> MeshTrustGroupID {
+        guard let replica = localReplica else {
+            throw MobileDistributedMeshError.networkNotReady
+        }
+        let group = try MeshTrustGroupLifecycle.archiveCurrentMesh(
+            replica: replica
+        )
+        activeTrustGroupID = nil
+        clearActiveGroupState()
+        await restartNetwork(replica: replica)
+        return group
+    }
+
+    /// Deletes every local distributed-Mesh replica and rotates the protected
+    /// device identity. This is intentionally different from archive and from
+    /// a signed leave: other controllers may still show the old device until
+    /// they revoke it from their current membership roster.
+    func resetAsNewMeshDevice() async throws {
+        guard let rootURL = localReplica?.rootURL else {
+            throw MobileDistributedMeshError.networkNotReady
+        }
+        await stopNetwork()
+        activeTrustGroupID = nil
+        clearActiveGroupState()
+        localReplica = nil
+        state = .opening
+
+        try MeshKeychainIdentityStorage().remove()
+        if FileManager.default.fileExists(atPath: rootURL.path) {
+            try FileManager.default.removeItem(at: rootURL)
+        }
+        await start()
+        if case .failed(let message) = state {
+            throw MobileDistributedMeshError.startupFailed(message)
+        }
+    }
+
+    @discardableResult
+    func leaveCurrentMesh(displayName: String) async throws
+        -> MeshTrustGroupLeaveResult {
+        try await waitUntilNetworkReady()
+        guard let replica = localReplica, let runtime, let localAddress else {
+            throw MobileDistributedMeshError.networkNotReady
+        }
+        guard try replica.activeTrustGroup() != nil else {
+            throw MeshTrustGroupLifecycleError.noActiveTrustGroup
+        }
+        let result = try await MeshTrustGroupLifecycle.leaveCurrentMesh(
+            replica: replica,
+            runtime: runtime,
+            localAddress: localAddress,
+            displayName: displayName
+        )
+        activeTrustGroupID = nil
+        clearActiveGroupState()
+        await restartNetwork(replica: replica)
+        return result
     }
 
     /// A pairing URL can foreground a freshly launched app before its scene
@@ -141,6 +297,9 @@ final class DistributedMeshSupport {
     private func waitUntilNetworkReady() async throws {
         if localReplica == nil {
             await start()
+        }
+        if let replica = localReplica, runtime == nil {
+            try await startNetwork(replica: replica)
         }
         for _ in 0..<300 {
             if localReplica != nil, runtime != nil, localAddress != nil {
@@ -159,11 +318,13 @@ final class DistributedMeshSupport {
               let epoch = try await replica.store.membershipEpoch(for: group)
         else {
             trustedDevices = []
+            membershipAudit = []
             return
         }
         trustedDevices = try await replica.store.trustedDevices(
             in: group, membershipEpoch: epoch
         )
+        membershipAudit = try await replica.store.membershipAudit(for: group)
     }
 
     func revokeDevice(_ device: MeshPairedDevice) async throws {
@@ -171,6 +332,9 @@ final class DistributedMeshSupport {
               let group = activeTrustGroupID, let address = localAddress,
               let epoch = try await replica.store.membershipEpoch(for: group)
         else { throw MobileDistributedMeshError.networkNotReady }
+        guard try replica.activeRoles().contains(.controller) else {
+            throw MobileDistributedMeshError.administratorRequired
+        }
         let peers = try await replica.store.trustedDevices(
             in: group, membershipEpoch: epoch
         )
@@ -182,15 +346,15 @@ final class DistributedMeshSupport {
                 id: replica.identity.deviceID,
                 endpointID: try replica.identity.endpointID(),
                 displayName: "This iPhone",
-                roles: [.controller, .replica]
+                roles: try replica.activeRoles()
             ),
             signingPublicKey: try replica.identity.signingPublicKeyBytes(),
             addressTicket: address.ticket
         )
         let survivors = peers.filter { $0.descriptor.id != device.descriptor.id }
-        let transition = try MeshMembershipTransitionSigner.sign(
-            trustGroupID: group, previousEpoch: epoch,
-            identity: replica.identity, roster: survivors + [localMember]
+        let transition = try await MeshTrustGroupLifecycle.certifyMembershipTransition(
+            replica: replica, runtime: runtime, group: group,
+            previousEpoch: epoch, roster: survivors + [localMember]
         )
         for peer in survivors {
             let transport = IrohMeshTransport(
@@ -204,7 +368,8 @@ final class DistributedMeshSupport {
                 .applyMembershipTransition(transition)
         }
         try await replica.store.applyMembershipTransition(
-            transition, localIdentity: replica.identity
+            transition, localIdentity: replica.identity,
+            localAuthorRoles: try replica.activeRoles()
         )
         connections.removeValue(forKey: device.descriptor.id)
         try await refreshTrustedDevices()
@@ -328,6 +493,14 @@ final class DistributedMeshSupport {
         try await requireChatRegistry().members(in: room)
     }
 
+    func agentPresence(for memberID: String) -> MobileAgentPresence? {
+        pruneExpiredRemotePresence()
+        let claims = remotePresenceByHost.values.compactMap { $0[memberID] }
+        // Resource IDs are globally stable. Multiple Host claims are a
+        // conflict, not a last-writer-wins opportunity.
+        return claims.count == 1 ? claims[0] : nil
+    }
+
     func createRoom(named name: String) async throws -> MeshRoomInfo {
         try await requireChatRegistry().createRoom(named: name)
     }
@@ -372,6 +545,16 @@ final class DistributedMeshSupport {
               let group = activeTrustGroupID
         else { throw MobileDistributedMeshError.networkNotReady }
         try await DistributedHostController.stopAgent(
+            memberID: memberID, runtime: runtime,
+            replica: replica, group: group
+        )
+    }
+
+    func locateAgentHost(memberID: String) async throws -> DistributedAgentHostLocation {
+        guard let runtime, let replica = localReplica,
+              let group = activeTrustGroupID
+        else { throw MobileDistributedMeshError.networkNotReady }
+        return try await DistributedHostController.locateAgent(
             memberID: memberID, runtime: runtime,
             replica: replica, group: group
         )
@@ -437,8 +620,17 @@ final class DistributedMeshSupport {
     @discardableResult
     func synchronizeOnce() async -> Int {
         guard let runtime, let replica = localReplica,
-              let group = activeTrustGroupID,
-              let epoch = try? await replica.store.membershipEpoch(for: group)
+              let group = activeTrustGroupID
+        else { return 0 }
+        guard (try? replica.activeTrustGroup()) == group else {
+            activeTrustGroupID = nil
+            clearActiveGroupState()
+            return 0
+        }
+        scheduleMembershipCatchUp(
+            replica: replica, runtime: runtime, expectedGroup: group
+        )
+        guard let epoch = try? await replica.store.membershipEpoch(for: group)
         else { return 0 }
         do {
             let peers = try await replica.store.trustedDevices(
@@ -448,48 +640,194 @@ final class DistributedMeshSupport {
             let pendingTransition = try await replica.store.latestMembershipTransition(
                 for: group
             )
+            let syncGate = peerSynchronizationGate
             var received = 0
             var failedPeers: [String] = []
-            for peer in peers {
-                let transport = IrohMeshTransport(
-                    runtime: runtime,
-                    remote: MeshIrohEndpointAddress(
-                        endpointID: peer.descriptor.endpointID,
-                        ticket: peer.addressTicket
-                    )
-                )
-                do {
-                    if let pendingTransition,
-                       pendingTransition.nextEpoch == epoch {
-                        try? await MeshReplicaRPCClient(transport: transport)
-                            .applyMembershipTransition(pendingTransition)
+            var presenceFailures: [String] = []
+            await withTaskGroup(
+                of: MeshPeerSynchronizationResult?.self
+            ) { tasks in
+                for peer in peers {
+                    tasks.addTask {
+                        guard await syncGate.acquire(peer.descriptor.id) else {
+                            return nil
+                        }
+                        let transport = IrohMeshTransport(
+                            runtime: runtime,
+                            remote: MeshIrohEndpointAddress(
+                                endpointID: peer.descriptor.endpointID,
+                                ticket: peer.addressTicket
+                            )
+                        )
+                        if let pendingTransition,
+                           pendingTransition.nextEpoch == epoch {
+                            try? await MeshReplicaRPCClient(
+                                transport: transport,
+                                requestTimeoutMilliseconds: MeshReplicaRPCClient
+                                    .backgroundRequestTimeoutMilliseconds
+                            ).applyMembershipTransition(pendingTransition)
+                        }
+                        let client = MeshReplicaRPCClient(
+                            transport: transport,
+                            requestTimeoutMilliseconds: MeshReplicaRPCClient
+                                .backgroundRequestTimeoutMilliseconds
+                        )
+                        let presenceFetcher:
+                            (@Sendable () async throws -> MeshAgentPresenceSnapshot)?
+                        // Probe every authenticated replica for compatibility
+                        // with older pairings that omitted the Host role on
+                        // Macs. Identity and per-resource ownership are still
+                        // verified before any state reaches the UI.
+                        presenceFetcher = {
+                            try await MeshVerifiedHostPresence.fetch(
+                                client: client, peer: peer, group: group,
+                                membershipEpoch: epoch
+                            )
+                        }
+                        let outcome = await MeshPeerSyncPresenceCoordinator.run(
+                            synchronize: {
+                                let report = try await MeshReplicaSyncSession(
+                                    store: replica.store, client: client,
+                                    remoteEndpointID: peer.descriptor.endpointID
+                                ).synchronize(group: group, membershipEpoch: epoch)
+                                return report.eventCount + report.snapshotCount
+                            },
+                            fetchPresence: presenceFetcher
+                        )
+                        let result = MeshPeerSynchronizationResult(
+                            deviceID: peer.descriptor.id,
+                            displayName: peer.descriptor.displayName,
+                            received: outcome.received,
+                            path: outcome.isReachable
+                                ? await transport.path : .unavailable,
+                            connected: outcome.isReachable,
+                            synchronizationError: outcome.synchronizationError,
+                            presence: outcome.presence,
+                            presenceError: outcome.presenceError
+                        )
+                        await syncGate.release(peer.descriptor.id)
+                        return result
                     }
-                    let report = try await MeshReplicaSyncSession(
-                        store: replica.store,
-                        client: MeshReplicaRPCClient(transport: transport),
-                        remoteEndpointID: peer.descriptor.endpointID
-                    ).synchronize(group: group, membershipEpoch: epoch)
-                    received += report.eventCount + report.snapshotCount
-                    connections[peer.descriptor.id] = MeshConnectionSnapshot(
-                        peer: peer.descriptor.id, path: await transport.path,
-                        connected: true, lastChange: Date()
+                }
+                for await result in tasks {
+                    guard let result else { continue }
+#if DEBUG
+                    if ProcessInfo.processInfo.environment[
+                        "PHAROS_TEST_TRACE_PRESENCE"
+                    ] == "1" {
+                        print(
+                            "PHAROS_PRESENCE peer=\(result.displayName) " +
+                            "path=\(result.path.rawValue) " +
+                            "sync=\(result.synchronizationError ?? "ok") " +
+                            "presence=\(result.presenceError ?? "ok") " +
+                            "records=\(result.presence?.records.count ?? 0)"
+                        )
+                    }
+#endif
+                    let oldPresence = effectiveRemotePresence()
+                    received += result.received
+                    if result.received > 0 {
+                        // Each peer converges independently. Refresh visible
+                        // Chat/Projects as soon as one reachable replica
+                        // delivers data instead of waiting for an offline phone
+                        // to exhaust its timeout at the end of the task group.
+                        registryRevision += 1
+                    }
+                    if result.synchronizationError != nil {
+                        failedPeers.append(result.displayName)
+                    }
+                    if let error = result.presenceError {
+                        presenceDiagnostics[result.deviceID] = error
+                        presenceFailures.append("\(result.displayName): \(error)")
+                    } else {
+                        presenceDiagnostics[result.deviceID] = nil
+                    }
+                    connections[result.deviceID] = MeshConnectionSnapshot(
+                        peer: result.deviceID, path: result.path,
+                        connected: result.connected, lastChange: Date()
                     )
-                } catch {
-                    failedPeers.append(peer.descriptor.displayName)
-                    connections[peer.descriptor.id] = MeshConnectionSnapshot(
-                        peer: peer.descriptor.id, path: .unavailable,
-                        connected: false, lastChange: Date()
-                    )
+                    let now = Int64(Date().timeIntervalSince1970 * 1_000)
+                    let priorLeaseExpired =
+                        (remotePresenceExpirationByHost[result.deviceID] ?? .min) <= now
+                    if let snapshot = result.presence,
+                       priorLeaseExpired || snapshot.generatedAtMilliseconds >=
+                        (remotePresenceGenerationByHost[result.deviceID] ?? .min) {
+                        remotePresenceGenerationByHost[result.deviceID] =
+                            snapshot.generatedAtMilliseconds
+                        remotePresenceExpirationByHost[result.deviceID] =
+                            snapshot.expiresAtMilliseconds
+                        remotePresenceByHost[result.deviceID] = Dictionary(
+                            uniqueKeysWithValues: snapshot.records.map {
+                                ($0.resourceID.rawValue, MobileAgentPresence(
+                                    record: $0, hostDeviceID: result.deviceID,
+                                    hostDisplayName: result.displayName,
+                                    expiresAtMilliseconds: snapshot.expiresAtMilliseconds
+                                ))
+                            }
+                        )
+                    }
+                    pruneExpiredRemotePresence()
+                    if effectiveRemotePresence() != oldPresence {
+                        // Presence is ephemeral, not a replicated event. Wake
+                        // already-visible Agents/Chat views immediately instead
+                        // of waiting for the slowest peer in this round.
+                        registryRevision += 1
+                    }
                 }
             }
+            pruneExpiredRemotePresence()
             lastSyncError = MeshSyncFailurePresentation.message(
                 peerNames: failedPeers
             )
-            if received > 0 { registryRevision += 1 }
+            if lastSyncError == nil,
+               let diagnostic = presenceFailures.sorted().first {
+                lastSyncError = "Live agent state unavailable — \(diagnostic)"
+            }
             return received
         } catch {
             lastSyncError = "Could not read trusted devices: \(error)"
             return 0
+        }
+    }
+
+    /// Preserve the foreground one-second cadence when a locked/offline peer
+    /// consumes its timeout. Replica events are immutable and deduplicated;
+    /// bounding overlap at two rounds prevents retry buildup.
+    func scheduleSynchronization() {
+        guard synchronizationTasksInFlight < 2 else { return }
+        synchronizationTasksInFlight += 1
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.synchronizationTasksInFlight -= 1 }
+            _ = await self.synchronizeOnce()
+        }
+    }
+
+    /// Keep signed membership recovery independent from high-frequency data
+    /// convergence so a locked/offline peer cannot stall live chat or agent
+    /// presence on the peers that remain reachable.
+    private func scheduleMembershipCatchUp(
+        replica: MeshLocalReplica, runtime: IrohEndpointRuntime,
+        expectedGroup: MeshTrustGroupID
+    ) {
+        guard membershipCatchUpTask == nil else { return }
+        membershipCatchUpTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.membershipCatchUpTask = nil }
+            let advanced = try? await MeshTrustGroupLifecycle.catchUpMembership(
+                replica: replica, runtime: runtime
+            )
+            guard !Task.isCancelled,
+                  self.activeTrustGroupID == expectedGroup else { return }
+            guard (try? replica.activeTrustGroup()) == expectedGroup else {
+                self.activeTrustGroupID = nil
+                self.clearActiveGroupState()
+                return
+            }
+            if (advanced ?? 0) > 0 {
+                try? await self.refreshTrustedDevices()
+                self.registryRevision += 1
+            }
         }
     }
 
@@ -500,20 +838,34 @@ final class DistributedMeshSupport {
         )
         let address = try await endpoint.localAddress()
         let router = MeshReplicaRPCServer(
-            store: replica.store, hostIdentity: replica.identity
+            store: replica.store,
+            hostIdentity: replica.identity,
+            localAuthorRoles: try replica.activeRoles(),
+            allowedTrustGroupID: activeTrustGroupID,
+            restrictToAllowedTrustGroup: true,
+            membershipTransitionObserver: { transition in
+                try? replica.reconcileActiveMembership(after: transition)
+            }
         )
         await endpoint.startServing { request, remoteEndpointID in
             if let pairing = try? MeshTrustPairingRPCRequest.decode(request.header) {
                 guard pairing.acceptance.acceptingEndpointID == remoteEndpointID else {
                     throw MeshTrustPairingError.endpointKeyMismatch
                 }
-                let paired = try await MeshTrustPairingService(
-                    identity: replica.identity, invitationStore: replica.store
-                ).redeem(pairing.acceptance, for: pairing.invitation)
+                let certified = try await MeshTrustGroupLifecycle
+                    .certifyJoiningDevice(
+                        invitation: pairing.invitation,
+                        acceptance: pairing.acceptance,
+                        replica: replica,
+                        runtime: endpoint,
+                        localAddress: address,
+                        displayName: "iPhone"
+                    )
                 return MeshTransportResponse(
                     header: try MeshTrustPairingRPCResponse(
-                        acceptedDeviceID: paired.descriptor.id
-                    ).encoded()
+                        acceptedDeviceID: certified.pairedDevice.descriptor.id
+                    ).encoded(),
+                    body: try certified.transition.canonicalBytes()
                 )
             }
             return try await router.handle(
@@ -522,6 +874,51 @@ final class DistributedMeshSupport {
         }
         runtime = endpoint
         localAddress = address
+    }
+
+    private func configureRegistries(
+        replica: MeshLocalReplica, group: MeshTrustGroupID
+    ) {
+        registry = MobileDistributedRegistry(replica: replica, group: group)
+        chatRegistry = DistributedChatRegistry(replica: replica, group: group)
+        attachmentRegistry = DistributedAttachmentRegistry(
+            replica: replica, group: group
+        )
+        registryRevision += 1
+    }
+
+    private func clearActiveGroupState() {
+        membershipCatchUpTask?.cancel()
+        membershipCatchUpTask = nil
+        registry = nil
+        chatRegistry = nil
+        attachmentRegistry = nil
+        trustedDevices = []
+        membershipAudit = []
+        connections = [:]
+        remotePresenceByHost = [:]
+        remotePresenceGenerationByHost = [:]
+        remotePresenceExpirationByHost = [:]
+        presenceDiagnostics = [:]
+        lastSyncError = nil
+        registryRevision += 1
+    }
+
+    private func stopNetwork() async {
+        membershipCatchUpTask?.cancel()
+        membershipCatchUpTask = nil
+        if let runtime { try? await runtime.close() }
+        runtime = nil
+        localAddress = nil
+    }
+
+    private func restartNetwork(replica: MeshLocalReplica) async {
+        await stopNetwork()
+        do {
+            try await startNetwork(replica: replica)
+        } catch {
+            lastSyncError = "Could not restart private Mesh: \(error)"
+        }
     }
 
     private func requireRegistry() throws -> MobileDistributedRegistry {
@@ -544,6 +941,54 @@ final class DistributedMeshSupport {
         }
         return attachmentRegistry
     }
+
+    private func pruneExpiredRemotePresence() {
+        let now = Int64(Date().timeIntervalSince1970 * 1_000)
+        remotePresenceByHost = remotePresenceByHost.reduce(into: [:]) { result, entry in
+            let live = entry.value.filter { $0.value.expiresAtMilliseconds > now }
+            if !live.isEmpty { result[entry.key] = live }
+        }
+    }
+
+    private func effectiveRemotePresence() -> [String: MobileAgentPresence] {
+        var claims: [String: [MobileAgentPresence]] = [:]
+        for host in remotePresenceByHost.values {
+            for (resourceID, presence) in host {
+                claims[resourceID, default: []].append(presence)
+            }
+        }
+        return claims.compactMapValues { $0.count == 1 ? $0[0] : nil }
+    }
+}
+
+private struct MeshPeerSynchronizationResult: Sendable {
+    let deviceID: MeshDeviceID
+    let displayName: String
+    let received: Int
+    let path: MeshTransportPath
+    let connected: Bool
+    let synchronizationError: String?
+    let presence: MeshAgentPresenceSnapshot?
+    let presenceError: String?
+}
+
+struct MobileAgentPresence: Equatable, Sendable {
+    let record: MeshAgentPresenceRecord
+    let hostDeviceID: MeshDeviceID
+    let hostDisplayName: String
+    let expiresAtMilliseconds: Int64
+}
+
+private actor MobilePeerSynchronizationGate {
+    private var active: Set<MeshDeviceID> = []
+
+    func acquire(_ peer: MeshDeviceID) -> Bool {
+        active.insert(peer).inserted
+    }
+
+    func release(_ peer: MeshDeviceID) {
+        active.remove(peer)
+    }
 }
 
 private enum MobileDistributedMeshError: LocalizedError {
@@ -553,6 +998,7 @@ private enum MobileDistributedMeshError: LocalizedError {
     case noActiveTrustGroup
     case attachmentNotFound
     case attachmentUnavailable
+    case administratorRequired
 
     var errorDescription: String? {
         switch self {
@@ -568,6 +1014,8 @@ private enum MobileDistributedMeshError: LocalizedError {
             "Attachment metadata is missing from this replica."
         case .attachmentUnavailable:
             "No trusted online device currently has this attachment."
+        case .administratorRequired:
+            "Only a current Mesh Admin device can invite or remove devices."
         }
     }
 }

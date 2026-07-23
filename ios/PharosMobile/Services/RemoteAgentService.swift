@@ -178,6 +178,14 @@ enum RemoteCommandBuilder {
         return "export PATH=\(path):$PATH; s=$(\(tmux) display-message -p -t '\(pane)' '#{session_name}') || exit 31; exec \(tmux) attach-session -d -t \"=$s\""
     }
 
+    static func attach(resourceID: String) throws -> String {
+        guard MeshResourceID(rawValue: resourceID) != nil else {
+            throw RemoteActionError.unsafeValue(resourceID)
+        }
+        return "export PATH=\(path):$PATH; exec pharos mesh attach-local " +
+            singleQuoted(resourceID)
+    }
+
     private static func safe(_ value: String) -> Bool {
         !value.isEmpty && value.allSatisfy { $0.isLetter || $0.isNumber || "._-".contains($0) }
     }

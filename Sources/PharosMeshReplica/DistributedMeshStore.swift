@@ -119,10 +119,31 @@ public struct MeshQuarantinedEvent: Codable, Equatable, Sendable {
     }
 }
 
+public struct MeshMembershipAuditEntry: Equatable, Identifiable, Sendable {
+    public var id: UInt64 { nextEpoch }
+    public let previousEpoch: UInt64
+    public let nextEpoch: UInt64
+    public let authorDeviceID: MeshDeviceID
+    public let removedDevices: [MeshPairedDevice]
+    public let transitionSHA256: String
+
+    public init(
+        previousEpoch: UInt64, nextEpoch: UInt64,
+        authorDeviceID: MeshDeviceID,
+        removedDevices: [MeshPairedDevice], transitionSHA256: String
+    ) {
+        self.previousEpoch = previousEpoch
+        self.nextEpoch = nextEpoch
+        self.authorDeviceID = authorDeviceID
+        self.removedDevices = removedDevices
+        self.transitionSHA256 = transitionSHA256
+    }
+}
+
 /// One serialized SQLite connection per local replica. No method contacts a
 /// broker or network transport; callers explicitly choose the database URL.
 public actor DistributedMeshStore {
-    public nonisolated static let currentSchemaVersion = 8
+    public nonisolated static let currentSchemaVersion = 10
     private let databaseAddress: UInt
     private let blobDirectoryPath: String
     private var materializationNeedsRebuild: Bool
@@ -160,6 +181,8 @@ public actor DistributedMeshStore {
             try Self.execute(handle, sql: Self.schemaV6)
             try Self.execute(handle, sql: Self.schemaV7)
             try Self.execute(handle, sql: Self.schemaV8)
+            try Self.execute(handle, sql: Self.schemaV9)
+            try Self.execute(handle, sql: Self.schemaV10)
             // Schema v2/v3 derived rows are not authoritative for the current
             // materializer. Persist the rebuild requirement inside this same
             // migration transaction so every process observes it; an actor-
@@ -402,6 +425,26 @@ public actor DistributedMeshStore {
     public func consume(_ record: MeshInvitationUseRecord, accepting device: MeshPairedDevice,
                         at milliseconds: Int64)
         throws -> MeshInvitationConsumption {
+        try consume(
+            record, accepting: device, at: milliseconds,
+            installTrustedDevice: true
+        )
+    }
+
+    public func consumeForMembershipTransition(
+        _ record: MeshInvitationUseRecord, accepting device: MeshPairedDevice,
+        at milliseconds: Int64
+    ) throws -> MeshInvitationConsumption {
+        try consume(
+            record, accepting: device, at: milliseconds,
+            installTrustedDevice: false
+        )
+    }
+
+    private func consume(
+        _ record: MeshInvitationUseRecord, accepting device: MeshPairedDevice,
+        at milliseconds: Int64, installTrustedDevice: Bool
+    ) throws -> MeshInvitationConsumption {
         try record.validate()
         try device.validateBinding()
         return try transaction { () -> MeshInvitationConsumption in
@@ -423,15 +466,17 @@ public actor DistributedMeshStore {
                 guard existing.hasSameCryptographicIdentity(as: device) else {
                     return .deviceAlreadyTrusted
                 }
-                try run(
-                    "UPDATE trusted_devices SET membership_epoch=?, envelope=? " +
-                        "WHERE trust_group_id=? AND device_id=?",
-                    [.integer(Int64(record.membershipEpoch)),
-                     .blob(try MeshCanonicalStoreJSON.encode(device)),
-                     .text(record.trustGroupID.rawValue.uuidString),
-                     .text(device.descriptor.id.rawValue.uuidString)]
-                )
-            } else {
+                if installTrustedDevice {
+                    try run(
+                        "UPDATE trusted_devices SET membership_epoch=?, envelope=? " +
+                            "WHERE trust_group_id=? AND device_id=?",
+                        [.integer(Int64(record.membershipEpoch)),
+                         .blob(try MeshCanonicalStoreJSON.encode(device)),
+                         .text(record.trustGroupID.rawValue.uuidString),
+                         .text(device.descriptor.id.rawValue.uuidString)]
+                    )
+                }
+            } else if installTrustedDevice {
                 try run(
                     "INSERT INTO trusted_devices(trust_group_id, device_id, endpoint_id, " +
                         "membership_epoch, envelope) VALUES(?, ?, ?, ?, ?)",
@@ -502,6 +547,83 @@ public actor DistributedMeshStore {
         }
     }
 
+    /// Installs a removed member's key as historical verification material
+    /// without changing the active membership epoch. Callers must obtain this
+    /// binding from an authenticated current controller roster.
+    public func installRetainedVerifiedPeer(
+        _ device: MeshPairedDevice, in group: MeshTrustGroupID,
+        membershipEpoch: UInt64
+    ) throws {
+        try device.validateBinding()
+        guard membershipEpoch > 0, membershipEpoch <= UInt64(Int64.max),
+              let currentEpoch = try self.membershipEpoch(for: group),
+              membershipEpoch < currentEpoch else {
+            throw MeshTrustPairingError.membershipEpochMismatch
+        }
+        try transaction {
+            if let existing = try trustedDeviceMatching(
+                group: group, deviceID: device.descriptor.id,
+                endpointID: device.descriptor.endpointID
+            ) {
+                guard existing.hasSameCryptographicIdentity(as: device) else {
+                    throw MeshTrustPairingError.deviceAlreadyTrusted
+                }
+                let storedEpoch = try queryOne(
+                    "SELECT membership_epoch FROM trusted_devices " +
+                        "WHERE trust_group_id=? AND device_id=?",
+                    [.text(group.rawValue.uuidString),
+                     .text(device.descriptor.id.rawValue.uuidString)]
+                ) { UInt64(sqlite3_column_int64($0, 0)) }
+                guard let storedEpoch, storedEpoch > membershipEpoch else {
+                    return
+                }
+                // Older builds could relay a retained binding without its
+                // original epoch, promoting a revoked device into the current
+                // live roster. A current controller may repair that row only
+                // when the locally stored, signed current transition also
+                // proves the device is absent. This is a monotonic reduction
+                // of authority; it can never demote a legitimate current
+                // member merely because one peer supplied stale history.
+                if storedEpoch == currentEpoch {
+                    guard let storedTransitionEnvelope = try queryOne(
+                        "SELECT envelope FROM membership_transitions " +
+                            "WHERE trust_group_id=? AND next_epoch=? LIMIT 1",
+                        [.text(group.rawValue.uuidString),
+                         .integer(Int64(currentEpoch))],
+                        transform: { Self.columnData($0, index: 0) }
+                    ),
+                    let envelope = storedTransitionEnvelope,
+                    let transition = try? MeshMembershipTransition.decodeCanonical(
+                        envelope
+                    ),
+                    transition.trustGroupID == group,
+                    transition.nextEpoch == currentEpoch,
+                    !transition.roster.contains(where: {
+                        $0.descriptor.id == device.descriptor.id ||
+                            $0.descriptor.endpointID == device.descriptor.endpointID
+                    }) else { return }
+                }
+                try run(
+                    "UPDATE trusted_devices SET membership_epoch=? " +
+                        "WHERE trust_group_id=? AND device_id=?",
+                    [.integer(Int64(membershipEpoch)),
+                     .text(group.rawValue.uuidString),
+                     .text(device.descriptor.id.rawValue.uuidString)]
+                )
+                return
+            }
+            try run(
+                "INSERT INTO trusted_devices(trust_group_id, device_id, endpoint_id, " +
+                    "membership_epoch, envelope) VALUES(?, ?, ?, ?, ?)",
+                [.text(group.rawValue.uuidString),
+                 .text(device.descriptor.id.rawValue.uuidString),
+                 .text(device.descriptor.endpointID.rawValue),
+                 .integer(Int64(membershipEpoch)),
+                 .blob(try MeshCanonicalStoreJSON.encode(device))]
+            )
+        }
+    }
+
     public func trustedDevice(in group: MeshTrustGroupID,
                               id: MeshDeviceID) throws -> MeshPairedDevice? {
         try queryOne(
@@ -536,6 +658,212 @@ public actor DistributedMeshStore {
         }
     }
 
+    /// All retained bindings, including devices removed in earlier epochs.
+    /// These rows are verification/audit material only; callers must continue
+    /// using the epoch-scoped overload for live authorization and UI rosters.
+    public func retainedTrustedDevices(
+        in group: MeshTrustGroupID
+    ) throws -> [(device: MeshPairedDevice, membershipEpoch: UInt64)] {
+        try query(
+            "SELECT envelope, membership_epoch FROM trusted_devices " +
+                "WHERE trust_group_id=? ORDER BY device_id",
+            [.text(group.rawValue.uuidString)]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let device = try? JSONDecoder().decode(
+                    MeshPairedDevice.self, from: data
+                  ) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            let epoch = sqlite3_column_int64(statement, 1)
+            guard epoch > 0 else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            try device.validateBinding()
+            return (device, UInt64(epoch))
+        }
+    }
+
+    public func membershipQuorumRequiredFromEpoch(
+        for group: MeshTrustGroupID
+    ) throws -> UInt64? {
+        try queryOne(
+            "SELECT quorum_required_from_epoch FROM membership_policies " +
+                "WHERE trust_group_id=?",
+            [.text(group.rawValue.uuidString)]
+        ) { UInt64(sqlite3_column_int64($0, 0)) }
+    }
+
+    /// Durably consumes this controller's one vote for a previous epoch before
+    /// returning its signature. Replaying the same proposal is idempotent;
+    /// asking the controller to approve a competing proposal fails closed.
+    /// The author signature is already carried by the proposal, so an author
+    /// receives nil after its vote is journaled.
+    public func recordMembershipVote(
+        for proposal: MeshMembershipTransition,
+        localIdentity: MeshDeviceIdentity,
+        localAuthorRoles: Set<MeshDeviceRole>
+    ) throws -> MeshMembershipApproval? {
+        guard proposal.version == MeshMembershipTransition.quorumVersion else {
+            throw MeshMembershipTransitionError.quorumRequired
+        }
+        try proposal.verifyAuthorSignature()
+        let endpoint = try localIdentity.endpointID()
+        let localController = MeshMembershipControllerIdentity(
+            deviceID: localIdentity.deviceID,
+            endpointID: endpoint,
+            signingPublicKey: try localIdentity.signingPublicKeyBytes()
+        )
+        guard localAuthorRoles.contains(.controller),
+              proposal.previousControllers?.contains(localController) == true else {
+            throw MeshMembershipTransitionError.authorNotController
+        }
+        let digest = Data(SHA256.hash(data: try proposal.canonicalSigningBytes()))
+        let approval: MeshMembershipApproval?
+        if proposal.authorDeviceID == localIdentity.deviceID &&
+            proposal.authorEndpointID == endpoint {
+            approval = nil
+        } else {
+            approval = try MeshMembershipTransitionSigner.approve(
+                proposal, with: localIdentity
+            )
+        }
+        let approvalEnvelope = try approval.map(MeshCanonicalStoreJSON.encode)
+
+        return try transaction {
+            let current = try membershipEpoch(for: proposal.trustGroupID)
+            guard current == proposal.previousEpoch else {
+                throw DistributedMeshStoreError.membershipEpochMismatch(
+                    expected: current ?? 0, actual: proposal.previousEpoch
+                )
+            }
+            try requireMatchingPreviousControllers(
+                proposal, localIdentity: localIdentity,
+                localAuthorRoles: localAuthorRoles
+            )
+            let existing: (Data, Data?)? = try queryOne(
+                "SELECT proposal_digest, approval FROM membership_votes " +
+                    "WHERE trust_group_id=? AND previous_epoch=? AND voter_device_id=?",
+                [.text(proposal.trustGroupID.rawValue.uuidString),
+                 .integer(Int64(proposal.previousEpoch)),
+                 .text(localIdentity.deviceID.rawValue.uuidString)]
+            ) { statement in
+                guard let storedDigest = Self.columnData(statement, index: 0) else {
+                    throw DistributedMeshStoreError.corruptStoredValue
+                }
+                return (storedDigest, Self.columnData(statement, index: 1))
+            }
+            if let existing {
+                guard existing.0 == digest else {
+                    throw MeshMembershipTransitionError.conflictingTransition
+                }
+                try persistMembershipProposal(
+                    proposal, digest: digest,
+                    authorDeviceID: proposal.authorDeviceID
+                )
+                if approval == nil { return nil }
+                guard let envelope = existing.1,
+                      let stored = try? JSONDecoder().decode(
+                          MeshMembershipApproval.self, from: envelope
+                      ), stored.deviceID == localIdentity.deviceID,
+                      stored.endpointID == endpoint,
+                      let key = try? Curve25519.Signing.PublicKey(
+                          rawRepresentation: localController.signingPublicKey
+                      ), key.isValidSignature(
+                          stored.signature,
+                          for: try proposal.canonicalSigningBytes()
+                      ) else {
+                    throw DistributedMeshStoreError.corruptStoredValue
+                }
+                return stored
+            }
+            try run(
+                "INSERT INTO membership_votes(trust_group_id, previous_epoch, " +
+                    "voter_device_id, proposal_digest, approval) VALUES(?, ?, ?, ?, ?)",
+                [.text(proposal.trustGroupID.rawValue.uuidString),
+                 .integer(Int64(proposal.previousEpoch)),
+                 .text(localIdentity.deviceID.rawValue.uuidString), .blob(digest),
+                 approvalEnvelope.map(Binding.blob) ?? .null]
+            )
+            try persistMembershipProposal(
+                proposal, digest: digest,
+                authorDeviceID: proposal.authorDeviceID
+            )
+            return approval
+        }
+    }
+
+    /// Returns the exact author-signed proposal previously chosen for this
+    /// epoch. Retrying it after a transient network failure preserves both the
+    /// one-vote safety rule and liveness; creating a different proposal would
+    /// correctly conflict with the durable vote journal.
+    public func pendingMembershipProposal(
+        for group: MeshTrustGroupID,
+        previousEpoch: UInt64,
+        authoredBy identity: MeshDeviceIdentity
+    ) throws -> MeshMembershipTransition? {
+        let stored: (Data, Data)? = try queryOne(
+            "SELECT proposal_digest, envelope FROM membership_proposals " +
+                "WHERE trust_group_id=? AND previous_epoch=? AND author_device_id=?",
+            [.text(group.rawValue.uuidString), .integer(Int64(previousEpoch)),
+             .text(identity.deviceID.rawValue.uuidString)]
+        ) { statement in
+            guard let digest = Self.columnData(statement, index: 0),
+                  let envelope = Self.columnData(statement, index: 1) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            return (digest, envelope)
+        }
+        guard let stored else { return nil }
+        guard let proposal = try? JSONDecoder().decode(
+            MeshMembershipTransition.self, from: stored.1
+        ) else { throw DistributedMeshStoreError.corruptStoredValue }
+        try proposal.verifyAuthorSignature()
+        let digest = Data(SHA256.hash(data: try proposal.canonicalSigningBytes()))
+        let localEndpointID = try identity.endpointID()
+        guard stored.0 == digest,
+              proposal.trustGroupID == group,
+              proposal.previousEpoch == previousEpoch,
+              proposal.authorDeviceID == identity.deviceID,
+              proposal.authorEndpointID == localEndpointID
+        else { throw DistributedMeshStoreError.corruptStoredValue }
+        return proposal
+    }
+
+    private func persistMembershipProposal(
+        _ proposal: MeshMembershipTransition,
+        digest: Data,
+        authorDeviceID: MeshDeviceID
+    ) throws {
+        let envelope = try MeshCanonicalStoreJSON.encode(proposal)
+        let existing: (Data, Data)? = try queryOne(
+            "SELECT proposal_digest, envelope FROM membership_proposals " +
+                "WHERE trust_group_id=? AND previous_epoch=? AND author_device_id=?",
+            [.text(proposal.trustGroupID.rawValue.uuidString),
+             .integer(Int64(proposal.previousEpoch)),
+             .text(authorDeviceID.rawValue.uuidString)]
+        ) { statement in
+            guard let storedDigest = Self.columnData(statement, index: 0),
+                  let storedEnvelope = Self.columnData(statement, index: 1) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            return (storedDigest, storedEnvelope)
+        }
+        if let existing {
+            guard existing.0 == digest, existing.1 == envelope else {
+                throw MeshMembershipTransitionError.conflictingTransition
+            }
+            return
+        }
+        try run(
+            "INSERT INTO membership_proposals(trust_group_id, previous_epoch, " +
+                "author_device_id, proposal_digest, envelope) VALUES(?, ?, ?, ?, ?)",
+            [.text(proposal.trustGroupID.rawValue.uuidString),
+             .integer(Int64(proposal.previousEpoch)),
+             .text(authorDeviceID.rawValue.uuidString), .blob(digest), .blob(envelope)]
+        )
+    }
+
     /// Atomically installs a controller-signed next-epoch roster. Retained
     /// peers move to the new epoch, omitted peers remain as inert audit rows,
     /// and all pending invitations from the previous epoch become unusable.
@@ -543,7 +871,64 @@ public actor DistributedMeshStore {
     /// for the same epoch fails closed instead of silently splitting trust.
     public func applyMembershipTransition(
         _ transition: MeshMembershipTransition,
+        localIdentity: MeshDeviceIdentity,
+        localAuthorRoles: Set<MeshDeviceRole>
+    ) throws {
+        try applyMembershipTransition(
+            transition, localIdentity: localIdentity,
+            localAuthorRoles: localAuthorRoles,
+            requireExactPreviousControllerSet: true
+        )
+    }
+
+    /// Applies the certified transition returned by the inviter while this
+    /// device is bootstrapping. A joining replica knows only the inviter from
+    /// the signed QR link, so it cannot reconstruct the complete previous
+    /// controller roster locally. The certificate remains fully verified and
+    /// must be authored by that exact trusted inviter; normal replicas never
+    /// use this bounded exception.
+    public func applyJoiningMembershipTransition(
+        _ transition: MeshMembershipTransition,
+        trustedInviter: MeshPairedDevice,
+        joiningDevice: MeshPairedDevice,
         localIdentity: MeshDeviceIdentity
+    ) throws {
+        try trustedInviter.validateBinding()
+        try joiningDevice.validateBinding()
+        let localEndpointID = try localIdentity.endpointID()
+        let localSigningPublicKey = try localIdentity.signingPublicKeyBytes()
+        let certifiedJoiningDevice = transition.roster.first {
+            $0.descriptor.id == joiningDevice.descriptor.id &&
+                $0.descriptor.endpointID == joiningDevice.descriptor.endpointID
+        }
+        guard trustedInviter.descriptor.roles.contains(.controller),
+              transition.authorDeviceID == trustedInviter.descriptor.id,
+              transition.authorEndpointID == trustedInviter.descriptor.endpointID,
+              transition.previousControllers?.contains(
+                MeshMembershipControllerIdentity(trustedInviter)
+              ) == true,
+              joiningDevice.descriptor.id == localIdentity.deviceID,
+              joiningDevice.descriptor.endpointID == localEndpointID,
+              joiningDevice.signingPublicKey == localSigningPublicKey,
+              certifiedJoiningDevice?.hasSameCryptographicIdentity(
+                as: joiningDevice
+              ) == true,
+              certifiedJoiningDevice?.descriptor.roles ==
+                joiningDevice.descriptor.roles,
+              certifiedJoiningDevice?.descriptor.protocolVersion ==
+                joiningDevice.descriptor.protocolVersion
+        else { throw MeshMembershipTransitionError.invalidRoster }
+        try applyMembershipTransition(
+            transition, localIdentity: localIdentity, localAuthorRoles: [],
+            requireExactPreviousControllerSet: false
+        )
+    }
+
+    private func applyMembershipTransition(
+        _ transition: MeshMembershipTransition,
+        localIdentity: MeshDeviceIdentity,
+        localAuthorRoles: Set<MeshDeviceRole>,
+        requireExactPreviousControllerSet: Bool
     ) throws {
         try transition.verifySignature()
         let envelope = try transition.canonicalBytes()
@@ -571,16 +956,32 @@ public actor DistributedMeshStore {
                     expected: current ?? 0, actual: transition.previousEpoch
                 )
             }
-            let proposedAuthor = transition.roster.first {
-                $0.descriptor.id == transition.authorDeviceID
+            if let requiredFrom = try membershipQuorumRequiredFromEpoch(
+                for: transition.trustGroupID
+            ), transition.previousEpoch >= requiredFrom,
+               transition.version != MeshMembershipTransition.quorumVersion {
+                throw MeshMembershipTransitionError.quorumRequired
             }
+            if transition.version == MeshMembershipTransition.quorumVersion,
+               requireExactPreviousControllerSet {
+                try requireMatchingPreviousControllers(
+                    transition, localIdentity: localIdentity,
+                    localAuthorRoles: localAuthorRoles
+                )
+            }
+            let proposedAuthor = transition.signingAuthor
+            let proposedAuthorKey = transition.previousControllers?.first(where: {
+                $0.deviceID == transition.authorDeviceID &&
+                    $0.endpointID == transition.authorEndpointID
+            })?.signingPublicKey ?? proposedAuthor?.signingPublicKey
             let localDeviceID = localIdentity.deviceID
             let localEndpointID = try localIdentity.endpointID()
             let localSigningPublicKey = try localIdentity.signingPublicKeyBytes()
             let authorIsLocal =
                 transition.authorDeviceID == localDeviceID &&
                 transition.authorEndpointID == localEndpointID &&
-                proposedAuthor?.signingPublicKey == localSigningPublicKey
+                proposedAuthorKey == localSigningPublicKey &&
+                localAuthorRoles.contains(.controller)
             let authorWasTrustedController: Bool
             if let currentAuthor = try trustedDevice(
                 in: transition.trustGroupID,
@@ -589,7 +990,7 @@ public actor DistributedMeshStore {
             ), currentAuthor.descriptor.id == transition.authorDeviceID {
                 authorWasTrustedController =
                     currentAuthor.descriptor.roles.contains(.controller) &&
-                    currentAuthor.signingPublicKey == proposedAuthor?.signingPublicKey
+                    currentAuthor.signingPublicKey == proposedAuthorKey
             } else {
                 authorWasTrustedController = false
             }
@@ -638,6 +1039,18 @@ public actor DistributedMeshStore {
                 [.integer(Int64(transition.nextEpoch)),
                  .text(transition.trustGroupID.rawValue.uuidString)]
             )
+            if transition.version == MeshMembershipTransition.quorumVersion {
+                try run(
+                    "INSERT INTO membership_policies(trust_group_id, " +
+                        "quorum_required_from_epoch) VALUES(?, ?) " +
+                        "ON CONFLICT(trust_group_id) DO UPDATE SET " +
+                        "quorum_required_from_epoch=MIN(" +
+                        "membership_policies.quorum_required_from_epoch, " +
+                        "excluded.quorum_required_from_epoch)",
+                    [.text(transition.trustGroupID.rawValue.uuidString),
+                     .integer(Int64(transition.nextEpoch))]
+                )
+            }
         }
     }
 
@@ -648,6 +1061,68 @@ public actor DistributedMeshStore {
             "SELECT envelope FROM membership_transitions WHERE trust_group_id=? " +
                 "ORDER BY next_epoch DESC LIMIT 1",
             [.text(group.rawValue.uuidString)]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let transition = try? JSONDecoder().decode(
+                    MeshMembershipTransition.self, from: data
+                  ) else { throw DistributedMeshStoreError.corruptStoredValue }
+            try transition.verifySignature()
+            return transition
+        }
+    }
+
+    /// Complete, signature-verified membership history for administration and
+    /// incident audit. Old trusted-device rows remain available separately so
+    /// callers can explain exactly which devices were omitted at each epoch.
+    public func membershipTransitions(
+        for group: MeshTrustGroupID
+    ) throws -> [MeshMembershipTransition] {
+        try query(
+            "SELECT envelope FROM membership_transitions WHERE trust_group_id=? " +
+                "ORDER BY next_epoch ASC",
+            [.text(group.rawValue.uuidString)]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let transition = try? JSONDecoder().decode(
+                    MeshMembershipTransition.self, from: data
+                  ) else { throw DistributedMeshStoreError.corruptStoredValue }
+            try transition.verifySignature()
+            return transition
+        }
+    }
+
+    public func membershipAudit(
+        for group: MeshTrustGroupID
+    ) throws -> [MeshMembershipAuditEntry] {
+        try membershipTransitions(for: group).map { transition in
+            let removed = try trustedDevices(
+                in: group, membershipEpoch: transition.previousEpoch
+            )
+            let digest = SHA256.hash(data: try transition.canonicalBytes())
+                .map { String(format: "%02x", $0) }.joined()
+            return MeshMembershipAuditEntry(
+                previousEpoch: transition.previousEpoch,
+                nextEpoch: transition.nextEpoch,
+                authorDeviceID: transition.authorDeviceID,
+                removedDevices: removed,
+                transitionSHA256: digest
+            )
+        }
+    }
+
+    /// The signed transition immediately following an older membership epoch.
+    /// Stale but still-authenticated peers use this one step at a time; serving
+    /// an arbitrary latest roster would skip the signature chain that makes
+    /// revocation and concurrent proposals fail closed.
+    public func nextMembershipTransition(
+        for group: MeshTrustGroupID, after previousEpoch: UInt64
+    ) throws -> MeshMembershipTransition? {
+        guard previousEpoch < UInt64(Int64.max) else { return nil }
+        return try queryOne(
+            "SELECT envelope FROM membership_transitions WHERE trust_group_id=? " +
+                "AND previous_epoch=? AND next_epoch=? LIMIT 1",
+            [.text(group.rawValue.uuidString), .integer(Int64(previousEpoch)),
+             .integer(Int64(previousEpoch + 1))]
         ) { statement in
             guard let data = Self.columnData(statement, index: 0),
                   let transition = try? JSONDecoder().decode(
@@ -703,6 +1178,28 @@ public actor DistributedMeshStore {
         }
     }
 
+    /// Resolves retained signature material without granting live membership.
+    /// This is used only after a current controller vouches for historical
+    /// events or snapshots; current RPC authorization remains epoch-scoped.
+    public func retainedTrustedDevice(
+        in group: MeshTrustGroupID, endpointID: MeshEndpointID
+    ) throws -> MeshPairedDevice? {
+        try queryOne(
+            "SELECT envelope FROM trusted_devices WHERE trust_group_id=? " +
+                "AND endpoint_id=? LIMIT 1",
+            [.text(group.rawValue.uuidString), .text(endpointID.rawValue)]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let device = try? JSONDecoder().decode(
+                    MeshPairedDevice.self, from: data
+                  ) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            try device.validateBinding()
+            return device
+        }
+    }
+
     public func authorizeReplicaRPCPeer(
         in group: MeshTrustGroupID, endpointID: MeshEndpointID,
         membershipEpoch: UInt64
@@ -717,6 +1214,45 @@ public actor DistributedMeshStore {
     /// caller supplies the trusted membership public key; this method checks it
     /// before opening the write transaction.
     public func insert(_ event: MeshReplicatedEvent, authorPublicKey: Data) throws -> MeshEventInsertion {
+        try insertVerified(
+            event, authorPublicKey: authorPublicKey,
+            historicalEventsAcceptedThrough: nil
+        )
+    }
+
+    /// Accepts an event authored in an earlier membership epoch only when the
+    /// authenticated current controller serving the range vouches for it.
+    /// Normal writes still require an exact epoch match, so a removed device
+    /// cannot append to an old author chain after revocation.
+    public func insertHistoricalEvent(
+        _ event: MeshReplicatedEvent, authorPublicKey: Data,
+        vouchedBy controllerEndpointID: MeshEndpointID,
+        currentMembershipEpoch: UInt64
+    ) throws -> MeshEventInsertion {
+        guard event.membershipEpoch < currentMembershipEpoch else {
+            throw DistributedMeshStoreError.membershipEpochMismatch(
+                expected: currentMembershipEpoch, actual: event.membershipEpoch
+            )
+        }
+        _ = try requireCurrentController(
+            in: event.trustGroupID, endpointID: controllerEndpointID,
+            membershipEpoch: currentMembershipEpoch
+        )
+        guard let author = try retainedTrustedDevice(
+            in: event.trustGroupID, endpointID: event.authorEndpointID
+        ), author.signingPublicKey == authorPublicKey else {
+            throw DistributedMeshStoreError.rpcPeerNotTrusted
+        }
+        return try insertVerified(
+            event, authorPublicKey: authorPublicKey,
+            historicalEventsAcceptedThrough: currentMembershipEpoch
+        )
+    }
+
+    private func insertVerified(
+        _ event: MeshReplicatedEvent, authorPublicKey: Data,
+        historicalEventsAcceptedThrough currentMembershipEpoch: UInt64?
+    ) throws -> MeshEventInsertion {
         try ensureMaterializedState()
         try DistributedMeshCrypto.verify(event, publicKey: authorPublicKey)
         let bytes = try event.canonicalBytes()
@@ -739,7 +1275,13 @@ public actor DistributedMeshStore {
             try requireDistributedWriteAuthorityIfMigrating(event.trustGroupID)
 
             let storedEpoch = try membershipEpoch(for: event.trustGroupID)
-            guard storedEpoch == event.membershipEpoch else {
+            let epochIsAccepted = if let currentMembershipEpoch {
+                storedEpoch == currentMembershipEpoch &&
+                    event.membershipEpoch <= currentMembershipEpoch
+            } else {
+                storedEpoch == event.membershipEpoch
+            }
+            guard epochIsAccepted else {
                 throw DistributedMeshStoreError.membershipEpochMismatch(
                     expected: storedEpoch ?? 0, actual: event.membershipEpoch
                 )
@@ -1193,10 +1735,47 @@ public actor DistributedMeshStore {
     public func installSnapshot(_ bundle: MeshReplicaSnapshotBundle,
                                 creatorPublicKey: Data) throws {
         let envelope = try validatedSnapshotEnvelope(
-            bundle, creatorPublicKey: creatorPublicKey
+            bundle, creatorPublicKey: creatorPublicKey,
+            historicalSnapshotsAcceptedThrough: nil
         )
         try transaction {
             try installSnapshotState(bundle, envelope: envelope)
+        }
+        materializationNeedsRebuild = false
+    }
+
+    /// Snapshot equivalent of `insertHistoricalEvent`: only a current
+    /// controller may attest a compacted snapshot created before the current
+    /// membership epoch.
+    public func installHistoricalSnapshot(
+        _ bundle: MeshReplicaSnapshotBundle, creatorPublicKey: Data,
+        vouchedBy controllerEndpointID: MeshEndpointID,
+        currentMembershipEpoch: UInt64
+    ) throws {
+        let group = bundle.snapshot.trustGroupID
+        guard bundle.snapshot.membershipEpoch < currentMembershipEpoch else {
+            throw DistributedMeshStoreError.membershipEpochMismatch(
+                expected: currentMembershipEpoch,
+                actual: bundle.snapshot.membershipEpoch
+            )
+        }
+        _ = try requireCurrentController(
+            in: group, endpointID: controllerEndpointID,
+            membershipEpoch: currentMembershipEpoch
+        )
+        guard let creator = try retainedTrustedDevice(
+            in: group, endpointID: bundle.snapshot.creatorEndpointID
+        ), creator.signingPublicKey == creatorPublicKey else {
+            throw DistributedMeshStoreError.rpcPeerNotTrusted
+        }
+        let envelope = try validatedSnapshotEnvelope(
+            bundle, creatorPublicKey: creatorPublicKey,
+            historicalSnapshotsAcceptedThrough: currentMembershipEpoch
+        )
+        try transaction {
+            try installSnapshotState(
+                bundle, envelope: envelope, preservingLocalSuffixes: true
+            )
         }
         materializationNeedsRebuild = false
     }
@@ -1211,7 +1790,8 @@ public actor DistributedMeshStore {
             throw MeshMigrationValidationError.invalidInventoryDigest
         }
         let envelope = try validatedSnapshotEnvelope(
-            bundle, creatorPublicKey: creatorPublicKey
+            bundle, creatorPublicKey: creatorPublicKey,
+            historicalSnapshotsAcceptedThrough: nil
         )
         let state = try transaction { () -> MeshMigrationCutoverState in
             let next: MeshMigrationCutoverState
@@ -1871,13 +2451,20 @@ public actor DistributedMeshStore {
     }
 
     private func validatedSnapshotEnvelope(
-        _ bundle: MeshReplicaSnapshotBundle, creatorPublicKey: Data
+        _ bundle: MeshReplicaSnapshotBundle, creatorPublicKey: Data,
+        historicalSnapshotsAcceptedThrough currentMembershipEpoch: UInt64?
     ) throws -> Data {
         try MeshReplicaSnapshotCrypto.verify(bundle, creatorPublicKey: creatorPublicKey)
         try ensureMaterializedState()
         let group = bundle.snapshot.trustGroupID
-        guard let epoch = try membershipEpoch(for: group),
-              epoch == bundle.snapshot.membershipEpoch else {
+        let epoch = try membershipEpoch(for: group)
+        let epochIsAccepted = if let currentMembershipEpoch {
+            epoch == currentMembershipEpoch &&
+                bundle.snapshot.membershipEpoch <= currentMembershipEpoch
+        } else {
+            epoch == bundle.snapshot.membershipEpoch
+        }
+        guard epochIsAccepted else {
             throw DistributedMeshStoreError.membershipEpochMismatch(
                 expected: try membershipEpoch(for: group) ?? 0,
                 actual: bundle.snapshot.membershipEpoch
@@ -1892,19 +2479,43 @@ public actor DistributedMeshStore {
     }
 
     private func installSnapshotState(
-        _ bundle: MeshReplicaSnapshotBundle, envelope: Data
+        _ bundle: MeshReplicaSnapshotBundle, envelope: Data,
+        preservingLocalSuffixes: Bool = false
     ) throws {
         let group = bundle.snapshot.trustGroupID
         let remoteHeads = Dictionary(
             uniqueKeysWithValues: bundle.snapshot.authorHeads.map { ($0.endpointID, $0) }
         )
-        for local in try authorHeads(for: group) {
-            guard let remote = remoteHeads[local.endpointID],
-                  remote.sequence >= local.sequence else {
-                throw DistributedMeshStoreError.snapshotDoesNotCoverLocalHead(local.endpointID)
+        let localHeads = try authorHeads(for: group)
+        let localEvents = preservingLocalSuffixes
+            ? try eventsForSnapshotReplay(in: group, after: remoteHeads)
+            : []
+        for local in localHeads {
+            guard let remote = remoteHeads[local.endpointID] else {
+                if preservingLocalSuffixes { continue }
+                throw DistributedMeshStoreError.snapshotDoesNotCoverLocalHead(
+                    local.endpointID
+                )
             }
-            if remote.sequence == local.sequence, remote.eventHash != local.eventHash {
-                throw DistributedMeshStoreError.snapshotHeadHashMismatch(local.endpointID)
+            if remote.sequence < local.sequence {
+                guard preservingLocalSuffixes else {
+                    throw DistributedMeshStoreError.snapshotDoesNotCoverLocalHead(
+                        local.endpointID
+                    )
+                }
+                guard let localHashAtRemoteHead = try eventHash(
+                    group: group, endpoint: local.endpointID,
+                    sequence: remote.sequence
+                ), localHashAtRemoteHead == remote.eventHash else {
+                    throw DistributedMeshStoreError.snapshotHeadHashMismatch(
+                        local.endpointID
+                    )
+                }
+            } else if remote.sequence == local.sequence,
+                      remote.eventHash != local.eventHash {
+                throw DistributedMeshStoreError.snapshotHeadHashMismatch(
+                    local.endpointID
+                )
             }
         }
         try run(
@@ -1928,8 +2539,43 @@ public actor DistributedMeshStore {
                  .integer(Int64(head.sequence)), .blob(head.eventHash)]
             )
         }
+        for event in localEvents {
+            let eventEnvelope = try event.canonicalBytes()
+            try materialize(event, envelope: eventEnvelope)
+            try run(
+                "INSERT INTO author_heads(trust_group_id, author_endpoint_id, sequence, " +
+                    "event_hash) VALUES(?, ?, ?, ?) ON CONFLICT(trust_group_id, " +
+                    "author_endpoint_id) DO UPDATE SET sequence=excluded.sequence, " +
+                    "event_hash=excluded.event_hash",
+                [.text(group.rawValue.uuidString),
+                 .text(event.authorEndpointID.rawValue),
+                 .integer(Int64(event.authorSequence)),
+                 .blob(try DistributedMeshCrypto.digest(event))]
+            )
+        }
         try storeSnapshot(bundle, envelope: envelope)
         try run("UPDATE materialization_metadata SET version=2")
+    }
+
+    private func eventsForSnapshotReplay(
+        in group: MeshTrustGroupID,
+        after remoteHeads: [MeshEndpointID: MeshSnapshotAuthorHead]
+    ) throws -> [MeshReplicatedEvent] {
+        try query(
+            "SELECT envelope FROM events WHERE trust_group_id=? " +
+                "ORDER BY author_endpoint_id, author_sequence",
+            [.text(group.rawValue.uuidString)]
+        ) { statement in
+            guard let data = Self.columnData(statement, index: 0),
+                  let event = try? JSONDecoder().decode(
+                    MeshReplicatedEvent.self, from: data
+                  ) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            return event
+        }.filter { event in
+            event.authorSequence > (remoteHeads[event.authorEndpointID]?.sequence ?? 0)
+        }
     }
 
     private func storeSnapshot(_ bundle: MeshReplicaSnapshotBundle,
@@ -2155,6 +2801,39 @@ public actor DistributedMeshStore {
         }
     }
 
+    /// Returns every signed Host resource owned by one device, including
+    /// retired audit rows. Callers must filter state explicitly; returning the
+    /// full set lets lifecycle repair distinguish a current ghost from an
+    /// intentionally retained retirement record.
+    public func hostResources(
+        in group: MeshTrustGroupID, hostDeviceID: MeshDeviceID
+    ) throws -> [MeshHostResource] {
+        let resourceIDs = try query(
+            "SELECT resource_id FROM host_resources WHERE trust_group_id=? " +
+            "AND host_device_id=? ORDER BY resource_id",
+            [
+                .text(group.rawValue.uuidString),
+                .text(hostDeviceID.rawValue.uuidString),
+            ]
+        ) { statement in
+            guard let resourceID = MeshResourceID(
+                rawValue: Self.columnText(statement, index: 0)
+            ) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            return resourceID
+        }
+        return try resourceIDs.map { resourceID in
+            guard let resource = try hostResource(
+                in: group, hostDeviceID: hostDeviceID,
+                resourceID: resourceID
+            ) else {
+                throw DistributedMeshStoreError.corruptStoredValue
+            }
+            return resource
+        }
+    }
+
     /// Authenticates and journals a directed command before any side effect.
     /// Stale, retired, disallowed, and already-expired work receives a signed
     /// terminal receipt instead of being reported as accepted.
@@ -2228,7 +2907,8 @@ public actor DistributedMeshStore {
             let receipt = MeshCommandReceipt(
                 commandID: command.id, idempotencyKey: command.idempotencyKey,
                 hostDeviceID: host.deviceID, resourceID: command.resourceID,
-                resourceGeneration: resource.generation, state: state,
+                resourceGeneration: resource.generation,
+                action: command.action, state: state,
                 acceptedAt: receivedAt, updatedAt: receivedAt,
                 failureCode: failureCode
             )
@@ -2430,6 +3110,50 @@ public actor DistributedMeshStore {
             in: group, endpointID: endpointID,
             membershipEpoch: membershipEpoch
         ) else { throw DistributedMeshStoreError.rpcPeerNotTrusted }
+        return peer
+    }
+
+    private func requireMatchingPreviousControllers(
+        _ transition: MeshMembershipTransition,
+        localIdentity: MeshDeviceIdentity,
+        localAuthorRoles: Set<MeshDeviceRole>
+    ) throws {
+        guard let claimed = transition.previousControllers else {
+            throw MeshMembershipTransitionError.previousControllerSetMismatch
+        }
+        var actualByEndpoint: [MeshEndpointID: MeshMembershipControllerIdentity] = [:]
+        for peer in try trustedDevices(
+            in: transition.trustGroupID,
+            membershipEpoch: transition.previousEpoch
+        ) where peer.descriptor.roles.contains(.controller) {
+            let controller = MeshMembershipControllerIdentity(peer)
+            actualByEndpoint[controller.endpointID] = controller
+        }
+        if localAuthorRoles.contains(.controller) {
+            let local = MeshMembershipControllerIdentity(
+                deviceID: localIdentity.deviceID,
+                endpointID: try localIdentity.endpointID(),
+                signingPublicKey: try localIdentity.signingPublicKeyBytes()
+            )
+            actualByEndpoint[local.endpointID] = local
+        }
+        let actual = actualByEndpoint.values.sorted { $0.endpointID < $1.endpointID }
+        guard actual == claimed else {
+            throw MeshMembershipTransitionError.previousControllerSetMismatch
+        }
+    }
+
+    private func requireCurrentController(
+        in group: MeshTrustGroupID, endpointID: MeshEndpointID,
+        membershipEpoch: UInt64
+    ) throws -> MeshPairedDevice {
+        let peer = try requireReplicaRPCPeer(
+            in: group, endpointID: endpointID,
+            membershipEpoch: membershipEpoch
+        )
+        guard peer.descriptor.roles.contains(.controller) else {
+            throw DistributedMeshStoreError.rpcPeerNotTrusted
+        }
         return peer
     }
 
@@ -3246,6 +3970,32 @@ public actor DistributedMeshStore {
       envelope BLOB NOT NULL,
       PRIMARY KEY(trust_group_id, next_epoch));
     UPDATE schema_metadata SET version=8;
+    """
+
+    private static let schemaV9 = """
+    CREATE TABLE IF NOT EXISTS membership_votes(
+      trust_group_id TEXT NOT NULL,
+      previous_epoch INTEGER NOT NULL CHECK(previous_epoch > 0),
+      voter_device_id TEXT NOT NULL,
+      proposal_digest BLOB NOT NULL CHECK(length(proposal_digest)=32),
+      approval BLOB,
+      PRIMARY KEY(trust_group_id, previous_epoch, voter_device_id));
+    CREATE TABLE IF NOT EXISTS membership_policies(
+      trust_group_id TEXT PRIMARY KEY,
+      quorum_required_from_epoch INTEGER NOT NULL
+        CHECK(quorum_required_from_epoch > 0));
+    UPDATE schema_metadata SET version=9;
+    """
+
+    private static let schemaV10 = """
+    CREATE TABLE IF NOT EXISTS membership_proposals(
+      trust_group_id TEXT NOT NULL,
+      previous_epoch INTEGER NOT NULL CHECK(previous_epoch > 0),
+      author_device_id TEXT NOT NULL,
+      proposal_digest BLOB NOT NULL CHECK(length(proposal_digest)=32),
+      envelope BLOB NOT NULL,
+      PRIMARY KEY(trust_group_id, previous_epoch, author_device_id));
+    UPDATE schema_metadata SET version=10;
     """
 }
 

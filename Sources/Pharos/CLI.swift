@@ -214,7 +214,15 @@ enum CLI {
             return 0
         }
         if sub == "pair", !legacyBrokerEnabled {
-            return await DistributedPairCLI.run(Array(args.dropFirst()))
+            let operation = {
+                await DistributedPairCLI.run(Array(args.dropFirst()))
+            }
+            if MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+                meshArguments: args
+            ) {
+                return await MacMeshRuntimeCoordinator.run(operation)
+            }
+            return await operation()
         }
         if DistributedAgentCLI.commands.contains(sub), !legacyBrokerEnabled {
             var distributedArgs = args
@@ -228,7 +236,15 @@ enum CLI {
                     distributedArgs += ["--session", sessionID]
                 }
             }
-            return await DistributedAgentCLI.run(distributedArgs)
+            let operation = {
+                await DistributedAgentCLI.run(distributedArgs)
+            }
+            if MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+                meshArguments: distributedArgs
+            ) {
+                return await MacMeshRuntimeCoordinator.run(operation)
+            }
+            return await operation()
         }
         if !legacyBrokerEnabled, sub == "unread", args.contains("--hook-stop") {
             return await DistributedHookCLI.run("stop", args: args)
@@ -574,6 +590,7 @@ enum CLI {
       create <room>                       create a replicated room
       list                                list replicated rooms + members
       join <room> <nick> --session <id>   join with this agent session
+      claim --member <session-id>         bind this exact tmux pane to an existing agent
       history <room> [--limit N]          show replicated history
       send <text> [@n …] [--room ROOM] [--member ID] [--reply ID] [--attach FILE]
       say <room> <nick> <text> [@n …] [--reply ID] [--attach FILE]
@@ -583,6 +600,7 @@ enum CLI {
       pair invite|accept|redeem|list|revoke manage signed trusted-device pairing
       leave <room> <nick|member-id>       leave replicated room membership
       stop <room> <nick|member-id>        send a signed stop to the owning Host
+      attach-local <member-id>            SSH-only: attach via Host-private tmux binding
       rename-member <room> <member> <new> rename replicated membership
       rename <room> <new-name>            rename a replicated room
       delete <room>                       delete a replicated room
@@ -847,7 +865,10 @@ enum CLI {
 
     // MARK: Misc
 
-    private static var version: String { "0.8.0" }
+    private static var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+            as? String ?? "2.0.0"
+    }
 
     private static func prettyJSON(_ obj: Any) -> String {
         guard

@@ -235,6 +235,47 @@ final class AgentKindCommandTests: XCTestCase {
         )
     }
 
+    func testMeshSpawnDoesNotMistakeTrustCursorOrBypassFlagForReadyComposer() {
+        XCTAssertEqual(
+            MeshSpawn.bootScreenState("""
+            codex --dangerously-bypass-hook-trust
+            Do you trust the contents of this directory?
+            › 1. Yes, continue
+            """),
+            .submitInterstitial
+        )
+        XCTAssertEqual(
+            MeshSpawn.bootScreenState(
+                "codex --dangerously-bypass-hook-trust\nstarting…"
+            ),
+            .waiting
+        )
+    }
+
+    func testMeshSpawnRecognizesRealCodexComposer() {
+        XCTAssertEqual(
+            MeshSpawn.bootScreenState("""
+            permissions: YOLO mode
+            › Find and fix a bug in @filename
+            /tmp/project · Full Access · Context 0% used
+            """),
+            .ready
+        )
+    }
+
+    func testMeshSpawnSkipsLaunchTimeCodexUpdateInsteadOfRunningHomebrew() {
+        XCTAssertEqual(
+            MeshSpawn.bootScreenState("""
+            Update available! 0.144.6 -> 0.145.0
+            › 1. Update now (runs `brew upgrade --cask codex`)
+              2. Skip
+              3. Skip until next version
+            Press enter to continue
+            """),
+            .skipUpdate
+        )
+    }
+
     func testCodexResolverIncludesDesktopAppAndVersionManagerShims() {
         let paths = LaunchService.agentExecutableCandidates(.codex, home: "/Users/tester")
         XCTAssertTrue(paths.contains("/Applications/Codex.app/Contents/Resources/codex"))
@@ -614,6 +655,31 @@ final class CLIParseTests: XCTestCase {
         XCTAssertTrue(CLI.isCommand("--help"))
         XCTAssertFalse(CLI.isCommand("-psn_0_12345")) // LaunchServices GUI arg
         XCTAssertFalse(CLI.isCommand("--mcp"))         // handled before isCommand
+    }
+
+    func testOnlyNetworkedMeshCommandsTakeExclusiveGUIRuntime() {
+        XCTAssertTrue(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+            meshArguments: ["pair", "invite"]
+        ))
+        XCTAssertTrue(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+            meshArguments: ["pair", "revoke", UUID().uuidString]
+        ))
+        XCTAssertTrue(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+            meshArguments: ["presence"]
+        ))
+        XCTAssertTrue(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+            meshArguments: ["stop", "room", "member"]
+        ))
+
+        XCTAssertFalse(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+            meshArguments: ["pair", "list"]
+        ))
+        XCTAssertFalse(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+            meshArguments: ["presence", "--local"]
+        ))
+        XCTAssertFalse(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+            meshArguments: ["send", "hello", "--member", "session"]
+        ))
     }
 }
 
@@ -2579,6 +2645,26 @@ final class MeshBroadcastTests: XCTestCase {
 }
 
 final class RemoteLaunchTmuxIdentityTests: XCTestCase {
+    func testRemoteAgentPrefersManagedCLIOverStaleUserLocalSymlink() {
+        let command = RemoteLaunch.preferredPathExport
+        let managed = try! XCTUnwrap(command.range(of: "/opt/homebrew/bin"))
+        let userLocal = try! XCTUnwrap(command.range(of: "$HOME/.local/bin"))
+
+        XCTAssertLessThan(managed.lowerBound, userLocal.lowerBound)
+        XCTAssertTrue(command.hasPrefix("export PATH="))
+    }
+
+    func testRemoteMeshHelperPrefersCurrentSystemAppBundle() {
+        XCTAssertEqual(
+            RemoteLaunch.remoteMeshHelperCandidates(home: "/Users/test").first,
+            "/Applications/Pharos.app/Contents/Helpers/pharos-mesh"
+        )
+        XCTAssertTrue(
+            RemoteLaunch.remoteMeshHelperCandidates(home: "/Users/test")
+                .contains("/Users/test/Applications/Pharos.app/Contents/Helpers/pharos-mesh")
+        )
+    }
+
     func testRemoteInteractiveShellFallsBackWhenForwardedTerminfoIsMissing() {
         let command = RemoteLaunch.terminalSafeRemoteShell("exec tmux attach -t '=agent'")
 

@@ -197,8 +197,6 @@ enum MeshSpawn {
                                 detail: "\(kind.rawValue) didn't reach its prompt — peek: tmux attach -t \(name)"))
             return
         }
-        passFirstRun(tmux, name)   // trust/theme/first-run screens
-
         onProgress(Progress(phase: .joining, detail: "asking it to join \(room)…"))
         sendLine(tmux, name, joinBrief(room: room, nick: nick, kind: kind))
 
@@ -270,42 +268,91 @@ enum MeshSpawn {
         try DistributedHostResourceBindings(
             dataDirectory: replica.rootURL
         ).save(binding, for: resourceID)
-        _ = try await replica.store.registerHostResource(
-            in: group, on: replica.identity, resourceID: resourceID,
-            allowedActions: [.poke, .stop],
-            at: MeshHybridTimestamp(
-                wallTimeMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
-            )
+        // The spawn knows the intended tmux name, but only a structured hook
+        // running inside that pane can prove the exact socket/pane/runtime
+        // fingerprint. Reconcile upgrades control capabilities immediately
+        // after that proof appears.
+        let actions: Set<MeshHostAction> = [.presence]
+        let timestamp = MeshHybridTimestamp(
+            wallTimeMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
         )
+        if let existing = try await replica.store.hostResource(
+            in: group, hostDeviceID: replica.identity.deviceID,
+            resourceID: resourceID
+        ) {
+            guard existing.state == .active else {
+                throw DistributedMeshStoreError.hostResourceRetired
+            }
+            if Set(existing.allowedActions) != actions {
+                _ = try await replica.store.replaceHostResource(
+                    in: group, on: replica.identity, resourceID: resourceID,
+                    allowedActions: actions, at: max(timestamp, existing.updatedAt)
+                )
+            }
+        } else {
+            _ = try await replica.store.registerHostResource(
+                in: group, on: replica.identity, resourceID: resourceID,
+                allowedActions: actions, at: timestamp
+            )
+        }
     }
 
     // MARK: tmux drive
 
-    /// Poll the pane until the agent's ready prompt (or a first-run screen)
-    /// appears. ~40s ceiling.
-    private static func waitForBoot(_ tmux: String, _ name: String) -> Bool {
-        for _ in 0..<20 {
-            let pane = Shell.run(tmux, ["capture-pane", "-p", "-t", name]).out.lowercased()
-            if pane.contains("bypass") || pane.contains("for shortcuts") || pane.contains("effort")
-                || pane.contains("trust this folder") || pane.contains("full access")
-                || pane.contains("›") {
-                return true
-            }
-            usleep(2_000_000)
-        }
-        return false
+    enum BootScreenState: Equatable {
+        case waiting
+        case skipUpdate
+        case submitInterstitial
+        case ready
     }
 
-    /// Dismiss trust / first-run prompts by pressing Enter a couple of times
-    /// (defaults are safe: trust folder, keep theme). Harmless if none are up.
-    private static func passFirstRun(_ tmux: String, _ name: String) {
-        for _ in 0..<2 {
-            let pane = Shell.run(tmux, ["capture-pane", "-p", "-t", name]).out.lowercased()
-            if pane.contains("trust this folder") || pane.contains("do you") || pane.contains("theme") {
+    /// Classify interstitials before readiness. Codex uses `›` both for its
+    /// normal composer and for the trust-screen selection cursor; the launch
+    /// command also contains the word "bypass". Neither is sufficient proof
+    /// that the composer is ready.
+    static func bootScreenState(_ pane: String) -> BootScreenState {
+        let lower = pane.lowercased()
+        // Never auto-select "Update now" inside a freshly-created tmux
+        // session. Homebrew can take minutes and replacing the running binary
+        // can strand its TUI. Skip this launch-time prompt; updates remain a
+        // deliberate user/admin operation outside agent creation.
+        if lower.contains("update available") &&
+            lower.contains("update now") && lower.contains("skip") {
+            return .skipUpdate
+        }
+        if lower.contains("do you trust") ||
+            lower.contains("trust the contents") ||
+            lower.contains("trust this folder") ||
+            (lower.contains("choose") && lower.contains("theme")) ||
+            lower.contains("press enter to continue") {
+            return .submitInterstitial
+        }
+        if lower.contains("for shortcuts") || lower.contains("effort:") ||
+            lower.contains("full access") && lower.contains("context") {
+            return .ready
+        }
+        return .waiting
+    }
+
+    /// Poll the pane until the agent's real composer appears, submitting any
+    /// trust/theme/continue interstitial first. ~40s ceiling.
+    private static func waitForBoot(_ tmux: String, _ name: String) -> Bool {
+        for _ in 0..<20 {
+            let pane = Shell.run(tmux, ["capture-pane", "-p", "-t", name]).out
+            switch bootScreenState(pane) {
+            case .ready:
+                return true
+            case .skipUpdate:
+                _ = Shell.run(tmux, ["send-keys", "-t", name, "Down", "Enter"])
+                usleep(1_500_000)
+            case .submitInterstitial:
                 _ = Shell.run(tmux, ["send-keys", "-t", name, "Enter"])
                 usleep(1_500_000)
+            case .waiting:
+                usleep(2_000_000)
             }
         }
+        return false
     }
 
     /// Type a line and submit it — the three-step send (literal text, pause,

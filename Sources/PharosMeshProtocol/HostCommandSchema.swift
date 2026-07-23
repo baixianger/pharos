@@ -25,6 +25,9 @@ public struct MeshHostAction: RawRepresentable, Codable, Hashable, Sendable {
     public static let stop = MeshHostAction(rawValue: "agent.stop.v1")!
     public static let spawn = MeshHostAction(rawValue: "agent.spawn.v1")!
     public static let attach = MeshHostAction(rawValue: "agent.attach.v1")!
+    /// Presence-only ownership. A session discovered through hooks may prove
+    /// which Host owns its live state without claiming tmux control.
+    public static let presence = MeshHostAction(rawValue: "agent.presence.v1")!
 }
 
 public enum MeshHostResourceState: String, Codable, Sendable {
@@ -186,6 +189,9 @@ public struct MeshCommandReceipt: Codable, Equatable, Identifiable, Sendable {
     public var hostDeviceID: MeshDeviceID
     public var resourceID: MeshResourceID
     public var resourceGeneration: UInt64
+    /// Optional only for decoding receipts written before Pharos 2.0 added
+    /// crash recovery. New receipts always persist the accepted action.
+    public var action: MeshHostAction?
     public var state: MeshCommandReceiptState
     public var acceptedAt: MeshHybridTimestamp
     public var updatedAt: MeshHybridTimestamp
@@ -194,7 +200,8 @@ public struct MeshCommandReceipt: Codable, Equatable, Identifiable, Sendable {
 
     public init(commandID: MeshCommandID, idempotencyKey: String,
                 hostDeviceID: MeshDeviceID, resourceID: MeshResourceID,
-                resourceGeneration: UInt64, state: MeshCommandReceiptState,
+                resourceGeneration: UInt64, action: MeshHostAction? = nil,
+                state: MeshCommandReceiptState,
                 acceptedAt: MeshHybridTimestamp, updatedAt: MeshHybridTimestamp,
                 result: Data? = nil, failureCode: String? = nil) {
         self.commandID = commandID
@@ -202,6 +209,7 @@ public struct MeshCommandReceipt: Codable, Equatable, Identifiable, Sendable {
         self.hostDeviceID = hostDeviceID
         self.resourceID = resourceID
         self.resourceGeneration = resourceGeneration
+        self.action = action
         self.state = state
         self.acceptedAt = acceptedAt
         self.updatedAt = updatedAt

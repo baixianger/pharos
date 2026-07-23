@@ -1,3 +1,4 @@
+import PharosMeshControl
 import SwiftUI
 
 /// One entry in the activity feed: an issue (by last update) or a project-log update.
@@ -53,7 +54,9 @@ struct DashboardView: View {
     @State private var agentToStop: StopTarget?
     @State private var meshAgents: [MeshMemberInfo] = []  // live roster across all machines (who)
     @State private var meshAgentSessions: [String: DashboardAgentSession] = [:]
+    @State private var meshAgentHosts: [String: DistributedAgentHostLocation] = [:]
     @State private var meshAgentToStop: MeshMemberInfo?
+    @State private var meshAgentToRemove: MeshMemberInfo?
     @State private var meshAgentToRename: MeshMemberInfo?
     @State private var meshAgentRenameText = ""
     @State private var agentActionError: String?
@@ -92,11 +95,14 @@ struct DashboardView: View {
                     if agentCount > 0 {
                         DashboardAgentsCard(
                             meshAgents: liveMeshAgents,
+                            hostLocations: meshAgentHosts,
                             unregisteredSessions: unregisteredSessions,
                             supportsSignedHostControl: distributedMesh.isProductModeEnabled,
                             onRename: beginRename,
                             onAttachMesh: attachMeshAgent,
                             onStopMesh: { meshAgentToStop = $0 },
+                            onRemoveMesh: { meshAgentToRemove = $0 },
+                            onRepairMesh: repairMeshAgent,
                             onAttachSession: attachSession,
                             onStopSession: beginStopSession
                         )
@@ -121,7 +127,10 @@ struct DashboardView: View {
         // painted it ~7s late. WindowTabBar sets `window.title` via AppKit
         // instead, which draws with the window's first frame.
         .onAppear { loadMesh() }
-        .onReceive(meshTick) { _ in loadMesh() }
+        .onReceive(meshTick) { _ in
+            loadMesh(refreshHostLocations: false)
+        }
+        .onChange(of: distributedMesh.presenceRevision) { _, _ in loadMesh() }
         .confirmationDialog("Stop agent on \(agentToStop?.label ?? "")?",
                             isPresented: Binding(get: { agentToStop != nil },
                                                  set: { if !$0 { agentToStop = nil } }),
@@ -141,6 +150,22 @@ struct DashboardView: View {
             Button("Cancel", role: .cancel) {}
         } message: { m in
             Text("Kills @\(m.nick)'s tmux session \(m.host.map { "on \($0)" } ?? "on this Mac") and removes this session from its chat rooms. Unsaved work is lost.")
+        }
+        .confirmationDialog(
+            "Remove @\(meshAgentToRemove?.nick ?? "") from Mesh?",
+            isPresented: Binding(
+                get: { meshAgentToRemove != nil },
+                set: { if !$0 { meshAgentToRemove = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: meshAgentToRemove
+        ) { m in
+            Button("Remove from Mesh", role: .destructive) {
+                removeMeshAgent(m)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Removes this identity from every chat room without stopping its process.")
         }
         .alert("Rename agent", isPresented: Binding(get: { meshAgentToRename != nil },
                                                      set: { if !$0 { meshAgentToRename = nil } }),
@@ -208,9 +233,26 @@ struct DashboardView: View {
     }
 
     private var unregisteredSessions: [DashboardAgentSession] {
-        DashboardAgentSession.unregistered(running: store.allRunningSessions,
-                                           remoteHosts: store.remoteSessionHosts,
-                                           registered: Set(meshAgentSessions.values))
+        var registered = Set(meshAgentSessions.values)
+        // A remote Host's structured observation is intentionally not
+        // replicated, so this dashboard may know the signed room member but
+        // not its tmux binding. Pharos-spawned mesh sessions have one exact,
+        // deterministic name; use that name only for display deduplication.
+        // Identity and Host control continue to route by stable member ID.
+        for member in liveMeshAgents {
+            for room in member.rooms {
+                let session = MeshSpawn.sessionName(room: room, nick: member.nick)
+                registered.insert(DashboardAgentSession(
+                    session: session,
+                    sshHost: store.remoteSessionHosts[session]
+                ))
+            }
+        }
+        return DashboardAgentSession.unregistered(
+            running: store.allRunningSessions,
+            remoteHosts: store.remoteSessionHosts,
+            registered: registered
+        )
     }
 
     private func beginRename(_ member: MeshMemberInfo) {
@@ -299,6 +341,29 @@ struct DashboardView: View {
         }
     }
 
+    private func removeMeshAgent(_ member: MeshMemberInfo) {
+        Task {
+            do {
+                try await distributedMesh.removeChatMemberFromAllRooms(member.id)
+            } catch {
+                agentActionError = error.localizedDescription
+            }
+            loadMesh()
+        }
+    }
+
+    private func repairMeshAgent(_ member: MeshMemberInfo) {
+        Task {
+            do {
+                meshAgentHosts[member.id] = try await distributedMesh
+                    .repairLocalAgentBinding(memberID: member.id)
+            } catch {
+                agentActionError = error.localizedDescription
+            }
+            loadMesh()
+        }
+    }
+
     private func removeMeshRegistrations(_ registrations: [(room: String, nick: String)],
                                          memberID: String) async -> String? {
         await Task.detached(priority: .userInitiated) {
@@ -348,41 +413,60 @@ struct DashboardView: View {
         return "ssh -t \(peer) \"\(escaped)\""
     }
 
-    private func loadMesh() {
+    private func loadMesh(refreshHostLocations: Bool = true) {
         if distributedMesh.isProductModeEnabled {
             Task {
                 do {
                     let rooms = try await distributedMesh.chatRooms()
                     var messages: [MeshMsg] = []
                     var members: [String: MeshMemberInfo] = [:]
+                    var sessions: [String: DashboardAgentSession] = [:]
                     for room in rooms {
                         messages.append(contentsOf: try await distributedMesh
                             .chatMessages(in: room, limit: 20))
-                        for member in try await distributedMesh.chatMembers(in: room) {
+                        for member in try await distributedMesh.chatMemberInfos(in: room) {
                             if var existing = members[member.id] {
                                 existing.rooms = Array(
                                     Set(existing.rooms + [room.name])
                                 ).sorted()
                                 members[member.id] = existing
                             } else {
-                                members[member.id] = MeshMemberInfo(
-                                    id: member.id, nick: member.nick,
-                                    rooms: [room.name], lastSeen: 0,
-                                    nodeOnline: nil
+                                members[member.id] = member
+                            }
+                            if let pane = member.tmuxPane,
+                               let session = RemoteLaunch.sessionName(
+                                pane: pane, host: nil, socket: member.tmuxSocket
+                               ) {
+                                sessions[member.id] = DashboardAgentSession(
+                                    session: session, sshHost: nil
                                 )
                             }
                         }
                     }
                     meshMessages = messages.sorted { $0.ts > $1.ts }
                     meshAgents = Array(members.values)
-                    // Distributed Host controls bind opaque resource IDs on
-                    // the owning device; legacy SSH/tmux discovery is never
-                    // used to infer a command route.
-                    meshAgentSessions = [:]
+                    // Display-only deduplication. Signed Host control still
+                    // routes exclusively by opaque resource ID.
+                    meshAgentSessions = sessions
+                    var hostLocations = meshAgentHosts.filter {
+                        members[$0.key] != nil
+                    }
+                    if refreshHostLocations {
+                        hostLocations = [:]
+                        for memberID in members.keys {
+                            if let location = try? await distributedMesh.locateAgentHost(
+                                memberID: memberID
+                            ) {
+                                hostLocations[memberID] = location
+                            }
+                        }
+                    }
+                    meshAgentHosts = hostLocations
                 } catch {
                     meshMessages = []
                     meshAgents = []
                     meshAgentSessions = [:]
+                    meshAgentHosts = [:]
                 }
             }
             return
@@ -660,11 +744,14 @@ struct DashboardView: View {
 
 private struct DashboardAgentsCard: View {
     let meshAgents: [MeshMemberInfo]
+    let hostLocations: [String: DistributedAgentHostLocation]
     let unregisteredSessions: [DashboardAgentSession]
     let supportsSignedHostControl: Bool
     let onRename: (MeshMemberInfo) -> Void
     let onAttachMesh: (MeshMemberInfo) -> Void
     let onStopMesh: (MeshMemberInfo) -> Void
+    let onRemoveMesh: (MeshMemberInfo) -> Void
+    let onRepairMesh: (MeshMemberInfo) -> Void
     let onAttachSession: (DashboardAgentSession) -> Void
     let onStopSession: (DashboardAgentSession) -> Void
 
@@ -676,10 +763,13 @@ private struct DashboardAgentsCard: View {
                 ForEach(meshAgents) { member in
                     DashboardMeshAgentRow(
                         member: member,
+                        hostLocation: hostLocations[member.id],
                         supportsSignedHostControl: supportsSignedHostControl,
                         onRename: { onRename(member) },
                         onAttach: { onAttachMesh(member) },
-                        onStop: { onStopMesh(member) }
+                        onStop: { onStopMesh(member) },
+                        onRemove: { onRemoveMesh(member) },
+                        onRepair: { onRepairMesh(member) }
                     )
                 }
                 ForEach(unregisteredSessions) { session in
@@ -699,10 +789,13 @@ private struct DashboardAgentsCard: View {
 
 private struct DashboardMeshAgentRow: View {
     let member: MeshMemberInfo
+    let hostLocation: DistributedAgentHostLocation?
     let supportsSignedHostControl: Bool
     let onRename: () -> Void
     let onAttach: () -> Void
     let onStop: () -> Void
+    let onRemove: () -> Void
+    let onRepair: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -726,9 +819,23 @@ private struct DashboardMeshAgentRow: View {
             Spacer(minLength: 8)
             Button("Rename", systemImage: "pencil", action: onRename)
                 .labelStyle(.iconOnly).help("Rename agent")
-            if member.tmuxPane != nil || supportsSignedHostControl {
-                if member.tmuxPane != nil { Button("Attach", action: onAttach) }
-                Button("Stop", role: .destructive, action: onStop).foregroundStyle(.red)
+            if supportsSignedHostControl {
+                if hostLocation?.controlReadiness == .managed {
+                    if member.tmuxPane != nil { Button("Attach", action: onAttach) }
+                    Button("Stop", role: .destructive, action: onStop)
+                        .foregroundStyle(.red)
+                } else {
+                    Text("Unmanaged").font(.caption2).foregroundStyle(.orange)
+                    if hostLocation?.isLocal == true {
+                        Button("Repair", action: onRepair)
+                    }
+                }
+                Button("Remove", role: .destructive, action: onRemove)
+                    .foregroundStyle(.red)
+            } else if member.tmuxPane != nil {
+                Button("Attach", action: onAttach)
+                Button("Stop", role: .destructive, action: onStop)
+                    .foregroundStyle(.red)
             } else {
                 Text("Not in tmux").font(.caption2).foregroundStyle(.tertiary)
             }

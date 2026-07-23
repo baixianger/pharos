@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import PharosMeshControl
 import PharosMeshReplica
 
 @Observable
@@ -847,6 +848,30 @@ final class RoomStore {
         }
     }
 
+    /// Removes the durable chat-roster identity without claiming that the
+    /// Host-local process was stopped. This remains available for an unmanaged
+    /// or offline legacy agent.
+    @discardableResult
+    func removeAgentFromMesh(_ member: MeshMember) async -> Bool {
+        guard usesDistributedRegistry else {
+            error = "Removing an agent without stopping it requires the P2P Mesh."
+            return false
+        }
+        do {
+            try await distributedMesh.removeMemberFromAllRooms(member.id)
+            error = nil
+            await refresh()
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
+    func locateAgentHost(memberID: String) async throws -> DistributedAgentHostLocation {
+        try await distributedMesh.locateAgentHost(memberID: memberID)
+    }
+
     private func mutateRegistry(_ mutation: (inout [String: Any]) throws -> Void) async -> Bool {
         guard !settings.mesh.host.isEmpty else {
             error = "Connect to your Broker before changing project data."
@@ -919,9 +944,22 @@ final class RoomStore {
     private func distributedMember(
         _ member: DistributedChatMember, room: String
     ) -> MeshMember {
-        MeshMember(
+        let presence = distributedMesh.agentPresence(for: member.id)
+        return MeshMember(
             id: member.id, nick: member.nick,
-            rooms: [room], lastSeen: 0, nodeOnline: nil
+            nodeID: presence?.hostDeviceID.rawValue.uuidString,
+            session: member.id, host: presence?.hostDisplayName,
+            state: presence?.record.state.rawValue,
+            stateTs: presence.map {
+                Double($0.record.observedAtMilliseconds) / 1_000
+            },
+            stateReason: presence?.record.stateReason,
+            kind: presence?.record.kind,
+            rooms: [room],
+            lastSeen: presence.map {
+                Double($0.record.observedAtMilliseconds) / 1_000
+            } ?? 0,
+            nodeOnline: presence.map { $0.record.state != .gone }
         )
     }
 

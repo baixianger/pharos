@@ -7,6 +7,81 @@ import PharosMeshIdentity
 import PharosMeshProtocol
 
 final class DistributedMeshStoreTests: XCTestCase {
+    func testReplicaSyncAndPresenceStartConcurrently() async {
+        let probe = ConcurrentOperationStartProbe()
+        let task = Task {
+            await MeshPeerSyncPresenceCoordinator.run(
+                synchronize: {
+                    await probe.arriveAndWait()
+                    return 1
+                },
+                fetchPresence: {
+                    await probe.arriveAndWait()
+                    return "busy"
+                }
+            )
+        }
+        for _ in 0..<100 where await probe.count < 2 {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        let count = await probe.count
+        task.cancel()
+        let outcome = await task.value
+
+        XCTAssertEqual(count, 2)
+        XCTAssertEqual(outcome.received, 1)
+        XCTAssertEqual(outcome.presence, "busy")
+    }
+
+    func testPresenceStillRefreshesWhenReplicaSynchronizationFails() async {
+        let outcome = await MeshPeerSyncPresenceCoordinator.run(
+            synchronize: {
+                throw MeshReplicaRPCError.synchronizationLimitExceeded
+            },
+            fetchPresence: { "busy" }
+        )
+
+        XCTAssertEqual(outcome.received, 0)
+        XCTAssertNotNil(outcome.synchronizationError)
+        XCTAssertEqual(outcome.presence, "busy")
+        XCTAssertNil(outcome.presenceError)
+        XCTAssertTrue(outcome.isReachable)
+    }
+
+    func testRPCClientPropagatesConfiguredBackgroundTimeout() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let transport = TimeoutRecordingTransport()
+        let client = MeshReplicaRPCClient(
+            transport: transport, requestTimeoutMilliseconds: 1_500
+        )
+
+        do {
+            _ = try await client.syncVector(
+                for: fixture.group, membershipEpoch: 1
+            )
+            XCTFail("recording transport should terminate the request")
+        } catch TimeoutRecordingTransport.Expected.failure {
+            // Expected: only the outbound request contract is under test.
+        }
+        let recordedTimeout = await transport.recordedTimeout()
+        XCTAssertEqual(recordedTimeout, 1_500)
+    }
+
+    func testBackgroundTimeoutCoversColdRelayConnectionBudget() {
+        // Cross-network cold QUIC setup was measured at 3.36–4.45 seconds. A
+        // simultaneous dial may then need one bounded reconnect, so keep room
+        // for two handshakes plus the authenticated RPC.
+        XCTAssertGreaterThanOrEqual(
+            MeshReplicaRPCClient.defaultRequestTimeoutMilliseconds,
+            10_000
+        )
+        XCTAssertGreaterThanOrEqual(
+            MeshReplicaRPCClient.backgroundRequestTimeoutMilliseconds,
+            10_000
+        )
+    }
+
     func testSyncFailurePresentationIsConciseStableAndRecoverable() {
         XCTAssertNil(MeshSyncFailurePresentation.message(peerNames: []))
         XCTAssertEqual(
@@ -162,6 +237,19 @@ final class DistributedMeshStoreTests: XCTestCase {
         let executionCounter = HostExecutionCounter()
         let server = MeshReplicaRPCServer(
             store: hostStore, hostIdentity: host,
+            hostPresenceProvider: {
+                MeshAgentPresenceSnapshot(
+                    hostDeviceID: host.deviceID,
+                    hostEndpointID: try! host.endpointID(),
+                    generatedAtMilliseconds: 1_000,
+                    expiresAtMilliseconds: 16_000,
+                    records: [MeshAgentPresenceRecord(
+                        resourceID: resourceID, state: .busy,
+                        observedAtMilliseconds: 900,
+                        stateReason: "tool", kind: "codex"
+                    )]
+                )
+            },
             hostCommandHandler: { command in
                 await executionCounter.record(command.id)
                 return .executed(Data("poke-ok".utf8))
@@ -190,7 +278,14 @@ final class DistributedMeshStoreTests: XCTestCase {
         XCTAssertEqual(fields.first?.value, mutation.value)
         let clientVector = try await clientStore.syncVector(for: fixture.group)
         let hostVector = try await hostStore.syncVector(for: fixture.group)
-        XCTAssertNotEqual(clientVector, hostVector)
+        XCTAssertEqual(clientVector, hostVector)
+        let pushedFields = try await hostStore.materializedFields(
+            for: controllerEntity, in: fixture.group
+        )
+        XCTAssertEqual(
+            pushedFields.first?.value,
+            Data("Offline Controller".utf8)
+        )
         let acknowledged = try await hostStore.acknowledgementVector(
             for: fixture.group, peer: controller.deviceID
         )
@@ -218,6 +313,21 @@ final class DistributedMeshStoreTests: XCTestCase {
         XCTAssertEqual(fetchedResource.resourceID, resourceID)
         XCTAssertEqual(fetchedResource.hostDeviceID, host.deviceID)
         XCTAssertEqual(fetchedResource.generation, 1)
+        let presence = try await client.hostPresence(
+            group: fixture.group, membershipEpoch: 1
+        )
+        XCTAssertEqual(presence.hostDeviceID, host.deviceID)
+        XCTAssertEqual(presence.records.first?.resourceID, resourceID)
+        XCTAssertEqual(presence.records.first?.state, .busy)
+        let storedHostPeer = try await clientStore.trustedDevice(
+            in: fixture.group, id: host.deviceID
+        )
+        let hostPeer = try XCTUnwrap(storedHostPeer)
+        let verifiedPresence = try await MeshVerifiedHostPresence.fetch(
+            client: client, peer: hostPeer, group: fixture.group,
+            membershipEpoch: 1, nowMilliseconds: 2_000
+        )
+        XCTAssertEqual(verifiedPresence.records.map(\.resourceID), [resourceID])
 
         let command = MeshHostCommand(
             trustGroupID: fixture.group, senderDeviceID: controller.deviceID,
@@ -255,6 +365,28 @@ final class DistributedMeshStoreTests: XCTestCase {
             XCTAssertEqual(
                 error as? MeshReplicaRPCError,
                 .remoteFailure("peer-not-trusted")
+            )
+        }
+
+        let inactiveGroupClient = MeshReplicaRPCClient(
+            transport: ReplicaRPCServerTransport(
+                server: MeshReplicaRPCServer(
+                    store: hostStore,
+                    allowedTrustGroupID: MeshTrustGroupID(),
+                    restrictToAllowedTrustGroup: true
+                ),
+                remoteEndpointID: try controller.endpointID()
+            )
+        )
+        do {
+            _ = try await inactiveGroupClient.syncVector(
+                for: fixture.group, membershipEpoch: 1
+            )
+            XCTFail("an archived trust group must not remain remotely serviceable")
+        } catch {
+            XCTAssertEqual(
+                error as? MeshReplicaRPCError,
+                .remoteFailure("trust-group-inactive")
             )
         }
 
@@ -361,6 +493,327 @@ final class DistributedMeshStoreTests: XCTestCase {
         XCTAssertEqual(materialized.first?.value, mutation.value)
     }
 
+    func testControllerSyncCarriesHistoricalEventsAcrossMembershipEpochs() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let hostStore = try DistributedMeshStore(
+            databaseURL: fixture.directory.appendingPathComponent("epoch-host.sqlite")
+        )
+        let joiningStore = try DistributedMeshStore(
+            databaseURL: fixture.directory.appendingPathComponent("epoch-joining.sqlite")
+        )
+        try await hostStore.setMembershipEpoch(1, for: fixture.group)
+        try await joiningStore.setMembershipEpoch(1, for: fixture.group)
+
+        let host = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 10))
+        let joining = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 20))
+        let removedAuthor = MeshDeviceIdentity.generate(
+            now: Date(timeIntervalSince1970: 30)
+        )
+        try await pairDevice(
+            joining, roles: [.controller, .replica], invitedBy: host,
+            in: fixture.group, store: hostStore
+        )
+        try await pairDevice(
+            host, roles: [.controller, .replica], invitedBy: joining,
+            in: fixture.group, store: joiningStore
+        )
+        try await pairDevice(
+            removedAuthor, roles: [.replica], invitedBy: host,
+            in: fixture.group, store: hostStore
+        )
+
+        let entity = MeshEntityReference(type: .project, id: "epoch-history")!
+        let mutation = MeshFieldMutation(
+            field: "title", value: Data("Created before pairing changed".utf8)
+        )
+        let event = try signedFieldEvent(
+            group: fixture.group, device: removedAuthor.deviceID,
+            endpoint: try removedAuthor.endpointID(),
+            key: try Curve25519.Signing.PrivateKey(
+                rawRepresentation: removedAuthor.irohSecretKeyBytes()
+            ),
+            sequence: 1, timestamp: .init(wallTimeMilliseconds: 1_000),
+            entity: entity, mutation: mutation
+        )
+        _ = try await hostStore.insert(
+            event, authorPublicKey: try removedAuthor.signingPublicKeyBytes()
+        )
+
+        let hostMember = try pairedDevice(
+            host, name: "Host Controller", roles: [.controller, .replica]
+        )
+        let joiningMember = try pairedDevice(
+            joining, name: "Joining Controller", roles: [.controller, .replica]
+        )
+        let transition = try MeshMembershipTransitionSigner.sign(
+            trustGroupID: fixture.group, previousEpoch: 1,
+            identity: host, roster: [hostMember, joiningMember]
+        )
+        try await hostStore.applyMembershipTransition(
+            transition, localIdentity: host,
+            localAuthorRoles: [.controller, .replica]
+        )
+        try await joiningStore.applyMembershipTransition(
+            transition, localIdentity: joining,
+            localAuthorRoles: [.replica]
+        )
+
+        let transport = ReplicaRPCServerTransport(
+            server: MeshReplicaRPCServer(store: hostStore, hostIdentity: host),
+            remoteEndpointID: try joining.endpointID()
+        )
+        let report = try await MeshReplicaSyncSession(
+            store: joiningStore,
+            client: MeshReplicaRPCClient(transport: transport),
+            remoteEndpointID: try host.endpointID()
+        ).synchronize(group: fixture.group, membershipEpoch: 2)
+
+        let materialized = try await joiningStore.materializedFields(
+            for: entity, in: fixture.group
+        )
+        let retainedAuthor = try await joiningStore.retainedTrustedDevice(
+            in: fixture.group, endpointID: try removedAuthor.endpointID()
+        )
+        let activePeers = try await joiningStore.trustedDevices(
+            in: fixture.group, membershipEpoch: 2
+        )
+        XCTAssertEqual(report.eventCount, 1)
+        XCTAssertEqual(
+            retainedAuthor?.signingPublicKey,
+            try removedAuthor.signingPublicKeyBytes()
+        )
+        XCTAssertFalse(activePeers.contains {
+            $0.descriptor.id == removedAuthor.deviceID
+        })
+        XCTAssertEqual(materialized.first?.value, mutation.value)
+    }
+
+    func testControllerRosterRepairsPromotedHistoricalGhostWithoutDemotingActivePeer()
+        async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let hostStore = try DistributedMeshStore(
+            databaseURL: fixture.directory.appendingPathComponent(
+                "ghost-repair-host.sqlite"
+            )
+        )
+        let joiningStore = try DistributedMeshStore(
+            databaseURL: fixture.directory.appendingPathComponent(
+                "ghost-repair-joining.sqlite"
+            )
+        )
+        try await hostStore.setMembershipEpoch(1, for: fixture.group)
+        try await joiningStore.setMembershipEpoch(1, for: fixture.group)
+
+        let host = MeshDeviceIdentity.generate()
+        let joining = MeshDeviceIdentity.generate()
+        let removed = MeshDeviceIdentity.generate()
+        try await pairDevice(
+            joining, roles: [.controller, .replica], invitedBy: host,
+            in: fixture.group, store: hostStore
+        )
+        try await pairDevice(
+            removed, roles: [.replica], invitedBy: host,
+            in: fixture.group, store: hostStore
+        )
+        try await pairDevice(
+            host, roles: [.controller, .replica], invitedBy: joining,
+            in: fixture.group, store: joiningStore
+        )
+        try await pairDevice(
+            removed, roles: [.replica], invitedBy: joining,
+            in: fixture.group, store: joiningStore
+        )
+
+        let hostMember = try pairedDevice(
+            host, name: "Host", roles: [.controller, .replica]
+        )
+        let joiningMember = try pairedDevice(
+            joining, name: "Joining", roles: [.controller, .replica]
+        )
+        let removedMember = try pairedDevice(
+            removed, name: "Removed", roles: [.replica]
+        )
+        let transition = try MeshMembershipTransitionSigner.sign(
+            trustGroupID: fixture.group, previousEpoch: 1,
+            identity: host, roster: [hostMember, joiningMember]
+        )
+        try await hostStore.applyMembershipTransition(
+            transition, localIdentity: host,
+            localAuthorRoles: [.controller, .replica]
+        )
+        try await joiningStore.applyMembershipTransition(
+            transition, localIdentity: joining,
+            localAuthorRoles: [.controller, .replica]
+        )
+
+        // Reproduce the pre-epoch-tag roster bug: an already retained binding
+        // was accidentally promoted into the current live epoch.
+        try await joiningStore.installVerifiedPeer(
+            removedMember, in: fixture.group, membershipEpoch: 2
+        )
+        let pollutedActive = try await joiningStore.trustedDevices(
+            in: fixture.group, membershipEpoch: 2
+        )
+        XCTAssertTrue(pollutedActive.contains {
+            $0.descriptor.id == removed.deviceID
+        })
+
+        let transport = ReplicaRPCServerTransport(
+            server: MeshReplicaRPCServer(store: hostStore, hostIdentity: host),
+            remoteEndpointID: try joining.endpointID()
+        )
+        _ = try await MeshReplicaSyncSession(
+            store: joiningStore,
+            client: MeshReplicaRPCClient(transport: transport),
+            remoteEndpointID: try host.endpointID()
+        ).synchronize(group: fixture.group, membershipEpoch: 2)
+
+        let active = try await joiningStore.trustedDevices(
+            in: fixture.group, membershipEpoch: 2
+        )
+        XCTAssertFalse(active.contains {
+            $0.descriptor.id == removed.deviceID
+        })
+        XCTAssertTrue(active.contains {
+            $0.descriptor.id == host.deviceID
+        })
+        let retained = try await joiningStore.retainedTrustedDevices(
+            in: fixture.group
+        )
+        XCTAssertEqual(
+            retained.first {
+                $0.device.descriptor.id == removed.deviceID
+            }?.membershipEpoch,
+            1
+        )
+
+        // Even an authenticated controller's historical entry cannot demote
+        // a device that the signed current transition still includes.
+        try await joiningStore.installRetainedVerifiedPeer(
+            hostMember, in: fixture.group, membershipEpoch: 1
+        )
+        let stillActive = try await joiningStore.trustedDevices(
+            in: fixture.group, membershipEpoch: 2
+        )
+        XCTAssertTrue(stillActive.contains {
+            $0.descriptor.id == host.deviceID
+        })
+    }
+
+    func testHistoricalSnapshotMergePreservesJoiningDeviceLocalEvents() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let hostStore = try DistributedMeshStore(
+            databaseURL: fixture.directory.appendingPathComponent("snapshot-host.sqlite")
+        )
+        let joiningStore = try DistributedMeshStore(
+            databaseURL: fixture.directory.appendingPathComponent("snapshot-joining.sqlite")
+        )
+        try await hostStore.setMembershipEpoch(1, for: fixture.group)
+        try await joiningStore.setMembershipEpoch(1, for: fixture.group)
+
+        let host = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 10))
+        let joining = MeshDeviceIdentity.generate(now: Date(timeIntervalSince1970: 20))
+        try await pairDevice(
+            joining, roles: [.controller, .replica], invitedBy: host,
+            in: fixture.group, store: hostStore
+        )
+        try await pairDevice(
+            host, roles: [.controller, .replica], invitedBy: joining,
+            in: fixture.group, store: joiningStore
+        )
+
+        let hostEntity = MeshEntityReference(type: .project, id: "snapshot-host")!
+        let hostMutation = MeshFieldMutation(
+            field: "title", value: Data("Host before epoch change".utf8)
+        )
+        let hostEvent = try signedFieldEvent(
+            group: fixture.group, device: host.deviceID,
+            endpoint: try host.endpointID(),
+            key: try Curve25519.Signing.PrivateKey(
+                rawRepresentation: host.irohSecretKeyBytes()
+            ), sequence: 1, timestamp: .init(wallTimeMilliseconds: 1_000),
+            entity: hostEntity, mutation: hostMutation
+        )
+        _ = try await hostStore.insert(
+            hostEvent, authorPublicKey: try host.signingPublicKeyBytes()
+        )
+        let snapshot = try await hostStore.createSnapshot(
+            for: fixture.group, identity: host,
+            createdAt: .init(wallTimeMilliseconds: 1_100)
+        )
+        try await hostStore.persistSnapshot(
+            snapshot, creatorPublicKey: try host.signingPublicKeyBytes()
+        )
+        _ = try await hostStore.compactEvents(
+            using: snapshot.snapshot.id,
+            creatorPublicKey: try host.signingPublicKeyBytes(),
+            activePeers: []
+        )
+
+        let joiningEntity = MeshEntityReference(
+            type: .project, id: "snapshot-joining"
+        )!
+        let joiningMutation = MeshFieldMutation(
+            field: "title", value: Data("Joining device local history".utf8)
+        )
+        let joiningEvent = try signedFieldEvent(
+            group: fixture.group, device: joining.deviceID,
+            endpoint: try joining.endpointID(),
+            key: try Curve25519.Signing.PrivateKey(
+                rawRepresentation: joining.irohSecretKeyBytes()
+            ), sequence: 1, timestamp: .init(wallTimeMilliseconds: 1_200),
+            entity: joiningEntity, mutation: joiningMutation
+        )
+        _ = try await joiningStore.insert(
+            joiningEvent, authorPublicKey: try joining.signingPublicKeyBytes()
+        )
+
+        let hostMember = try pairedDevice(
+            host, name: "Host Controller", roles: [.controller, .replica]
+        )
+        let joiningMember = try pairedDevice(
+            joining, name: "Joining Controller", roles: [.controller, .replica]
+        )
+        let transition = try MeshMembershipTransitionSigner.sign(
+            trustGroupID: fixture.group, previousEpoch: 1,
+            identity: host, roster: [hostMember, joiningMember]
+        )
+        try await hostStore.applyMembershipTransition(
+            transition, localIdentity: host,
+            localAuthorRoles: [.controller, .replica]
+        )
+        try await joiningStore.applyMembershipTransition(
+            transition, localIdentity: joining,
+            localAuthorRoles: [.replica]
+        )
+
+        let transport = ReplicaRPCServerTransport(
+            server: MeshReplicaRPCServer(store: hostStore, hostIdentity: host),
+            remoteEndpointID: try joining.endpointID()
+        )
+        let report = try await MeshReplicaSyncSession(
+            store: joiningStore,
+            client: MeshReplicaRPCClient(transport: transport),
+            remoteEndpointID: try host.endpointID()
+        ).synchronize(group: fixture.group, membershipEpoch: 2)
+
+        let hostFields = try await joiningStore.materializedFields(
+            for: hostEntity, in: fixture.group
+        )
+        let joiningFields = try await joiningStore.materializedFields(
+            for: joiningEntity, in: fixture.group
+        )
+        let vector = try await joiningStore.syncVector(for: fixture.group)
+        XCTAssertEqual(report.snapshotCount, 1)
+        XCTAssertEqual(hostFields.first?.value, hostMutation.value)
+        XCTAssertEqual(joiningFields.first?.value, joiningMutation.value)
+        XCTAssertEqual(vector.sequence(for: try host.endpointID()), 1)
+        XCTAssertEqual(vector.sequence(for: try joining.endpointID()), 1)
+    }
+
     func testReplicaRPCClientRejectsMismatchedResponseCorrelation() async throws {
         let client = MeshReplicaRPCClient(transport: MismatchedReplicaRPCTransport())
         do {
@@ -380,7 +833,7 @@ final class DistributedMeshStoreTests: XCTestCase {
 
         let schemaVersion = try await store.schemaVersion()
         let journalMode = try await store.journalMode()
-        XCTAssertEqual(schemaVersion, 8)
+        XCTAssertEqual(schemaVersion, 10)
         XCTAssertEqual(journalMode.lowercased(), "wal")
         try await store.setMembershipEpoch(1, for: fixture.group)
 
@@ -1445,7 +1898,7 @@ final class DistributedMeshStoreTests: XCTestCase {
 
         let reopened = try DistributedMeshStore(databaseURL: fixture.databaseURL)
         let reopenedSchemaVersion = try await reopened.schemaVersion()
-        XCTAssertEqual(reopenedSchemaVersion, 8)
+        XCTAssertEqual(reopenedSchemaVersion, 10)
         let crashReplay = try await reopened.claimExecution(
             commandID: command.id, on: host,
             at: .init(wallTimeMilliseconds: 130)
@@ -1527,6 +1980,100 @@ final class DistributedMeshStoreTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? DistributedMeshStoreError, .corruptStoredValue)
         }
+    }
+
+    func testExecutingStopRecoversRosterCleanupAfterHostCrash() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let replica = try MeshLocalReplica.open(
+            rootURL: fixture.directory.appendingPathComponent(
+                "stop-recovery", isDirectory: true
+            ),
+            identityStorage: MeshMemoryIdentityStorage()
+        )
+        let store = replica.store
+        let host = replica.identity
+        let sender = MeshDeviceIdentity.generate(
+            now: Date(timeIntervalSince1970: 2)
+        )
+        try await store.setMembershipEpoch(1, for: fixture.group)
+        try await pairController(
+            sender, invitedBy: host, in: fixture.group, store: store
+        )
+        let registry = DistributedChatRegistry(
+            replica: replica, group: fixture.group
+        )
+        _ = try await registry.createRoom(named: "stop-recovery")
+        let chat = DistributedAgentChat(replica: replica, group: fixture.group)
+        let memberID = "crashed-stop-agent"
+        _ = try await chat.join(
+            room: "stop-recovery", nick: "worker", memberID: memberID
+        )
+        let resourceID = try XCTUnwrap(MeshResourceID(rawValue: memberID))
+        let bindings = DistributedHostResourceBindings(
+            dataDirectory: replica.rootURL
+        )
+        try bindings.save(
+            try DistributedHostResourceBinding(
+                resourceID: resourceID,
+                tmuxSession: "pharos-crashed-stop",
+                tmuxSocket: "/tmp/tmux-crashed-stop",
+                tmuxPane: "%9", tmuxSessionID: "$4",
+                tmuxSessionCreatedAt: 10, panePID: 11
+            ),
+            for: resourceID
+        )
+        let base = Int64(Date().timeIntervalSince1970 * 1_000)
+        let managed = try await store.replaceHostResource(
+            in: fixture.group, on: host, resourceID: resourceID,
+            allowedActions: [.presence, .poke, .stop],
+            at: MeshHybridTimestamp(wallTimeMilliseconds: base)
+        )
+        let command = MeshHostCommand(
+            trustGroupID: fixture.group,
+            senderDeviceID: sender.deviceID,
+            targetHostDeviceID: host.deviceID,
+            targetHostEndpointID: try host.endpointID(),
+            resourceID: resourceID,
+            expectedResourceGeneration: managed.generation,
+            action: .stop,
+            idempotencyKey: "stop-recovery-after-crash",
+            createdAt: MeshHybridTimestamp(wallTimeMilliseconds: base + 1),
+            deadlineMilliseconds: base + 10_000
+        )
+        let accepted = try await store.accept(
+            MeshHostCommandCrypto.sign(
+                command, membershipEpoch: 1, with: sender
+            ),
+            on: host,
+            receivedAt: MeshHybridTimestamp(wallTimeMilliseconds: base + 2)
+        )
+        XCTAssertEqual(accepted.receipt.action, .stop)
+        let claim = try await store.claimExecution(
+            commandID: command.id, on: host,
+            at: MeshHybridTimestamp(wallTimeMilliseconds: base + 3)
+        )
+        XCTAssertTrue(claim.shouldExecute)
+
+        await DistributedHostCommandRecovery.recover(
+            replica: replica, group: fixture.group,
+            executor: DistributedHostCommandExecutor(
+                bindings: bindings,
+                seatInspector: MissingTmuxSeatInspector()
+            )
+        )
+
+        let storedReceipt = try await store.commandReceipt(id: command.id)
+        let recovered = try XCTUnwrap(storedReceipt)
+        XCTAssertEqual(recovered.receipt.state, .executed)
+        let memberships = try await chat.memberships(memberID: memberID)
+        XCTAssertTrue(memberships.isEmpty)
+        let retired = try await store.hostResource(
+            in: fixture.group, hostDeviceID: host.deviceID,
+            resourceID: resourceID
+        )
+        XCTAssertEqual(retired?.state, .retired)
+        XCTAssertThrowsError(try bindings.load(resourceID))
     }
 
     func testHostCommandRejectsTamperingUnknownSendersWrongEndpointAndRevokedEpoch() async throws {
@@ -1780,17 +2327,17 @@ final class DistributedMeshStoreTests: XCTestCase {
         let migrated = try DistributedMeshStore(databaseURL: fixture.databaseURL)
         let migratedVersion = try await migrated.schemaVersion()
         let migratedEpoch = try await migrated.membershipEpoch(for: fixture.group)
-        XCTAssertEqual(migratedVersion, 8)
+        XCTAssertEqual(migratedVersion, 10)
         XCTAssertEqual(migratedEpoch, 9)
 
         let futureURL = fixture.directory.appendingPathComponent("future.sqlite")
         try executeSQLite(
             at: futureURL,
             sql: "CREATE TABLE schema_metadata(version INTEGER NOT NULL); " +
-                 "INSERT INTO schema_metadata VALUES(9);"
+                 "INSERT INTO schema_metadata VALUES(11);"
         )
         XCTAssertThrowsError(try DistributedMeshStore(databaseURL: futureURL)) {
-            XCTAssertEqual($0 as? DistributedMeshStoreError, .unsupportedSchemaVersion(9))
+            XCTAssertEqual($0 as? DistributedMeshStoreError, .unsupportedSchemaVersion(11))
         }
 
         let ambiguousURL = fixture.directory.appendingPathComponent("ambiguous.sqlite")
@@ -1830,7 +2377,7 @@ final class DistributedMeshStoreTests: XCTestCase {
         XCTAssertEqual(fields.map(\.field), ["title"])
         XCTAssertEqual(fields.first?.value, Data("Retained".utf8))
         let schemaVersion = try await migrated.schemaVersion()
-        XCTAssertEqual(schemaVersion, 8)
+        XCTAssertEqual(schemaVersion, 10)
     }
 
     func testInterruptedV3MaterializationRebuildIsRetriedOnNextRead() async throws {
@@ -2118,7 +2665,8 @@ final class DistributedMeshStoreTests: XCTestCase {
         )
         do {
             try await store.applyMembershipTransition(
-                forgedTransition, localIdentity: controller
+                forgedTransition, localIdentity: controller,
+                localAuthorRoles: [.controller, .replica]
             )
             XCTFail("matching only the local device UUID must not authorize a transition")
         } catch {
@@ -2131,8 +2679,20 @@ final class DistributedMeshStoreTests: XCTestCase {
             trustGroupID: fixture.group, previousEpoch: 1,
             identity: controller, roster: [controllerMember, retainedMember]
         )
+        do {
+            try await store.applyMembershipTransition(
+                transition, localIdentity: controller,
+                localAuthorRoles: [.replica]
+            )
+            XCTFail("a replica-only local device must not authorize a transition")
+        } catch {
+            XCTAssertEqual(
+                error as? MeshMembershipTransitionError, .authorNotController
+            )
+        }
         try await store.applyMembershipTransition(
-            transition, localIdentity: controller
+            transition, localIdentity: controller,
+            localAuthorRoles: [.controller, .replica]
         )
         let currentEpoch = try await store.membershipEpoch(for: fixture.group)
         XCTAssertEqual(currentEpoch, 2)
@@ -2147,6 +2707,17 @@ final class DistributedMeshStoreTests: XCTestCase {
             revokedAuditRow,
             "the revoked row remains only as old-epoch audit evidence"
         )
+        let auditTransitions = try await store.membershipTransitions(
+            for: fixture.group
+        )
+        XCTAssertEqual(auditTransitions, [transition])
+        let auditEntries = try await store.membershipAudit(for: fixture.group)
+        XCTAssertEqual(auditEntries.count, 1)
+        XCTAssertEqual(
+            auditEntries[0].removedDevices.map(\.descriptor.id),
+            [revoked.deviceID]
+        )
+        XCTAssertEqual(auditEntries[0].transitionSHA256.count, 64)
 
         let revokedMember = try pairedDevice(
             revoked, name: "Revoked Controller", roles: [.controller, .replica]
@@ -2157,7 +2728,8 @@ final class DistributedMeshStoreTests: XCTestCase {
         )
         do {
             try await store.applyMembershipTransition(
-                revokedAuthorTransition, localIdentity: controller
+                revokedAuthorTransition, localIdentity: controller,
+                localAuthorRoles: [.controller, .replica]
             )
             XCTFail("an old-epoch controller audit row must not regain authority")
         } catch {
@@ -2167,7 +2739,8 @@ final class DistributedMeshStoreTests: XCTestCase {
         }
 
         try await store.applyMembershipTransition(
-            transition, localIdentity: controller
+            transition, localIdentity: controller,
+            localAuthorRoles: [.controller, .replica]
         )
         let conflicting = try MeshMembershipTransitionSigner.sign(
             trustGroupID: fixture.group, previousEpoch: 1,
@@ -2175,12 +2748,362 @@ final class DistributedMeshStoreTests: XCTestCase {
         )
         do {
             try await store.applyMembershipTransition(
-                conflicting, localIdentity: controller
+                conflicting, localIdentity: controller,
+                localAuthorRoles: [.controller, .replica]
             )
             XCTFail("a different transition for the committed epoch must fail closed")
         } catch {
             XCTAssertEqual(
                 error as? MeshMembershipTransitionError, .conflictingTransition
+            )
+        }
+    }
+
+    func testJoiningTransitionIsAnchoredToExactInviterIdentity() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let store = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        try await store.setMembershipEpoch(1, for: fixture.group)
+        let inviter = MeshDeviceIdentity.generate()
+        let joiner = MeshDeviceIdentity.generate()
+        let attacker = MeshDeviceIdentity.generate()
+        let inviterMember = try pairedDevice(
+            inviter, name: "Inviter", roles: [.controller, .replica]
+        )
+        let joinerMember = try pairedDevice(
+            joiner, name: "Joiner", roles: [.controller, .replica]
+        )
+        try await store.installVerifiedPeer(
+            inviterMember, in: fixture.group, membershipEpoch: 1
+        )
+
+        let attackerMember = try pairedDevice(
+            attacker, name: "Attacker", roles: [.controller, .replica]
+        )
+        let attackerProposal = try MeshMembershipTransitionSigner.propose(
+            trustGroupID: fixture.group, previousEpoch: 1,
+            identity: attacker,
+            previousControllers: [MeshMembershipControllerIdentity(attackerMember)],
+            roster: [attackerMember, joinerMember]
+        )
+        let attackerTransition = try MeshMembershipTransitionSigner.certify(
+            attackerProposal, approvals: []
+        )
+        do {
+            try await store.applyJoiningMembershipTransition(
+                attackerTransition, trustedInviter: inviterMember,
+                joiningDevice: joinerMember, localIdentity: joiner
+            )
+            XCTFail("a certified transition from a different inviter must fail")
+        } catch {
+            XCTAssertEqual(
+                error as? MeshMembershipTransitionError, .invalidRoster,
+                "unexpected rejection: \(error)"
+            )
+        }
+
+        let proposal = try MeshMembershipTransitionSigner.propose(
+            trustGroupID: fixture.group, previousEpoch: 1,
+            identity: inviter,
+            previousControllers: [MeshMembershipControllerIdentity(inviterMember)],
+            roster: [inviterMember, joinerMember]
+        )
+        let transition = try MeshMembershipTransitionSigner.certify(
+            proposal, approvals: []
+        )
+        try await store.applyJoiningMembershipTransition(
+            transition, trustedInviter: inviterMember,
+            joiningDevice: joinerMember, localIdentity: joiner
+        )
+        let joinedEpoch = try await store.membershipEpoch(for: fixture.group)
+        let joinedPeers = try await store.trustedDevices(
+            in: fixture.group, membershipEpoch: 2
+        )
+        XCTAssertEqual(joinedEpoch, 2)
+        XCTAssertEqual(joinedPeers, [inviterMember])
+    }
+
+    func testQuorumVoteJournalPreventsConflictingCertificatesAndActivatesPolicy() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let store = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        try await store.setMembershipEpoch(1, for: fixture.group)
+        let a = MeshDeviceIdentity.generate()
+        let b = MeshDeviceIdentity.generate()
+        let c = MeshDeviceIdentity.generate()
+        try await pairDevice(
+            a, roles: [.controller, .replica], invitedBy: b,
+            in: fixture.group, store: store
+        )
+        try await pairDevice(
+            c, roles: [.controller, .replica], invitedBy: b,
+            in: fixture.group, store: store
+        )
+        let storedA = try await store.trustedDevice(
+            in: fixture.group, id: a.deviceID
+        )
+        let storedC = try await store.trustedDevice(
+            in: fixture.group, id: c.deviceID
+        )
+        let aMember = try XCTUnwrap(storedA)
+        let cMember = try XCTUnwrap(storedC)
+        let bMember = try pairedDevice(
+            b, name: "B", roles: [.controller, .replica]
+        )
+        let controllers = [aMember, bMember, cMember]
+            .map(MeshMembershipControllerIdentity.init)
+
+        let removeC = try MeshMembershipTransitionSigner.propose(
+            trustGroupID: fixture.group, previousEpoch: 1, identity: a,
+            previousControllers: controllers,
+            roster: [aMember, bMember]
+        )
+        let removeA = try MeshMembershipTransitionSigner.propose(
+            trustGroupID: fixture.group, previousEpoch: 1, identity: c,
+            previousControllers: controllers,
+            roster: [bMember, cMember]
+        )
+        let recordedApproval = try await store.recordMembershipVote(
+            for: removeC, localIdentity: b,
+            localAuthorRoles: [.controller, .replica]
+        )
+        let bApproval = try XCTUnwrap(recordedApproval)
+        let replayedApproval = try await store.recordMembershipVote(
+            for: removeC, localIdentity: b,
+            localAuthorRoles: [.controller, .replica]
+        )
+        XCTAssertEqual(
+            replayedApproval, bApproval,
+            "same-proposal vote replay must return the durable approval"
+        )
+        do {
+            _ = try await store.recordMembershipVote(
+                for: removeA, localIdentity: b,
+                localAuthorRoles: [.controller, .replica]
+            )
+            XCTFail("one controller must never vote for two proposals in one epoch")
+        } catch {
+            XCTAssertEqual(
+                error as? MeshMembershipTransitionError,
+                .conflictingTransition
+            )
+        }
+        let reopened = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        do {
+            _ = try await reopened.recordMembershipVote(
+                for: removeA, localIdentity: b,
+                localAuthorRoles: [.controller, .replica]
+            )
+            XCTFail("the one-vote rule must survive reopening the database")
+        } catch {
+            XCTAssertEqual(
+                error as? MeshMembershipTransitionError,
+                .conflictingTransition
+            )
+        }
+        let durableReplay = try await reopened.recordMembershipVote(
+            for: removeC, localIdentity: b,
+            localAuthorRoles: [.controller, .replica]
+        )
+        XCTAssertEqual(durableReplay, bApproval)
+
+        let certified = try MeshMembershipTransitionSigner.certify(
+            removeC, approvals: [bApproval]
+        )
+        try await store.applyMembershipTransition(
+            certified, localIdentity: b,
+            localAuthorRoles: [.controller, .replica]
+        )
+        let quorumEpoch = try await store.membershipQuorumRequiredFromEpoch(
+            for: fixture.group
+        )
+        let currentEpoch = try await store.membershipEpoch(for: fixture.group)
+        XCTAssertEqual(quorumEpoch, 2)
+        XCTAssertEqual(currentEpoch, 2)
+
+        let legacyNext = try MeshMembershipTransitionSigner.sign(
+            trustGroupID: fixture.group, previousEpoch: 2,
+            identity: b, roster: [aMember, bMember]
+        )
+        do {
+            try await store.applyMembershipTransition(
+                legacyNext, localIdentity: b,
+                localAuthorRoles: [.controller, .replica]
+            )
+            XCTFail("v1 must remain historical-only after quorum activation")
+        } catch {
+            XCTAssertEqual(
+                error as? MeshMembershipTransitionError, .quorumRequired
+            )
+        }
+    }
+
+    func testPendingAuthorProposalSurvivesRestartForExactRetry() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let author = MeshDeviceIdentity.generate()
+        let b = MeshDeviceIdentity.generate()
+        let c = MeshDeviceIdentity.generate()
+        let authorMember = try pairedDevice(
+            author, name: "Author", roles: [.controller, .replica]
+        )
+        let bMember = try pairedDevice(
+            b, name: "B", roles: [.controller, .replica]
+        )
+        let cMember = try pairedDevice(
+            c, name: "C", roles: [.controller, .replica]
+        )
+        let proposal = try MeshMembershipTransitionSigner.propose(
+            trustGroupID: fixture.group, previousEpoch: 1,
+            identity: author,
+            previousControllers: [authorMember, bMember, cMember]
+                .map(MeshMembershipControllerIdentity.init),
+            roster: [authorMember, bMember]
+        )
+
+        do {
+            let first = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+            try await first.setMembershipEpoch(1, for: fixture.group)
+            try await first.installVerifiedPeer(
+                bMember, in: fixture.group, membershipEpoch: 1
+            )
+            try await first.installVerifiedPeer(
+                cMember, in: fixture.group, membershipEpoch: 1
+            )
+            let approval = try await first.recordMembershipVote(
+                for: proposal, localIdentity: author,
+                localAuthorRoles: [.controller, .replica]
+            )
+            XCTAssertNil(approval)
+        }
+
+        let reopened = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        let recovered = try await reopened.pendingMembershipProposal(
+            for: fixture.group, previousEpoch: 1, authoredBy: author
+        )
+        XCTAssertEqual(recovered, proposal)
+        let replay = try await reopened.recordMembershipVote(
+            for: proposal, localIdentity: author,
+            localAuthorRoles: [.controller, .replica]
+        )
+        XCTAssertNil(replay)
+        let schemaVersion = try await reopened.schemaVersion()
+        XCTAssertEqual(schemaVersion, 10)
+    }
+
+    func testQuorumCertificateRejectsFabricatedPreviousControllerSet() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let store = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        try await store.setMembershipEpoch(1, for: fixture.group)
+        let a = MeshDeviceIdentity.generate()
+        let b = MeshDeviceIdentity.generate()
+        let omitted = MeshDeviceIdentity.generate()
+        try await pairDevice(
+            a, roles: [.controller, .replica], invitedBy: b,
+            in: fixture.group, store: store
+        )
+        try await pairDevice(
+            omitted, roles: [.controller, .replica], invitedBy: b,
+            in: fixture.group, store: store
+        )
+        let storedA = try await store.trustedDevice(
+            in: fixture.group, id: a.deviceID
+        )
+        let aMember = try XCTUnwrap(storedA)
+        let bMember = try pairedDevice(
+            b, name: "B", roles: [.controller, .replica]
+        )
+        let fabricatedControllers = [aMember, bMember]
+            .map(MeshMembershipControllerIdentity.init)
+        let proposal = try MeshMembershipTransitionSigner.propose(
+            trustGroupID: fixture.group, previousEpoch: 1, identity: a,
+            previousControllers: fabricatedControllers,
+            roster: [aMember, bMember]
+        )
+        let approval = try MeshMembershipTransitionSigner.approve(
+            proposal, with: b
+        )
+        let certified = try MeshMembershipTransitionSigner.certify(
+            proposal, approvals: [approval]
+        )
+
+        do {
+            try await store.applyMembershipTransition(
+                certified, localIdentity: b,
+                localAuthorRoles: [.controller, .replica]
+            )
+            XCTFail("a minority must not shrink the claimed controller universe")
+        } catch {
+            XCTAssertEqual(
+                error as? MeshMembershipTransitionError,
+                .previousControllerSetMismatch
+            )
+        }
+    }
+
+    func testMembershipVoteRPCReturnsOneDurableVoteAndRejectsCompetingProposal() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let store = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        try await store.setMembershipEpoch(1, for: fixture.group)
+        let author = MeshDeviceIdentity.generate()
+        let voter = MeshDeviceIdentity.generate()
+        let third = MeshDeviceIdentity.generate()
+        try await pairDevice(
+            author, roles: [.controller, .replica], invitedBy: voter,
+            in: fixture.group, store: store
+        )
+        try await pairDevice(
+            third, roles: [.controller, .replica], invitedBy: voter,
+            in: fixture.group, store: store
+        )
+        let storedAuthor = try await store.trustedDevice(
+            in: fixture.group, id: author.deviceID
+        )
+        let storedThird = try await store.trustedDevice(
+            in: fixture.group, id: third.deviceID
+        )
+        let authorMember = try XCTUnwrap(storedAuthor)
+        let thirdMember = try XCTUnwrap(storedThird)
+        let voterMember = try pairedDevice(
+            voter, name: "Voter", roles: [.controller, .replica]
+        )
+        let controllers = [authorMember, voterMember, thirdMember]
+            .map(MeshMembershipControllerIdentity.init)
+        let first = try MeshMembershipTransitionSigner.propose(
+            trustGroupID: fixture.group, previousEpoch: 1,
+            identity: author, previousControllers: controllers,
+            roster: [authorMember, voterMember]
+        )
+        let competing = try MeshMembershipTransitionSigner.propose(
+            trustGroupID: fixture.group, previousEpoch: 1,
+            identity: author, previousControllers: controllers,
+            roster: [authorMember, thirdMember]
+        )
+        let client = MeshReplicaRPCClient(
+            transport: ReplicaRPCServerTransport(
+                server: MeshReplicaRPCServer(
+                    store: store, hostIdentity: voter,
+                    localAuthorRoles: [.controller, .replica]
+                ),
+                remoteEndpointID: try author.endpointID()
+            )
+        )
+        let receivedApproval = try await client.requestMembershipVote(for: first)
+        let approval = try XCTUnwrap(receivedApproval)
+        XCTAssertEqual(approval.deviceID, voter.deviceID)
+        XCTAssertNoThrow(try MeshMembershipTransitionSigner.certify(
+            first, approvals: [approval]
+        ))
+
+        do {
+            _ = try await client.requestMembershipVote(for: competing)
+            XCTFail("RPC must surface the durable one-vote conflict")
+        } catch {
+            XCTAssertEqual(
+                error as? MeshReplicaRPCError,
+                .remoteFailure("membership-vote-conflict")
             )
         }
     }
@@ -2233,6 +3156,78 @@ final class DistributedMeshStoreTests: XCTestCase {
             in: fixture.group, membershipEpoch: 2
         )
         XCTAssertEqual(survivorPeers.map(\.descriptor.id), [controller.deviceID])
+    }
+
+    func testControllerCanSignOwnDepartureWhenAnotherControllerSurvives() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let store = try DistributedMeshStore(databaseURL: fixture.databaseURL)
+        try await store.setMembershipEpoch(1, for: fixture.group)
+        let departing = MeshDeviceIdentity.generate()
+        let survivor = MeshDeviceIdentity.generate()
+        try await pairDevice(
+            departing, roles: [.controller, .replica], invitedBy: survivor,
+            in: fixture.group, store: store
+        )
+        let departingMember = try pairedDevice(
+            departing, name: "Departing Mac", roles: [.controller, .replica]
+        )
+        let survivorMember = try pairedDevice(
+            survivor, name: "Surviving iPhone", roles: [.controller, .replica]
+        )
+        let transition = try MeshMembershipTransitionSigner.sign(
+            trustGroupID: fixture.group,
+            previousEpoch: 1,
+            identity: departing,
+            roster: [survivorMember],
+            departingAuthor: departingMember
+        )
+
+        try await store.applyMembershipTransition(
+            transition, localIdentity: survivor,
+            localAuthorRoles: [.replica]
+        )
+
+        let currentEpoch = try await store.membershipEpoch(for: fixture.group)
+        let currentPeers = try await store.trustedDevices(
+            in: fixture.group, membershipEpoch: 2
+        )
+        XCTAssertEqual(currentEpoch, 2)
+        XCTAssertTrue(
+            currentPeers.isEmpty,
+            "the local survivor is intentionally not stored as its own peer"
+        )
+        let auditRow = try await store.trustedDevice(
+            in: fixture.group, id: departing.deviceID
+        )
+        XCTAssertNotNil(auditRow)
+    }
+
+    func testControllerCannotLeaveWithoutAnotherController() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let departing = MeshDeviceIdentity.generate()
+        let replica = MeshDeviceIdentity.generate()
+        let departingMember = try pairedDevice(
+            departing, name: "Departing Mac", roles: [.controller, .replica]
+        )
+        let replicaMember = try pairedDevice(
+            replica, name: "Replica only", roles: [.replica]
+        )
+
+        XCTAssertThrowsError(
+            try MeshMembershipTransitionSigner.sign(
+                trustGroupID: fixture.group,
+                previousEpoch: 1,
+                identity: departing,
+                roster: [replicaMember],
+                departingAuthor: departingMember
+            )
+        ) {
+            XCTAssertEqual(
+                $0 as? MeshMembershipTransitionError, .invalidRoster
+            )
+        }
     }
 
     private func signedFieldEvent(
@@ -2383,6 +3378,12 @@ final class DistributedMeshStoreTests: XCTestCase {
     }
 }
 
+private struct MissingTmuxSeatInspector: DistributedTmuxSeatInspecting {
+    func resolve(socket: String?, pane: String) throws -> DistributedTmuxSeat {
+        throw DistributedHostExecutorError.runtimeSeatMismatch
+    }
+}
+
 private struct ReplicaRPCServerTransport: MeshTransport, Sendable {
     let server: MeshReplicaRPCServer
     let remoteEndpointID: MeshEndpointID
@@ -2396,6 +3397,32 @@ private struct ReplicaRPCServerTransport: MeshTransport, Sendable {
 
     func exchange(_ request: MeshTransportRequest) async throws -> MeshTransportResponse {
         try await server.handle(request, remoteEndpointID: remoteEndpointID)
+    }
+}
+
+private actor TimeoutRecordingTransport: MeshTransport {
+    enum Expected: Error { case failure }
+
+    private var timeout: Int?
+    var path: MeshTransportPath { get async { .local } }
+
+    func exchange(_ request: MeshTransportRequest) async throws -> MeshTransportResponse {
+        timeout = request.timeoutMilliseconds
+        throw Expected.failure
+    }
+
+    func recordedTimeout() -> Int? { timeout }
+}
+
+private actor ConcurrentOperationStartProbe {
+    private var arrivals = 0
+    var count: Int { arrivals }
+
+    func arriveAndWait() async {
+        arrivals += 1
+        while arrivals < 2, !Task.isCancelled {
+            await Task.yield()
+        }
     }
 }
 

@@ -54,14 +54,17 @@ final class PairingCoordinator {
     var pendingDevice: PendingDeviceInvitation?
     var errorMessage: String?
     var showsError = false
-    /// Drives the broker-setup wizard cover. Auto-shown on first run (no
-    /// broker) and re-openable from Settings; the wizard's close button and a
-    /// successful pairing both clear it.
+    /// Drives the personal-Mesh setup cover. It is auto-shown until this
+    /// device creates or joins a trust group and remains reopenable later.
     var showsSetupGuide = false
 
     func receive(_ url: URL) {
         if let invitation = try? MeshTrustInvitationLink.decode(url) {
             errorMessage = nil
+            // Device confirmation has one app-level presenter. Close the
+            // onboarding cover before publishing the pending invitation so
+            // SwiftUI never tries to stack the same sheet from two levels.
+            showsSetupGuide = false
             pendingDevice = PendingDeviceInvitation(invitation: invitation)
             return
         }
@@ -78,6 +81,7 @@ final class PairingCoordinator {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if let invitation = try? MeshTrustInvitationTicket.decode(trimmed) {
             errorMessage = nil
+            showsSetupGuide = false
             pendingDevice = PendingDeviceInvitation(invitation: invitation)
             return
         }

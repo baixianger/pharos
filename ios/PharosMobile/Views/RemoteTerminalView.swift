@@ -4,6 +4,7 @@ import SwiftUI
 struct TerminalTarget: Identifiable, Equatable {
     let member: MeshMember
     let profile: SSHHostProfile
+    var distributedResourceID: String? = nil
     var id: String { member.id }
 }
 
@@ -34,7 +35,9 @@ struct RemoteTerminalView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Text(target.member.tmuxPane ?? "tmux").font(.caption.monospaced()).foregroundStyle(.secondary)
+                    Text(target.distributedResourceID.map { String($0.prefix(8)) } ??
+                         target.member.tmuxPane ?? "tmux")
+                        .font(.caption.monospaced()).foregroundStyle(.secondary)
                 }
             }
         }
@@ -54,9 +57,15 @@ struct RemoteTerminalView: View {
             let shell = try await session.openShell()
             feed.onInput = { data in Task { try? await shell.write(data) } }
             feed.resize = { cols, rows in await shell.resize(cols: cols, rows: rows) }
-            let command = try RemoteCommandBuilder.attach(pane: target.member.tmuxPane ?? "",
-                                                           socket: target.member.tmuxSocket) + "\n"
-            try await shell.write(Data(command.utf8))
+            let command: String
+            if let resourceID = target.distributedResourceID {
+                command = try RemoteCommandBuilder.attach(resourceID: resourceID)
+            } else {
+                command = try RemoteCommandBuilder.attach(
+                    pane: target.member.tmuxPane ?? "", socket: target.member.tmuxSocket
+                )
+            }
+            try await shell.write(Data((command + "\n").utf8))
             for await chunk in shell.output { feed.write(chunk) }
         } catch is CancellationError {
         } catch {

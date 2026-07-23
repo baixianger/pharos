@@ -38,15 +38,13 @@ sudo -u pharos-mesh pharos-mesh distributed init \
 ```
 
 Normally, pair it into the existing group instead. Create an invitation on an
-existing controller, accept it on Linux, and redeem the returned acceptance on
-the inviter. The shared CLI exposes the exact two-step commands:
+existing controller, then accept it on Linux while an admin quorum is online.
+The accepting command completes the certified membership transition:
 
 ```sh
 pharos-mesh distributed device-invite --data-dir ABSOLUTE-PATH
 pharos-mesh distributed device-accept INVITATION --name linux \
   --data-dir /var/lib/pharos-mesh
-pharos-mesh distributed device-redeem INVITATION ACCEPTANCE \
-  --data-dir ABSOLUTE-PATH
 ```
 
 Pairing secrets are bearer credentials: transfer them privately and do not put
@@ -94,6 +92,28 @@ generation-bound host resources such as a tmux pane. Run that mode as the user
 who owns those resources, never as the system service's `DynamicUser`. Commands
 are signed, deadline-bound, replay-protected, and restricted to registered
 actions; arbitrary remote shell execution is not part of Mesh.
+
+On macOS, an Agent becomes controllable only after Pharos verifies its exact
+live tmux seat. Normal structured hooks do this automatically. To adopt a
+pre-2.0 session that already joined a room, run this **inside that Agent's own
+tmux pane**:
+
+```sh
+pharos mesh claim --member <stable-session-id> --kind codex
+```
+
+`claim` does not search by nick, cwd, host name, or tmux session name. It reads
+the current pane and socket, resolves the live tmux session ID, creation time,
+and pane PID, and refuses duplicate or mismatched claims. A session without
+this proof remains visible as presence-only/Unmanaged: it may be removed from
+the replicated roster, but it cannot be poked, attached, or stopped remotely.
+
+Every stop re-verifies the complete seat fingerprint immediately before
+`kill-session`. The Host then durably finishes its signed receipt, retires the
+Host resource, removes the private binding and observation, and removes the
+Agent from all room rosters. An accepted/executing stop is retried after a Host
+restart; if the old seat is already gone or has been replaced, recovery treats
+only the old resource as gone and never targets the replacement.
 
 ## Backup, recovery, and migration
 

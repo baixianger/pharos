@@ -4,7 +4,29 @@ import PharosMeshReplica
 import Testing
 @testable import PharosMobile
 
+private actor StartupCounter {
+    private(set) var value = 0
+    func increment() { value += 1 }
+}
+
 struct MeshCoreTests {
+    @Test @MainActor
+    func startupGateCoalescesConcurrentOpenRequests() async {
+        let gate = MobileMeshStartupGate()
+        let starts = StartupCounter()
+
+        async let first: Void = gate.run {
+            await starts.increment()
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        async let second: Void = gate.run {
+            await starts.increment()
+        }
+        _ = await (first, second)
+
+        #expect(await starts.value == 1)
+    }
+
     @Test func distributedRegistryPreservesAdvancedProjectAndIssueFields() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "pharos-mobile-registry-\(UUID().uuidString)",
@@ -132,6 +154,21 @@ struct MeshCoreTests {
         let other = SSHHostProfile(meshHost: "mac-mini", sshHost: "100.64.0.9", username: "pai")
         #expect(SSHHostResolver.profile(forHost: "HOME-TS", tailscaleIP: "100.64.0.8",
                                         in: [other, expected])?.id == expected.id)
+    }
+
+    @Test func hostResolverPrefersMeshDeviceIDEvenAfterHostRename() {
+        let stableID = "48FFD7B5-ED5F-4E99-9107-B0BC519AC0DD"
+        let expected = SSHHostProfile(
+            meshHost: "Xiang's Mac mini", meshDeviceID: stableID,
+            sshHost: "100.64.0.8", username: "pai"
+        )
+        let renamedCollision = SSHHostProfile(
+            meshHost: "mac-mini", sshHost: "100.64.0.9", username: "pai"
+        )
+        #expect(SSHHostResolver.profile(
+            forDeviceID: stableID, host: "mac-mini", tailscaleIP: nil,
+            in: [renamedCollision, expected]
+        )?.id == expected.id)
     }
 
     @Test func hostResolverAcceptsTailscaleEndpointAlias() {

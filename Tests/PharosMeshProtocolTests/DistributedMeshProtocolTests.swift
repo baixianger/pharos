@@ -3,6 +3,39 @@ import XCTest
 @testable import PharosMeshProtocol
 
 final class DistributedMeshProtocolTests: XCTestCase {
+    func testAgentPresenceSnapshotIsBoundedUniqueAndExpiring() throws {
+        let record = MeshAgentPresenceRecord(
+            resourceID: MeshResourceID(rawValue: "agent/presence-test")!,
+            state: .busy, observedAtMilliseconds: 9_900,
+            stateReason: "tool", kind: "codex"
+        )
+        var snapshot = MeshAgentPresenceSnapshot(
+            hostDeviceID: MeshDeviceID(),
+            hostEndpointID: MeshEndpointID(rawValue: "host-endpoint")!,
+            generatedAtMilliseconds: 10_000,
+            expiresAtMilliseconds: 25_000,
+            records: [record]
+        )
+
+        try snapshot.validate()
+        XCTAssertTrue(snapshot.isFresh(at: 10_500))
+        XCTAssertFalse(snapshot.isFresh(at: 25_000))
+
+        snapshot.records.append(record)
+        XCTAssertThrowsError(try snapshot.validate()) {
+            XCTAssertEqual(
+                $0 as? MeshReplicaRPCValidationError, .invalidAgentPresence
+            )
+        }
+        snapshot.records = [record]
+        snapshot.expiresAtMilliseconds = 40_001
+        XCTAssertThrowsError(try snapshot.validate()) {
+            XCTAssertEqual(
+                $0 as? MeshReplicaRPCValidationError, .invalidAgentPresence
+            )
+        }
+    }
+
     func testEndpointIDIsOpaqueButSafe() throws {
         let value = try XCTUnwrap(MeshEndpointID(rawValue: "  endpoint-public-key  "))
         XCTAssertEqual(value.rawValue, "endpoint-public-key")
@@ -230,6 +263,29 @@ final class DistributedMeshProtocolTests: XCTestCase {
         )
         XCTAssertThrowsError(try unbounded.validate()) {
             XCTAssertEqual($0 as? MeshReplicationValidationError, .invalidRangeLimit)
+        }
+    }
+
+    func testRangeResponseAllowsHistoricalButNotFutureMembershipEpochs() throws {
+        let historical = makeEvent(sequence: 1)
+        let request = MeshEventRangeRequest(
+            trustGroupID: historical.trustGroupID,
+            membershipEpoch: 2,
+            authorEndpointID: historical.authorEndpointID,
+            afterSequence: 0
+        )
+        try MeshEventRangeResponse(
+            request: request, kind: .events, events: [historical]
+        ).validate()
+
+        var future = historical
+        future.membershipEpoch = 3
+        XCTAssertThrowsError(try MeshEventRangeResponse(
+            request: request, kind: .events, events: [future]
+        ).validate()) {
+            XCTAssertEqual(
+                $0 as? MeshReplicationValidationError, .invalidRangeResponse
+            )
         }
     }
 

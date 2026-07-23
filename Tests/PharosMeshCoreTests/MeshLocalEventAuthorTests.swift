@@ -97,6 +97,7 @@ final class MeshLocalEventAuthorTests: XCTestCase {
 
         XCTAssertEqual(groups[0], groups[1])
         XCTAssertEqual(try first.activeTrustGroup(), groups[0])
+        XCTAssertTrue(try first.activeRoles().contains(.controller))
         XCTAssertEqual(epoch, 1)
         XCTAssertEqual(storedGroups, [groups[0]])
     }
@@ -144,6 +145,83 @@ final class MeshLocalEventAuthorTests: XCTestCase {
             rootURL: fixture.root, identityStorage: storage
         )
         XCTAssertEqual(try reopened.activeTrustGroup(), replacement)
+    }
+
+    func testPairingPersistsGrantedLocalRolesAndAuthorizedUpdates() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let storage = MeshMemoryIdentityStorage()
+        let replica = try MeshLocalReplica.open(
+            rootURL: fixture.root, identityStorage: storage
+        )
+        try replica.adoptActiveTrustGroup(
+            fixture.group, roles: [.replica]
+        )
+        XCTAssertEqual(try replica.activeRoles(), [.replica])
+
+        try replica.updateActiveRoles(
+            [.controller, .replica], for: fixture.group
+        )
+        let reopened = try MeshLocalReplica.open(
+            rootURL: fixture.root, identityStorage: storage
+        )
+        XCTAssertEqual(
+            try reopened.activeRoles(), [.controller, .replica]
+        )
+    }
+
+    func testLegacyActiveProfileMigratesRolesBeforeAdminAuthorization() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try FileManager.default.createDirectory(
+            at: fixture.root, withIntermediateDirectories: true
+        )
+        let profileURL = fixture.root.appendingPathComponent(
+            "active-trust-group-v1.json"
+        )
+        let groupID = fixture.group.rawValue.uuidString
+        try Data(
+            "{\"trustGroupID\":{\"rawValue\":\"\(groupID)\"},\"version\":1}".utf8
+        ).write(to: profileURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: profileURL.path
+        )
+        let replica = try MeshLocalReplica.open(
+            rootURL: fixture.root,
+            identityStorage: MeshMemoryIdentityStorage()
+        )
+
+        XCTAssertTrue(try replica.activeRoles().contains(.controller))
+        let migrated = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: profileURL)
+        ) as? [String: Any]
+        XCTAssertEqual(migrated?["version"] as? Int, 2)
+        XCTAssertNotNil(migrated?["roles"])
+    }
+
+    func testDeactivatingGroupArchivesReplicaAndAllowsFreshSelection() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let storage = MeshMemoryIdentityStorage()
+        let replica = try MeshLocalReplica.open(
+            rootURL: fixture.root, identityStorage: storage
+        )
+        try replica.adoptActiveTrustGroup(fixture.group)
+        try await replica.store.setMembershipEpoch(7, for: fixture.group)
+
+        try replica.deactivateActiveTrustGroup()
+
+        XCTAssertNil(try replica.activeTrustGroup())
+        let archivedEpoch = try await replica.store.membershipEpoch(
+            for: fixture.group
+        )
+        XCTAssertEqual(
+            archivedEpoch, 7,
+            "leaving the selection must retain the archived signed replica"
+        )
+        let replacement = MeshTrustGroupID()
+        try replica.adoptActiveTrustGroup(replacement)
+        XCTAssertEqual(try replica.activeTrustGroup(), replacement)
     }
 
     private final class Fixture {

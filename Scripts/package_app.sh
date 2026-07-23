@@ -79,7 +79,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleURLTypes</key>
     <array>
       <dict>
-        <key>CFBundleURLName</key><string>Pharos Broker Pairing</string>
+        <key>CFBundleURLName</key><string>Pharos Mesh Invitation</string>
         <key>CFBundleURLSchemes</key><array><string>pharos</string></array>
       </dict>
     </array>

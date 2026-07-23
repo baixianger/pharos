@@ -128,16 +128,41 @@ public struct MeshLocalReplica: Sendable {
     }
 
     public func activeTrustGroup() throws -> MeshTrustGroupID? {
+        try activeTrustGroupProfile()?.trustGroupID
+    }
+
+    /// The roles granted to this device in the selected Mesh. Version-one
+    /// profiles predate role persistence; every released v1 pairing flow
+    /// granted controller + replica, so that is the bounded migration value.
+    public func activeRoles() throws -> Set<MeshDeviceRole> {
+        guard let profile = try activeTrustGroupProfile() else { return [] }
+        if profile.version == 1 {
+            let roles = Self.defaultLocalRoles
+            try writeActiveTrustGroupProfile(
+                ActiveTrustGroupProfile(
+                    version: 2, trustGroupID: profile.trustGroupID,
+                    roles: roles
+                )
+            )
+            return roles
+        }
+        guard profile.version == 2, let roles = profile.roles, !roles.isEmpty else {
+            throw MeshLocalReplicaError.corruptActiveTrustGroup
+        }
+        return roles
+    }
+
+    private func activeTrustGroupProfile() throws -> ActiveTrustGroupProfile? {
         let storage = MeshFileIdentityStorage(
             fileURL: rootURL.appendingPathComponent("active-trust-group-v1.json")
         )
         guard let data = try storage.load() else { return nil }
         guard let profile = try? JSONDecoder().decode(
             ActiveTrustGroupProfile.self, from: data
-        ), profile.version == 1 else {
+        ), profile.version == 1 || profile.version == 2 else {
             throw MeshLocalReplicaError.corruptActiveTrustGroup
         }
-        return profile.trustGroupID
+        return profile
     }
 
     /// Creates the first personal trust group exactly once across concurrent
@@ -152,7 +177,8 @@ public struct MeshLocalReplica: Sendable {
         }
         let candidate = MeshTrustGroupID()
         let profile = ActiveTrustGroupProfile(
-            version: 1, trustGroupID: candidate
+            version: 2, trustGroupID: candidate,
+            roles: Self.defaultLocalRoles
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -173,9 +199,16 @@ public struct MeshLocalReplica: Sendable {
     /// overwritten implicitly, preventing an unrelated QR scan from silently
     /// moving the device into another trust domain.
     public func adoptActiveTrustGroup(
-        _ group: MeshTrustGroupID, replacingExisting: Bool = false
+        _ group: MeshTrustGroupID, replacingExisting: Bool = false,
+        roles: Set<MeshDeviceRole>? = nil
     ) throws {
-        let profile = ActiveTrustGroupProfile(version: 1, trustGroupID: group)
+        let roles = roles ?? Self.defaultLocalRoles
+        guard !roles.isEmpty else {
+            throw MeshLocalReplicaError.corruptActiveTrustGroup
+        }
+        let profile = ActiveTrustGroupProfile(
+            version: 2, trustGroupID: group, roles: roles
+        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let storage = MeshFileIdentityStorage(
@@ -188,6 +221,51 @@ public struct MeshLocalReplica: Sendable {
             _ = try storage.insertIfAbsent(encoded)
         }
         guard try activeTrustGroup() == group else {
+            throw MeshLocalReplicaError.corruptActiveTrustGroup
+        }
+    }
+
+    /// Applies a role change already authorized by a membership transition.
+    public func updateActiveRoles(
+        _ roles: Set<MeshDeviceRole>, for group: MeshTrustGroupID
+    ) throws {
+        guard try activeTrustGroup() == group, !roles.isEmpty else {
+            throw MeshLocalReplicaError.corruptActiveTrustGroup
+        }
+        let profile = ActiveTrustGroupProfile(
+            version: 2, trustGroupID: group, roles: roles
+        )
+        try writeActiveTrustGroupProfile(profile)
+    }
+
+    /// Reconciles the selected local membership after the store accepted a
+    /// verified transition. A device omitted from the new roster is revoked
+    /// and must stop presenting the group as active; a retained device adopts
+    /// exactly the roles authorized in the signed roster.
+    public func reconcileActiveMembership(
+        after transition: MeshMembershipTransition
+    ) throws {
+        guard try activeTrustGroup() == transition.trustGroupID else { return }
+        if let localMember = transition.roster.first(where: {
+            $0.descriptor.id == identity.deviceID &&
+                $0.descriptor.endpointID == (try? identity.endpointID())
+        }) {
+            try updateActiveRoles(
+                localMember.descriptor.roles, for: transition.trustGroupID
+            )
+        } else {
+            try deactivateActiveTrustGroup()
+        }
+    }
+
+    /// Stops selecting a trust group while retaining its signed replica as an
+    /// archive. This does not claim remote revocation; callers that intend to
+    /// leave must publish a membership transition first.
+    public func deactivateActiveTrustGroup() throws {
+        try MeshFileIdentityStorage(
+            fileURL: rootURL.appendingPathComponent("active-trust-group-v1.json")
+        ).remove()
+        guard try activeTrustGroup() == nil else {
             throw MeshLocalReplicaError.corruptActiveTrustGroup
         }
     }
@@ -212,8 +290,27 @@ public struct MeshLocalReplica: Sendable {
         )
     }
 
+    private func writeActiveTrustGroupProfile(
+        _ profile: ActiveTrustGroupProfile
+    ) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        try MeshFileIdentityStorage(
+            fileURL: rootURL.appendingPathComponent("active-trust-group-v1.json")
+        ).replace(try encoder.encode(profile))
+    }
+
     private struct ActiveTrustGroupProfile: Codable {
         var version: Int
         var trustGroupID: MeshTrustGroupID
+        var roles: Set<MeshDeviceRole>?
+    }
+
+    private static var defaultLocalRoles: Set<MeshDeviceRole> {
+#if os(macOS) || os(Linux)
+        [.controller, .host, .replica]
+#else
+        [.controller, .replica]
+#endif
     }
 }

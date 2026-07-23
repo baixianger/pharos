@@ -31,6 +31,114 @@ public enum MeshSyncFailurePresentation {
     }
 }
 
+/// Runs durable replica convergence and ephemeral Host presence as two
+/// independent operations. Presence is deliberately attempted even when the
+/// heavier data pull fails: a reachable Host must not make all of its live
+/// agents appear Unknown merely because one anti-entropy round timed out.
+public struct MeshPeerSyncPresenceOutcome<Presence: Sendable>: Sendable {
+    public let received: Int
+    public let synchronizationError: String?
+    public let presence: Presence?
+    public let presenceError: String?
+
+    public var isReachable: Bool {
+        synchronizationError == nil || presence != nil
+    }
+}
+
+public enum MeshPeerSyncPresenceCoordinator {
+    public static func run<Presence: Sendable>(
+        synchronize: @Sendable () async throws -> Int,
+        fetchPresence: (@Sendable () async throws -> Presence)?
+    ) async -> MeshPeerSyncPresenceOutcome<Presence> {
+        async let synchronization: (Int, String?) = {
+            do { return (try await synchronize(), nil) }
+            catch { return (0, error.localizedDescription) }
+        }()
+        async let livePresence: (Presence?, String?) = {
+            guard let fetchPresence else { return (nil, nil) }
+            do { return (try await fetchPresence(), nil) }
+            catch { return (nil, error.localizedDescription) }
+        }()
+        let ((received, synchronizationError), (presence, presenceError)) =
+            await (synchronization, livePresence)
+        return MeshPeerSyncPresenceOutcome(
+            received: received,
+            synchronizationError: synchronizationError,
+            presence: presence,
+            presenceError: presenceError
+        )
+    }
+}
+
+public enum MeshPresenceVerificationError: LocalizedError, Equatable, Sendable {
+    case hostIdentityMismatch
+    case staleSnapshot
+    case resourceRejected(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .hostIdentityMismatch:
+            "The Host presence identity did not match its trusted device."
+        case .staleSnapshot:
+            "The Host presence lease expired before it was received."
+        case .resourceRejected(let id):
+            "The Host could not prove ownership of agent \(id)."
+        }
+    }
+}
+
+public struct MeshMembershipVoteResponse: Codable, Equatable, Sendable {
+    public var approval: MeshMembershipApproval?
+
+    public init(approval: MeshMembershipApproval?) {
+        self.approval = approval
+    }
+}
+
+/// Fetches and verifies one Host-authoritative presence snapshot without
+/// allowing callers to silently collapse transport and ownership failures into
+/// an indistinguishable `unknown` state.
+public enum MeshVerifiedHostPresence {
+    public static func fetch(
+        client: MeshReplicaRPCClient, peer: MeshPairedDevice,
+        group: MeshTrustGroupID, membershipEpoch: UInt64,
+        nowMilliseconds: Int64 = Int64(Date().timeIntervalSince1970 * 1_000)
+    ) async throws -> MeshAgentPresenceSnapshot {
+        let snapshot = try await client.hostPresence(
+            group: group, membershipEpoch: membershipEpoch
+        )
+        guard snapshot.hostDeviceID == peer.descriptor.id,
+              snapshot.hostEndpointID == peer.descriptor.endpointID else {
+            throw MeshPresenceVerificationError.hostIdentityMismatch
+        }
+        guard snapshot.isFresh(at: nowMilliseconds) else {
+            throw MeshPresenceVerificationError.staleSnapshot
+        }
+        for record in snapshot.records {
+            let resource: MeshHostResource
+            do {
+                resource = try await client.hostResource(
+                    record.resourceID, group: group,
+                    membershipEpoch: membershipEpoch
+                )
+            } catch {
+                throw MeshPresenceVerificationError.resourceRejected(
+                    record.resourceID.rawValue
+                )
+            }
+            guard resource.state == .active,
+                  resource.hostDeviceID == peer.descriptor.id,
+                  resource.hostEndpointID == peer.descriptor.endpointID else {
+                throw MeshPresenceVerificationError.resourceRejected(
+                    record.resourceID.rawValue
+                )
+            }
+        }
+        return snapshot
+    }
+}
+
 public enum MeshHostCommandExecutionOutcome: Equatable, Sendable {
     case executed(Data?)
     case failed(code: String)
@@ -42,11 +150,23 @@ public enum MeshHostCommandExecutionOutcome: Equatable, Sendable {
 public struct MeshReplicaRPCServer: Sendable {
     public let store: DistributedMeshStore
     public let hostIdentity: MeshDeviceIdentity?
+    public let localAuthorRoles: Set<MeshDeviceRole>
+    public let allowedTrustGroupID: MeshTrustGroupID?
+    public let restrictToAllowedTrustGroup: Bool
     private let timestamp: @Sendable () -> MeshHybridTimestamp
     private let hostCommandHandler: (@Sendable (MeshHostCommand) async -> MeshHostCommandExecutionOutcome)?
+    private let hostPresenceProvider: (@Sendable () async -> MeshAgentPresenceSnapshot)?
+    private let membershipTransitionObserver:
+        (@Sendable (MeshMembershipTransition) async -> Void)?
 
     public init(
         store: DistributedMeshStore, hostIdentity: MeshDeviceIdentity? = nil,
+        localAuthorRoles: Set<MeshDeviceRole> = [],
+        allowedTrustGroupID: MeshTrustGroupID? = nil,
+        restrictToAllowedTrustGroup: Bool = false,
+        membershipTransitionObserver:
+            (@Sendable (MeshMembershipTransition) async -> Void)? = nil,
+        hostPresenceProvider: (@Sendable () async -> MeshAgentPresenceSnapshot)? = nil,
         timestamp: @escaping @Sendable () -> MeshHybridTimestamp = {
             MeshHybridTimestamp(
                 wallTimeMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
@@ -55,12 +175,23 @@ public struct MeshReplicaRPCServer: Sendable {
     ) {
         self.store = store
         self.hostIdentity = hostIdentity
+        self.localAuthorRoles = localAuthorRoles
+        self.allowedTrustGroupID = allowedTrustGroupID
+        self.restrictToAllowedTrustGroup = restrictToAllowedTrustGroup
         self.hostCommandHandler = nil
+        self.hostPresenceProvider = hostPresenceProvider
+        self.membershipTransitionObserver = membershipTransitionObserver
         self.timestamp = timestamp
     }
 
     public init(
         store: DistributedMeshStore, hostIdentity: MeshDeviceIdentity?,
+        localAuthorRoles: Set<MeshDeviceRole> = [],
+        allowedTrustGroupID: MeshTrustGroupID? = nil,
+        restrictToAllowedTrustGroup: Bool = false,
+        membershipTransitionObserver:
+            (@Sendable (MeshMembershipTransition) async -> Void)? = nil,
+        hostPresenceProvider: (@Sendable () async -> MeshAgentPresenceSnapshot)? = nil,
         hostCommandHandler: @escaping @Sendable (MeshHostCommand) async
             -> MeshHostCommandExecutionOutcome,
         timestamp: @escaping @Sendable () -> MeshHybridTimestamp = {
@@ -71,7 +202,12 @@ public struct MeshReplicaRPCServer: Sendable {
     ) {
         self.store = store
         self.hostIdentity = hostIdentity
+        self.localAuthorRoles = localAuthorRoles
+        self.allowedTrustGroupID = allowedTrustGroupID
+        self.restrictToAllowedTrustGroup = restrictToAllowedTrustGroup
         self.hostCommandHandler = hostCommandHandler
+        self.hostPresenceProvider = hostPresenceProvider
+        self.membershipTransitionObserver = membershipTransitionObserver
         self.timestamp = timestamp
     }
 
@@ -86,8 +222,41 @@ public struct MeshReplicaRPCServer: Sendable {
         guard header.disposition == .request else {
             throw MeshReplicaRPCError.invalidHeader
         }
+        if restrictToAllowedTrustGroup,
+           header.trustGroupID != allowedTrustGroupID {
+            return try failure(for: header, code: "trust-group-inactive")
+        }
         guard header.metadata == nil else {
             return try failure(for: header, code: "invalid-request")
+        }
+
+        // A stale authenticated member may fetch exactly the next signed
+        // transition. This must precede current-epoch authorization, otherwise
+        // a device that missed one offline change can never rejoin anti-entropy.
+        if header.operation == .membershipTransitionNext {
+            let transition = try await store.nextMembershipTransition(
+                for: header.trustGroupID, after: header.membershipEpoch
+            )
+            // Retained members have already moved to the next-epoch row, while
+            // revoked members remain as old-epoch audit rows. Accept either
+            // cryptographically authenticated case, but never an arbitrary
+            // endpoint asking for the trust history.
+            let retained = transition?.roster.contains(where: {
+                $0.descriptor.endpointID == remoteEndpointID
+            }) == true
+            let departed = transition?.departingAuthor?.descriptor.endpointID
+                == remoteEndpointID
+            let oldEpochPeer = try await store.trustedDevice(
+                in: header.trustGroupID, endpointID: remoteEndpointID,
+                membershipEpoch: header.membershipEpoch
+            ) != nil
+            guard retained || departed || oldEpochPeer else {
+                return try failure(for: header, code: "peer-not-trusted")
+            }
+            return try success(
+                for: header,
+                body: try transition.map(MeshReplicaRPCJSON.encode)
+            )
         }
 
         // Membership changes are authenticated by their controller signature
@@ -105,8 +274,10 @@ public struct MeshReplicaRPCServer: Sendable {
                     throw MeshReplicaRPCError.invalidBody
                 }
                 try await store.applyMembershipTransition(
-                    transition, localIdentity: hostIdentity
+                    transition, localIdentity: hostIdentity,
+                    localAuthorRoles: localAuthorRoles
                 )
+                await membershipTransitionObserver?(transition)
                 return try success(for: header)
             } catch let error as MeshMembershipTransitionError {
                 let code = error == .conflictingTransition
@@ -117,12 +288,26 @@ public struct MeshReplicaRPCServer: Sendable {
             }
         }
 
+        let authorizedPeer: MeshPairedDevice
         do {
-            _ = try await store.authorizeReplicaRPCPeer(
+            authorizedPeer = try await store.authorizeReplicaRPCPeer(
                 in: header.trustGroupID, endpointID: remoteEndpointID,
                 membershipEpoch: header.membershipEpoch
             )
         } catch let error as DistributedMeshStoreError {
+            if ProcessInfo.processInfo.environment["PHAROS_MESH_RPC_DIAGNOSTICS"] == "1" {
+                let currentEpoch = try? await store.membershipEpoch(
+                    for: header.trustGroupID
+                )
+                let epochText = currentEpoch.map(String.init) ?? "none"
+                let message = "mesh-rpc authorization rejected " +
+                    "peer=\(remoteEndpointID.rawValue) " +
+                    "group=\(header.trustGroupID.rawValue.uuidString) " +
+                    "requestEpoch=\(header.membershipEpoch) " +
+                    "currentEpoch=\(epochText) " +
+                    "error=\(error)\n"
+                FileHandle.standardError.write(Data(message.utf8))
+            }
             switch error {
             case .membershipEpochMismatch:
                 return try failure(for: header, code: "membership-epoch-mismatch")
@@ -154,17 +339,19 @@ public struct MeshReplicaRPCServer: Sendable {
                     for: header.trustGroupID, requestedBy: remoteEndpointID,
                     membershipEpoch: header.membershipEpoch
                 )
-                let peers = try await store.trustedDevices(
-                    in: header.trustGroupID,
-                    membershipEpoch: header.membershipEpoch
+                let peers = try await store.retainedTrustedDevices(
+                    in: header.trustGroupID
                 )
                 vector.trustRoster = peers
-                    .filter { $0.descriptor.endpointID != remoteEndpointID }
+                    .filter {
+                        $0.device.descriptor.endpointID != remoteEndpointID
+                    }
                     .map {
                         MeshTrustRosterEntry(
-                            descriptor: $0.descriptor,
-                            signingPublicKey: $0.signingPublicKey,
-                            addressTicket: $0.addressTicket
+                            descriptor: $0.device.descriptor,
+                            signingPublicKey: $0.device.signingPublicKey,
+                            addressTicket: $0.device.addressTicket,
+                            membershipEpoch: $0.membershipEpoch
                         )
                     }
                     .sorted { $0.descriptor.endpointID < $1.descriptor.endpointID }
@@ -190,6 +377,37 @@ public struct MeshReplicaRPCServer: Sendable {
                 }
                 try await store.acknowledge(
                     vector, requestedBy: remoteEndpointID
+                )
+                return try success(for: header)
+
+            case .syncOffer:
+                let vector: MeshSyncVector = try decodeBody(request.body)
+                guard vector.trustGroupID == header.trustGroupID,
+                      vector.membershipEpoch == header.membershipEpoch else {
+                    throw MeshReplicaRPCError.invalidBody
+                }
+                let missing = try await store.missingRangeRequests(
+                    advertisedBy: vector
+                )
+                guard missing.count <= MeshSyncVector.maximumAuthors else {
+                    throw MeshReplicaRPCError.invalidBody
+                }
+                if missing.isEmpty {
+                    try await store.acknowledge(
+                        vector, requestedBy: remoteEndpointID
+                    )
+                }
+                return try success(
+                    for: header,
+                    body: try MeshReplicaRPCJSON.encode(missing)
+                )
+
+            case .syncIngest:
+                let response: MeshEventRangeResponse = try decodeBody(request.body)
+                try await installPushedRange(
+                    response, from: remoteEndpointID,
+                    group: header.trustGroupID,
+                    membershipEpoch: header.membershipEpoch
                 )
                 return try success(for: header)
 
@@ -235,6 +453,21 @@ public struct MeshReplicaRPCServer: Sendable {
                     for: header, body: try MeshReplicaRPCJSON.encode(resource)
                 )
 
+            case .hostPresence:
+                guard request.body == nil,
+                      let hostIdentity, let hostPresenceProvider else {
+                    return try failure(for: header, code: "host-unavailable")
+                }
+                let snapshot = await hostPresenceProvider()
+                try snapshot.validate()
+                guard snapshot.hostDeviceID == hostIdentity.deviceID,
+                      snapshot.hostEndpointID == (try hostIdentity.endpointID()) else {
+                    return try failure(for: header, code: "presence-identity-mismatch")
+                }
+                return try success(
+                    for: header, body: try MeshReplicaRPCJSON.encode(snapshot)
+                )
+
             case .hostCommand:
                 guard let hostIdentity else {
                     return try failure(for: header, code: "host-unavailable")
@@ -274,7 +507,30 @@ public struct MeshReplicaRPCServer: Sendable {
                     }
                 }
                 return try success(for: header, body: try MeshReplicaRPCJSON.encode(receipt))
-            case .membershipTransition:
+            case .membershipVote:
+                guard let hostIdentity,
+                      authorizedPeer.descriptor.roles.contains(.controller) else {
+                    return try failure(for: header, code: "membership-voter-unavailable")
+                }
+                let proposal: MeshMembershipTransition = try decodeBody(request.body)
+                guard proposal.version == MeshMembershipTransition.quorumVersion,
+                      proposal.trustGroupID == header.trustGroupID,
+                      proposal.previousEpoch == header.membershipEpoch,
+                      proposal.authorDeviceID == authorizedPeer.descriptor.id,
+                      proposal.authorEndpointID == remoteEndpointID else {
+                    return try failure(for: header, code: "membership-proposal-invalid")
+                }
+                let approval = try await store.recordMembershipVote(
+                    for: proposal, localIdentity: hostIdentity,
+                    localAuthorRoles: localAuthorRoles
+                )
+                return try success(
+                    for: header,
+                    body: try MeshReplicaRPCJSON.encode(
+                        MeshMembershipVoteResponse(approval: approval)
+                    )
+                )
+            case .membershipTransition, .membershipTransitionNext:
                 preconditionFailure("membership transition handled before current-epoch authorization")
             }
         } catch let error as MeshReplicaRPCError {
@@ -284,6 +540,10 @@ public struct MeshReplicaRPCServer: Sendable {
             default:
                 return try failure(for: header, code: "request-failed")
             }
+        } catch let error as MeshMembershipTransitionError {
+            let code = error == .conflictingTransition
+                ? "membership-vote-conflict" : "membership-vote-invalid"
+            return try failure(for: header, code: code)
         } catch let error as DistributedMeshStoreError {
             switch error {
             case .membershipEpochMismatch:
@@ -329,12 +589,106 @@ public struct MeshReplicaRPCServer: Sendable {
         do { return try MeshReplicaRPCJSON.decode(T.self, from: body) }
         catch { throw MeshReplicaRPCError.invalidBody }
     }
+
+    private func installPushedRange(
+        _ response: MeshEventRangeResponse,
+        from remoteEndpointID: MeshEndpointID,
+        group: MeshTrustGroupID,
+        membershipEpoch: UInt64
+    ) async throws {
+        try response.validate()
+        guard response.request.trustGroupID == group,
+              response.request.membershipEpoch == membershipEpoch else {
+            throw MeshReplicaRPCError.invalidBody
+        }
+        switch response.kind {
+        case .events:
+            for event in response.events {
+                let author = if event.membershipEpoch == membershipEpoch {
+                    try await store.trustedDevice(
+                        in: group, endpointID: event.authorEndpointID,
+                        membershipEpoch: membershipEpoch
+                    )
+                } else {
+                    try await store.retainedTrustedDevice(
+                        in: group, endpointID: event.authorEndpointID
+                    )
+                }
+                guard let author else { throw MeshReplicaRPCError.peerNotTrusted }
+                if event.membershipEpoch == membershipEpoch {
+                    _ = try await store.insert(
+                        event, authorPublicKey: author.signingPublicKey
+                    )
+                } else {
+                    _ = try await store.insertHistoricalEvent(
+                        event, authorPublicKey: author.signingPublicKey,
+                        vouchedBy: remoteEndpointID,
+                        currentMembershipEpoch: membershipEpoch
+                    )
+                }
+            }
+        case .snapshot:
+            guard let bundle = response.snapshot else {
+                throw MeshReplicaRPCError.peerNotTrusted
+            }
+            let creator = if bundle.snapshot.membershipEpoch == membershipEpoch {
+                try await store.trustedDevice(
+                    in: group, endpointID: bundle.snapshot.creatorEndpointID,
+                    membershipEpoch: membershipEpoch
+                )
+            } else {
+                try await store.retainedTrustedDevice(
+                    in: group, endpointID: bundle.snapshot.creatorEndpointID
+                )
+            }
+            guard let creator else { throw MeshReplicaRPCError.peerNotTrusted }
+            if bundle.snapshot.membershipEpoch == membershipEpoch {
+                try await store.installSnapshot(
+                    bundle, creatorPublicKey: creator.signingPublicKey
+                )
+            } else {
+                try await store.installHistoricalSnapshot(
+                    bundle, creatorPublicKey: creator.signingPublicKey,
+                    vouchedBy: remoteEndpointID,
+                    currentMembershipEpoch: membershipEpoch
+                )
+            }
+        case .upToDate:
+            break
+        }
+    }
 }
 
 public struct MeshReplicaRPCClient: Sendable {
-    private let transport: any MeshTransport
+    /// A first request may need to establish a QUIC path through the public
+    /// relay before any bytes can flow. Real cross-network cold connects take
+    /// roughly 3–5 seconds; a 1.5-second UI budget caused every attempt to be
+    /// cancelled before the path became usable, leaving reachable agents as
+    /// Unknown forever. Peers are contacted concurrently, so this bound does
+    /// not put an offline device in front of an online peer's result.
+    /// Covers a cold relay connection plus one bounded duplicate-connection
+    /// recovery. A simultaneous dial can consume roughly one cold handshake
+    /// before Iroh asks one side to reconnect; cancelling at 5–6 seconds made
+    /// a reachable Host repeatedly disappear as Unknown on its peers.
+    public static let defaultRequestTimeoutMilliseconds = 10_000
+    public static let backgroundRequestTimeoutMilliseconds = 10_000
 
-    public init(transport: any MeshTransport) { self.transport = transport }
+    private let transport: any MeshTransport
+    private let requestTimeoutMilliseconds: Int
+
+    public init(transport: any MeshTransport) {
+        self.init(
+            transport: transport,
+            requestTimeoutMilliseconds: Self.defaultRequestTimeoutMilliseconds
+        )
+    }
+
+    public init(
+        transport: any MeshTransport, requestTimeoutMilliseconds: Int
+    ) {
+        self.transport = transport
+        self.requestTimeoutMilliseconds = max(1, requestTimeoutMilliseconds)
+    }
 
     public func syncVector(
         for group: MeshTrustGroupID, membershipEpoch: UInt64
@@ -370,6 +724,38 @@ public struct MeshReplicaRPCClient: Sendable {
             operation: .syncAcknowledge, group: vector.trustGroupID,
             membershipEpoch: vector.membershipEpoch,
             body: try MeshReplicaRPCJSON.encode(vector)
+        )
+    }
+
+    public func offer(
+        _ vector: MeshSyncVector
+    ) async throws -> [MeshEventRangeRequest] {
+        let response = try await exchange(
+            operation: .syncOffer, group: vector.trustGroupID,
+            membershipEpoch: vector.membershipEpoch,
+            body: try MeshReplicaRPCJSON.encode(vector)
+        )
+        let requests: [MeshEventRangeRequest] = try decodeBody(response.body)
+        guard requests.count <= MeshSyncVector.maximumAuthors else {
+            throw MeshReplicaRPCError.invalidBody
+        }
+        for request in requests {
+            try request.validate()
+            guard request.trustGroupID == vector.trustGroupID,
+                  request.membershipEpoch == vector.membershipEpoch else {
+                throw MeshReplicaRPCError.responseMismatch
+            }
+        }
+        return requests
+    }
+
+    public func ingest(_ response: MeshEventRangeResponse) async throws {
+        try response.validate()
+        _ = try await exchange(
+            operation: .syncIngest,
+            group: response.request.trustGroupID,
+            membershipEpoch: response.request.membershipEpoch,
+            body: try MeshReplicaRPCJSON.encode(response)
         )
     }
 
@@ -472,6 +858,19 @@ public struct MeshReplicaRPCClient: Sendable {
         return resource
     }
 
+    public func hostPresence(
+        group: MeshTrustGroupID, membershipEpoch: UInt64
+    ) async throws -> MeshAgentPresenceSnapshot {
+        let response = try await exchange(
+            operation: .hostPresence, group: group,
+            membershipEpoch: membershipEpoch
+        )
+        let snapshot: MeshAgentPresenceSnapshot = try decodeBody(response.body)
+        do { try snapshot.validate() }
+        catch { throw MeshReplicaRPCError.responseMismatch }
+        return snapshot
+    }
+
     public func applyMembershipTransition(
         _ transition: MeshMembershipTransition
     ) async throws {
@@ -482,6 +881,47 @@ public struct MeshReplicaRPCClient: Sendable {
             membershipEpoch: transition.previousEpoch,
             body: try MeshReplicaRPCJSON.encode(transition)
         )
+    }
+
+    public func requestMembershipVote(
+        for proposal: MeshMembershipTransition
+    ) async throws -> MeshMembershipApproval? {
+        try proposal.verifyAuthorSignature()
+        let response = try await exchange(
+            operation: .membershipVote,
+            group: proposal.trustGroupID,
+            membershipEpoch: proposal.previousEpoch,
+            body: try MeshReplicaRPCJSON.encode(proposal)
+        )
+        let vote: MeshMembershipVoteResponse = try decodeBody(response.body)
+        if let approval = vote.approval {
+            guard approval.deviceID != proposal.authorDeviceID,
+                  proposal.previousControllers?.contains(where: {
+                      $0.deviceID == approval.deviceID &&
+                          $0.endpointID == approval.endpointID
+                  }) == true else {
+                throw MeshReplicaRPCError.responseMismatch
+            }
+        }
+        return vote.approval
+    }
+
+    public func nextMembershipTransition(
+        for group: MeshTrustGroupID, after membershipEpoch: UInt64
+    ) async throws -> MeshMembershipTransition? {
+        let response = try await exchange(
+            operation: .membershipTransitionNext, group: group,
+            membershipEpoch: membershipEpoch
+        )
+        guard let body = response.body else { return nil }
+        let transition: MeshMembershipTransition = try decodeBody(body)
+        try transition.verifySignature()
+        guard transition.trustGroupID == group,
+              transition.previousEpoch == membershipEpoch,
+              transition.nextEpoch == membershipEpoch + 1 else {
+            throw MeshReplicaRPCError.responseMismatch
+        }
+        return transition
     }
 
     private func exchange(
@@ -495,7 +935,8 @@ public struct MeshReplicaRPCClient: Sendable {
             metadata: metadata
         )
         let request = MeshTransportRequest(
-            header: try requestHeader.canonicalBytes(), body: body
+            header: try requestHeader.canonicalBytes(), body: body,
+            timeoutMilliseconds: requestTimeoutMilliseconds
         )
         let response = try await transport.exchange(request)
         try response.validate()
@@ -552,9 +993,10 @@ public struct MeshReplicaSyncReport: Equatable, Sendable {
     }
 }
 
-/// One bounded pull/ack anti-entropy session. Peers run the same operation in
-/// both directions; all writes still pass through the store's signature,
-/// membership, sequence, hash-chain, and snapshot verification.
+/// One bounded bidirectional anti-entropy session. The caller first pulls what
+/// it lacks, then offers its resulting vector so the peer can request missing
+/// ranges over the same authenticated connection. All writes still pass
+/// through signature, membership, sequence, hash-chain, and snapshot checks.
 public struct MeshReplicaSyncSession: Sendable {
     public static let maximumRangeRounds = 4_096
 
@@ -603,6 +1045,9 @@ public struct MeshReplicaSyncSession: Sendable {
                 // can contain offline authors the remote has never received;
                 // claiming those here would correctly fail its monotonic
                 // acknowledgement validation.
+                try await pushLocalChanges(
+                    group: group, membershipEpoch: membershipEpoch
+                )
                 try await client.acknowledge(remote)
                 return report
             }
@@ -612,29 +1057,91 @@ public struct MeshReplicaSyncSession: Sendable {
                 switch response.kind {
                 case .events:
                     for event in response.events {
-                        guard let author = try await store.trustedDevice(
-                            in: group, endpointID: event.authorEndpointID,
-                            membershipEpoch: membershipEpoch
-                        ) else { throw MeshReplicaRPCError.peerNotTrusted }
-                        _ = try await store.insert(
-                            event, authorPublicKey: author.signingPublicKey
-                        )
+                        let author = if event.membershipEpoch == membershipEpoch {
+                            try await store.trustedDevice(
+                                in: group, endpointID: event.authorEndpointID,
+                                membershipEpoch: membershipEpoch
+                            )
+                        } else {
+                            try await store.retainedTrustedDevice(
+                                in: group, endpointID: event.authorEndpointID
+                            )
+                        }
+                        guard let author else {
+                            throw MeshReplicaRPCError.peerNotTrusted
+                        }
+                        if event.membershipEpoch == membershipEpoch {
+                            _ = try await store.insert(
+                                event, authorPublicKey: author.signingPublicKey
+                            )
+                        } else {
+                            guard let remoteEndpointID else {
+                                throw MeshReplicaRPCError.peerNotTrusted
+                            }
+                            _ = try await store.insertHistoricalEvent(
+                                event, authorPublicKey: author.signingPublicKey,
+                                vouchedBy: remoteEndpointID,
+                                currentMembershipEpoch: membershipEpoch
+                            )
+                        }
                         report.eventCount += 1
                     }
                 case .snapshot:
-                    guard let bundle = response.snapshot,
-                          let creator = try await store.trustedDevice(
-                            in: group,
-                            endpointID: bundle.snapshot.creatorEndpointID,
-                            membershipEpoch: membershipEpoch
-                          ) else { throw MeshReplicaRPCError.peerNotTrusted }
-                    try await store.installSnapshot(
-                        bundle, creatorPublicKey: creator.signingPublicKey
-                    )
+                    guard let bundle = response.snapshot else {
+                        throw MeshReplicaRPCError.peerNotTrusted
+                    }
+                    let creator =
+                        if bundle.snapshot.membershipEpoch == membershipEpoch {
+                            try await store.trustedDevice(
+                                in: group,
+                                endpointID: bundle.snapshot.creatorEndpointID,
+                                membershipEpoch: membershipEpoch
+                            )
+                        } else {
+                            try await store.retainedTrustedDevice(
+                                in: group,
+                                endpointID: bundle.snapshot.creatorEndpointID
+                            )
+                        }
+                    guard let creator else {
+                        throw MeshReplicaRPCError.peerNotTrusted
+                    }
+                    if bundle.snapshot.membershipEpoch == membershipEpoch {
+                        try await store.installSnapshot(
+                            bundle, creatorPublicKey: creator.signingPublicKey
+                        )
+                    } else {
+                        guard let remoteEndpointID else {
+                            throw MeshReplicaRPCError.peerNotTrusted
+                        }
+                        try await store.installHistoricalSnapshot(
+                            bundle, creatorPublicKey: creator.signingPublicKey,
+                            vouchedBy: remoteEndpointID,
+                            currentMembershipEpoch: membershipEpoch
+                        )
+                    }
                     report.snapshotCount += 1
                 case .upToDate:
                     throw MeshReplicaRPCError.responseMismatch
                 }
+            }
+        }
+        throw MeshReplicaRPCError.synchronizationLimitExceeded
+    }
+
+    private func pushLocalChanges(
+        group: MeshTrustGroupID, membershipEpoch: UInt64
+    ) async throws {
+        for _ in 0..<Self.maximumRangeRounds {
+            let local = try await store.syncVector(for: group)
+            guard local.membershipEpoch == membershipEpoch else {
+                throw MeshReplicaRPCError.membershipEpochMismatch
+            }
+            let requests = try await client.offer(local)
+            if requests.isEmpty { return }
+            for request in requests {
+                let response = try await store.syncResponse(for: request)
+                try await client.ingest(response)
             }
         }
         throw MeshReplicaRPCError.synchronizationLimitExceeded
@@ -650,6 +1157,7 @@ public struct MeshReplicaSyncSession: Sendable {
             membershipEpoch: membershipEpoch
         ), controller.descriptor.roles.contains(.controller) else { return }
         for entry in roster {
+            let entryEpoch = entry.membershipEpoch ?? membershipEpoch
             let peer = MeshPairedDevice(
                 descriptor: entry.descriptor,
                 signingPublicKey: entry.signingPublicKey,
@@ -660,18 +1168,28 @@ public struct MeshReplicaSyncSession: Sendable {
             if let existing = try await store.trustedDevice(
                 in: group, id: peer.descriptor.id
             ) {
+                guard existing.hasSameCryptographicIdentity(as: peer) else {
+                    throw MeshReplicaRPCError.peerNotTrusted
+                }
+                // Historical rows are signature-verification material only.
+                // Never let an older roster overwrite the roles, protocol, or
+                // current routing hint of a surviving active member.
+                if entryEpoch < membershipEpoch {
+                    try await store.installRetainedVerifiedPeer(
+                        peer, in: group, membershipEpoch: entryEpoch
+                    )
+                    continue
+                }
                 // Display names are local aliases chosen independently by
                 // each inviter (for example "Pharos Mac" versus "Mac mini").
                 // They are not part of the cryptographic device identity and
                 // must not turn a valid transitive roster into a trust error.
                 // Endpoint, key, roles, and protocol version remain strict so
                 // a relayed roster cannot rebind or elevate an existing peer.
-                guard existing.descriptor.id == peer.descriptor.id,
-                      existing.descriptor.endpointID == peer.descriptor.endpointID,
-                      existing.descriptor.roles == peer.descriptor.roles,
+                guard existing.descriptor.roles == peer.descriptor.roles,
                       existing.descriptor.protocolVersion ==
                           peer.descriptor.protocolVersion,
-                      existing.signingPublicKey == peer.signingPublicKey else {
+                      entryEpoch == membershipEpoch else {
                     throw MeshReplicaRPCError.peerNotTrusted
                 }
                 if existing.addressTicket != peer.addressTicket {
@@ -682,9 +1200,15 @@ public struct MeshReplicaSyncSession: Sendable {
                     )
                 }
             } else {
-                try await store.installVerifiedPeer(
-                    peer, in: group, membershipEpoch: membershipEpoch
-                )
+                if entryEpoch < membershipEpoch {
+                    try await store.installRetainedVerifiedPeer(
+                        peer, in: group, membershipEpoch: entryEpoch
+                    )
+                } else {
+                    try await store.installVerifiedPeer(
+                        peer, in: group, membershipEpoch: entryEpoch
+                    )
+                }
             }
         }
     }

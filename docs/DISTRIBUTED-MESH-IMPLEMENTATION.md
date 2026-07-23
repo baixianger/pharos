@@ -145,6 +145,12 @@ Implemented on `feat/distributed-iroh`:
   and competing same-epoch transitions fail closed. macOS/iOS UI and
   `pair revoke` expose the workflow; offline survivors receive the transition
   before their next ordinary sync;
+- active membership profile v2 persists the local device's signed invitation
+  roles. Every local transition path checks that persisted controller grant;
+  possessing a valid replica key alone cannot self-promote into Mesh Admin.
+  Legacy product profiles migrate to their historically granted platform roles.
+  `pair audit` verifies and prints the complete transition chain plus removed
+  old-epoch rows and canonical transition hashes;
 - the iOS project consumes `PharosMeshIdentity` and the portable
   `PharosMeshReplica` product; isolated simulator builds compile and link
   Keychain, identity, pairing, Crypto, SQLite, replica persistence, and Iroh for
@@ -357,6 +363,19 @@ Implemented on `feat/distributed-iroh`:
 - the authenticated replica RPC command route binds the QUIC peer Endpoint ID
   to the signed controller envelope and returns only a correlated,
   signature-verified Host receipt; it still never performs the side effect.
+- binding schema v2 records the exact tmux socket, pane ID, session ID, session
+  creation time, and pane PID. The executor resolves and compares that live
+  fingerprint before every poke, attach, or stop; v1 and partial bindings are
+  storage-compatible but never executable.
+- the Host-local reconciler grants `presence,poke,stop` only from one exact
+  structured-hook seat. Missing proof becomes presence-only; duplicate seat
+  claims, stale bindings, and ownership conflicts revoke control rather than
+  guessing from nick, cwd, or machine labels. `pharos mesh claim` provides the
+  same proof path for a pre-existing session when run inside its own tmux pane.
+- Stop finalization removes the Agent from every room, retires its resource,
+  removes private binding/observation state, and leaves an executed signed
+  receipt. Accepted/executing Stop receipts resume this idempotent sequence on
+  Host launch after a crash.
 
 1. Bind each Host profile to a trusted device ID and Endpoint ID.
 2. Persist a local Host resource generation for every agent/tmux session.
