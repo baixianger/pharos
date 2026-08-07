@@ -65,29 +65,26 @@ struct ConversationView: View {
         .quickLookPreview($previewURL)
     }
 
-    // Inverted transcript: the LazyVStack renders newest→oldest, and both the
-    // ScrollView and every cell are flipped upside down. The newest message
-    // therefore rests at scroll offset 0 (the visual bottom) — an offset the
-    // keyboard and the growing composer can't move, which is what made the old
-    // .scrollPosition(anchor:.bottom) approach jump to a blank region while
-    // typing. Prepended history lands off-screen at the visual top (no yank),
-    // and a new message inserts at offset 0 so it auto-appears when at rest.
+    // Keep the transcript in normal visual order. The previous double-flip
+    // implementation made iOS context-menu previews inherit a 180° transform,
+    // producing upside-down previews, collapsed vertical lines, and overlapping
+    // text. ScrollViewReader keeps the newest message visible without changing
+    // the coordinate system used by rows and their system previews.
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(transcriptCells.reversed())) { cell in
-                        transcriptCellView(cell).flipUpsideDown()
+                    if store.hasMoreHistory {
+                        historyLoader
                     }
-                    Group {
-                        if store.hasMoreHistory { historyLoader } else { channelWelcome }
+                    ForEach(transcriptCells) { cell in
+                        transcriptCellView(cell)
                     }
-                    .flipUpsideDown()
+                    if !store.hasMoreHistory { channelWelcome }
                 }
                 .scrollTargetLayout()
                 .padding(.vertical, 8)
             }
-            .flipUpsideDown()
             .scrollIndicators(.hidden)
             .background(Color(uiColor: .systemBackground))
             .scrollDismissesKeyboard(.interactively)
@@ -101,15 +98,17 @@ struct ConversationView: View {
                     try? await Task.sleep(for: .milliseconds(50))
                 }
                 try? await Task.sleep(for: .milliseconds(300))
+                if let last = store.messages.last?.id {
+                    proxy.scrollTo(last, anchor: .bottom)
+                }
                 allowsHistoryPaging = true
             }
             // On send, return to the newest message even if the user had
-            // scrolled up. ScrollViewReader works in untransformed layout space,
-            // where the newest cell is the layout-top (offset 0), so anchor .top.
+            // scrolled up.
             .onChange(of: scrollBottomTick) {
                 guard let last = store.messages.last?.id else { return }
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                    proxy.scrollTo(last, anchor: .top)
+                    proxy.scrollTo(last, anchor: .bottom)
                 }
             }
         }
@@ -643,16 +642,6 @@ private enum MobileRoomDraftCache {
         if draft.isEmpty { drafts.removeValue(forKey: room) }
         else { drafts[room] = draft }
         UserDefaults.standard.set(drafts, forKey: defaultsKey)
-    }
-}
-
-private extension View {
-    /// Vertical flip for the inverted chat transcript. Rotating 180° then
-    /// mirroring horizontally is a pure vertical reflection (crisper than a
-    /// negative-y scaleEffect); applied to both the ScrollView and each cell it
-    /// reverses the visual stacking order while keeping content upright.
-    func flipUpsideDown() -> some View {
-        rotationEffect(.radians(.pi)).scaleEffect(x: -1, y: 1, anchor: .center)
     }
 }
 
