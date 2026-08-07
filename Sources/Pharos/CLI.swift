@@ -233,14 +233,16 @@ enum CLI {
             var kind: String?
             if let i = a.firstIndex(of: "--kind"), i + 1 < a.count { kind = a[i + 1] }
             kind = kind ?? detectAgentKind(env)
-            let r = MeshClient.send(MeshRequest(cmd: "join", room: a[0], nick: a[1],
+            var request = MeshRequest(cmd: "join", room: a[0], nick: a[1],
                                                 project: FileManager.default.currentDirectoryPath,
                                                 session: session,
                                                 host: HostIdentity.current,
                                                 tmuxPane: pane,
                                                 tmuxSocket: socket,
                                                 kind: kind,
-                                                tailscaleIP: detectTailscaleIP()))
+                                                tailscaleIP: detectTailscaleIP())
+            request.nodeID = MeshNodeIdentity.current
+            let r = MeshClient.send(request)
             guard r.ok else { return report(r) }
             print("joined \(a[0]) as \(a[1])")
             let history = r.messages ?? []

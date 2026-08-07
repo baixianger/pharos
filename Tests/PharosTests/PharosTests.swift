@@ -2041,6 +2041,22 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         XCTAssertEqual(broker.process(MeshRequest(cmd: "node-list")).nodes?.map(\.id), ["node-1"])
     }
 
+    func testNodeIdentityWinsOverConflictingHostAndIPForPokeRouting() throws {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "node-heartbeat", memberID: "node-1",
+                                                 host: "mini.local", tailscaleIP: "100.123.131.117")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "node-heartbeat", memberID: "node-2",
+                                                 host: "air.local", tailscaleIP: "100.91.91.43")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "dev", nick: "agent",
+                                                 session: "session-1", host: "mini.local", tmuxPane: "%7",
+                                                 kind: "codex", tailscaleIP: "100.123.131.117",
+                                                 nodeID: "node-2")).ok)
+        XCTAssertEqual(broker.process(MeshRequest(cmd: "who")).members?.first?.nodeID, "node-2")
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "poke", room: "dev", nick: "agent")).ok)
+        XCTAssertEqual(broker.process(MeshRequest(cmd: "node-command-list", nodeID: "node-2")).commands?.count, 1)
+        XCTAssertTrue((broker.process(MeshRequest(cmd: "node-command-list", nodeID: "node-1")).commands ?? []).isEmpty)
+    }
+
     func testManualPokeRequiresHostNodeAndPublishesDurableCommand() throws {
         let broker = MeshBroker()
         XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "dev", nick: "agent",

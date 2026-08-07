@@ -273,6 +273,7 @@ public struct MeshUnread: Codable, Sendable {
 /// session id → runtime identity. `aliases` is room → display nick; aliases are
 /// room-scoped and never serve as delivery keys.
 public struct MeshPresenceEntry: Codable, Sendable {
+    public var nodeID: String?
     public var project: String?
     public var session: String?
     public var host: String?
@@ -288,12 +289,12 @@ public struct MeshPresenceEntry: Codable, Sendable {
     public var lastSeen: Double
     public var online: Bool
 
-    public init(project: String? = nil, session: String? = nil, host: String? = nil,
+    public init(nodeID: String? = nil, project: String? = nil, session: String? = nil, host: String? = nil,
                 tmuxPane: String? = nil, tmuxSocket: String? = nil,
                 state: String? = nil, stateTs: Double? = nil, stateReason: String? = nil,
                 kind: String? = nil, tailscaleIP: String? = nil,
                 aliases: [String: String], rooms: [String], lastSeen: Double, online: Bool) {
-        self.project = project; self.session = session; self.host = host; self.tmuxPane = tmuxPane
+        self.nodeID = nodeID; self.project = project; self.session = session; self.host = host; self.tmuxPane = tmuxPane
         self.tmuxSocket = tmuxSocket; self.state = state; self.stateTs = stateTs
         self.stateReason = stateReason; self.kind = kind
         self.tailscaleIP = tailscaleIP; self.aliases = aliases; self.rooms = rooms
@@ -307,6 +308,7 @@ public struct MeshPresenceEntry: Codable, Sendable {
 public struct MeshMemberInfo: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var nick: String
+    public var nodeID: String?
     public var project: String?
     public var session: String?
     public var host: String?
@@ -322,14 +324,14 @@ public struct MeshMemberInfo: Codable, Sendable, Equatable, Identifiable {
     public var lastSeen: Double
     public var nodeOnline: Bool?
 
-    public init(id: String, nick: String, project: String? = nil, session: String? = nil,
+    public init(id: String, nick: String, nodeID: String? = nil, project: String? = nil, session: String? = nil,
                 host: String? = nil, tmuxPane: String? = nil,
                 tmuxSocket: String? = nil, state: String? = nil, stateTs: Double? = nil,
                 stateReason: String? = nil,
                 unread: Int? = nil, kind: String? = nil,
                 tailscaleIP: String? = nil, rooms: [String], lastSeen: Double,
                 nodeOnline: Bool? = nil) {
-        self.id = id; self.nick = nick; self.project = project; self.session = session; self.host = host
+        self.id = id; self.nick = nick; self.nodeID = nodeID; self.project = project; self.session = session; self.host = host
         self.tmuxPane = tmuxPane; self.tmuxSocket = tmuxSocket; self.state = state; self.stateTs = stateTs
         self.stateReason = stateReason
         self.unread = unread; self.kind = kind; self.tailscaleIP = tailscaleIP
@@ -1022,7 +1024,7 @@ public final class MeshBroker: @unchecked Sendable {
             if rooms[r]!.mailboxes[memberID] == nil { rooms[r]!.mailboxes[memberID] = [] }
             // A joining agent is mid-turn by definition (the CLI runs in its
             // Bash tool) — seed state busy until its hooks report otherwise.
-            touchPresenceLocked(memberID, project: req.project, session: req.session,
+            touchPresenceLocked(memberID, nodeID: req.nodeID, project: req.project, session: req.session,
                                 host: req.host, tmuxPane: req.tmuxPane, tmuxSocket: req.tmuxSocket,
                                 state: MeshSessionState.busy.rawValue, kind: req.kind,
                                 tailscaleIP: req.tailscaleIP)
@@ -1123,7 +1125,7 @@ public final class MeshBroker: @unchecked Sendable {
             lock.lock()
             let targetInfo = (req.to ?? []).map { nick in
                 memberInfoLocked(room: r, nick: nick)
-                    ?? MeshMemberInfo(id: "", nick: nick, project: nil, session: nil, host: nil,
+                    ?? MeshMemberInfo(id: "", nick: nick, nodeID: nil, project: nil, session: nil, host: nil,
                                       tmuxPane: nil, tmuxSocket: nil, state: nil, stateTs: nil, unread: nil,
                                       kind: nil, tailscaleIP: nil, rooms: [], lastSeen: 0)
             }
@@ -1440,11 +1442,18 @@ public final class MeshBroker: @unchecked Sendable {
                                     requireUnread: Bool, preferredNodeID: String? = nil) -> MeshNodeCommand? {
         lock.lock()
         pruneNodesLocked()
-        let nodeID = preferredNodeID.flatMap { nodes[$0]?.id } ?? nodes.values.first(where: { node in
-            if let memberIP = member.tailscaleIP, !memberIP.isEmpty,
-               let nodeIP = node.tailscaleIP, !nodeIP.isEmpty { return memberIP == nodeIP }
-            return normalizedHost(member.host) == normalizedHost(node.host)
-        })?.id
+        let nodeID: String?
+        if let preferredNodeID {
+            nodeID = nodes[preferredNodeID]?.id
+        } else if let owner = member.nodeID, !owner.isEmpty {
+            nodeID = nodes[owner]?.id
+        } else {
+            nodeID = nodes.values.first(where: { node in
+                if let memberIP = member.tailscaleIP, !memberIP.isEmpty,
+                   let nodeIP = node.tailscaleIP, !nodeIP.isEmpty { return memberIP == nodeIP }
+                return normalizedHost(member.host) == normalizedHost(node.host)
+            })?.id
+        }
         lock.unlock()
         guard let nodeID,
               let data = try? JSONEncoder().encode(MeshNodePokePayload(memberID: member.id,
@@ -1465,7 +1474,9 @@ public final class MeshBroker: @unchecked Sendable {
         var recoveries: [(MeshMemberInfo, String)] = []
         for (memberID, entry) in presence {
             let owned: Bool
-            if let tailscaleIP, !tailscaleIP.isEmpty,
+            if let owner = entry.nodeID, !owner.isEmpty {
+                owned = owner == nodeID
+            } else if let tailscaleIP, !tailscaleIP.isEmpty,
                let memberIP = entry.tailscaleIP, !memberIP.isEmpty {
                 owned = tailscaleIP == memberIP
             } else {
@@ -1599,7 +1610,8 @@ public final class MeshBroker: @unchecked Sendable {
     /// host / tmux pane / state) and mirror to disk. Skips nicks that are members
     /// of nothing and were never seen — e.g. the GUI's "human" sender — so
     /// presence stays a roster of agents.
-    private func touchPresenceLocked(_ memberID: String, project: String? = nil, session: String? = nil,
+    private func touchPresenceLocked(_ memberID: String, nodeID: String? = nil,
+                                     project: String? = nil, session: String? = nil,
                                      host: String? = nil, tmuxPane: String? = nil, tmuxSocket: String? = nil,
                                      state: String? = nil,
                                      kind: String? = nil, tailscaleIP: String? = nil) {
@@ -1607,10 +1619,11 @@ public final class MeshBroker: @unchecked Sendable {
             value.members.first(where: { $0.value == memberID }).map { (room, $0.key) }
         })
         if presence[memberID] == nil && aliases.isEmpty { return }
-        var e = presence[memberID] ?? MeshPresenceEntry(project: nil, session: nil, host: nil, tmuxPane: nil,
+        var e = presence[memberID] ?? MeshPresenceEntry(nodeID: nil, project: nil, session: nil, host: nil, tmuxPane: nil,
                                                         tmuxSocket: nil,
                                                         state: nil, stateTs: nil, kind: nil, tailscaleIP: nil,
                                                         aliases: [:], rooms: [], lastSeen: 0, online: true)
+        if let owner = nodeID, !owner.isEmpty { e.nodeID = owner }
         if let p = project, !p.isEmpty { e.project = p }
         if let s = session, !s.isEmpty { e.session = s }
         if let h = host, !h.isEmpty { e.host = h }
@@ -1646,20 +1659,21 @@ public final class MeshBroker: @unchecked Sendable {
             let alias = room.members.first(where: { $0.value == memberID })?.key
             return acc + (room.mailboxes[memberID]?.filter { alias.map($0.to.contains) ?? false }.count ?? 0)
         }
-        return MeshMemberInfo(id: memberID, nick: nick, project: e.project, session: e.session, host: e.host,
+        return MeshMemberInfo(id: memberID, nick: nick, nodeID: e.nodeID, project: e.project, session: e.session, host: e.host,
                               tmuxPane: e.tmuxPane, tmuxSocket: e.tmuxSocket,
                               state: e.state, stateTs: e.stateTs, stateReason: e.stateReason,
                               unread: unread, kind: e.kind, tailscaleIP: e.tailscaleIP,
                               rooms: [room], lastSeen: e.lastSeen,
-                              nodeOnline: nodeIsOnlineLocked(host: e.host, tailscaleIP: e.tailscaleIP))
+                              nodeOnline: nodeIsOnlineLocked(nodeID: e.nodeID, host: e.host, tailscaleIP: e.tailscaleIP))
     }
 
     private func pruneNodesLocked(now: Double = Date().timeIntervalSince1970) {
         nodes = nodes.filter { now - $0.value.lastSeen < 70 }
     }
 
-    private func nodeIsOnlineLocked(host: String?, tailscaleIP: String?) -> Bool {
+    private func nodeIsOnlineLocked(nodeID: String?, host: String?, tailscaleIP: String?) -> Bool {
         pruneNodesLocked()
+        if let nodeID, !nodeID.isEmpty { return nodes[nodeID] != nil }
         return nodes.values.contains { node in
             if let tailscaleIP, !tailscaleIP.isEmpty,
                let nodeIP = node.tailscaleIP, !nodeIP.isEmpty { return tailscaleIP == nodeIP }
@@ -1948,6 +1962,7 @@ public final class MeshBroker: @unchecked Sendable {
         // let refreshPresenceRoomsLocked rebuild aliases/rooms from the map.
         var e = presence[newID] ?? old
         if e.kind == nil { e.kind = old.kind }
+        if e.nodeID == nil { e.nodeID = req.nodeID ?? old.nodeID }
         if e.host == nil { e.host = req.host ?? old.host }
         if e.tailscaleIP == nil { e.tailscaleIP = old.tailscaleIP }
         e.session = newID
