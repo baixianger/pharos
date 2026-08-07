@@ -47,14 +47,6 @@ struct MessageRow: View {
             }
         }
         .gesture(replyDragGesture)
-        .contextMenu {
-            if let onReply {
-                Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
-            }
-            Button("Copy message", systemImage: "doc.on.doc") {
-                UIPasteboard.general.string = message.text
-            }
-        }
     }
 
     private var replyDragGesture: some Gesture {

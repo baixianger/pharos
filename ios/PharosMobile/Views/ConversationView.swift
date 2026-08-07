@@ -160,6 +160,19 @@ struct ConversationView: View {
                 }
             )
             .id(id)
+            // Keep the context-menu modifier outside the per-cell 180°
+            // transform below. Otherwise iOS captures the transformed row as
+            // its long-press preview, which appears upside down or collapses
+            // to a vertical line under the preview's narrow proposal.
+            .contextMenu {
+                Button("Reply", systemImage: "arrowshape.turn.up.left") {
+                    replyingTo = message
+                    focused = true
+                }
+                Button("Copy message", systemImage: "doc.on.doc") {
+                    UIPasteboard.general.string = message.text
+                }
+            }
         }
     }
 
