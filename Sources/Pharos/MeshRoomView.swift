@@ -424,7 +424,7 @@ struct MeshRoomView: View {
         let human = nick == "human"
         let info = membersInfo[nick]
         let state = MeshSessionState(rawValue: info?.state ?? "")
-        let offline = !human && (info == nil || state == .gone)
+        let offline = !human && (info == nil || info?.nodeOnline != true || state == .gone)
         return Circle()
             .fill(offline ? AnyShapeStyle(Color.gray.opacity(0.22))
                           : AnyShapeStyle((human ? Color.accentColor : Self.nickColor(nick)).opacity(0.25)))
@@ -587,7 +587,8 @@ struct MeshRoomView: View {
         let info = membersInfo
         guard !info.isEmpty else { return true }
         guard let member = info[nick] else { return false }
-        return MeshSessionState(rawValue: member.state ?? "") != .gone
+        return member.nodeOnline == true
+            && MeshSessionState(rawValue: member.state ?? "") != .gone
     }
 
     /// Live, non-human room members shown as one-tap @-mention chips above the

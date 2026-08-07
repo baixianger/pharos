@@ -188,6 +188,7 @@ struct DashboardView: View {
     private var liveMeshAgents: [MeshMemberInfo] {
         var byID: [String: MeshMemberInfo] = [:]
         for member in meshAgents where member.nick != "human"
+            && member.nodeOnline == true
             && MeshSessionState(rawValue: member.state ?? "") != .gone {
             if var existing = byID[member.id] {
                 existing.rooms = Array(Set(existing.rooms + member.rooms)).sorted()

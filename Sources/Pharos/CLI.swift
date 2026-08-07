@@ -355,7 +355,8 @@ enum CLI {
             let members = r.members ?? []
             if members.isEmpty { print("(nobody has joined yet)") }
             for m in members {
-                var bits = [m.state ?? "state?"]
+                let live = m.nick == "human" || m.nodeOnline == true
+                var bits = [live ? (m.state ?? "state?") : "offline"]
                 if let k = m.kind { bits.append(k) }
                 if let h = m.host { bits.append(h) }
                 if let ip = m.tailscaleIP { bits.append(ip) }

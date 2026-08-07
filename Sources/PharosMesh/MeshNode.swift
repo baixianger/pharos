@@ -222,7 +222,7 @@ enum MeshNode {
             return
         }
         if MeshPaneSafety.paneLooksIdle(capture.output) {
-            let prompt = "Join the Pharos mesh room \(room) as \(nick), announce that you joined, then return to the idle composer. Use the session id supplied by your SessionStart context when joining."
+            let prompt = "Join the Pharos mesh room \(room) as \(nick). Run pharos mesh join \(room) \(nick) --session \(payload.sessionName) --kind \(payload.agent), then run pharos mesh send \"\(nick) joined\" --room \(room) --member \(payload.sessionName), then return to the idle composer."
             let typed = run(tmux, prefix + ["send-keys", "-t", payload.sessionName, "-l", "--", prompt])
             if typed.ok { usleep(350_000) }
             let submitted = typed.ok
