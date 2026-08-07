@@ -53,7 +53,7 @@ enum MeshNode {
         let response = MeshClient.events(after: state.cursor, timeoutMs: 5_000)
         guard response.ok, let next = response.cursor else {
             let detail = response.error ?? (response.ok ? "missing event cursor" : "request failed")
-            FileHandle.standardError.write(Data("pharos node: broker unavailable ((detail)); retrying\n".utf8))
+            FileHandle.standardError.write(Data("pharos node: broker unavailable (\(detail)); retrying\n".utf8))
             sleep(state.backoff)
             state.backoff = min(state.backoff * 2, 15)
             return
@@ -391,7 +391,7 @@ enum MeshNode {
         let count = (counts[member.id] ?? 0) + 1
         counts[member.id] = count
         guard count >= 2 else { return }
-        markObserved(member, state: .gone)
+        log("liveness probe missing @\(member.nick) (hook state unchanged)")
         counts.removeValue(forKey: member.id)
     }
 
@@ -417,17 +417,8 @@ enum MeshNode {
         guard run(tmux, prefix + ["send-keys", "-t", pane, "Escape"]).ok else {
             return "tmux Escape failed"
         }
-        markObserved(member, state: .busy)
         log("dismissed form for @\(member.nick); Stop hook delivers the answer")
         return nil
-    }
-
-    private static func markObserved(_ member: MeshMemberInfo, state: MeshSessionState) {
-        var request = MeshRequest(cmd: "mark", memberID: member.id, state: state.rawValue)
-        request.expectedState = member.state
-        request.expectedStateTs = member.stateTs
-        let response = MeshClient.send(request)
-        if response.ok { log("reconciled @\(member.nick) to \(state.rawValue)") }
     }
 
     static func owns(_ member: MeshMemberInfo) -> Bool {

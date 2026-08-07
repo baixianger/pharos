@@ -16,8 +16,8 @@ import Darwin
 /// 2026-07-17 layers durable Node poke on top. Hooks are the ONLY source of
 /// busy/blocked/stopped/idle state. Their reports are leases: fresh busy and
 /// blocked suppress poke; expired or unknown state permits eventual delivery.
-/// tmux output and ANSI/TUI text never infer state. The Node observes only an
-/// exact pane/process identity so it can mark a session `gone` after exit.
+/// tmux output and ANSI/TUI text never infer state. Node liveness is only a
+/// safety check for commands; it never writes lifecycle state.
 enum MeshHooks {
 
     /// Substring identifying our hook entry in a settings.json, whatever the
@@ -70,8 +70,11 @@ enum MeshHooks {
 
     private static let codexManifest: [(event: String, marker: String)] = [
         ("Stop", marker), ("SessionStart", startMarker),
-        ("UserPromptSubmit", markMarker), ("PermissionRequest", markMarker),
-        ("PostToolUse", postToolMarker),
+        ("SessionEnd", markMarker), ("SubagentStart", markMarker),
+        ("SubagentStop", markMarker), ("PreToolUse", markMarker),
+        ("PermissionRequest", markMarker), ("PostToolUse", postToolMarker),
+        ("PreCompact", markMarker), ("PostCompact", markMarker),
+        ("UserPromptSubmit", markMarker),
     ]
 
     private static func hookEntryPresent(_ hooks: [String: Any], event: String,
@@ -213,10 +216,23 @@ enum MeshHooks {
         return r.ok ? 0 : 1
     }
 
-    /// Hook event → session state (probed mapping — see MeshSessionState docs).
+    /// Hook event → session state. The `codex` branch follows Codex's documented
+    /// native lifecycle events; the default branch preserves Claude mapping.
     /// nil = an event we deliberately ignore.
     static func stateFor(event: String, notificationType: String?,
-                         reason: String? = nil) -> MeshSessionState? {
+                         reason: String? = nil, codex: Bool = false,
+                         toolName: String? = nil) -> MeshSessionState? {
+        if codex {
+            switch event {
+            case "SessionStart": .idle
+            case "SessionEnd": .gone
+            case "SubagentStart", "SubagentStop", "UserPromptSubmit",
+                 "PreToolUse", "PostToolUse", "PreCompact", "PostCompact":
+                toolName == "AskUserQuestion" && event == "PreToolUse" ? .blocked : .busy
+            case "PermissionRequest": .blocked
+            default: nil
+            }
+        } else {
         switch event {
         case "UserPromptSubmit": .busy       // a turn begins (incl. our own nudge → self-debouncing)
         case "PermissionRequest": .blocked   // an approval dialog is about to be shown
@@ -249,6 +265,7 @@ enum MeshHooks {
             }
         default: nil
         }
+        }
     }
 
     private static func markHook() -> Int32 {
@@ -257,18 +274,24 @@ enum MeshHooks {
               let event = obj["hook_event_name"] as? String else { return 0 }
         let cwd = (obj["cwd"] as? String) ?? FileManager.default.currentDirectoryPath
         let session = sessionID(payload: obj)
+        let codex = CommandLine.arguments.contains("--codex")
         // PreToolUse{AskUserQuestion}: the dialog is about to block the session
         // on a HUMAN. Report blocked(form) and forward the full form into the
         // member's room so the human can answer from chat (verified: the
         // dialog itself renders normally as long as we emit no decision).
         if event == "PreToolUse" {
-            guard obj["tool_name"] as? String == "AskUserQuestion" else { return 0 }
-            report(.blocked, cwd: cwd, session: session, reason: "form:AskUserQuestion")
-            forwardForm(toolInput: obj["tool_input"] as? [String: Any] ?? [:], session: session)
+            let toolName = obj["tool_name"] as? String
+            if toolName == "AskUserQuestion" {
+                report(.blocked, cwd: cwd, session: session, reason: "form:AskUserQuestion")
+                forwardForm(toolInput: obj["tool_input"] as? [String: Any] ?? [:], session: session)
+            } else if codex {
+                report(.busy, cwd: cwd, session: session, reason: "tool:\(toolName ?? "unknown")")
+            }
             return 0
         }
         guard let state = stateFor(event: event, notificationType: obj["notification_type"] as? String,
-                                   reason: obj["reason"] as? String)
+                                   reason: obj["reason"] as? String, codex: codex,
+                                   toolName: obj["tool_name"] as? String)
         else { return 0 }
         report(state, cwd: cwd, session: session,
                reason: stateReason(event: event, notificationType: obj["notification_type"] as? String,
@@ -542,6 +565,7 @@ enum MeshHooks {
               let sid = sessionID(payload: obj), !sid.isEmpty else { return 0 }
         let cwd = obj["cwd"] as? String ?? FileManager.default.currentDirectoryPath
         recordSessionContext(sessionID: sid, cwd: cwd)
+        report(.idle, cwd: cwd, session: sid)
         // `/clear` and `resume` end the prior session id and start THIS one on
         // the same tmux pane; `source` names exactly that transition. Only then
         // do we reclaim the seat: a plain `startup` is a genuinely new agent and
@@ -779,10 +803,8 @@ enum MeshHooks {
     }
 
     /// `install-hooks --codex` — wire Pharos into Codex's native lifecycle hook
-    /// engine. SessionStart records identity silently; it must not inject
-    /// persistent developer context. Codex's PermissionRequest provides a
-    /// structured blocked signal even though it lacks Notification. SessionEnd
-    /// remains unavailable, so Node liveness owns `gone`. NOTE: Codex prompts to
+    /// engine. SessionStart records identity and reports idle; it does not
+    /// inject persistent developer context. NOTE: Codex prompts to
     /// TRUST new/changed hooks on first run; spawn Codex with
     /// `--dangerously-bypass-hook-trust` (or approve once) so this takes effect.
     private static func installCodexHooks() -> Int32 {
@@ -804,14 +826,26 @@ enum MeshHooks {
                                 command: hookCommand("unread --hook-stop --codex"), marker: marker)),
             ("SessionStart", upsertHook(&hooks, event: "SessionStart",
                                         command: hookCommand("session-start --silent"), marker: startMarker)),
+            ("SessionEnd", upsertHook(&hooks, event: "SessionEnd",
+                                       command: hookCommand("mark --hook --codex"), marker: markMarker)),
+            ("SubagentStart", upsertHook(&hooks, event: "SubagentStart",
+                                          command: hookCommand("mark --hook --codex"), marker: markMarker, matcher: "*")),
+            ("SubagentStop", upsertHook(&hooks, event: "SubagentStop",
+                                         command: hookCommand("mark --hook --codex"), marker: markMarker, matcher: "*")),
+            ("PreToolUse", upsertHook(&hooks, event: "PreToolUse",
+                                       command: hookCommand("mark --hook --codex"), marker: markMarker, matcher: "*")),
             ("UserPromptSubmit", upsertHook(&hooks, event: "UserPromptSubmit",
-                                            command: hookCommand("mark --hook"), marker: markMarker)),
+                                            command: hookCommand("mark --hook --codex"), marker: markMarker)),
             ("PermissionRequest", upsertHook(&hooks, event: "PermissionRequest",
-                                              command: hookCommand("mark --hook"),
+                                              command: hookCommand("mark --hook --codex"),
                                               marker: markMarker, matcher: "*")),
             ("PostToolUse", upsertHook(&hooks, event: "PostToolUse",
                                        command: hookCommand("unread --hook-post-tool --codex"),
                                        marker: postToolMarker, matcher: "*")),
+            ("PreCompact", upsertHook(&hooks, event: "PreCompact",
+                                       command: hookCommand("mark --hook --codex"), marker: markMarker, matcher: "manual|auto")),
+            ("PostCompact", upsertHook(&hooks, event: "PostCompact",
+                                        command: hookCommand("mark --hook --codex"), marker: markMarker, matcher: "manual|auto")),
         ]
         root["hooks"] = hooks
         let removedUnsupportedMetadata = sanitizeCodexRoot(&root)
@@ -829,7 +863,7 @@ enum MeshHooks {
             return 1
         }
         print(results.map { "\($0.0): \($0.1.verb)" }.joined(separator: "; ") + " → \(file.path)")
-        print("(Codex PermissionRequest reports blocked; Notification/SessionEnd remain unavailable.)")
+        print("(Codex lifecycle state is reported only by documented native hooks; existing sessions must restart to load changes.)")
         print("(first run: Codex prompts to trust hooks — spawn with --dangerously-bypass-hook-trust)")
         return 0
     }

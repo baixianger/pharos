@@ -1309,6 +1309,20 @@ final class MeshStateMappingTests: XCTestCase {
         XCTAssertEqual(MeshHooks.stateFor(event: "Notification", notificationType: "elicitation_response"), .busy)
     }
 
+    func testCodexHookEventMappingUsesDocumentedLifecycleEvents() {
+        XCTAssertEqual(MeshHooks.stateFor(event: "SessionStart", notificationType: nil, codex: true), .idle)
+        XCTAssertEqual(MeshHooks.stateFor(event: "UserPromptSubmit", notificationType: nil, codex: true), .busy)
+        XCTAssertEqual(MeshHooks.stateFor(event: "PreToolUse", notificationType: nil, codex: true, toolName: "Bash"), .busy)
+        XCTAssertEqual(MeshHooks.stateFor(event: "PermissionRequest", notificationType: nil, codex: true), .blocked)
+        XCTAssertEqual(MeshHooks.stateFor(event: "PreCompact", notificationType: nil, codex: true), .busy)
+        XCTAssertEqual(MeshHooks.stateFor(event: "PostCompact", notificationType: nil, codex: true), .busy)
+        XCTAssertEqual(MeshHooks.stateFor(event: "SubagentStart", notificationType: nil, codex: true), .busy)
+        XCTAssertEqual(MeshHooks.stateFor(event: "SubagentStop", notificationType: nil, codex: true), .busy)
+        XCTAssertEqual(MeshHooks.stateFor(event: "SessionEnd", notificationType: nil, codex: true), .gone)
+        XCTAssertNil(MeshHooks.stateFor(event: "Notification", notificationType: "idle_prompt", codex: true))
+        XCTAssertNil(MeshHooks.stateFor(event: "StopFailure", notificationType: nil, codex: true))
+    }
+
     /// SessionEnd is NOT unconditionally `gone`. `/clear` and `resume` end this
     /// session id but immediately start a new one on the same tmux pane, so they
     /// map to `stopped` (pane alive, delivery continues) — the successor's rebind

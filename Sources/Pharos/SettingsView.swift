@@ -639,7 +639,7 @@ private struct CLISettingsTab: View {
                         : "Install failed — check ~/.codex/hooks.json (invalid JSON is never overwritten)."
                 }
                 .buttonStyle(.borderedProminent)
-                HelpBadge(text: "Codex ships structured lifecycle hooks: Stop handles unread + stopped, SessionStart records identity, UserPromptSubmit / PostToolUse report busy, and PermissionRequest reports blocked. PostToolUse output is suppressed when there is nothing to show. Codex still lacks Notification/SessionEnd, so idle is unavailable and Node liveness owns gone. Needs a recent Codex build (older ones only have `notify`).")
+                HelpBadge(text: "Codex 状态完全由原生 lifecycle hooks 上报：SessionStart/Stop/SessionEnd、UserPromptSubmit、PreToolUse、PermissionRequest、PostToolUse、compact 和 subagent 事件分别更新状态；Stop 负责投递未读 @消息。Node 只验证 pane/process 是否可安全操作，不写状态。新 hook 需要重启 Codex 会话后生效。")
             }
             if let s = codexHookStatus {
                 Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
