@@ -359,6 +359,7 @@ enum CLI {
                 if let k = m.kind { bits.append(k) }
                 if let h = m.host { bits.append(h) }
                 if let ip = m.tailscaleIP { bits.append(ip) }
+                if let nodeID = m.nodeID { bits.append("node (nodeID)") }
                 bits.append(m.tmuxPane.map { "tmux \($0)" } ?? "no tmux")
                 if let p = m.project { bits.append((p as NSString).abbreviatingWithTildeInPath) }
                 bits.append("session \(m.id.prefix(8))")
