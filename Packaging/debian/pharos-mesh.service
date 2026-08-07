@@ -9,6 +9,7 @@ DynamicUser=yes
 StateDirectory=pharos-mesh
 StateDirectoryMode=0750
 EnvironmentFile=-/etc/pharos-mesh.env
+Environment=LD_LIBRARY_PATH=/opt/pharos-swift
 ExecStart=/usr/bin/pharos-mesh serve --bind ${PHAROS_MESH_BIND} --data-dir /var/lib/pharos-mesh
 Restart=on-failure
 RestartSec=2
