@@ -654,13 +654,17 @@ enum MeshHooks {
             return stable
         }
         guard let pane = environment["TMUX_PANE"], !pane.isEmpty,
-              environment["TMUX"] != nil else { return nil }
+              environment["TMUX"] != nil else {
+            return environment["CODEX_THREAD_ID"]
+        }
         let socket = RemoteLaunch.tmuxSocket(fromEnvironmentValue: environment["TMUX"])
         let file = sessionContextFile(pane: pane, socket: socket)
-        guard let data = try? Data(contentsOf: file),
-              let context = try? JSONDecoder().decode(SessionContext.self, from: data),
-              context.tmuxPane == pane, context.tmuxSocket == socket else { return nil }
-        return context.sessionID
+        if let data = try? Data(contentsOf: file),
+           let context = try? JSONDecoder().decode(SessionContext.self, from: data),
+           context.tmuxPane == pane, context.tmuxSocket == socket {
+            return context.sessionID
+        }
+        return environment["CODEX_THREAD_ID"]
     }
 
     /// Codex exposes its runtime thread as CODEX_THREAD_ID, while hook
