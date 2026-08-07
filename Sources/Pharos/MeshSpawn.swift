@@ -182,9 +182,10 @@ enum MeshSpawn {
         }
         let name = sessionName(room: room, nick: nick)
         _ = Shell.run(tmux, ["kill-session", "-t", name])   // clear a stale one
+        let command = "/usr/bin/env PHAROS_MESH_SESSION='\(name)' "
+            + launchCommand(kind, resolution: resolution)
         guard Shell.run(tmux, ["new-session", "-d", "-s", name, "-c", dir,
-                               "-x", "200", "-y", "50",
-                               launchCommand(kind, resolution: resolution)]).ok else {
+                               "-x", "200", "-y", "50", command]).ok else {
             onProgress(Progress(phase: .failed, detail: "couldn't start the tmux session")); return
         }
         // Size the window to whichever client is currently driving it, instead of

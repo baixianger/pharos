@@ -154,7 +154,8 @@ enum MeshNode {
             return
         }
         var arguments = prefix + ["new-session", "-d", "-s", payload.sessionName,
-                                  "-c", projectPath, "-x", "200", "-y", "50", executable]
+                                  "-c", projectPath, "-x", "200", "-y", "50",
+                                  "/usr/bin/env", "PHAROS_MESH_SESSION=\(payload.sessionName)", executable]
         if payload.yolo {
             arguments += payload.agent == "claude"
                 ? ["--dangerously-skip-permissions"]

@@ -156,7 +156,7 @@ enum MeshHooks {
             // survives for the next turn boundary if the agent ignored it.
             reentry = obj["stop_hook_active"] as? Bool == true
             if let c = obj["cwd"] as? String, !c.isEmpty { cwd = c }
-            session = obj["session_id"] as? String   // exact per-session addressing
+            session = sessionID(payload: obj)
         }
         // Cross-host: a dial-out session has no local presence/unread files, so
         // ask the remote broker (fail-open — unreachable broker never blocks).
@@ -256,7 +256,7 @@ enum MeshHooks {
               let obj = try? JSONSerialization.jsonObject(with: input) as? [String: Any],
               let event = obj["hook_event_name"] as? String else { return 0 }
         let cwd = (obj["cwd"] as? String) ?? FileManager.default.currentDirectoryPath
-        let session = obj["session_id"] as? String
+        let session = sessionID(payload: obj)
         // PreToolUse{AskUserQuestion}: the dialog is about to block the session
         // on a HUMAN. Report blocked(form) and forward the full form into the
         // member's room so the human can answer from chat (verified: the
@@ -349,7 +349,7 @@ enum MeshHooks {
         if let input = readStdinIfPiped(),
            let obj = try? JSONSerialization.jsonObject(with: input) as? [String: Any] {
             if let c = obj["cwd"] as? String, !c.isEmpty { cwd = c }
-            session = obj["session_id"] as? String
+            session = sessionID(payload: obj)
         }
         var nick: String?
         var memberID: String?
@@ -539,7 +539,7 @@ enum MeshHooks {
     static func sessionStart(_ args: [String]) -> Int32 {
         guard let input = readStdinIfPiped(),
               let obj = try? JSONSerialization.jsonObject(with: input) as? [String: Any],
-              let sid = obj["session_id"] as? String, !sid.isEmpty else { return 0 }
+              let sid = sessionID(payload: obj), !sid.isEmpty else { return 0 }
         let cwd = obj["cwd"] as? String ?? FileManager.default.currentDirectoryPath
         recordSessionContext(sessionID: sid, cwd: cwd)
         // `/clear` and `resume` end the prior session id and start THIS one on
@@ -650,6 +650,9 @@ enum MeshHooks {
     static func currentSessionID(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String? {
+        if let stable = environment["PHAROS_MESH_SESSION"], !stable.isEmpty {
+            return stable
+        }
         guard let pane = environment["TMUX_PANE"], !pane.isEmpty,
               environment["TMUX"] != nil else { return nil }
         let socket = RemoteLaunch.tmuxSocket(fromEnvironmentValue: environment["TMUX"])
@@ -658,6 +661,18 @@ enum MeshHooks {
               let context = try? JSONDecoder().decode(SessionContext.self, from: data),
               context.tmuxPane == pane, context.tmuxSocket == socket else { return nil }
         return context.sessionID
+    }
+
+    /// Codex exposes its runtime thread as CODEX_THREAD_ID, while hook
+    /// payloads may use session_id. Spawned Mesh sessions get a stable
+    /// PHAROS_MESH_SESSION first so join/Stop/@mention share one identity.
+    private static func sessionID(payload: [String: Any]?,
+                                  environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+        if let stable = environment["PHAROS_MESH_SESSION"], !stable.isEmpty { return stable }
+        if let value = payload?["session_id"] as? String, !value.isEmpty { return value }
+        if let value = payload?["thread_id"] as? String, !value.isEmpty { return value }
+        if let value = environment["CODEX_THREAD_ID"], !value.isEmpty { return value }
+        return nil
     }
 
     private static func sessionContextFile(pane: String, socket: String?) -> URL {
