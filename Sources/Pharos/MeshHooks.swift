@@ -377,13 +377,14 @@ enum MeshHooks {
         var memberID: String?
         var msgs: [MeshMsg] = []
         if MeshPaths.dialEndpoint != nil {
-            // One round-trip: peek returns unread and piggybacks the busy mark.
+            // Peek is read-only; lifecycle state must still go through the
+            // dedicated hook mark path below.
             let resp = MeshClient.send(MeshRequest(cmd: "peek", nick: explicitNick,
-                                                   project: cwd, session: session,
-                                                   state: MeshSessionState.busy.rawValue))
+                                                   project: cwd, session: session))
             nick = resp.note ?? explicitNick
             memberID = resp.memberID
             msgs = resp.messages ?? []
+            report(.busy, nick: nick ?? explicitNick, cwd: cwd, session: session)
         } else {
             report(.busy, nick: explicitNick, cwd: cwd, session: session)
             if let member = resolveMember(cwd: cwd, session: session, preferredNick: explicitNick) {
