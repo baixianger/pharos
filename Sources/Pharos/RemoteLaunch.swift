@@ -359,7 +359,7 @@ enum RemoteLaunch {
         }
 
         onProgress(.init(phase: .joining, detail: "asking it on \(host) to join \(room)…"))
-        sendLine(host, name, MeshSpawn.joinBrief(room: room, nick: nick, kind: kind))
+        sendLine(host, name, MeshSpawn.joinBrief(room: room, nick: nick, kind: kind, session: name))
 
         for _ in 0..<25 {
             pause(2)

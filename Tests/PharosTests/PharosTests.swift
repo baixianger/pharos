@@ -250,6 +250,12 @@ final class AgentKindCommandTests: XCTestCase {
         )
     }
 
+    func testMeshJoinBriefCarriesExplicitSessionIdentity() {
+        let brief = MeshSpawn.joinBrief(room: "room", nick: "agent", kind: .codex,
+                                        session: "tmux-session-id")
+        XCTAssertTrue(brief.contains("pharos mesh join room agent --session tmux-session-id --kind codex"))
+    }
+
     func testCodexResolverIncludesDesktopAppAndVersionManagerShims() {
         let paths = LaunchService.agentExecutableCandidates(.codex, home: "/Users/tester")
         XCTAssertTrue(paths.contains("/Applications/Codex.app/Contents/Resources/codex"))

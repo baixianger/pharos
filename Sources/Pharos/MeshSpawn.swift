@@ -92,9 +92,10 @@ enum MeshSpawn {
 
     /// Brief typed into either agent after its composer is ready. Keeping this
     /// shared guarantees local and remote spawn register the same identity.
-    static func joinBrief(room: String, nick: String, kind: AgentKind) -> String {
+    static func joinBrief(room: String, nick: String, kind: AgentKind,
+                          session: String) -> String {
         "Join the mesh chat room \(room) as nick \(nick): run  "
-            + "pharos mesh join \(room) \(nick) --kind \(kind.rawValue). "
+            + "pharos mesh join \(room) \(nick) --session \(session) --kind \(kind.rawValue). "
             + "Then run  pharos mesh send \"\(nick) joined\". "
             + "Return to the idle composer after announcing; do not run a listener or polling command. "
             + "Pharos hooks and nudges will wake you for new messages. Do nothing else."
@@ -195,7 +196,7 @@ enum MeshSpawn {
             return
         }
         onProgress(Progress(phase: .joining, detail: "asking it to join \(room)…"))
-        sendLine(tmux, name, joinBrief(room: room, nick: nick, kind: kind))
+        sendLine(tmux, name, joinBrief(room: room, nick: nick, kind: kind, session: name))
 
         // Confirm it actually joined (~40s).
         for _ in 0..<20 {
