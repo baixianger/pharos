@@ -340,7 +340,10 @@ struct ConversationView: View {
         return room.members
             .filter { $0 != "human" }
             .compactMap { store.members[$0] }
-            .filter { ($0.state.flatMap(MeshSessionState.init(rawValue:))) != .gone }
+            .filter {
+                $0.nodeOnline == true
+                    && ($0.state.flatMap(MeshSessionState.init(rawValue:))) != .gone
+            }
             .sorted { $0.nick.localizedCaseInsensitiveCompare($1.nick) == .orderedAscending }
     }
 

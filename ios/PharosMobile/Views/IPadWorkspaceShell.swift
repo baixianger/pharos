@@ -146,7 +146,11 @@ struct IPadWorkspaceShell: View {
 
     private func selectFirstAgentIfNeeded() {
         let live = store.members.values
-            .filter { $0.nick != "human" && $0.state.flatMap(MeshSessionState.init(rawValue:)) != .gone }
+            .filter {
+                $0.nick != "human"
+                    && $0.nodeOnline == true
+                    && $0.state.flatMap(MeshSessionState.init(rawValue:)) != .gone
+            }
             .sorted { ($0.host ?? "", $0.nick) < ($1.host ?? "", $1.nick) }
         if selectedAgentID == nil || !live.contains(where: { $0.id == selectedAgentID }) {
             selectedAgentID = live.first?.id
@@ -479,7 +483,8 @@ private struct IPadAgentsIndex: View {
         members
             .filter { $0.nick != "human" }
             .filter { member in
-                let isLive = member.state.flatMap(MeshSessionState.init(rawValue:)) != .gone
+                let isLive = member.nodeOnline == true
+                    && member.state.flatMap(MeshSessionState.init(rawValue:)) != .gone
                 return switch filter {
                 case .live: isLive
                 case .all: true

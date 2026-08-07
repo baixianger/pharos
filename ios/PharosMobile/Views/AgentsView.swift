@@ -108,7 +108,11 @@ struct AgentsView: View {
         store.members.values
             .filter { $0.nick != "human" }
             .filter { member in
-                let isLive = member.state.flatMap(MeshSessionState.init(rawValue:)) != .gone
+                // A roster record is actionable only when a real host Node is
+                // online. Legacy/imported records can have a non-gone state
+                // while having no live tmux owner at all.
+                let isLive = member.nodeOnline == true
+                    && member.state.flatMap(MeshSessionState.init(rawValue:)) != .gone
                 return switch filter {
                 case .live: isLive
                 case .all: true

@@ -114,7 +114,8 @@ private struct RoomRow: View {
 
     private var activeCount: Int {
         members.filter {
-            guard let state = $0.state.flatMap(MeshSessionState.init(rawValue:)) else { return false }
+            guard $0.nodeOnline == true,
+                  let state = $0.state.flatMap(MeshSessionState.init(rawValue:)) else { return false }
             return state != .gone
         }.count
     }
