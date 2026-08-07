@@ -181,17 +181,16 @@ enum MeshHooks {
         return 0
     }
 
-    /// Cross-host Stop hook: one `peek` resolves the nick, returns its unread
-    /// AND piggybacks the `stopped` report. Fail-open — an unreachable broker,
-    /// no nick, or no unread all exit 0 without blocking.
+    /// Cross-host Stop hook: one `peek` resolves the nick and returns its
+    /// unread; the hook then reports state through the dedicated `mark` path.
+    /// Fail-open — an unreachable broker, no nick, or no unread all exit 0.
     private static func stopHookRemote(cwd: String, session: String?, explicitNick: String?,
                                        reentry: Bool, codex: Bool) -> Int32 {
         if reentry { report(.idle, nick: explicitNick, cwd: cwd, session: session); return 0 }
         let resp = MeshClient.send(MeshRequest(cmd: "peek", nick: explicitNick,
-                                               project: cwd, session: session,
-                                               state: MeshSessionState.idle.rawValue))
+                                               project: cwd, session: session))
         guard resp.ok, let msgs = resp.messages, !msgs.isEmpty, let nick = resp.note else {
-            // `peek` already persisted idle when there are no pending messages.
+            report(.idle, nick: explicitNick, cwd: cwd, session: session)
             return 0
         }
         emitContinuation(nick: nick, memberID: resp.memberID, messages: msgs, codex: codex)
@@ -201,9 +200,9 @@ enum MeshHooks {
 
     // MARK: `pharos mesh mark` — session-state reporting
 
-    /// `--hook` mode: shared body for lifecycle hooks — maps the event
-    /// (official schema plus probed ground truth, cc-hook-probe
-    /// FINDINGS) to a state and reports it. Plain mode (`mark <nick> <state>`)
+    /// `--hook` mode: shared body for lifecycle hooks — maps the event to a
+    /// state and reports it. Codex uses its documented native lifecycle events;
+    /// the default branch preserves the Claude mapping. Plain mode (`mark <nick> <state>`)
     /// is for manual testing. Always exits 0 in hook mode.
     static func mark(_ args: [String]) -> Int32 {
         if args.contains("--hook") { return markHook() }
@@ -565,7 +564,6 @@ enum MeshHooks {
               let sid = sessionID(payload: obj), !sid.isEmpty else { return 0 }
         let cwd = obj["cwd"] as? String ?? FileManager.default.currentDirectoryPath
         recordSessionContext(sessionID: sid, cwd: cwd)
-        report(.idle, cwd: cwd, session: sid)
         // `/clear` and `resume` end the prior session id and start THIS one on
         // the same tmux pane; `source` names exactly that transition. Only then
         // do we reclaim the seat: a plain `startup` is a genuinely new agent and
@@ -578,6 +576,7 @@ enum MeshHooks {
         if let source = obj["source"] as? String, source == "clear" || source == "resume" {
             rebindPriorSeat(sessionID: sid, cwd: cwd)
         }
+        report(.idle, cwd: cwd, session: sid)
         if args.contains("--silent") { return 0 }
         var ctx = "Pharos mesh: your session id is \(sid). When you join a mesh chat "
                 + "room, pass it so delivery targets this exact session — "

@@ -1708,6 +1708,25 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
                        ["session-orbidash", "session-lelantos"])
     }
 
+    func testLifecycleStateChangesOnlyThroughHookMark() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "state-room", nick: "agent",
+                                                 session: "state-session", kind: "codex")).ok)
+        XCTAssertNil(broker.process(MeshRequest(cmd: "who")).members?.first?.state)
+
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "mark", session: "state-session",
+                                                 state: MeshSessionState.busy.rawValue)).ok)
+        let before = broker.process(MeshRequest(cmd: "who")).members?.first
+        XCTAssertEqual(before?.state, MeshSessionState.busy.rawValue)
+
+        _ = broker.process(MeshRequest(cmd: "peek", session: "state-session",
+                                       state: MeshSessionState.idle.rawValue))
+        _ = broker.process(MeshRequest(cmd: "recv", memberID: "state-session"))
+        let after = broker.process(MeshRequest(cmd: "who")).members?.first
+        XCTAssertEqual(after?.state, MeshSessionState.busy.rawValue)
+        XCTAssertEqual(after?.stateTs, before?.stateTs)
+    }
+
     /// The core `/clear` rescue: a working agent's session ends and a new session
     /// id starts on the SAME physical tmux seat. `rebind` re-keys the membership,
     /// mailbox and presence onto the live session so the roster follows it
@@ -1728,7 +1747,7 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
 
         let roster = broker.process(MeshRequest(cmd: "who")).members ?? []
         XCTAssertEqual(roster.map(\.id), ["sid-new"])                       // re-keyed, no ghost
-        XCTAssertEqual(roster.first?.state, MeshSessionState.busy.rawValue) // reset to busy
+        XCTAssertNil(roster.first?.state)                                    // hook must report state
         XCTAssertEqual(roster.first?.tmuxPane, pane)                        // seat kept
         XCTAssertEqual(roster.first?.kind, "claude")                        // avatar kind kept
         // The queued message moved with it — nothing lost.

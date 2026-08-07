@@ -1022,11 +1022,9 @@ public final class MeshBroker: @unchecked Sendable {
                 rooms[r]!.members[n] = memberID
             }
             if rooms[r]!.mailboxes[memberID] == nil { rooms[r]!.mailboxes[memberID] = [] }
-            // A joining agent is mid-turn by definition (the CLI runs in its
-            // Bash tool) — seed state busy until its hooks report otherwise.
             touchPresenceLocked(memberID, nodeID: req.nodeID, project: req.project, session: req.session,
                                 host: req.host, tmuxPane: req.tmuxPane, tmuxSocket: req.tmuxSocket,
-                                state: MeshSessionState.busy.rawValue, kind: req.kind,
+                                kind: req.kind,
                                 tailscaleIP: req.tailscaleIP)
             syncUnreadLocked(memberID)
             lock.unlock()
@@ -1226,17 +1224,11 @@ public final class MeshBroker: @unchecked Sendable {
             // broker (a dial-out host has no local presence/unread files), then
             // return that nick's unread WITHOUT draining. `note` carries the
             // resolved nick so the remote hook can format its block message.
-            // A `state` in the request piggybacks the hook's state report
-            // (e.g. the Stop hook marks `stopped`) on the same round-trip.
+            // Lifecycle state is intentionally not accepted here; only the
+            // dedicated hook `mark` command may change it.
             lock.lock()
             guard let memberID = resolveMemberIDLocked(request: req) else {
                 lock.unlock(); return MeshResponse(ok: true, messages: [])
-            }
-            if let s = req.state, MeshSessionState(rawValue: s) != nil, presence[memberID] != nil {
-                presence[memberID]!.state = s
-                presence[memberID]!.stateTs = Date().timeIntervalSince1970
-                presence[memberID]!.stateReason = req.stateReason
-                writePresenceLocked()
             }
             var pending: [MeshMsg] = []
             for (_, room) in rooms {
@@ -1265,8 +1257,6 @@ public final class MeshBroker: @unchecked Sendable {
             }
             out.sort { $0.ts < $1.ts }
             syncUnreadLocked(memberID)
-            // recv runs inside the agent's Bash tool → it's mid-turn right now.
-            touchPresenceLocked(memberID, state: MeshSessionState.busy.rawValue)
             lock.unlock()
             return MeshResponse(ok: true, messages: out, note: out.isEmpty ? "idle" : nil)
 
@@ -1958,8 +1948,9 @@ public final class MeshBroker: @unchecked Sendable {
             if !mail.isEmpty { rooms[name]!.mailboxes[newID, default: []].append(contentsOf: mail) }
         }
         // Carry the predecessor's durable identity onto the new entry (keeping
-        // anything the new session already set for itself), reset to busy, and
-        // let refreshPresenceRoomsLocked rebuild aliases/rooms from the map.
+        // anything the new session already set for itself). Lifecycle state is
+        // deliberately reset to unknown here; only the successor's SessionStart
+        // hook may publish its first state.
         var e = presence[newID] ?? old
         if e.kind == nil { e.kind = old.kind }
         if e.nodeID == nil { e.nodeID = req.nodeID ?? old.nodeID }
@@ -1969,8 +1960,8 @@ public final class MeshBroker: @unchecked Sendable {
         e.tmuxPane = pane
         e.tmuxSocket = req.tmuxSocket ?? old.tmuxSocket
         if let cwd = req.project ?? old.project { e.project = cwd }
-        e.state = MeshSessionState.busy.rawValue
-        e.stateTs = now
+        e.state = nil
+        e.stateTs = nil
         e.stateReason = nil
         e.online = true
         e.lastSeen = now
