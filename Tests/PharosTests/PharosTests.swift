@@ -235,6 +235,21 @@ final class AgentKindCommandTests: XCTestCase {
         )
     }
 
+    func testMeshSpawnDistinguishesCodexInterstitialsFromReadyComposer() {
+        XCTAssertEqual(
+            MeshSpawn.bootScreenState("Do you trust the contents of this directory?\n› 1. Yes, continue"),
+            .submitInterstitial
+        )
+        XCTAssertEqual(
+            MeshSpawn.bootScreenState("Update available! 0.144.6 -> 0.145.0\n› 1. Update now\n  2. Skip"),
+            .skipUpdate
+        )
+        XCTAssertEqual(
+            MeshSpawn.bootScreenState("permissions: YOLO mode\n› Find and fix a bug\n/tmp/project · Full Access · Context 0% used"),
+            .ready
+        )
+    }
+
     func testCodexResolverIncludesDesktopAppAndVersionManagerShims() {
         let paths = LaunchService.agentExecutableCandidates(.codex, home: "/Users/tester")
         XCTAssertTrue(paths.contains("/Applications/Codex.app/Contents/Resources/codex"))
@@ -2513,7 +2528,23 @@ final class MeshBroadcastTests: XCTestCase {
     }
 }
 
+final class ContentRouteStateTests: XCTestCase {
+    func testLateRoomWriteCannotReopenRouteAfterNavigation() {
+        XCTAssertNil(ContentRouteState.applyingRoomWrite(current: nil, next: "chat"))
+        XCTAssertEqual(ContentRouteState.applyingRoomWrite(current: "", next: "chat"), "chat")
+    }
+}
+
 final class RemoteLaunchTmuxIdentityTests: XCTestCase {
+    func testRemotePathPrefersManagedInstallsOverUserLocalSymlinks() {
+        let command = RemoteLaunch.preferredPathExport
+        let managed = try! XCTUnwrap(command.range(of: "/opt/homebrew/bin"))
+        let userLocal = try! XCTUnwrap(command.range(of: "$HOME/.local/bin"))
+
+        XCTAssertLessThan(managed.lowerBound, userLocal.lowerBound)
+        XCTAssertTrue(command.hasPrefix("export PATH="))
+    }
+
     func testRemoteInteractiveShellFallsBackWhenForwardedTerminfoIsMissing() {
         let command = RemoteLaunch.terminalSafeRemoteShell("exec tmux attach -t '=agent'")
 

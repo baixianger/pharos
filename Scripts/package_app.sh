@@ -25,9 +25,11 @@ if [[ ${#ARCH_LIST[@]} -eq 0 ]]; then
   ARCH_LIST=("$HOST_ARCH")
 fi
 
-for ARCH in "${ARCH_LIST[@]}"; do
-  swift build -c "$CONF" --arch "$ARCH"
-done
+if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+  for ARCH in "${ARCH_LIST[@]}"; do
+    swift build -c "$CONF" --arch "$ARCH"
+  done
+fi
 
 APP="$ROOT/${APP_NAME}.app"
 rm -rf "$APP"

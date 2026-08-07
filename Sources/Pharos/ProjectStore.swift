@@ -678,9 +678,11 @@ final class ProjectStore {
             setMeshHub(true)
         }
         lastFileMtime = fileModificationDate()
-        refreshRunningAgents()
         requestNotificationAuthorizationIfNeeded()
-        startPolling()
+        if ProcessInfo.processInfo.environment["PHAROS_DISABLE_BACKGROUND_TASKS"] != "1" {
+            refreshRunningAgents()
+            startPolling()
+        }
         startFileWatch()
     }
 

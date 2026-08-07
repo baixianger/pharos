@@ -24,8 +24,11 @@ enum RemoteLaunch {
     }
 
     private static let sshOpts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
-    /// Non-interactive SSH shells miss homebrew/user bins (tmux, claude live there).
-    private static let pathShim = #"PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin""#
+    /// Prefer managed/system installs over stale user-local symlinks. A stale
+    /// Pharos.app can otherwise launch an older helper/schema on the peer.
+    static let preferredPathExport =
+        #"export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH""#
+    private static let pathShim = preferredPathExport
 
     /// Single-quote wrap for the remote shell (safe under zsh/bash, any content).
     private static func sq(_ s: String) -> String {
@@ -95,10 +98,10 @@ enum RemoteLaunch {
     static func interactiveAttachCommand(session: String, host: String?) -> String {
         let attach = "exec tmux attach -t \(sq("=\(session)"))"
         guard let host, !host.isEmpty else {
-            return "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin\"; \(attach)"
+            return "\(preferredPathExport); \(attach)"
         }
         let inner = terminalSafeRemoteShell(
-            "export PATH=\"$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin\"; \(attach)"
+            "\(preferredPathExport); \(attach)"
         )
         return "ssh -t \(sq(host)) \(sq(inner))"
     }
@@ -330,6 +333,10 @@ enum RemoteLaunch {
         var keychainNote = ""
         if os == "Darwin" {
             keychainNote = keychainReady(host: host)
+            // tmux retains the environment from its first session; establish
+            // the same helper precedence inside the new pane as in SSH probes.
+            sendLine(host, name, preferredPathExport)
+            pause(0.4)
             sendLine(host, name,
                      #"export SSH_AUTH_SOCK="$(find /var/run /private/tmp -maxdepth 2 -name Listeners -user "$(whoami)" 2>/dev/null | head -1)""#)
             pause(0.8)
@@ -377,6 +384,13 @@ enum RemoteLaunch {
             if lower.contains("trust this folder") || lower.contains("do you trust") { screen = "trust" }
             else if lower.contains("choose") && lower.contains("theme") { screen = "theme" }
             else if lower.contains("press enter to continue") { screen = "continue" }
+            if lower.contains("update available") && lower.contains("update now") &&
+                lower.contains("skip") && lastScreen != "update" {
+                _ = tmux(host, ["send-keys", "-t", name, "Down", "Enter"])
+                lastScreen = "update"
+                pause(2)
+                continue
+            }
             if !screen.isEmpty && screen != lastScreen {
                 _ = tmux(host, ["send-keys", "-t", name, "Enter"])
                 lastScreen = screen
@@ -385,8 +399,9 @@ enum RemoteLaunch {
             }
             // Check readiness only after interstitials: Codex uses `›` both as
             // its composer and as the selection cursor on the trust screen.
-            if screen.isEmpty && (pane.contains("›") || lower.contains("full access")
-                                  || lower.contains("for shortcuts")) {
+            if screen.isEmpty && (pane.contains("›") ||
+                                  (lower.contains("full access") && lower.contains("context")) ||
+                                  lower.contains("for shortcuts")) {
                 return true
             }
             pause(2)
