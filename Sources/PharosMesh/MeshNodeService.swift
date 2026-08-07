@@ -15,7 +15,7 @@ enum MeshNodeService {
         let directory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
         let file = directory.appendingPathComponent("\(label).plist")
-        let executable = executablePath
+        let executable = try installRuntimeExecutable()
         let logDirectory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/Pharos", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -99,6 +99,24 @@ enum MeshNodeService {
     private static var executablePath: String {
         (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]))
             .resolvingSymlinksInPath().path
+    }
+
+    /// The GUI bundle is only the installer/skin. Keep the long-lived Node
+    /// process on an app-independent path so replacing or quitting Pharos.app
+    /// cannot invalidate the LaunchAgent's executable.
+    private static func installRuntimeExecutable() throws -> String {
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Pharos/Runtime", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent("pharos-mesh-node")
+        let source = URL(fileURLWithPath: executablePath)
+        let data = try Data(contentsOf: source)
+        try data.write(to: destination, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: Int16(0o755))],
+            ofItemAtPath: destination.path
+        )
+        return destination.path
     }
 
     private static func xml(_ value: String) -> String {
