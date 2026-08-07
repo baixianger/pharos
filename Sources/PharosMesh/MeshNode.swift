@@ -52,7 +52,8 @@ enum MeshNode {
         // trust/composer transition itself produced no new Broker event.
         let response = MeshClient.events(after: state.cursor, timeoutMs: 5_000)
         guard response.ok, let next = response.cursor else {
-            FileHandle.standardError.write(Data("pharos node: broker unavailable; retrying\n".utf8))
+            let detail = response.error ?? (response.ok ? "missing event cursor" : "request failed")
+            FileHandle.standardError.write(Data("pharos node: broker unavailable ((detail)); retrying\n".utf8))
             sleep(state.backoff)
             state.backoff = min(state.backoff * 2, 15)
             return
