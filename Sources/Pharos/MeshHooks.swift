@@ -165,9 +165,12 @@ enum MeshHooks {
                                   reentry: reentry, codex: codex)
         }
         if reentry { report(.stopped, nick: explicitNick, cwd: cwd, session: session); return 0 }
-        guard let member = resolveMember(cwd: cwd, session: session, preferredNick: explicitNick),
-              let u = loadUnread(member.id), u.count > 0 else {
-            report(.stopped, nick: explicitNick, cwd: cwd, session: session)
+            guard let member = resolveMember(cwd: cwd, session: session, preferredNick: explicitNick),
+                  let u = loadUnread(member.id), u.count > 0 else {
+            // A successful Stop means the coding agent returned to its
+            // composer. Keep this aligned with the distributed implementation:
+            // stopped is for an API/error stop, idle is poke-ready.
+            report(.idle, nick: explicitNick, cwd: cwd, session: session)
             return 0
         }
         emitContinuation(nick: member.nick, memberID: member.id, messages: u.messages, codex: codex)
@@ -180,11 +183,14 @@ enum MeshHooks {
     /// no nick, or no unread all exit 0 without blocking.
     private static func stopHookRemote(cwd: String, session: String?, explicitNick: String?,
                                        reentry: Bool, codex: Bool) -> Int32 {
-        if reentry { report(.stopped, nick: explicitNick, cwd: cwd, session: session); return 0 }
+        if reentry { report(.idle, nick: explicitNick, cwd: cwd, session: session); return 0 }
         let resp = MeshClient.send(MeshRequest(cmd: "peek", nick: explicitNick,
                                                project: cwd, session: session,
-                                               state: MeshSessionState.stopped.rawValue))
-        guard resp.ok, let msgs = resp.messages, !msgs.isEmpty, let nick = resp.note else { return 0 }
+                                               state: MeshSessionState.idle.rawValue))
+        guard resp.ok, let msgs = resp.messages, !msgs.isEmpty, let nick = resp.note else {
+            // `peek` already persisted idle when there are no pending messages.
+            return 0
+        }
         emitContinuation(nick: nick, memberID: resp.memberID, messages: msgs, codex: codex)
         report(.busy, nick: nick, cwd: cwd, session: session)   // ditto: turn continues
         return 0
@@ -384,33 +390,29 @@ enum MeshHooks {
         let memberArg = memberID.map { " --member \($0)" } ?? ""
         lines.append("When you reach a natural pause, pick them up with `pharos mesh recv \(n)\(memberArg)` "
                      + "and reply in the room if a response is expected.")
-        var payload: [String: Any] = [
+        let payload: [String: Any] = [
             "hookSpecificOutput": [
                 "hookEventName": "PostToolUse",
                 "additionalContext": lines.joined(separator: "\n"),
             ]
         ]
-        if codex { payload["suppressOutput"] = true }
         if let d = try? JSONSerialization.data(withJSONObject: payload) {
             print(String(decoding: d, as: UTF8.self))
         }
         return 0
     }
 
-    /// Codex supports `suppressOutput` on command-hook output. Emit it even
-    /// when there is no unread message so the all-tools heartbeat does not add
-    /// a completed hook cell after every tool invocation.
+    /// Keep empty PostToolUse hooks silent. Do not emit unsupported metadata:
+    /// recent Codex builds reject `suppressOutput`, and a rejected hook loses
+    /// the state heartbeat that follows it.
     private static func finishPostTool(codex: Bool) -> Int32 {
-        guard codex else { return 0 }
-        if let d = try? JSONSerialization.data(withJSONObject: ["suppressOutput": true]) {
-            print(String(decoding: d, as: UTF8.self))
-        }
+        _ = codex
         return 0
     }
 
     /// Continue the agent with unread room context. Claude now has a first-class
     /// non-error Stop feedback form. Codex's Stop schema intentionally remains
-    /// top-level `decision:block`, with `suppressOutput` hiding hook chrome.
+    /// top-level `decision:block`; keep the reason visible to the agent.
     private static func emitContinuation(nick: String, memberID: String?, messages: [MeshMsg],
                                          codex: Bool) {
         var perRoom: [String: Int] = [:]
@@ -432,8 +434,10 @@ enum MeshHooks {
     /// Kept testable because Claude and Codex deliberately expose different
     /// Stop output schemas despite sharing the same event name.
     static func continuationPayload(text: String, codex: Bool) -> [String: Any] {
+        // Keep the reason visible. suppressOutput hid the only delivery signal
+        // for Codex, making an @mention appear to be swallowed.
         codex
-            ? ["decision": "block", "reason": text, "suppressOutput": true]
+            ? ["decision": "block", "reason": text]
             : ["hookSpecificOutput": ["hookEventName": "Stop", "additionalContext": text]]
     }
 

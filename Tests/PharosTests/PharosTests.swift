@@ -250,10 +250,11 @@ final class AgentKindCommandTests: XCTestCase {
         )
     }
 
-    func testMeshJoinBriefCarriesExplicitSessionIdentity() {
+    func testMeshJoinBriefUsesHookSessionIdentity() {
         let brief = MeshSpawn.joinBrief(room: "room", nick: "agent", kind: .codex,
                                         session: "tmux-session-id")
-        XCTAssertTrue(brief.contains("pharos mesh join room agent --session tmux-session-id --kind codex"))
+        XCTAssertTrue(brief.contains("pharos mesh join room agent --kind codex"))
+        XCTAssertFalse(brief.contains("--session tmux-session-id"))
     }
 
     func testCodexResolverIncludesDesktopAppAndVersionManagerShims() {
@@ -1353,7 +1354,7 @@ final class MeshStateMappingTests: XCTestCase {
         let codex = MeshHooks.continuationPayload(text: "hello", codex: true)
         XCTAssertEqual(codex["decision"] as? String, "block")
         XCTAssertEqual(codex["reason"] as? String, "hello")
-        XCTAssertEqual(codex["suppressOutput"] as? Bool, true)
+        XCTAssertNil(codex["suppressOutput"])
         XCTAssertNil(codex["hookSpecificOutput"])
     }
 

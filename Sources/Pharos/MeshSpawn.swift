@@ -95,7 +95,12 @@ enum MeshSpawn {
     static func joinBrief(room: String, nick: String, kind: AgentKind,
                           session: String) -> String {
         "Join the mesh chat room \(room) as nick \(nick): run  "
-            + "pharos mesh join \(room) \(nick) --session \(session) --kind \(kind.rawValue). "
+            // Do not pass the tmux session name here. The agent's structured
+            // SessionStart hook records the real Codex/Claude session id, and
+            // `mesh join` resolves that id from the current tmux seat. Using
+            // the tmux name made later Stop/@mention hooks address a different
+            // identity and left the real session stuck busy.
+            + "pharos mesh join \(room) \(nick) --kind \(kind.rawValue). "
             + "Then run  pharos mesh send \"\(nick) joined\". "
             + "Return to the idle composer after announcing; do not run a listener or polling command. "
             + "Pharos hooks and nudges will wake you for new messages. Do nothing else."
