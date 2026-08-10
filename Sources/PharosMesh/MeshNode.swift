@@ -154,9 +154,20 @@ enum MeshNode {
             continueSpawnBootstrap(command, payload: payload, tmux: tmux, prefix: prefix)
             return
         }
+        // The node itself dials the broker over TCP, but a newly spawned agent
+        // does not inherit the node process' static client configuration.  If
+        // we omit this, a satellite Mac with no local broker starts an agent
+        // whose `pharos mesh` commands fall back to a local/replica island and
+        // report "room not found" for rooms that exist on the central broker.
+        // Pass the endpoint explicitly so hooks and the agent CLI use the same
+        // broker as the node.  Keep the session identity separate and stable.
+        var environment = ["PHAROS_MESH_SESSION=\(payload.sessionName)"]
+        if let endpoint = MeshClient.remoteEndpoint, !endpoint.isEmpty {
+            environment.append("PHAROS_MESH_TCP=\(endpoint)")
+        }
         var arguments = prefix + ["new-session", "-d", "-s", payload.sessionName,
                                   "-c", projectPath, "-x", "200", "-y", "50",
-                                  "/usr/bin/env", "PHAROS_MESH_SESSION=\(payload.sessionName)", executable]
+                                  "/usr/bin/env"] + environment + [executable]
         if payload.yolo {
             arguments += payload.agent == "claude"
                 ? ["--dangerously-skip-permissions"]
