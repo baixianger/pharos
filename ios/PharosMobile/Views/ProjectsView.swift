@@ -2,10 +2,12 @@ import SwiftUI
 import UIKit
 
 /// Registry projects presented as a quiet, status-first Linear-style index.
-/// Project data comes only from the Broker, with a device-local offline cache.
+/// Distributed mode reads the device-local signed replica; legacy mode retains
+/// the Broker cache until the migration flag becomes the only runtime.
 struct ProjectsView: View {
     @Environment(RoomStore.self) private var store
     @Environment(AppSettings.self) private var settings
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @State private var projects: [RemoteProject] = []
     @State private var loading = false
     @State private var loadError: String?
@@ -73,7 +75,7 @@ struct ProjectsView: View {
                     Task { await load() }
                 }
             }
-            .task { await load() }
+            .task(id: distributedMesh.registryRevision) { await load() }
             .refreshable { await load() }
         }
     }
@@ -140,6 +142,7 @@ struct ProjectsView: View {
 
     private var emptyDescription: String {
         if let loadError { return loadError }
+        if isDistributed { return "Create a project here, or pair a trusted device to receive its replicated projects." }
         if settings.mesh.host.isEmpty { return "Connect to your Broker in Settings to load the registry." }
         if filter == .active { return "Projects appear here while an agent reports that working directory." }
         return "The Broker registry did not return any projects."
@@ -153,7 +156,13 @@ struct ProjectsView: View {
             projects = viaMesh
             return
         }
-        loadError = "The Broker is unavailable and no project cache exists yet."
+        loadError = isDistributed
+            ? "Pair this iPhone with a trusted Pharos device before loading replicated projects."
+            : "The Broker is unavailable and no project cache exists yet."
+    }
+
+    private var isDistributed: Bool {
+        PharosMeshRuntimeMode.usesDistributedMesh
     }
 }
 
@@ -164,6 +173,10 @@ private struct NewProjectView: View {
     @State private var githubRemote = ""
     @State private var notes = ""
     @State private var tags = ""
+    @State private var yolo = true
+    @State private var tmux = false
+    @State private var playbooks: [RemotePlaybook] = []
+    @State private var milestones: [ProjectMilestoneDraft] = []
     @State private var saving = false
     let onCreated: () -> Void
 
@@ -188,6 +201,9 @@ private struct NewProjectView: View {
                 } footer: {
                     Text("Separate tags with commas. Checkout paths are configured separately on each Host.")
                 }
+                ProjectExecutionDefaultsSection(yolo: $yolo, tmux: $tmux)
+                ProjectPlaybooksSection(playbooks: $playbooks)
+                ProjectMilestonesSection(milestones: $milestones)
                 if let error = store.error {
                     Section {
                         Label(error, systemImage: "exclamationmark.triangle")
@@ -218,12 +234,28 @@ private struct NewProjectView: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         let succeeded = await store.addProject(name: name, githubRemote: githubRemote,
-                                               notes: notes, tags: parsedTags)
+                                               notes: notes, tags: parsedTags,
+                                               yolo: yolo, tmux: tmux,
+                                               playbooks: cleanedPlaybooks,
+                                               milestones: cleanedMilestones)
         saving = false
         if succeeded {
             onCreated()
             dismiss()
         }
+    }
+
+    private var cleanedPlaybooks: [RemotePlaybook] {
+        playbooks.compactMap { value in
+            let name = value.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let command = value.command.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, !command.isEmpty else { return nil }
+            return RemotePlaybook(id: value.id, name: name, command: command)
+        }
+    }
+
+    private var cleanedMilestones: [RemoteMilestone] {
+        milestones.compactMap(\.remoteValue)
     }
 }
 
@@ -237,6 +269,10 @@ private struct EditProjectView: View {
     @State private var githubRemote: String
     @State private var notes: String
     @State private var tags: String
+    @State private var yolo: Bool
+    @State private var tmux: Bool
+    @State private var playbooks: [RemotePlaybook]
+    @State private var milestones: [ProjectMilestoneDraft]
     @State private var saving = false
 
     init(project: RemoteProject, onSaved: @escaping () -> Void) {
@@ -246,6 +282,10 @@ private struct EditProjectView: View {
         _githubRemote = State(initialValue: project.githubRemote ?? "")
         _notes = State(initialValue: project.notes)
         _tags = State(initialValue: project.tags.joined(separator: ", "))
+        _yolo = State(initialValue: project.yolo)
+        _tmux = State(initialValue: project.tmux)
+        _playbooks = State(initialValue: project.playbooks)
+        _milestones = State(initialValue: project.milestones.map(ProjectMilestoneDraft.init))
     }
 
     var body: some View {
@@ -269,6 +309,9 @@ private struct EditProjectView: View {
                 } footer: {
                     Text("Separate tags with commas.")
                 }
+                ProjectExecutionDefaultsSection(yolo: $yolo, tmux: $tmux)
+                ProjectPlaybooksSection(playbooks: $playbooks)
+                ProjectMilestonesSection(milestones: $milestones)
                 if let error = store.error {
                     Section {
                         Label(error, systemImage: "exclamationmark.triangle")
@@ -298,12 +341,138 @@ private struct EditProjectView: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         let succeeded = await store.updateProject(project, name: name, githubRemote: githubRemote,
-                                                  notes: notes, tags: parsedTags)
+                                                  notes: notes, tags: parsedTags,
+                                                  yolo: yolo, tmux: tmux,
+                                                  playbooks: cleanedPlaybooks,
+                                                  milestones: cleanedMilestones)
         saving = false
         if succeeded {
             onSaved()
             dismiss()
         }
+    }
+
+    private var cleanedPlaybooks: [RemotePlaybook] {
+        playbooks.compactMap { value in
+            let name = value.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let command = value.command.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, !command.isEmpty else { return nil }
+            return RemotePlaybook(id: value.id, name: name, command: command)
+        }
+    }
+
+    private var cleanedMilestones: [RemoteMilestone] {
+        milestones.compactMap(\.remoteValue)
+    }
+}
+
+private struct ProjectExecutionDefaultsSection: View {
+    @Binding var yolo: Bool
+    @Binding var tmux: Bool
+
+    var body: some View {
+        Section {
+            Toggle("Allow autonomous agent actions", isOn: $yolo)
+            Toggle("Keep agents in persistent tmux sessions", isOn: $tmux)
+        } header: {
+            Text("Agent defaults")
+        } footer: {
+            Text("These defaults follow the project. Each Host still chooses its own checkout path and execution environment.")
+        }
+    }
+}
+
+private struct ProjectPlaybooksSection: View {
+    @Binding var playbooks: [RemotePlaybook]
+
+    var body: some View {
+        Section {
+            ForEach($playbooks) { $playbook in
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("Playbook name", text: $playbook.name)
+                    TextField("Command", text: $playbook.command, axis: .vertical)
+                        .font(.body.monospaced())
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .lineLimit(2...5)
+                }
+            }
+            .onDelete { playbooks.remove(atOffsets: $0) }
+            Button("Add playbook", systemImage: "plus") {
+                playbooks.append(RemotePlaybook(
+                    id: UUID().uuidString, name: "", command: ""
+                ))
+            }
+        } header: {
+            Text("Playbooks")
+        } footer: {
+            Text("Swipe a playbook to remove it. Commands run only on the Host you choose.")
+        }
+    }
+}
+
+private struct ProjectMilestonesSection: View {
+    @Binding var milestones: [ProjectMilestoneDraft]
+
+    var body: some View {
+        Section {
+            ForEach($milestones) { $milestone in
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("Milestone name", text: $milestone.name)
+                    Toggle("Due date", isOn: $milestone.hasDue)
+                    if milestone.hasDue {
+                        DatePicker(
+                            "Due", selection: $milestone.due,
+                            displayedComponents: .date
+                        )
+                    }
+                }
+            }
+            .onDelete { milestones.remove(atOffsets: $0) }
+            Button("Add milestone", systemImage: "plus") {
+                milestones.append(ProjectMilestoneDraft())
+            }
+        } header: {
+            Text("Milestones")
+        } footer: {
+            Text("Removing a milestone also clears it from issues that used it.")
+        }
+    }
+}
+
+private struct ProjectMilestoneDraft: Identifiable, Hashable {
+    let id: String
+    var name: String
+    var hasDue: Bool
+    var due: Date
+    let createdAt: Date
+
+    init(
+        id: String = UUID().uuidString, name: String = "",
+        hasDue: Bool = false, due: Date = .now, createdAt: Date = .now
+    ) {
+        self.id = id
+        self.name = name
+        self.hasDue = hasDue
+        self.due = due
+        self.createdAt = createdAt
+    }
+
+    init(_ milestone: RemoteMilestone) {
+        id = milestone.id
+        name = milestone.name
+        hasDue = milestone.due != nil
+        due = milestone.due ?? .now
+        createdAt = milestone.createdAt
+    }
+
+    var remoteValue: RemoteMilestone? {
+        let value = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        return RemoteMilestone(
+            id: id, name: value, due: hasDue ? due : nil,
+            createdAt: createdAt
+        )
     }
 }
 
@@ -440,6 +609,11 @@ struct ProjectSummaryView: View {
             switch tab {
             case .overview:
                 ProjectOverviewSections(project: project, agents: agents)
+                ProjectAutomationSummarySection(
+                    yolo: project.yolo, tmux: project.tmux
+                )
+                ProjectPlaybookSummarySection(playbooks: project.playbooks)
+                ProjectMilestoneSummarySection(milestones: project.milestones)
             case .activity:
                 ProjectActivitySections(project: project, agents: agents)
             case .issues:
@@ -493,7 +667,7 @@ struct ProjectSummaryView: View {
             }
         }
         .sheet(isPresented: $showingNewIssue) {
-            NewProjectIssueView(projectName: project.name) {
+            NewIssueView(initialProject: project.name) {
                 Task { await reload() }
             }
         }
@@ -525,7 +699,7 @@ struct ProjectSummaryView: View {
 
     private func reload() async {
         guard let projects = await store.fetchProjectsOverMesh(),
-              let updated = projects.first(where: { $0.name == project.name }) else { return }
+              let updated = projects.first(where: { $0.id == project.id }) else { return }
         project = updated
     }
 }
@@ -563,6 +737,9 @@ private struct ProjectDetailHeader: View {
         if !project.notes.isEmpty { return project.notes }
         if activeAgentCount > 0 {
             return activeAgentCount == 1 ? "One agent is working on this project." : "\(activeAgentCount) agents are working on this project."
+        }
+        if PharosMeshRuntimeMode.usesDistributedMesh {
+            return "Project details, activity, and issues from your signed device replica."
         }
         return "Project details, activity, and issues from your Broker registry."
     }
@@ -620,6 +797,62 @@ private struct ProjectOverviewSections: View {
                             .foregroundStyle(.secondary)
                     } label: {
                         Label("@\(member.nick)", systemImage: AgentStatus.icon(member.kind))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ProjectAutomationSummarySection: View {
+    let yolo: Bool
+    let tmux: Bool
+
+    var body: some View {
+        Section("Agent defaults") {
+            LabeledContent(
+                "Autonomous actions", value: yolo ? "Allowed" : "Ask first"
+            )
+            LabeledContent(
+                "Session persistence", value: tmux ? "tmux" : "Standard"
+            )
+        }
+    }
+}
+
+private struct ProjectPlaybookSummarySection: View {
+    let playbooks: [RemotePlaybook]
+
+    var body: some View {
+        if !playbooks.isEmpty {
+            Section("Playbooks") {
+                ForEach(playbooks) { playbook in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(playbook.name).font(.headline)
+                        Text(playbook.command)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ProjectMilestoneSummarySection: View {
+    let milestones: [RemoteMilestone]
+
+    var body: some View {
+        if !milestones.isEmpty {
+            Section("Milestones") {
+                ForEach(milestones) { milestone in
+                    LabeledContent(milestone.name) {
+                        if let due = milestone.due {
+                            Text(due, format: .dateTime.year().month().day())
+                        } else {
+                            Text("No due date").foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -693,57 +926,3 @@ private struct ProjectIssuesSection: View {
         }
     }
 }
-
-private struct NewProjectIssueView: View {
-    @Environment(RoomStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    let projectName: String
-    let onCreated: () -> Void
-    @State private var title = ""
-    @State private var saving = false
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Issue") {
-                    TextField("Issue title", text: $title, axis: .vertical)
-                        .lineLimit(2...5)
-                }
-                Section {
-                    LabeledContent("Project", value: projectName)
-                    LabeledContent("Status", value: "Todo")
-                }
-                if let error = store.error {
-                    Section {
-                        Label(error, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.red)
-                    }
-                }
-            }
-            .pharosPlainList()
-            .navigationTitle("New issue")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }.disabled(saving)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(saving ? "Adding…" : "Add") { Task { await save() } }
-                        .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
-                }
-            }
-            .interactiveDismissDisabled(saving)
-        }
-    }
-
-    private func save() async {
-        saving = true
-        let succeeded = await store.addIssue(to: projectName, title: title)
-        saving = false
-        if succeeded {
-            onCreated()
-            dismiss()
-        }
-    }
-}
-

@@ -1,0 +1,73 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"/Applications/Pharos.app/Contents/MacOS/Pharos\" ]; then \"/Applications/Pharos.app/Contents/MacOS/Pharos\" mesh mark --hook; elif command -v pharos >/dev/null 2>&1; then pharos mesh mark --hook; else true; fi",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"/Applications/Pharos.app/Contents/MacOS/Pharos\" ]; then \"/Applications/Pharos.app/Contents/MacOS/Pharos\" mesh mark --hook; elif command -v pharos >/dev/null 2>&1; then pharos mesh mark --hook; else true; fi",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"/Applications/Pharos.app/Contents/MacOS/Pharos\" ]; then \"/Applications/Pharos.app/Contents/MacOS/Pharos\" mesh unread --hook-post-tool; elif command -v pharos >/dev/null 2>&1; then pharos mesh unread --hook-post-tool; else true; fi",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"/Applications/Pharos.app/Contents/MacOS/Pharos\" ]; then \"/Applications/Pharos.app/Contents/MacOS/Pharos\" mesh session-start; elif command -v pharos >/dev/null 2>&1; then pharos mesh session-start; else true; fi",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"/Applications/Pharos.app/Contents/MacOS/Pharos\" ]; then \"/Applications/Pharos.app/Contents/MacOS/Pharos\" mesh mark --hook; elif command -v pharos >/dev/null 2>&1; then pharos mesh mark --hook; else true; fi",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"/Applications/Pharos.app/Contents/MacOS/Pharos\" ]; then \"/Applications/Pharos.app/Contents/MacOS/Pharos\" mesh unread --hook-stop; elif command -v pharos >/dev/null 2>&1; then pharos mesh unread --hook-stop; else true; fi",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

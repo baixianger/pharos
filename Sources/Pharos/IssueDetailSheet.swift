@@ -17,6 +17,8 @@ struct IssueDetailSheet: View {
     @State private var editedTitle = ""
     @State private var editedBody = ""
     @State private var quickLookURL: URL?
+    @State private var fetchedAttachmentURLs: [UUID: URL] = [:]
+    @State private var failedAttachmentIDs: Set<UUID> = []
     @State private var newLabel = ""
     @State private var showNewMilestone = false
     @State private var newMilestoneName = ""
@@ -286,12 +288,26 @@ struct IssueDetailSheet: View {
     }
 
     private func attachmentTile(_ att: IssueAttachment, issueID: UUID) -> some View {
-        let url = AttachmentStore.fileURL(att, issueID: issueID)
+        let url = fetchedAttachmentURLs[att.id]
+            ?? AttachmentStore.fileURL(att, issueID: issueID)
+        let available = FileManager.default.fileExists(atPath: url.path)
         return VStack(spacing: 6) {
             ZStack(alignment: .topTrailing) {
                 Group {
-                    if att.isImage, let img = NSImage(contentsOf: url) {
+                    if att.isImage, available, let img = NSImage(contentsOf: url) {
                         Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
+                    } else if !available, att.meshAttachment != nil {
+                        if failedAttachmentIDs.contains(att.id) {
+                            Button {
+                                Task { await fetchAttachment(att, issueID: issueID) }
+                            } label: {
+                                Label("Retry download", systemImage: "arrow.clockwise.icloud")
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            ProgressView().controlSize(.small)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
                     } else {
                         Image(systemName: "doc.fill")
                             .font(.system(size: 44)).foregroundStyle(.secondary)
@@ -303,7 +319,7 @@ struct IssueDetailSheet: View {
                 .background(.quaternary.opacity(0.4))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .contentShape(Rectangle())
-                .onTapGesture { quickLookURL = url }
+                .onTapGesture { if available { quickLookURL = url } }
                 .help("Click to preview (QuickLook)")
 
                 Button {
@@ -317,13 +333,31 @@ struct IssueDetailSheet: View {
             Text(att.originalName).font(.caption).lineLimit(1)
             Text(byteString(att.byteSize)).font(.caption2).foregroundStyle(.secondary)
         }
+        .task(id: att.meshAttachment?.id) {
+            guard !available else { return }
+            await fetchAttachment(att, issueID: issueID)
+        }
         .contextMenu {
             Button { quickLookURL = url } label: { Label("Quick Look", systemImage: "eye") }
+                .disabled(!available)
             Button { NSWorkspace.shared.open(url) } label: { Label("Open in default app", systemImage: "arrow.up.forward.app") }
+                .disabled(!available)
             Button { LaunchService.revealInFinder(url.path) } label: { Label("Reveal in Finder", systemImage: "folder") }
+                .disabled(!available)
             Button(role: .destructive) {
                 store.removeAttachment(projectID, number: number, attachment: att)
             } label: { Label("Remove", systemImage: "trash") }
+        }
+    }
+
+    private func fetchAttachment(_ attachment: IssueAttachment, issueID: UUID) async {
+        failedAttachmentIDs.remove(attachment.id)
+        if let fetched = await store.ensureAttachmentAvailable(
+            issueID: issueID, attachment: attachment
+        ) {
+            fetchedAttachmentURLs[attachment.id] = fetched
+        } else {
+            failedAttachmentIDs.insert(attachment.id)
         }
     }
 

@@ -1,399 +1,13 @@
 import Foundation
 import Crypto
+import PharosMeshProtocol
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
 #endif
 
-// MARK: - Wire protocol (newline-delimited JSON over a local unix socket)
-
-public struct MeshRequest: Codable, Sendable {
-    public var cmd: String
-    public var room: String?
-    public var nick: String?
-    public var memberID: String?
-    public var text: String?
-    public var to: [String]?
-    public var timeoutMs: Int?
-    public var limit: Int?
-    public var project: String?
-    public var session: String?
-    public var host: String?
-    public var tmuxPane: String?
-    public var tmuxSocket: String? = nil
-    public var state: String?
-    public var stateReason: String?
-    public var expectedState: String?
-    public var expectedStateTs: Double?
-    public var kind: String?
-    public var tailscaleIP: String?
-    /// history only: return messages strictly before this message id (paging).
-    public var beforeID: String?
-    public var replyToID: String?
-    public var attachments: [MeshAttachment]?
-    public var attachment: MeshAttachment?
-    public var attachmentID: String?
-    public var payload: String?
-    public var expectedRevision: String?
-    public var cursor: UInt64?
-    public var authToken: String?
-    public var nodeID: String?
-    public var commandID: String?
-    public var action: String?
-    public var idempotencyKey: String?
-    public var deadline: Double?
-    public var retryAt: Double?
-    public var maxAttempts: Int?
-
-    public init(cmd: String, room: String? = nil, nick: String? = nil, memberID: String? = nil,
-                text: String? = nil, to: [String]? = nil, timeoutMs: Int? = nil, limit: Int? = nil,
-                project: String? = nil, session: String? = nil, host: String? = nil,
-                tmuxPane: String? = nil, tmuxSocket: String? = nil, state: String? = nil,
-                stateReason: String? = nil,
-                expectedState: String? = nil, expectedStateTs: Double? = nil, kind: String? = nil,
-                tailscaleIP: String? = nil, replyToID: String? = nil,
-                attachments: [MeshAttachment]? = nil, attachment: MeshAttachment? = nil,
-                attachmentID: String? = nil, payload: String? = nil,
-                expectedRevision: String? = nil, cursor: UInt64? = nil,
-                authToken: String? = nil, nodeID: String? = nil, commandID: String? = nil,
-                action: String? = nil, idempotencyKey: String? = nil, deadline: Double? = nil,
-                retryAt: Double? = nil, maxAttempts: Int? = nil) {
-        self.cmd = cmd; self.room = room; self.nick = nick; self.memberID = memberID
-        self.text = text; self.to = to; self.timeoutMs = timeoutMs; self.limit = limit
-        self.project = project; self.session = session; self.host = host; self.tmuxPane = tmuxPane
-        self.tmuxSocket = tmuxSocket; self.state = state; self.stateReason = stateReason
-        self.expectedState = expectedState
-        self.expectedStateTs = expectedStateTs; self.kind = kind; self.tailscaleIP = tailscaleIP
-        self.replyToID = replyToID; self.attachments = attachments; self.attachment = attachment
-        self.attachmentID = attachmentID
-        self.payload = payload
-        self.expectedRevision = expectedRevision
-        self.cursor = cursor
-        self.authToken = authToken; self.nodeID = nodeID; self.commandID = commandID
-        self.action = action; self.idempotencyKey = idempotencyKey; self.deadline = deadline
-        self.retryAt = retryAt; self.maxAttempts = maxAttempts
-    }
-}
-
-/// Monotonic, broker-runtime event used by foreground clients and headless
-/// Host nodes. A fresh subscriber first asks for the current cursor, reloads
-/// its durable snapshot, then blocks on `events` for changes after that cursor.
-/// The message transcript/mailbox remains authoritative across broker restarts.
-public struct MeshEvent: Codable, Sendable, Equatable, Identifiable {
-    public enum Kind: String, Codable, Sendable { case message, poke, roster, registry, nodeCommand }
-
-    public var id: UInt64 { sequence }
-    public var sequence: UInt64
-    public var kind: Kind
-    public var ts: Double
-    public var room: String?
-    public var message: MeshMsg?
-    public var member: MeshMemberInfo?
-
-    public init(sequence: UInt64, kind: Kind, ts: Double = Date().timeIntervalSince1970,
-                room: String? = nil, message: MeshMsg? = nil, member: MeshMemberInfo? = nil) {
-        self.sequence = sequence; self.kind = kind; self.ts = ts
-        self.room = room; self.message = message; self.member = member
-    }
-}
-
-public enum MeshNodeCommandAction: String, Codable, Sendable, CaseIterable {
-    case spawnAgent, stopSession, poke, reconcile
-}
-
-public enum MeshNodeCommandState: String, Codable, Sendable {
-    case queued, accepted, running, succeeded, failed, expired, canceled
-
-    public var isTerminal: Bool {
-        switch self {
-        case .succeeded, .failed, .expired, .canceled: true
-        default: false
-        }
-    }
-}
-
-/// Durable, allow-listed control request. The Broker owns desired state; a
-/// Host node repeatedly claims the same command until it records a terminal
-/// result, which makes delivery idempotent across disconnects and restarts.
-public struct MeshNodeCommand: Codable, Sendable, Equatable, Identifiable {
-    public var id: String
-    public var nodeID: String
-    public var action: MeshNodeCommandAction
-    public var payload: String?
-    public var idempotencyKey: String
-    public var state: MeshNodeCommandState
-    public var createdAt: Double
-    public var updatedAt: Double
-    public var deadline: Double
-    public var result: String?
-    public var attempts: Int
-    public var maxAttempts: Int
-    public var nextAttemptAt: Double
-
-    public init(id: String = UUID().uuidString, nodeID: String, action: MeshNodeCommandAction,
-                payload: String?, idempotencyKey: String, state: MeshNodeCommandState = .queued,
-                createdAt: Double = Date().timeIntervalSince1970,
-                updatedAt: Double = Date().timeIntervalSince1970,
-                deadline: Double, result: String? = nil, attempts: Int = 0,
-                maxAttempts: Int = 120, nextAttemptAt: Double? = nil) {
-        self.id = id; self.nodeID = nodeID; self.action = action; self.payload = payload
-        self.idempotencyKey = idempotencyKey; self.state = state
-        self.createdAt = createdAt; self.updatedAt = updatedAt; self.deadline = deadline
-        self.result = result
-        self.attempts = attempts; self.maxAttempts = maxAttempts
-        self.nextAttemptAt = nextAttemptAt ?? createdAt
-    }
-}
-
-public struct MeshNodePokePayload: Codable, Sendable, Equatable {
-    public var memberID: String
-    public var requireUnread: Bool
-
-    public init(memberID: String, requireUnread: Bool = true) {
-        self.memberID = memberID; self.requireUnread = requireUnread
-    }
-}
-
-public struct MeshNodeStopPayload: Codable, Sendable, Equatable {
-    public var memberID: String
-    public init(memberID: String) { self.memberID = memberID }
-}
-
-public struct MeshNodeSpawnPayload: Codable, Sendable, Equatable {
-    public var projectID: String
-    public var sessionName: String
-    public var agent: String
-    public var yolo: Bool
-    public var room: String?
-    public var nick: String?
-
-    public init(projectID: String, sessionName: String, agent: String, yolo: Bool,
-                room: String? = nil, nick: String? = nil) {
-        self.projectID = projectID; self.sessionName = sessionName; self.agent = agent
-        self.yolo = yolo; self.room = room; self.nick = nick
-    }
-}
-
-public struct MeshPairingCredential: Codable, Sendable, Equatable {
-    public var brokerID: String
-    public var controlToken: String
-
-    public init(brokerID: String, controlToken: String) {
-        self.brokerID = brokerID; self.controlToken = controlToken
-    }
-}
-
-/// Hook-reported lifecycle states (probed ground truth, cc-hook-probe FINDINGS,
-/// re-verified on CC v2.1.207 2026-07-11):
-///  busy    — UserPromptSubmit/PostToolUse fired, turn in flight
-///  blocked — PermissionRequest or Notification{permission_prompt|elicitation_dialog}:
-///            waiting on the HUMAN — send-keys would type into the dialog
-///  stopped — Stop or StopFailure fired: turn over, composer idle → poke-safe
-///  idle    — Notification{idle_prompt} (60s after Stop): confirmed idle
-///  gone    — SessionEnd: never poke
-public enum MeshSessionState: String, Codable, Sendable {
-    case busy, blocked, stopped, idle, gone
-    /// May a send-keys nudge safely reach this session's composer?
-    public var pokeable: Bool { self == .stopped || self == .idle }
-}
-
-public struct MeshReply: Codable, Sendable, Equatable {
-    public var messageID: String
-    public var from: String
-    public var preview: String
-    public var ts: Double
-
-    public init(messageID: String, from: String, preview: String, ts: Double) {
-        self.messageID = messageID; self.from = from; self.preview = preview; self.ts = ts
-    }
-}
-
-public struct MeshAttachment: Codable, Sendable, Equatable, Identifiable {
-    public var id: String
-    public var name: String
-    public var mimeType: String
-    public var byteSize: Int
-    public var sha256: String
-
-    public init(id: String = UUID().uuidString, name: String, mimeType: String,
-                byteSize: Int, sha256: String) {
-        self.id = id; self.name = name; self.mimeType = mimeType
-        self.byteSize = byteSize; self.sha256 = sha256
-    }
-}
-
-public struct MeshMsg: Codable, Sendable, Equatable, Identifiable {
-    public var id: String?
-    public var from: String
-    public var room: String
-    public var text: String
-    public var ts: Double
-    public var to: [String]
-    public var replyTo: MeshReply?
-    public var attachments: [MeshAttachment]?
-
-    public init(id: String? = nil, from: String, room: String, text: String, ts: Double,
-                to: [String], replyTo: MeshReply? = nil, attachments: [MeshAttachment]? = nil) {
-        self.id = id; self.from = from; self.room = room; self.text = text; self.ts = ts; self.to = to
-        self.replyTo = replyTo; self.attachments = attachments
-    }
-
-    public var stableID: String { id ?? "legacy|\(room)|\(ts)|\(from)" }
-}
-
-public struct MeshRoomInfo: Codable, Sendable, Equatable {
-    public var name: String
-    public var members: [String]
-    public init(name: String, members: [String]) { self.name = name; self.members = members }
-}
-
-// MARK: - Mirrored local state (the zero-daemon surface the hooks read)
-
-/// Per-session unread signal file: a mirror of the member's in-RAM mailboxes across
-/// all rooms, rewritten by the broker on every deliver and every drain. The
-/// file EXISTS iff something is unread — hooks check it with a pure local read,
-/// so a dead broker can never error or trap an agent.
-public struct MeshUnread: Codable, Sendable {
-    public var v: Int
-    public var memberID: String
-    public var nick: String
-    public var count: Int
-    public var rooms: [String: Int]
-    public var messages: [MeshMsg]
-    public var updatedTs: Double
-
-    public init(v: Int, memberID: String, nick: String, count: Int, rooms: [String: Int],
-                messages: [MeshMsg], updatedTs: Double) {
-        self.v = v; self.memberID = memberID; self.nick = nick; self.count = count
-        self.rooms = rooms; self.messages = messages; self.updatedTs = updatedTs
-    }
-}
-
-/// session id → runtime identity. `aliases` is room → display nick; aliases are
-/// room-scoped and never serve as delivery keys.
-public struct MeshPresenceEntry: Codable, Sendable {
-    public var project: String?
-    public var session: String?
-    public var host: String?
-    public var tmuxPane: String?
-    public var tmuxSocket: String? = nil
-    public var state: String?
-    public var stateTs: Double?
-    public var stateReason: String?
-    public var kind: String?
-    public var tailscaleIP: String?
-    public var aliases: [String: String]
-    public var rooms: [String]
-    public var lastSeen: Double
-    public var online: Bool
-
-    public init(project: String? = nil, session: String? = nil, host: String? = nil,
-                tmuxPane: String? = nil, tmuxSocket: String? = nil,
-                state: String? = nil, stateTs: Double? = nil, stateReason: String? = nil,
-                kind: String? = nil, tailscaleIP: String? = nil,
-                aliases: [String: String], rooms: [String], lastSeen: Double, online: Bool) {
-        self.project = project; self.session = session; self.host = host; self.tmuxPane = tmuxPane
-        self.tmuxSocket = tmuxSocket; self.state = state; self.stateTs = stateTs
-        self.stateReason = stateReason; self.kind = kind
-        self.tailscaleIP = tailscaleIP; self.aliases = aliases; self.rooms = rooms
-        self.lastSeen = lastSeen; self.online = online
-    }
-}
-
-/// One member of the mesh as the GUI/CLI sees it — presence plus identity, the
-/// unit `who` returns and `say` echoes back for each @-target so the sender can
-/// poke (or tell the human to). Field meanings mirror MeshPresenceEntry.
-public struct MeshMemberInfo: Codable, Sendable, Equatable, Identifiable {
-    public var id: String
-    public var nick: String
-    public var project: String?
-    public var session: String?
-    public var host: String?
-    public var tmuxPane: String?
-    public var tmuxSocket: String? = nil
-    public var state: String?
-    public var stateTs: Double?
-    public var stateReason: String?
-    public var unread: Int?
-    public var kind: String?
-    public var tailscaleIP: String?
-    public var rooms: [String]
-    public var lastSeen: Double
-    public var nodeOnline: Bool?
-
-    public init(id: String, nick: String, project: String? = nil, session: String? = nil,
-                host: String? = nil, tmuxPane: String? = nil,
-                tmuxSocket: String? = nil, state: String? = nil, stateTs: Double? = nil,
-                stateReason: String? = nil,
-                unread: Int? = nil, kind: String? = nil,
-                tailscaleIP: String? = nil, rooms: [String], lastSeen: Double,
-                nodeOnline: Bool? = nil) {
-        self.id = id; self.nick = nick; self.project = project; self.session = session; self.host = host
-        self.tmuxPane = tmuxPane; self.tmuxSocket = tmuxSocket; self.state = state; self.stateTs = stateTs
-        self.stateReason = stateReason
-        self.unread = unread; self.kind = kind; self.tailscaleIP = tailscaleIP
-        self.rooms = rooms; self.lastSeen = lastSeen
-        self.nodeOnline = nodeOnline
-    }
-}
-
-public struct MeshNodeInfo: Codable, Sendable, Equatable, Identifiable {
-    public var id: String
-    public var host: String
-    public var tailscaleIP: String?
-    public var lastSeen: Double
-    public var buildID: String?
-
-    public init(id: String, host: String, tailscaleIP: String?, lastSeen: Double,
-                buildID: String? = nil) {
-        self.id = id; self.host = host; self.tailscaleIP = tailscaleIP; self.lastSeen = lastSeen
-        self.buildID = buildID
-    }
-}
-
-public struct MeshPresence: Codable, Sendable {
-    public var v: Int
-    public var members: [String: MeshPresenceEntry]
-    public init(v: Int, members: [String: MeshPresenceEntry]) { self.v = v; self.members = members }
-}
-
-public struct MeshResponse: Codable, Sendable, Equatable {
-    public var ok: Bool
-    public var error: String?
-    public var rooms: [MeshRoomInfo]?
-    public var messages: [MeshMsg]?
-    public var members: [MeshMemberInfo]?
-    public var note: String?
-    public var memberID: String?
-    public var payload: String?
-    public var capabilities: [String]?
-    public var attachment: MeshAttachment?
-    public var revision: String?
-    public var events: [MeshEvent]?
-    public var cursor: UInt64?
-    public var nodes: [MeshNodeInfo]?
-    public var command: MeshNodeCommand?
-    public var commands: [MeshNodeCommand]?
-
-    public init(ok: Bool, error: String? = nil, rooms: [MeshRoomInfo]? = nil, messages: [MeshMsg]? = nil,
-                members: [MeshMemberInfo]? = nil, note: String? = nil, memberID: String? = nil,
-                payload: String? = nil, capabilities: [String]? = nil, attachment: MeshAttachment? = nil,
-                revision: String? = nil, events: [MeshEvent]? = nil, cursor: UInt64? = nil,
-                nodes: [MeshNodeInfo]? = nil, command: MeshNodeCommand? = nil,
-                commands: [MeshNodeCommand]? = nil) {
-        self.ok = ok; self.error = error; self.rooms = rooms; self.messages = messages; self.members = members
-        self.note = note; self.memberID = memberID; self.payload = payload
-        self.capabilities = capabilities; self.attachment = attachment
-        self.revision = revision
-        self.events = events; self.cursor = cursor
-        self.nodes = nodes
-        self.command = command; self.commands = commands
-    }
-
-    public static func okay(_ note: String? = nil) -> MeshResponse { MeshResponse(ok: true, note: note) }
-    public static func fail(_ e: String) -> MeshResponse { MeshResponse(ok: false, error: e) }
-}
+// Shared legacy wire values live in PharosMeshProtocol.
 
 // MARK: - Paths (socket is always local; durable Broker data lives in the configured data directory)
 
@@ -1023,6 +637,7 @@ public final class MeshBroker: @unchecked Sendable {
             // A joining agent is mid-turn by definition (the CLI runs in its
             // Bash tool) — seed state busy until its hooks report otherwise.
             touchPresenceLocked(memberID, project: req.project, session: req.session,
+                                nodeID: req.nodeID,
                                 host: req.host, tmuxPane: req.tmuxPane, tmuxSocket: req.tmuxSocket,
                                 state: MeshSessionState.busy.rawValue, kind: req.kind,
                                 tailscaleIP: req.tailscaleIP)
@@ -1108,11 +723,14 @@ public final class MeshBroker: @unchecked Sendable {
             let delivery = deliver(room: r, from: n, text: t, to: req.to, replyTo: reply,
                                    attachments: attachments.isEmpty ? nil : attachments)
             publish(kind: .message, room: r, message: delivery.message)
+            var unroutable: [String] = []
             if req.to?.isEmpty == false {
                 for target in delivery.targets {
-                    _ = enqueuePokeCommand(for: target,
-                                           idempotencyKey: "message:\(delivery.message.id ?? "unknown")",
-                                           requireUnread: true)
+                    if enqueuePokeCommand(for: target,
+                                          idempotencyKey: "message:\(delivery.message.id ?? "unknown")",
+                                          requireUnread: true) == nil {
+                        unroutable.append(target.nick)
+                    }
                 }
             }
             // Echo EVERY @-target's presence so the sender can act on delivery:
@@ -1123,12 +741,15 @@ public final class MeshBroker: @unchecked Sendable {
             lock.lock()
             let targetInfo = (req.to ?? []).map { nick in
                 memberInfoLocked(room: r, nick: nick)
-                    ?? MeshMemberInfo(id: "", nick: nick, project: nil, session: nil, host: nil,
+                    ?? MeshMemberInfo(id: "", nick: nick, nodeID: nil, project: nil, session: nil, host: nil,
                                       tmuxPane: nil, tmuxSocket: nil, state: nil, stateTs: nil, unread: nil,
                                       kind: nil, tailscaleIP: nil, rooms: [], lastSeen: 0)
             }
             lock.unlock()
-            return MeshResponse(ok: true, members: targetInfo.isEmpty ? nil : targetInfo)
+            let note = unroutable.isEmpty ? nil
+                : "Delivered, but automatic poke was not queued because the Host node is unavailable for "
+                    + unroutable.map { "@\($0)" }.joined(separator: ", ") + "."
+            return MeshResponse(ok: true, members: targetInfo.isEmpty ? nil : targetInfo, note: note)
 
         case "poke":
             guard let room = req.room, let nick = req.nick else {
@@ -1440,11 +1061,21 @@ public final class MeshBroker: @unchecked Sendable {
                                     requireUnread: Bool, preferredNodeID: String? = nil) -> MeshNodeCommand? {
         lock.lock()
         pruneNodesLocked()
-        let nodeID = preferredNodeID.flatMap { nodes[$0]?.id } ?? nodes.values.first(where: { node in
-            if let memberIP = member.tailscaleIP, !memberIP.isEmpty,
-               let nodeIP = node.tailscaleIP, !nodeIP.isEmpty { return memberIP == nodeIP }
-            return normalizedHost(member.host) == normalizedHost(node.host)
-        })?.id
+        let nodeID: String?
+        if let preferredNodeID {
+            nodeID = nodes[preferredNodeID]?.id
+        } else if let owner = member.nodeID, !owner.isEmpty {
+            // An explicit binding is authoritative. Falling back to a different
+            // node merely because its display host happens to match would send
+            // control input to the wrong machine after a restore or rename.
+            nodeID = nodes[owner]?.id
+        } else {
+            nodeID = nodes.values.first(where: { node in
+                if let memberIP = member.tailscaleIP, !memberIP.isEmpty,
+                   let nodeIP = node.tailscaleIP, !nodeIP.isEmpty { return memberIP == nodeIP }
+                return normalizedHost(member.host) == normalizedHost(node.host)
+            })?.id
+        }
         lock.unlock()
         guard let nodeID,
               let data = try? JSONEncoder().encode(MeshNodePokePayload(memberID: member.id,
@@ -1465,7 +1096,9 @@ public final class MeshBroker: @unchecked Sendable {
         var recoveries: [(MeshMemberInfo, String)] = []
         for (memberID, entry) in presence {
             let owned: Bool
-            if let tailscaleIP, !tailscaleIP.isEmpty,
+            if let owner = entry.nodeID, !owner.isEmpty {
+                owned = owner == nodeID
+            } else if let tailscaleIP, !tailscaleIP.isEmpty,
                let memberIP = entry.tailscaleIP, !memberIP.isEmpty {
                 owned = tailscaleIP == memberIP
             } else {
@@ -1600,6 +1233,7 @@ public final class MeshBroker: @unchecked Sendable {
     /// of nothing and were never seen — e.g. the GUI's "human" sender — so
     /// presence stays a roster of agents.
     private func touchPresenceLocked(_ memberID: String, project: String? = nil, session: String? = nil,
+                                     nodeID: String? = nil,
                                      host: String? = nil, tmuxPane: String? = nil, tmuxSocket: String? = nil,
                                      state: String? = nil,
                                      kind: String? = nil, tailscaleIP: String? = nil) {
@@ -1607,10 +1241,11 @@ public final class MeshBroker: @unchecked Sendable {
             value.members.first(where: { $0.value == memberID }).map { (room, $0.key) }
         })
         if presence[memberID] == nil && aliases.isEmpty { return }
-        var e = presence[memberID] ?? MeshPresenceEntry(project: nil, session: nil, host: nil, tmuxPane: nil,
+        var e = presence[memberID] ?? MeshPresenceEntry(nodeID: nil, project: nil, session: nil, host: nil, tmuxPane: nil,
                                                         tmuxSocket: nil,
                                                         state: nil, stateTs: nil, kind: nil, tailscaleIP: nil,
                                                         aliases: [:], rooms: [], lastSeen: 0, online: true)
+        if let owner = nodeID, !owner.isEmpty { e.nodeID = owner }
         if let p = project, !p.isEmpty { e.project = p }
         if let s = session, !s.isEmpty { e.session = s }
         if let h = host, !h.isEmpty { e.host = h }
@@ -1646,20 +1281,23 @@ public final class MeshBroker: @unchecked Sendable {
             let alias = room.members.first(where: { $0.value == memberID })?.key
             return acc + (room.mailboxes[memberID]?.filter { alias.map($0.to.contains) ?? false }.count ?? 0)
         }
-        return MeshMemberInfo(id: memberID, nick: nick, project: e.project, session: e.session, host: e.host,
+        return MeshMemberInfo(id: memberID, nick: nick, nodeID: e.nodeID,
+                              project: e.project, session: e.session, host: e.host,
                               tmuxPane: e.tmuxPane, tmuxSocket: e.tmuxSocket,
                               state: e.state, stateTs: e.stateTs, stateReason: e.stateReason,
                               unread: unread, kind: e.kind, tailscaleIP: e.tailscaleIP,
                               rooms: [room], lastSeen: e.lastSeen,
-                              nodeOnline: nodeIsOnlineLocked(host: e.host, tailscaleIP: e.tailscaleIP))
+                              nodeOnline: nodeIsOnlineLocked(nodeID: e.nodeID, host: e.host,
+                                                             tailscaleIP: e.tailscaleIP))
     }
 
     private func pruneNodesLocked(now: Double = Date().timeIntervalSince1970) {
         nodes = nodes.filter { now - $0.value.lastSeen < 70 }
     }
 
-    private func nodeIsOnlineLocked(host: String?, tailscaleIP: String?) -> Bool {
+    private func nodeIsOnlineLocked(nodeID: String?, host: String?, tailscaleIP: String?) -> Bool {
         pruneNodesLocked()
+        if let nodeID, !nodeID.isEmpty { return nodes[nodeID] != nil }
         return nodes.values.contains { node in
             if let tailscaleIP, !tailscaleIP.isEmpty,
                let nodeIP = node.tailscaleIP, !nodeIP.isEmpty { return tailscaleIP == nodeIP }
@@ -1948,6 +1586,7 @@ public final class MeshBroker: @unchecked Sendable {
         // let refreshPresenceRoomsLocked rebuild aliases/rooms from the map.
         var e = presence[newID] ?? old
         if e.kind == nil { e.kind = old.kind }
+        if e.nodeID == nil { e.nodeID = req.nodeID ?? old.nodeID }
         if e.host == nil { e.host = req.host ?? old.host }
         if e.tailscaleIP == nil { e.tailscaleIP = old.tailscaleIP }
         e.session = newID
@@ -1990,7 +1629,7 @@ public final class MeshBroker: @unchecked Sendable {
         if let d = try? JSONEncoder().encode(snap) { try? d.write(to: MeshPaths.presenceFile, options: .atomic) }
     }
 
-    private static let maximumAttachmentBytes = 25 * 1024 * 1024
+    private static let maximumAttachmentBytes = DistributedMeshProtocol.maximumBlobBytes
 
     private func handleAttachmentUpload(_ fd: Int32, request: MeshRequest) {
         guard let attachment = request.attachment,

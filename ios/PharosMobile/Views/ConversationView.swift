@@ -33,6 +33,10 @@ struct ConversationView: View {
             if let error = store.error { errorBar(error) }
         }
         .navigationBarTitleDisplayMode(.inline)
+        // Keep the navigation identity explicit. A principal toolbar item can
+        // temporarily disappear while the keyboard rebuilds the toolbar;
+        // without a navigation title SwiftUI falls back to the app title.
+        .navigationTitle(store.selectedRoom ?? "Chat")
         .toolbar(.hidden, for: .tabBar)
         .toolbar { channelToolbar }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
@@ -77,13 +81,17 @@ struct ConversationView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(transcriptCells.reversed())) { cell in
-                        transcriptCellView(cell).flipUpsideDown()
+                        transcriptCellView(cell)
                     }
                     Group {
                         if store.hasMoreHistory { historyLoader } else { channelWelcome }
                     }
-                    .flipUpsideDown()
                 }
+                // Flip the complete layout once, rather than each row.
+                // Reply cards are nested inside MessageRow; keeping them in
+                // the same transform layer avoids SwiftUI applying an extra
+                // 180° transform to quoted content.
+                .flipUpsideDown()
                 .scrollTargetLayout()
                 .padding(.vertical, 8)
             }
@@ -107,7 +115,7 @@ struct ConversationView: View {
             // scrolled up. ScrollViewReader works in untransformed layout space,
             // where the newest cell is the layout-top (offset 0), so anchor .top.
             .onChange(of: scrollBottomTick) {
-                guard let last = store.messages.last?.id else { return }
+                guard let last = store.messages.last?.stableID else { return }
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
                     proxy.scrollTo(last, anchor: .top)
                 }
@@ -133,9 +141,9 @@ struct ConversationView: View {
         var cells: [TranscriptCell] = []
         for (index, message) in store.messages.enumerated() {
             if startsNewDay(at: index) {
-                cells.append(.divider(id: "day-\(message.id)", date: message.date))
+                cells.append(.divider(id: "day-\(message.stableID)", date: message.date))
             }
-            cells.append(.message(id: message.id, message: message,
+            cells.append(.message(id: message.stableID, message: message,
                                   showsHeader: startsMessageGroup(at: index)))
         }
         return cells
@@ -149,7 +157,7 @@ struct ConversationView: View {
         case .message(let id, let message, let showsHeader):
             MessageRow(
                 message: message,
-                member: store.members[message.from],
+                member: store.member(for: message),
                 showsHeader: showsHeader,
                 onReply: {
                     replyingTo = message
@@ -181,23 +189,6 @@ struct ConversationView: View {
 
     @ToolbarContentBuilder
     private var channelToolbar: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            VStack(spacing: 1) {
-                HStack(spacing: 4) {
-                    Image(systemName: "number")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.secondary)
-                    Text(store.selectedRoom ?? "Chat")
-                        .font(.headline)
-                        .lineLimit(1)
-                }
-                Text(channelSubtitle)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .accessibilityElement(children: .combine)
-        }
-
         ToolbarItem(placement: .topBarTrailing) {
             Button("Add agent", systemImage: "person.badge.plus") { destination = .spawn }
                 .labelStyle(.iconOnly)
@@ -239,8 +230,8 @@ struct ConversationView: View {
     @ViewBuilder
     private var composer: some View {
         VStack(spacing: 7) {
-            if !availableMembers.isEmpty {
-                RoomMentionStrip(members: availableMembers) { member in
+            if !mentionableMembers.isEmpty {
+                RoomMentionStrip(members: mentionableMembers) { member in
                     store.insertMention(member.nick, into: &draft)
                     showAttachmentPanel = false
                     focused = true
@@ -333,20 +324,12 @@ struct ConversationView: View {
         .padding(.vertical, 6)
     }
 
-    /// Room members eligible to @mention: live agents only. A gone agent can't
-    /// be poked, so surfacing it in the mention strip is misleading.
-    private var availableMembers: [MeshMember] {
+    /// Durable room membership controls addressing. Presence only colors the
+    /// status dot; the owning Host decides whether an addressed agent is idle
+    /// and eligible for a nudge.
+    private var mentionableMembers: [MeshMember] {
         guard let room = store.rooms.first(where: { $0.name == store.selectedRoom }) else { return [] }
-        return room.members
-            .filter { $0 != "human" }
-            .compactMap { store.members[$0] }
-            .filter { ($0.state.flatMap(MeshSessionState.init(rawValue:))) != .gone }
-            .sorted { $0.nick.localizedCaseInsensitiveCompare($1.nick) == .orderedAscending }
-    }
-
-    private var channelSubtitle: String {
-        let total = availableMembers.count
-        return total == 0 ? "No active agents" : (total == 1 ? "1 agent" : "\(total) agents")
+        return RosterIndex.mentionableAgents(store.members(in: room))
     }
 
     private var trimmedDraft: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -462,7 +445,10 @@ struct ConversationView: View {
         guard index > 0 else { return true }
         let current = store.messages[index]
         let previous = store.messages[index - 1]
-        return current.from != previous.from || current.date.timeIntervalSince(previous.date) > 5 * 60
+        let currentAuthor = current.authorMemberID ?? "legacy:\(current.from)"
+        let previousAuthor = previous.authorMemberID ?? "legacy:\(previous.from)"
+        return currentAuthor != previousAuthor ||
+            current.date.timeIntervalSince(previous.date) > 5 * 60
     }
 
     private func startsNewDay(at index: Int) -> Bool {
@@ -665,7 +651,7 @@ struct ManageRoomSheet: View {
 
     private var members: [MeshMember] {
         guard let room = store.rooms.first(where: { $0.name == roomName }) else { return [] }
-        return room.members.compactMap { store.members[$0] }
+        return store.members(in: room)
     }
 
     var body: some View {
@@ -722,7 +708,9 @@ struct ManageRoomSheet: View {
                     }
                     .disabled(busy)
                 } footer: {
-                    Text("Deleting removes the room and its membership for everyone. Message history is retained by the Broker.")
+                    Text(PharosMeshRuntimeMode.usesDistributedMesh
+                         ? "Deleting replicates the room removal to every trusted device. Existing signed message events remain in replica history."
+                         : "Deleting removes the room and its membership for everyone. Message history is retained by the Broker.")
                 }
 
                 if let error = store.error {

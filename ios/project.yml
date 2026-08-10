@@ -10,9 +10,11 @@ settings:
     SWIFT_STRICT_CONCURRENCY: complete
     DEVELOPMENT_TEAM: TN7ZDD72P2
     CODE_SIGN_STYLE: Automatic
-    MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "128"
+    MARKETING_VERSION: "2.0.0"
+    CURRENT_PROJECT_VERSION: "235"
 packages:
+  PharosShared:
+    path: ..
   MarkdownUI:
     url: https://github.com/gonzalezreal/swift-markdown-ui
     from: 2.4.1
@@ -32,6 +34,18 @@ targets:
     sources:
       - path: PharosMobile
     dependencies:
+      - package: PharosShared
+        product: PharosMeshProtocol
+      - package: PharosShared
+        product: PharosMeshIroh
+      - package: PharosShared
+        product: PharosMeshIdentity
+      - package: PharosShared
+        product: PharosMeshReplica
+      - package: PharosShared
+        product: PharosMeshControl
+      - package: PharosShared
+        product: PharosMeshLifecycle
       - package: MarkdownUI
         product: MarkdownUI
       - package: Citadel
@@ -52,12 +66,12 @@ targets:
         NSHumanReadableCopyright: "© 2026 Pai"
         LSApplicationCategoryType: public.app-category.developer-tools
         ITSAppUsesNonExemptEncryption: false
-        NSCameraUsageDescription: "Pharos uses the camera to scan Broker pairing codes and attach photos to Mesh messages."
+        NSCameraUsageDescription: "Pharos uses the camera to scan trusted-device pairing codes and attach photos to Mesh messages."
         CFBundleURLTypes:
           - CFBundleURLName: me.pai.pharos.mobile.pairing
             CFBundleURLSchemes:
               - pharos
-        NSLocalNetworkUsageDescription: "Pharos connects to your private Mesh broker and SSH hosts over Tailscale."
+        NSLocalNetworkUsageDescription: "Pharos connects directly to your trusted Mesh devices and to SSH execution hosts."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         UILaunchScreen: {}
@@ -70,10 +84,6 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-    entitlements:
-      path: PharosMobile/PharosMobile.entitlements
-      properties:
-        com.apple.developer.ubiquity-kvstore-identifier: $(TeamIdentifierPrefix)me.pai.pharos.mobile
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: me.pai.pharos.mobile
@@ -83,13 +93,15 @@ targets:
         SUPPORTS_MACCATALYST: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        CODE_SIGN_ENTITLEMENTS: PharosMobile/PharosMobile.entitlements
+        # The app imports PharosMeshReplica directly. Xcode's explicit module
+        # dependency scanner does not inherit SwiftPM system-library module
+        # maps transitively, so expose CSQLite's module map at the app target.
+        SWIFT_INCLUDE_PATHS: "$(inherited) $(SRCROOT)/../Sources/CSQLite"
       configs:
-        # Archive (Release) must sign with the match distribution profile — the
-        # Automatic wildcard team profile can't carry the iCloud entitlement.
-        # Scoped to this target: SwiftPM package targets reject profiles, so
-        # this can never go through global xcargs. Debug stays Automatic for
-        # device_install.
+        # Archive (Release) signs with the match distribution profile. Keep
+        # this scoped to the app target: SwiftPM package targets reject
+        # provisioning profiles passed through global xcargs. Debug stays
+        # Automatic for device_install.
         Release:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: Apple Distribution

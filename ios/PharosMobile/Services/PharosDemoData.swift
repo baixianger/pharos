@@ -19,7 +19,7 @@ struct PharosDemoData: Sendable {
         ],
         selectedRoom: "launch-room",
         messages: decodeMessages(),
-        members: RosterIndex.byNick([
+        members: RosterIndex.byID([
             member("nova", kind: "codex", project: "Aurora", host: "studio-mac", pane: "%3",
                    state: "busy", rooms: ["launch-room", "ios-release"]),
             member("atlas", kind: "claude", project: "Atlas", host: "studio-mac", pane: "%5",

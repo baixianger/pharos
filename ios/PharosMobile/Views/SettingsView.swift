@@ -1,59 +1,35 @@
 import SwiftUI
+import PharosMeshIdentity
+import PharosMeshProtocol
 
 struct SettingsView: View {
     var showsDoneButton = false
     @Environment(AppSettings.self) private var settings
     @Environment(SSHIdentityStore.self) private var identities
     @Environment(PairingCoordinator.self) private var pairing
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @Environment(\.dismiss) private var dismiss
     @State private var meshHost = ""
     @State private var meshPort = "47800"
     @State private var showHostEditor = false
     @State private var showsPairingScanner = false
+    @State private var showsInviteDevice = false
+    @State private var showsLeaveOptions = false
     @State private var brokerStatus: MobileBrokerConnectionStatus = .unchecked
+    @State private var deviceToRevoke: MeshPairedDevice?
+    @State private var revokeError: String?
+    @State private var lifecycleError: String?
+    @State private var isChangingMeshMembership = false
+    @State private var showsResetDeviceConfirmation = false
     private let meshClient = MeshTCPClient()
 
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    Button("Set up Mesh Broker…", systemImage: "wand.and.stars") {
-                        pairing.showsSetupGuide = true
-                    }
-                    Button("Pair with another Broker", systemImage: "qrcode.viewfinder") {
-                        showsPairingScanner = true
-                    }
-                    brokerStatusView
-                    HStack {
-                        Text(brokerTarget)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer()
-                        Button("Test again") { Task { await testBroker() } }
-                            .disabled(brokerStatus.isChecking || !hasValidBrokerTarget)
-                    }
-                    LabeledContent("Host") {
-                        TextField("Tailscale IP or MagicDNS", text: $meshHost)
-                            .multilineTextAlignment(.trailing)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                    }
-                    LabeledContent("Port") {
-                        TextField("47800", text: $meshPort)
-                            .multilineTextAlignment(.trailing)
-                            .keyboardType(.numberPad)
-                    }
-                    Button("Save connection") {
-                        saveMesh()
-                        Task { await testBroker() }
-                    }
-                } header: {
-                    Text("Mesh Broker").textCase(nil)
-                } footer: {
-                    Text("The Broker is the single source of truth for projects, issues, logs, rooms, messages, and attachments. This iPhone keeps only a local cache; Hosts execute agents separately.")
-                        .font(.caption).foregroundStyle(.secondary)
+                if isDistributed {
+                    distributedDevicesSection
+                } else {
+                    brokerSection
                 }
 
                 Section("Hosts") {
@@ -100,13 +76,20 @@ struct SettingsView: View {
                 } header: {
                     Text("Device SSH identity")
                 } footer: {
-                    Text("Private keys are device-local in Keychain and never uploaded to iCloud. Hosts use SSH to launch, attach, and stop agents; Mesh traffic goes directly to the Broker.")
+                    Text(isDistributed
+                         ? "Private keys are device-local in Keychain and never uploaded to iCloud. Hosts use SSH only for agent execution; replicated Mesh data travels directly between trusted devices."
+                         : "Private keys are device-local in Keychain and never uploaded to iCloud. Hosts use SSH to launch, attach, and stop agents; Mesh traffic goes directly to the Broker.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("Runtime limits") {
-                    Label("Live Broker events with reconnect sync", systemImage: "bolt.horizontal.circle")
-                    Label("Background delivery requires a future APNs relay", systemImage: "bell.slash")
+                    if isDistributed {
+                        Label("Signed device-to-device replica sync", systemImage: "point.3.connected.trianglepath.dotted")
+                        Label("Background sync pauses when iOS suspends Pharos", systemImage: "moon.zzz")
+                    } else {
+                        Label("Live Broker events with reconnect sync", systemImage: "bolt.horizontal.circle")
+                        Label("Background delivery requires a future APNs relay", systemImage: "bell.slash")
+                    }
                 }
             }
             .pharosPlainList()
@@ -119,7 +102,7 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showHostEditor) { NavigationStack { SSHHostEditor(profile: nil) } }
             .sheet(isPresented: $showsPairingScanner) {
-                PairingScannerSheet { value in
+                PairingScannerSheet(allowsLegacyBrokerLinks: !isDistributed) { value in
                     showsPairingScanner = false
                     Task { @MainActor in
                         try? await Task.sleep(for: .milliseconds(250))
@@ -127,10 +110,352 @@ struct SettingsView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showsInviteDevice) {
+                InviteDeviceSheet().environment(distributedMesh)
+            }
+            .alert(
+                "Remove trusted device?",
+                isPresented: Binding(
+                    get: { deviceToRevoke != nil },
+                    set: { if !$0 { deviceToRevoke = nil } }
+                ),
+                presenting: deviceToRevoke
+            ) { device in
+                Button("Cancel", role: .cancel) { deviceToRevoke = nil }
+                Button("Remove", role: .destructive) {
+                    deviceToRevoke = nil
+                    Task {
+                        do { try await distributedMesh.revokeDevice(device) }
+                        catch { revokeError = error.localizedDescription }
+                    }
+                }
+            } message: { device in
+                Text("\(device.descriptor.displayName) will lose Mesh access. Use this for a lost or replaced device.")
+            }
+            .confirmationDialog(
+                "Leave this personal Mesh?",
+                isPresented: $showsLeaveOptions,
+                titleVisibility: .visible
+            ) {
+                Button("Remove this device from Mesh", role: .destructive) {
+                    leaveMesh()
+                }
+                Button("Disconnect and archive locally") {
+                    archiveMeshLocally()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Leaving publishes a signed self-removal and requires another online Mesh admin device. Disconnecting only archives this iPhone locally; revoke it later from another admin device.")
+            }
+            .confirmationDialog(
+                "Reset this iPhone as a new Mesh device?",
+                isPresented: $showsResetDeviceConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Delete Local Mesh Data and Identity", role: .destructive) {
+                    resetAsNewMeshDevice()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This permanently deletes every local Mesh replica and creates a new device identity. Other devices keep their data and may still list the old iPhone until you remove it there.")
+            }
+            .alert(
+                "Couldn’t Leave Mesh",
+                isPresented: Binding(
+                    get: { lifecycleError != nil },
+                    set: { if !$0 { lifecycleError = nil } }
+                )
+            ) {
+                Button("Archive on This iPhone") { archiveMeshLocally() }
+                Button("Keep Connected", role: .cancel) { lifecycleError = nil }
+            } message: {
+                Text(lifecycleError ?? "The leave request could not be completed.")
+            }
             .onAppear { load() }
             .onChange(of: settings.mesh) { load() }
-            .task { await testBroker() }
+            .task {
+                if !isDistributed { await testBroker() }
+            }
         }
+    }
+
+    private var isDistributed: Bool {
+        PharosMeshRuntimeMode.usesDistributedMesh
+    }
+
+    @ViewBuilder
+    private var distributedDevicesSection: some View {
+        Section {
+            if distributedMesh.activeTrustGroupID != nil {
+                Button("Invite a device", systemImage: "person.badge.plus") {
+                    showsInviteDevice = true
+                }
+                .disabled(!distributedMesh.isLocalMeshAdmin)
+            }
+            Button("Join another Mesh", systemImage: "qrcode.viewfinder") {
+                showsPairingScanner = true
+            }
+            distributedStateView
+            LabeledContent("Mesh admins") {
+                Text("\(distributedMesh.meshAdminCount)")
+                    .font(.caption.monospaced())
+            }
+            if distributedMesh.trustedDevices.isEmpty {
+                ContentUnavailableView {
+                    Label("No trusted peers yet", systemImage: "person.crop.circle.badge.plus")
+                } description: {
+                    Text("On a Mac, choose Settings → Machines → Pair a device, then scan its QR code here.")
+                }
+            } else {
+                ForEach(distributedMesh.trustedDevices, id: \.descriptor.id) { device in
+                    trustedDeviceRow(device)
+                        .swipeActions(edge: .trailing) {
+                            if distributedMesh.isLocalMeshAdmin {
+                            Button(role: .destructive) {
+                                deviceToRevoke = device
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                            }
+                        }
+                }
+            }
+            if !distributedMesh.membershipAudit.isEmpty {
+                LabeledContent("Membership audit") {
+                    Text("\(distributedMesh.membershipAudit.count)")
+                        .font(.caption.monospaced())
+                }
+                ForEach(Array(distributedMesh.membershipAudit.suffix(3).reversed())) { entry in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(entry.removedDevices.isEmpty
+                             ? "Roster updated"
+                             : "Removed " + entry.removedDevices.map {
+                                $0.descriptor.displayName
+                             }.joined(separator: ", "))
+                        Text(
+                            "epoch \(entry.previousEpoch)→\(entry.nextEpoch) · " +
+                            "admin \(entry.authorDeviceID.rawValue.uuidString.prefix(8)) · " +
+                            "sha256 \(entry.transitionSHA256.prefix(12))…"
+                        )
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if !distributedMesh.trustedDevices.isEmpty,
+               distributedMesh.connections.values.allSatisfy({ !$0.connected }) {
+                Text("Trusted peers are offline. Changes stay on this iPhone and merge when any peer reconnects.")
+                    .foregroundStyle(.secondary)
+            }
+            if let lastSyncError = distributedMesh.lastSyncError {
+                Text(lastSyncError)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if let revokeError {
+                Text(revokeError).font(.caption).foregroundStyle(.red)
+            }
+            if distributedMesh.activeTrustGroupID != nil {
+                Button("Sync now", systemImage: "arrow.triangle.2.circlepath") {
+                    Task { _ = await distributedMesh.synchronizeOnce() }
+                }
+                Button("Leave this Mesh", systemImage: "rectangle.portrait.and.arrow.right") {
+                    lifecycleError = nil
+                    showsLeaveOptions = true
+                }
+                .foregroundStyle(.red)
+                .disabled(isChangingMeshMembership)
+            } else {
+                Text("This iPhone is not joined to a Mesh. Reset it if you want a completely new device identity before scanning an invitation.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Reset as New Mesh Device", systemImage: "arrow.counterclockwise.circle", role: .destructive) {
+                    showsResetDeviceConfirmation = true
+                }
+                .disabled(isChangingMeshMembership)
+            }
+            if isChangingMeshMembership {
+                HStack {
+                    ProgressView()
+                    Text("Updating Mesh membership…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let lifecycleError {
+                Text(lifecycleError).font(.caption).foregroundStyle(.red)
+            }
+        } header: {
+            Text("Trusted devices").textCase(nil)
+        } footer: {
+            Text("Every device stores its own signed replica. No Broker is the source of truth; concurrent field edits converge deterministically after devices reconnect.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func trustedDeviceRow(_ device: MeshPairedDevice) -> some View {
+        let connection = distributedMesh.connections[device.descriptor.id]
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Label(
+                    device.descriptor.displayName,
+                    systemImage: connection?.connected == true
+                        ? "checkmark.circle.fill" : "circle.dashed"
+                )
+                .foregroundStyle(connection?.connected == true ? .green : .primary)
+                if device.descriptor.roles.contains(.controller) {
+                    Text("Mesh Admin")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(.tint.opacity(0.12), in: Capsule())
+                }
+                if localDeviceID == device.descriptor.id {
+                    Text("This iPhone")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text([
+                deviceAccessSummary(device.descriptor.roles),
+                connection.map { String(describing: $0.path) } ?? "not connected yet",
+                abbreviated(device.descriptor.id.rawValue.uuidString),
+            ].joined(separator: " · "))
+            .font(.caption.monospaced())
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private var localDeviceID: MeshDeviceID? {
+        guard case .ready(let deviceID, _) = distributedMesh.state else { return nil }
+        return deviceID
+    }
+
+    @ViewBuilder
+    private var distributedStateView: some View {
+        switch distributedMesh.state {
+        case .disabled:
+            Label("Private mesh disabled", systemImage: "network.slash")
+                .foregroundStyle(.secondary)
+        case .opening:
+            HStack { ProgressView(); Text("Opening private mesh…") }
+        case .ready(let deviceID, _):
+            LabeledContent("This iPhone") {
+                HStack(spacing: 6) {
+                    if distributedMesh.isLocalMeshAdmin {
+                        Text("Mesh Admin")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.tint.opacity(0.12), in: Capsule())
+                    }
+                    Text(abbreviated(deviceID.rawValue.uuidString))
+                        .font(.caption.monospaced())
+                }
+            }
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private var brokerSection: some View {
+        Section {
+            Button("Set up Mesh Broker…", systemImage: "wand.and.stars") {
+                pairing.showsSetupGuide = true
+            }
+            Button("Pair with another Broker", systemImage: "qrcode.viewfinder") {
+                showsPairingScanner = true
+            }
+            brokerStatusView
+            HStack {
+                Text(brokerTarget)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button("Test again") { Task { await testBroker() } }
+                    .disabled(brokerStatus.isChecking || !hasValidBrokerTarget)
+            }
+            LabeledContent("Host") {
+                TextField("Tailscale IP or MagicDNS", text: $meshHost)
+                    .multilineTextAlignment(.trailing)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+            LabeledContent("Port") {
+                TextField("47800", text: $meshPort)
+                    .multilineTextAlignment(.trailing)
+                    .keyboardType(.numberPad)
+            }
+            Button("Save connection") {
+                saveMesh()
+                Task { await testBroker() }
+            }
+        } header: {
+            Text("Mesh Broker").textCase(nil)
+        } footer: {
+            Text("The Broker is the single source of truth for projects, issues, logs, rooms, messages, and attachments. This iPhone keeps only a local cache; Hosts execute agents separately.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func abbreviated(_ value: String) -> String {
+        value.count > 16 ? "\(value.prefix(8))…\(value.suffix(8))" : value
+    }
+
+    private func leaveMesh() {
+        lifecycleError = nil
+        isChangingMeshMembership = true
+        Task {
+            defer { isChangingMeshMembership = false }
+            do {
+                _ = try await distributedMesh.leaveCurrentMesh(
+                    displayName: UIDevice.current.name
+                )
+                pairing.showsSetupGuide = true
+            } catch {
+                lifecycleError = error.localizedDescription
+            }
+        }
+    }
+
+    private func archiveMeshLocally() {
+        lifecycleError = nil
+        isChangingMeshMembership = true
+        Task {
+            defer { isChangingMeshMembership = false }
+            do {
+                _ = try await distributedMesh.archiveCurrentMesh()
+                pairing.showsSetupGuide = true
+            } catch {
+                lifecycleError = error.localizedDescription
+            }
+        }
+    }
+
+    private func resetAsNewMeshDevice() {
+        lifecycleError = nil
+        isChangingMeshMembership = true
+        Task {
+            defer { isChangingMeshMembership = false }
+            do {
+                try await distributedMesh.resetAsNewMeshDevice()
+                pairing.showsSetupGuide = true
+            } catch {
+                lifecycleError = error.localizedDescription
+            }
+        }
+    }
+
+    private func deviceAccessSummary(_ roles: Set<MeshDeviceRole>) -> String {
+        if roles.contains(.controller), roles.contains(.replica) {
+            return "data sync + agent control"
+        }
+        if roles.contains(.controller) { return "agent control" }
+        if roles.contains(.replica) { return "data sync" }
+        return "trusted device"
     }
 
     private var hasValidBrokerTarget: Bool {
@@ -235,6 +560,7 @@ private struct SSHHostEditor: View {
     @Environment(AppSettings.self) private var settings
     @Environment(SSHIdentityStore.self) private var identities
     @Environment(RoomStore.self) private var store
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @Environment(\.dismiss) private var dismiss
     private enum HostChoice: Hashable { case pick(String), custom }
     @State private var value: SSHHostProfile
@@ -253,21 +579,40 @@ private struct SSHHostEditor: View {
         _portText = State(initialValue: String(initial.port))
     }
 
-    /// Distinct, non-empty host names reported by members in the live roster.
-    private var knownHosts: [String] {
+    /// Trusted P2P Host devices are authoritative. Live roster names are kept
+    /// only as a migration fallback for legacy Broker profiles.
+    private var trustedHosts: [(id: String, name: String)] {
+        distributedMesh.trustedDevices
+            .filter { $0.descriptor.roles.contains(.host) }
+            .map {
+                (
+                    $0.descriptor.id.rawValue.uuidString,
+                    $0.descriptor.displayName
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private var knownLegacyHosts: [String] {
         Array(Set(store.members.values.compactMap { m in
             let h = m.host?.trimmingCharacters(in: .whitespaces)
             return (h?.isEmpty == false) ? h : nil
         })).sorted()
     }
 
-    /// Roster hosts, plus the currently-set host if it isn't online right now
-    /// (so editing an offline mapping still shows its value).
-    private var hostOptions: [String] {
-        var opts = knownHosts
-        let cur = value.meshHost.trimmingCharacters(in: .whitespaces)
-        if !cur.isEmpty, !opts.contains(cur) { opts.insert(cur, at: 0) }
-        return opts
+    private var legacyHostOptions: [String] {
+        var options = knownLegacyHosts
+        let current = value.meshHost.trimmingCharacters(in: .whitespaces)
+        if !current.isEmpty,
+           !options.contains(where: {
+               $0.caseInsensitiveCompare(current) == .orderedSame
+           }),
+           !trustedHosts.contains(where: {
+               $0.name.caseInsensitiveCompare(current) == .orderedSame
+           }) {
+            options.insert(current, at: 0)
+        }
+        return options
     }
 
     /// The Tailscale IP a member on `host` reported at join (nil if unknown).
@@ -280,12 +625,19 @@ private struct SSHHostEditor: View {
     var body: some View {
         Form {
             Section {
-                if hostOptions.isEmpty {
+                if trustedHosts.isEmpty && legacyHostOptions.isEmpty {
                     TextField("Host identity", text: $value.meshHost)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                 } else {
                     Picker("Host identity", selection: $hostChoice) {
-                        ForEach(hostOptions, id: \.self) { Text($0).tag(HostChoice.pick($0)) }
+                        ForEach(trustedHosts, id: \.id) { host in
+                            Text(host.name).tag(HostChoice.pick(host.id))
+                        }
+                        ForEach(legacyHostOptions.filter { legacy in
+                            !trustedHosts.contains { $0.name == legacy }
+                        }, id: \.self) { legacy in
+                            Text(legacy).tag(HostChoice.pick("legacy:\(legacy)"))
+                        }
                         Text("Custom…").tag(HostChoice.custom)
                     }
                     if hostChoice == .custom {
@@ -303,7 +655,7 @@ private struct SSHHostEditor: View {
             } header: {
                 Text("Host")
             } footer: {
-                Text("Host identity is picked from members currently registered with the Broker, so attach and stop actions route to the correct SSH machine. Choose Custom… for an offline Host.")
+                Text("Choose the trusted Mesh Host that owns the agents. Pharos stores its stable Device ID, so SSH and tmux routing survives display-name changes. Choose Custom… only for a legacy or offline Host.")
             }
 
             Section {
@@ -350,7 +702,20 @@ private struct SSHHostEditor: View {
         .navigationTitle("Host")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: hostChoice) {
-            guard case .pick(let h) = hostChoice else { return }
+            guard case .pick(let selection) = hostChoice else {
+                value.meshDeviceID = nil
+                return
+            }
+            let h: String
+            if selection.hasPrefix("legacy:") {
+                h = String(selection.dropFirst("legacy:".count))
+                value.meshDeviceID = nil
+            } else if let trusted = trustedHosts.first(where: { $0.id == selection }) {
+                h = trusted.name
+                value.meshDeviceID = trusted.id
+            } else {
+                return
+            }
             value.meshHost = h
             // Auto-fill the SSH host from the member's reported Tailscale IP, but
             // never clobber a value the user typed themselves — only overwrite an
@@ -363,10 +728,23 @@ private struct SSHHostEditor: View {
         }
         .onAppear {
             let cur = value.meshHost.trimmingCharacters(in: .whitespaces)
-            if !cur.isEmpty {
-                hostChoice = .pick(cur)
-            } else if let first = knownHosts.first {
-                hostChoice = .pick(first)
+            if let deviceID = value.meshDeviceID,
+               trustedHosts.contains(where: { $0.id == deviceID }) {
+                hostChoice = .pick(deviceID)
+            } else if let exact = trustedHosts.first(where: {
+                $0.name.caseInsensitiveCompare(cur) == .orderedSame
+            }) {
+                hostChoice = .pick(exact.id)
+                value.meshDeviceID = exact.id
+                value.meshHost = exact.name
+            } else if !cur.isEmpty {
+                hostChoice = .pick("legacy:\(cur)")
+            } else if let first = trustedHosts.first {
+                hostChoice = .pick(first.id)
+                value.meshDeviceID = first.id
+                value.meshHost = first.name
+            } else if let first = legacyHostOptions.first {
+                hostChoice = .pick("legacy:\(first)")
                 value.meshHost = first
             } else {
                 hostChoice = .custom

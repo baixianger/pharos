@@ -4,9 +4,10 @@
 coding agents (Claude Code, Codex) across many repos: launch, organize, resume,
 and track agent work — in yolo mode, in parallel, at speed.
 
-> **Status: v0.2 → v1.0 shipped.** All milestone goals below are implemented
-> (build + 22 tests green). A few items need on-device verification or your
-> credentials/decisions — see **Manual follow-ups**.
+> **Status: 2.0.0 / distributed Mesh release candidate.** Broker mode is
+> rollback-only. The local-first implementation has 357 SwiftPM tests plus 28
+> iOS tests, and build 235 is installed on both production Macs; release
+> credentials and background iOS delivery remain follow-ups.
 
 ## The core loop
 
@@ -39,7 +40,7 @@ and track agent work — in yolo mode, in parallel, at speed.
 - [x] Sparkle auto-update (dormant until keys configured). *needs EdDSA keys + appcast host*
 - [x] Onboarding + real error states (alerts; launch/clone preflight).
 - [x] Settings depth (terminal/editor/appearance/defaults, folder-scan, agent args, peer, MCP).
-- [x] Tests (22) + CI runs `swift test`. (Strict concurrency blocked only by Sparkle's MainActor isolation — kept Swift 5 mode, documented.)
+- [x] Tests (299) + CI runs `swift test`. (Strict concurrency blocked only by Sparkle's MainActor isolation — kept Swift 5 mode, documented.)
 - [x] Performance: `AsyncSemaphore` caps concurrent git queries to 6 (was ~150 procs on launch).
 - [x] Accessibility: labels on controls; decorative visuals hidden from VoiceOver.
 - [ ] Localization (en/zh) — **deferred** (single-user tool; revisit if distributed).
@@ -51,7 +52,7 @@ and track agent work — in yolo mode, in parallel, at speed.
 
 ### v1.0 — Market
 - [x] Landing page + screenshots (`site/` — drop real PNGs into `site/shots/`).
-- [x] Licensing / pricing decision doc (`docs/LICENSING.md`) + placeholder `LICENSE`. *your call*
+- [x] MIT licensing decision recorded in `LICENSE` and `docs/LICENSING.md`.
 - [x] Cross-project status (open PRs + CI per repo via `gh`).
 
 ## Manual follow-ups (need your input or hardware)
@@ -59,7 +60,7 @@ and track agent work — in yolo mode, in parallel, at speed.
 - **Auto-update:** generate Sparkle EdDSA keys, set `SUPublicEDKey` in `package_app.sh`, host the appcast (`docs/SPARKLE.md`).
 - **Desktop placement & SSH peer:** verify on a multi-Space Mac / with a real `~/.ssh/config` host.
 - **Landing screenshots:** drop real PNGs into `site/shots/x1–x3.png`.
-- **Licensing:** pick an option from `docs/LICENSING.md` (current default: proprietary).
+- **Licensing:** MIT was selected; `LICENSE` and the README badge are authoritative.
 
 ## What's genuinely next (post-v1.0 polish)
 - Cache git/status across launches + debounce refresh.
@@ -202,3 +203,33 @@ matters is which **agent / session / worktree** is working an item.
 - [x] **Dashboard entry in the sidebar.** A "Dashboard" row pinned at the top of
   the sidebar (selected when no project is) — the obvious entry point to the
   overview, alongside the toolbar button.
+
+### v2.0 — Local-first P2P Mesh
+
+- [x] **No central Broker.** Signed SQLite replicas synchronize over
+  identity-addressed Iroh direct/relay paths; membership is an epoch-scoped,
+  quorum-certified roster.
+- [x] **Stable Agent identity.** Room membership, mentions, presence, Host
+  resources, receipts, and tmux control use the same session/resource ID. Nicks,
+  cwd, host names, and computer names are labels only.
+- [x] **Host-local reconciliation.** Structured hooks and `pharos mesh claim`
+  grant control only from an exact live tmux socket+pane. Binding v2 fingerprints
+  the tmux session ID, creation time, pane ID, and pane PID; duplicates, stale
+  v1 bindings, and replacement sessions fail closed.
+- [x] **Capability-aware lifecycle UI.** macOS and iOS distinguish Stop
+  (verified owning Host), Remove from Mesh (replicated roster only), Repair
+  (local proof), and SSH→tmux Attach (same LAN/Tailscale boundary).
+- [x] **Durable cross-Host Stop.** The Host journals accepted/executing/executed
+  receipts, replays unfinished stops after restart, retires the resource,
+  removes private binding/observation state, and removes the Agent from every
+  room. A stopped resource cannot target a replacement tmux seat.
+- [x] **Production topology.** Mac mini, home-ts, Linux, and physical iPhone
+  retain one trust group; real chat, offline convergence, controller quorum,
+  lifecycle presence, conflict handling, SSH attach, and real macOS/iOS
+  cross-Host Stop are recorded in
+  `docs/PRODUCTION-VALIDATION-2026-07-23.md`.
+- [ ] **iOS background freshness.** Suspension remains an OS boundary; durable
+  state catches up on foreground. Privacy-preserving APNs wake is a post-2.0
+  enhancement, not a correctness dependency.
+- [ ] **Native Iroh PTY relay.** Remote terminal currently uses Mesh identity
+  plus SSH/Tailscale. A bounded audited PTY protocol remains research.

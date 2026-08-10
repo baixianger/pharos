@@ -1,0 +1,35 @@
+FROM rust:1.91-bookworm AS iroh-build
+
+ARG IROH_FFI_REVISION=358722a7b30a72e9b0625c8bfdfaf940753a43f7
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends clang git pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone https://github.com/baixianger/iroh-ffi.git /src/iroh-ffi \
+    && git -C /src/iroh-ffi checkout "${IROH_FFI_REVISION}"
+WORKDIR /src/iroh-ffi
+RUN cargo build --locked --release --lib
+
+FROM swift:6.2.4-bookworm AS pharos-build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libsqlite3-dev pkg-config unzip \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=iroh-build /src/iroh-ffi/target/release/libiroh_ffi.so /usr/local/lib/libiroh_ffi.so
+RUN mkdir -p /usr/local/lib/pkgconfig
+COPY Packaging/iroh-linux.pc /usr/local/lib/pkgconfig/iroh.pc
+ENV LD_LIBRARY_PATH=/usr/local/lib
+WORKDIR /src/pharos
+COPY . .
+RUN swift build -c release --product pharos-mesh --static-swift-stdlib
+
+FROM swift:6.2.4-bookworm
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libsqlite3-0 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=iroh-build /src/iroh-ffi/target/release/libiroh_ffi.so /usr/local/lib/libiroh_ffi.so
+COPY --from=pharos-build /src/pharos/.build/release/pharos-mesh /usr/local/bin/pharos-mesh
+ENV LD_LIBRARY_PATH=/usr/local/lib
+VOLUME ["/data"]
+ENTRYPOINT ["/usr/local/bin/pharos-mesh"]
+CMD ["distributed", "sync-serve", "--data-dir", "/data", "--json"]

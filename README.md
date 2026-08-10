@@ -68,15 +68,15 @@ sudo apt update
 sudo apt install pharos-mesh
 ```
 
-The package installs the standalone Linux Broker and CLI, not the macOS project
-launcher. See [the headless Mesh guide](docs/MESH_HEADLESS.md) for Tailscale and
-systemd configuration.
+The package installs the portable signed-replica CLI/runtime, not the macOS
+project launcher. Linux participates as a normal identity-addressed Mesh device;
+the legacy TCP Broker remains available only for migration rollback.
 
-On a Mac or Linux execution Host, install the per-user node so Mesh can wake
-registered tmux agents even when the Pharos GUI is closed:
+Initialize or inspect the device-local replica:
 
 ```bash
-pharos-mesh node install --endpoint 100.78.109.51:47800
+pharos-mesh distributed init
+pharos-mesh distributed status
 ```
 
 ### Build from Source
@@ -142,7 +142,7 @@ Run `pharos help` for the authoritative list. Summary:
 | Issues & log | `issue add <project> "<title>" [--priority …] [--body …] [--attach <file>]… [--label L]…` · `issue list <project> [--all] [--status S] [--priority P] [--label L] [--milestone M]` · `issue status\|priority <project> <#> <value>` · `issue label add\|rm <project> <#> <label>` · `issue milestone <project> <#> <name\|none>` · `issue parent <project> <#> <parent#\|none>` · `issue link\|unlink <project> <#> <relates\|blocks\|blocked-by\|duplicate> <#>` · `issue start <project> <#> <agent>` · `issue rm <project> <#>` · `attach add\|list\|rm <project> <#> …` · `update add <project> "<text>" [--issue <#>]` |
 | Milestones | `milestone add <project> "<name>" [--due yyyy-MM-dd]` · `milestone list <project>` · `milestone rm <project> <name>` |
 | Registry | `add <name> [--path] [--remote] [--tag]… [--notes]` · `remove <project>` · `rename <project> <new>` · `describe <project> <text…>` · `group create\|delete\|add\|remove …` · `yolo`/`tmux <project> <on\|off>` · `trash restore <id>` · `trash empty` |
-| Mesh | `mesh create\|list\|join\|say\|recv\|who\|poke\|unread\|history\|leave\|rename\|delete` · `mesh install-hooks [--project <dir> \| --user]` (also invocable as `chat`) |
+| Mesh | `mesh create\|list\|join\|claim\|send\|recv\|who\|presence\|history\|leave\|stop\|attach-local\|rename\|delete` · `mesh install-hooks [--project <dir> \| --user]` (also invocable as `chat`) |
 | Cross-host | `launch <project> <agent> --host <ssh-alias>` · `issue start <project> <#> <agent> --host <alias>` · `agents [--host]` · `agent peek\|say\|kill <session> [--host]` |
 | Multi-machine | `host` · `path <project> <path>` · `path <project> --clear` |
 
@@ -151,36 +151,67 @@ start` moves an issue to *In Progress* and links the agent session; when that
 agent finishes (tmux), Pharos auto-posts an update to the project log. Agents can
 also post their own progress with `pharos update add`.
 
-## Broker-owned data and execution Hosts
+## Local-first data and execution Hosts
 
 <div align="center">
-  <img src="site/shots/settings-machines.png" width="520" alt="Settings → Machines — Broker and execution Hosts">
+  <img src="site/shots/settings-machines.png" width="520" alt="Settings → Machines — trusted devices and execution Hosts">
 </div>
 
-The **Mesh Broker is the single source of truth** for projects, issues, updates,
-Trash, chat, and attachments. macOS and iOS keep local caches for startup and
-temporary offline reading. Registry writes use SHA-256 revisions and
-compare-and-swap; stale clients preserve their edit as a conflict file instead
-of silently overwriting newer Broker data. The Broker creates a versioned backup
-before every accepted registry change.
+Every trusted Mac, iPhone, iPad, or Linux device owns a signed SQLite replica of
+portable projects, issues, updates, Trash, chat, and attachment metadata. There
+is no global data leader. Offline writes remain visible locally and converge
+field-by-field after Iroh reconnects directly or through an encrypted relay.
+Append-only messages retain immutable authorship; content-addressed attachments
+are verified before publication.
 
-Settings → **Machines** separates that Broker from the **Hosts** that execute
-agents. Checkout paths, SSH keys/routes, tool paths, and tmux state stay local to
-each Host. A controller asks the selected Host to resolve its own project path;
-paths are never published in the portable registry. iCloud is no longer a live
-sync transport. Existing iCloud data is imported once and left untouched as a
-rollback copy. See [ADR-002](docs/ADR-002-BROKER-OWNED-DATA.md).
+Settings → **Machines** shows cryptographically identified trusted devices and
+the observed direct/relay/offline path. Removing a lost or replaced device
+advances the signed membership epoch; the omitted key can no longer authenticate.
+Keep at least two Mesh admin devices. This is a replicated authorization role,
+not a central server. Non-admin replicas cannot invite or revoke devices even
+when they hold a valid device key. To rotate a device key, pair and verify the
+replacement first, then remove the old device. Checkout paths, SSH keys, tool
+paths, and tmux state remain Host-local. See [ADR-003](docs/ADR-003-LOCAL-FIRST-DISTRIBUTED-MESH.md).
+For best membership availability, keep three Mesh admins. If two admins
+concurrently approve different roster changes, neither change commits; bring
+the third current admin online and retry the intended change to safely choose
+one proposal.
+The Iroh feature and best-practice decisions are tracked in the
+[Iroh capability adoption roadmap](docs/IROH-CAPABILITY-ADOPTION.md).
+To learn the underlying Rust syntax and run a real two-endpoint experiment,
+open the [Rust + Iroh Jupyter tutorial](tutorials/iroh-rust-notebook/README.md).
+
+On first launch, choose **Create personal Mesh** or open a signed invitation
+from another device. To add a device later, open Settings → **Machines** →
+**Invite a device**. The system share sheet can send the five-minute,
+single-use magic link through AirDrop, Mail, or Messages; the same invitation
+is available as a QR code or copyable link.
+
+Use **Join another Mesh** to switch trust groups. **Archive current Mesh and
+switch** keeps its signed local replica for history but does not revoke this
+device remotely. **Leave current Mesh and switch** first publishes a signed
+membership transition and requires an online surviving Mesh admin device to
+acknowledge it. A device never silently abandons one trust group while claiming
+to have revoked itself from the others.
+
+For headless Linux pairing and service commands, see
+[Pharos Mesh on Linux](docs/MESH_HEADLESS.md). No public TCP port, fixed Broker,
+or Tailscale configuration is required in the distributed product mode.
+`pharos mesh pair audit` prints the verified membership epoch chain, signing
+Admin device, removed device aliases, and canonical transition SHA-256 digest;
+old rows remain audit evidence but never reappear in the active device list.
 
 ---
 
 ## Privacy
 
 Pharos reads `~/.claude/projects/` and `~/.codex/sessions/` **locally only**.
-Portable project state lives on your configured Broker; clients cache it under
-`~/Library/Application Support/Pharos/`. Messages, attachments, session routing
-metadata, and commands travel only between devices
-on your own SSH/Tailscale network; the public Pharos project operates no hosted
-service for this data.
+Portable state lives in each device's local replica under Application Support
+(or the Linux XDG data directory). Iroh relays see encrypted transport only;
+private keys and plaintext payloads are never sent to a Pharos-hosted service.
+SSH is retained solely for explicit agent bootstrap and interactive recovery.
+Those SSH features require the iPhone and target Host to be reachable on the
+same LAN or through Tailscale; Iroh Mesh does not currently relay PTY bytes.
 
 ---
 

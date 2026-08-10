@@ -1,0 +1,7 @@
+prefix=/usr/local
+libdir=${prefix}/lib
+
+Name: iroh
+Description: Iroh UniFFI transport library
+Version: 1.1.0
+Libs: -L${libdir} -liroh_ffi

@@ -6,6 +6,7 @@ import UIKit
 /// Owns the Broker event cursor so every surface shows live agent status.
 struct MainTabView: View {
     @Environment(RoomStore.self) private var store
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var selection: AppTab = .projects
 
@@ -23,7 +24,11 @@ struct MainTabView: View {
         .onChange(of: horizontalSizeClass, initial: true) {
             store.autoSelectsFirstRoom = horizontalSizeClass != .compact
         }
-        .task { await listenWhileVisible() }
+        // Opening the signed replica runs alongside this view's first task.
+        // Retry when the registry becomes available (and after later syncs),
+        // otherwise an early no-active-group result leaves Chat stale while
+        // Projects and Issues already show the replicated data.
+        .task(id: distributedMesh.registryRevision) { await listenWhileVisible() }
     }
 
     private func listenWhileVisible() async {

@@ -41,11 +41,11 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Pharos uses the camera to scan Broker pairing codes and attach photos to Mesh messages.</string>
+	<string>Pharos uses the camera to scan trusted-device pairing codes and attach photos to Mesh messages.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Pai</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Pharos connects to your private Mesh broker and SSH hosts over Tailscale.</string>
+	<string>Pharos connects directly to your trusted Mesh devices and to SSH execution hosts.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

@@ -1,15 +1,15 @@
 [Unit]
-Description=Pharos Mesh headless broker
+Description=Pharos Mesh local-first replica
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-DynamicUser=yes
+User=pharos-mesh
+Group=pharos-mesh
 StateDirectory=pharos-mesh
 StateDirectoryMode=0750
-EnvironmentFile=-/etc/pharos-mesh.env
-ExecStart=/usr/bin/pharos-mesh serve --bind ${PHAROS_MESH_BIND} --data-dir /var/lib/pharos-mesh
+ExecStart=/usr/bin/pharos-mesh distributed sync-serve --data-dir /var/lib/pharos-mesh --relay production
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true

@@ -85,16 +85,26 @@ enum MeshSpawn {
     }
 
     static func launchCommand(_ kind: AgentKind,
-                              resolution: LaunchService.AgentResolution) -> String {
-        launchCommand(kind, executable: resolution.executable,
-                      environment: resolution.environment)
+                              resolution: LaunchService.AgentResolution,
+                              environment: [String: String] = [:]) -> String {
+        var merged = resolution.environment
+        merged.merge(environment) { _, new in new }
+        return launchCommand(kind, executable: resolution.executable,
+                             environment: merged)
     }
 
     /// Brief typed into either agent after its composer is ready. Keeping this
     /// shared guarantees local and remote spawn register the same identity.
-    static func joinBrief(room: String, nick: String, kind: AgentKind) -> String {
-        "Join the mesh chat room \(room) as nick \(nick): run  "
-            + "pharos mesh join \(room) \(nick) --kind \(kind.rawValue). "
+    static func joinBrief(
+        room: String, nick: String, kind: AgentKind, memberID: String,
+        includeClaim: Bool = true
+    ) -> String {
+        let claim = includeClaim
+            ? " Then run  pharos mesh claim --member \(memberID) --kind \(kind.rawValue)."
+            : ""
+        return "Join the mesh chat room \(room) as nick \(nick): run  "
+            + "pharos mesh join \(room) \(nick) --session \(memberID) --kind \(kind.rawValue). "
+            + claim
             + "Then run  pharos mesh send \"\(nick) joined\". "
             + "Return to the idle composer after announcing; do not run a listener or polling command. "
             + "Pharos hooks and nudges will wake you for new messages. Do nothing else."
@@ -103,6 +113,7 @@ enum MeshSpawn {
     /// One entry point for GUI and CLI. `host == nil` means this Mac; otherwise
     /// it is an SSH alias/IP for the paired Mac.
     static func spawn(room: String, nick: String, kind: AgentKind, host: String? = nil,
+                      nodeID: String? = nil,
                       workDir: WorkDir = .scratch,
                       onProgress: @escaping (Progress) -> Void) async {
         let projectID: String?
@@ -114,7 +125,8 @@ enum MeshSpawn {
         case .path:
             projectID = nil // explicit paths remain an SSH/local rescue path
         }
-        if let projectID, let node = MeshNodeControl.activeNode(for: host) {
+        if !PharosMeshRuntimeMode.usesDistributedMesh,
+           let projectID, let node = MeshNodeControl.activeNode(for: host, nodeID: nodeID) {
             let name = sessionName(room: room, nick: nick)
             onProgress(Progress(phase: .booting, detail: "asking Node \(node.host) to start \(kind.rawValue)…"))
             let command = await MeshNodeControl.spawn(
@@ -130,7 +142,7 @@ enum MeshSpawn {
             onProgress(Progress(phase: .joining, detail: "waiting for \(nick) to join \(room)…"))
             for _ in 0..<40 {
                 try? await Task.sleep(for: .seconds(1))
-                if didJoin(room: room, nick: nick) {
+                if await didJoin(room: room, nick: nick) {
                     onProgress(Progress(phase: .joined, detail: "joined \(room) via Node"))
                     return
                 }
@@ -139,9 +151,11 @@ enum MeshSpawn {
             return
         }
         if let host, !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            RemoteLaunch.spawnMeshAgent(room: room, nick: nick, kind: kind,
-                                        host: host.trimmingCharacters(in: .whitespacesAndNewlines),
-                                        workDir: workDir, onProgress: onProgress)
+            await RemoteLaunch.spawnMeshAgent(
+                room: room, nick: nick, kind: kind,
+                host: host.trimmingCharacters(in: .whitespacesAndNewlines),
+                workDir: workDir, onProgress: onProgress
+            )
         } else {
             await spawnLocal(room: room, nick: nick, kind: kind,
                              workDir: workDir, onProgress: onProgress)
@@ -175,81 +189,244 @@ enum MeshSpawn {
             return
         }
         let name = sessionName(room: room, nick: nick)
-        _ = Shell.run(tmux, ["kill-session", "-t", name])   // clear a stale one
-        guard Shell.run(tmux, ["new-session", "-d", "-s", name, "-c", dir,
-                               "-x", "200", "-y", "50",
-                               launchCommand(kind, resolution: resolution)]).ok else {
+        let memberID = UUID().uuidString.lowercased()
+        let socket = localTmuxSocket(memberID: memberID)
+        try? FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: socket).deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        _ = runTmux(tmux, socket: socket, ["kill-server"])
+        try? FileManager.default.removeItem(atPath: socket) // stale dead-server socket
+        guard runTmux(tmux, socket: socket, [
+            "new-session", "-d", "-s", name, "-c", dir,
+            "-x", "200", "-y", "50",
+            launchCommand(
+                kind, resolution: resolution,
+                environment: ["PHAROS_MESH_SESSION": memberID]
+            ),
+        ]).ok else {
             onProgress(Progress(phase: .failed, detail: "couldn't start the tmux session")); return
         }
         // Size the window to whichever client is currently driving it, instead of
         // the smallest attached one — so a phone/desktop attaching later doesn't
         // make the agent's TUI redraw-fight (the "flushing" screen). Best-effort.
-        _ = Shell.run(tmux, ["set-option", "-t", name, "window-size", "latest"])
-        _ = Shell.run(tmux, ["set-window-option", "-t", name, "aggressive-resize", "on"])
+        _ = runTmux(tmux, socket: socket, ["set-option", "-t", name, "window-size", "latest"])
+        _ = runTmux(tmux, socket: socket, ["set-window-option", "-t", name, "aggressive-resize", "on"])
+        let keychain = runTmux(tmux, socket: socket, [
+            "run-shell",
+            "security show-keychain-info ~/Library/Keychains/login.keychain-db >/dev/null 2>&1",
+        ])
+        let keychainNote = keychain.ok ? "keychain ready" : "keychain authorization unavailable"
         let where_ = workDir.isDefault ? "" : " in \((dir as NSString).abbreviatingWithTildeInPath)"
-        onProgress(Progress(phase: .booting, detail: "starting \(kind.rawValue)\(where_)…"))
+        onProgress(Progress(
+            phase: .booting,
+            detail: "starting \(kind.rawValue)\(where_)…  \(keychainNote)"
+        ))
 
-        guard waitForBoot(tmux, name) else {
+        guard waitForBoot(tmux, socket: socket, name) else {
             onProgress(Progress(phase: .failed,
-                                detail: "\(kind.rawValue) didn't reach its prompt — peek: tmux attach -t \(name)"))
+                                detail: "\(kind.rawValue) didn't reach its prompt — peek: tmux -S \(socket) attach -t \(name)"))
             return
         }
-        passFirstRun(tmux, name)   // trust/theme/first-run screens
-
         onProgress(Progress(phase: .joining, detail: "asking it to join \(room)…"))
-        sendLine(tmux, name, joinBrief(room: room, nick: nick, kind: kind))
+        sendLine(
+            tmux, socket: socket, name,
+            joinBrief(
+                room: room, nick: nick, kind: kind, memberID: memberID,
+                includeClaim: PharosMeshRuntimeMode.usesDistributedMesh
+            )
+        )
+        // Codex can paint its composer before slow MCP startup has fully
+        // released input. In that window the literal brief remains visible but
+        // the first Enter is ignored. A delayed confirmation is harmless once
+        // processing has started (the composer is empty) and closes that race.
+        usleep(2_000_000)
+        _ = runTmux(tmux, socket: socket, ["send-keys", "-t", name, "Enter"])
 
         // Confirm it actually joined (~40s).
         for _ in 0..<20 {
             usleep(2_000_000)
-            if didJoin(room: room, nick: nick) {
-                onProgress(Progress(phase: .joined, detail: "joined \(room)")); return
+            if let member = await joinedMember(
+                room: room, nick: nick, memberID: memberID
+            ) {
+                if PharosMeshRuntimeMode.usesDistributedMesh {
+                    do {
+                        try await registerLocalHostResource(
+                            memberID: member.id, tmuxSession: name, tmuxSocket: socket
+                        )
+                    } catch {
+                        onProgress(Progress(
+                            phase: .failed,
+                            detail: "joined \(room), but Host control registration failed: \(error.localizedDescription)"
+                        ))
+                        return
+                    }
+                }
+                onProgress(Progress(phase: .joined, detail: "joined \(room)"))
+                return
             }
         }
         onProgress(Progress(phase: .failed,
-                            detail: "spawned but hasn't joined yet — check: tmux attach -t \(name)"))
+                            detail: "spawned but hasn't joined yet — check: tmux -S \(socket) attach -t \(name)"))
     }
 
-    /// True once `nick` is a member of `room` per the broker.
-    static func didJoin(room: String, nick: String) -> Bool {
+    /// True once `nick` is materialized in `room`. Product mode reads the
+    /// shared local replica, so CLI and GUI confirmation never contacts the
+    /// retired Broker. Legacy diagnostic mode keeps its historical probe.
+    static func didJoin(room: String, nick: String) async -> Bool {
+        await joinedMember(room: room, nick: nick) != nil
+    }
+
+    static func joinedMember(
+        room: String, nick: String, memberID: String? = nil
+    ) async -> DistributedChatMember? {
+        if PharosMeshRuntimeMode.usesDistributedMesh {
+            do {
+                let replica = try MeshLocalReplica.openDefault(headless: true)
+                let group = try await replica.ensureActiveTrustGroup()
+                let chat = DistributedChatRegistry(replica: replica, group: group)
+                guard let target = try await chat.rooms().first(where: {
+                    $0.name.localizedCaseInsensitiveCompare(room) == .orderedSame
+                }) else { return nil }
+                return try await chat.members(in: target).first(where: { member in
+                    if let memberID { return member.id == memberID }
+                    return member.nick.localizedCaseInsensitiveCompare(nick) == .orderedSame
+                })
+            } catch {
+                return nil
+            }
+        }
         let rooms = MeshClient.send(MeshRequest(cmd: "list")).rooms ?? []
-        return rooms.first { $0.name == room }?.members.contains(nick) ?? false
+        guard rooms.first(where: { $0.name == room })?.members.contains(nick) == true else {
+            return nil
+        }
+        return DistributedChatMember(id: nick, nick: nick)
+    }
+
+    private static func registerLocalHostResource(
+        memberID: String, tmuxSession: String, tmuxSocket: String
+    ) async throws {
+        guard let resourceID = MeshResourceID(rawValue: memberID) else {
+            throw MeshSpawnControlError.invalidMemberID
+        }
+        let replica = try MeshLocalReplica.openDefault(headless: true)
+        let group = try await replica.ensureActiveTrustGroup()
+        let binding = try DistributedHostResourceBinding(
+            resourceID: resourceID, tmuxSession: tmuxSession, tmuxSocket: tmuxSocket
+        )
+        try DistributedHostResourceBindings(
+            dataDirectory: replica.rootURL
+        ).save(binding, for: resourceID)
+        // The spawn knows the intended tmux name, but only a structured hook
+        // running inside that pane can prove the exact socket/pane/runtime
+        // fingerprint. Reconcile upgrades control capabilities immediately
+        // after that proof appears.
+        let actions: Set<MeshHostAction> = [.presence]
+        let timestamp = MeshHybridTimestamp(
+            wallTimeMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+        )
+        if let existing = try await replica.store.hostResource(
+            in: group, hostDeviceID: replica.identity.deviceID,
+            resourceID: resourceID
+        ) {
+            guard existing.state == .active else {
+                throw DistributedMeshStoreError.hostResourceRetired
+            }
+            // `pharos mesh claim` may already have promoted this exact seat to
+            // poke/stop before the GUI observes the join. Never downgrade that
+            // stronger Host-local proof back to presence-only.
+        } else {
+            _ = try await replica.store.registerHostResource(
+                in: group, on: replica.identity, resourceID: resourceID,
+                allowedActions: actions, at: timestamp
+            )
+        }
     }
 
     // MARK: tmux drive
 
-    /// Poll the pane until the agent's ready prompt (or a first-run screen)
-    /// appears. ~40s ceiling.
-    private static func waitForBoot(_ tmux: String, _ name: String) -> Bool {
+    enum BootScreenState: Equatable {
+        case waiting
+        case skipUpdate
+        case submitInterstitial
+        case ready
+    }
+
+    /// Classify interstitials before readiness. Codex uses `›` both for its
+    /// normal composer and for the trust-screen selection cursor; the launch
+    /// command also contains the word "bypass". Neither is sufficient proof
+    /// that the composer is ready.
+    static func bootScreenState(_ pane: String) -> BootScreenState {
+        let lower = pane.lowercased()
+        // Never auto-select "Update now" inside a freshly-created tmux
+        // session. Homebrew can take minutes and replacing the running binary
+        // can strand its TUI. Skip this launch-time prompt; updates remain a
+        // deliberate user/admin operation outside agent creation.
+        if lower.contains("update available") &&
+            lower.contains("update now") && lower.contains("skip") {
+            return .skipUpdate
+        }
+        if lower.contains("do you trust") ||
+            lower.contains("trust the contents") ||
+            lower.contains("trust this folder") ||
+            (lower.contains("choose") && lower.contains("theme")) ||
+            lower.contains("press enter to continue") {
+            return .submitInterstitial
+        }
+        if lower.contains("for shortcuts") || lower.contains("effort:") ||
+            lower.contains("full access") && lower.contains("context") {
+            return .ready
+        }
+        return .waiting
+    }
+
+    /// Poll the pane until the agent's real composer appears, submitting any
+    /// trust/theme/continue interstitial first. ~40s ceiling.
+    private static func waitForBoot(_ tmux: String, socket: String, _ name: String) -> Bool {
         for _ in 0..<20 {
-            let pane = Shell.run(tmux, ["capture-pane", "-p", "-t", name]).out.lowercased()
-            if pane.contains("bypass") || pane.contains("for shortcuts") || pane.contains("effort")
-                || pane.contains("trust this folder") || pane.contains("full access")
-                || pane.contains("›") {
+            let pane = runTmux(tmux, socket: socket, ["capture-pane", "-p", "-t", name]).out
+            switch bootScreenState(pane) {
+            case .ready:
                 return true
+            case .skipUpdate:
+                _ = runTmux(tmux, socket: socket, ["send-keys", "-t", name, "Down", "Enter"])
+                usleep(1_500_000)
+            case .submitInterstitial:
+                _ = runTmux(tmux, socket: socket, ["send-keys", "-t", name, "Enter"])
+                usleep(1_500_000)
+            case .waiting:
+                usleep(2_000_000)
             }
-            usleep(2_000_000)
         }
         return false
     }
 
-    /// Dismiss trust / first-run prompts by pressing Enter a couple of times
-    /// (defaults are safe: trust folder, keep theme). Harmless if none are up.
-    private static func passFirstRun(_ tmux: String, _ name: String) {
-        for _ in 0..<2 {
-            let pane = Shell.run(tmux, ["capture-pane", "-p", "-t", name]).out.lowercased()
-            if pane.contains("trust this folder") || pane.contains("do you") || pane.contains("theme") {
-                _ = Shell.run(tmux, ["send-keys", "-t", name, "Enter"])
-                usleep(1_500_000)
-            }
-        }
-    }
-
     /// Type a line and submit it — the three-step send (literal text, pause,
     /// separate Enter) that dodges Claude/Codex paste-detection.
-    private static func sendLine(_ tmux: String, _ name: String, _ text: String) {
-        _ = Shell.run(tmux, ["send-keys", "-t", name, "-l", "--", text])
+    private static func sendLine(
+        _ tmux: String, socket: String, _ name: String, _ text: String
+    ) {
+        _ = runTmux(tmux, socket: socket, ["send-keys", "-t", name, "-l", "--", text])
         usleep(400_000)
-        _ = Shell.run(tmux, ["send-keys", "-t", name, "Enter"])
+        _ = runTmux(tmux, socket: socket, ["send-keys", "-t", name, "Enter"])
     }
+
+    private static func runTmux(
+        _ tmux: String, socket: String, _ args: [String]
+    ) -> Shell.Result {
+        Shell.run(tmux, ["-S", socket] + args)
+    }
+
+    static func localTmuxSocket(memberID: String) -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".pharos/tmux", isDirectory: true)
+            .appendingPathComponent("mesh-\(safe(memberID)).sock")
+            .path
+    }
+}
+
+private enum MeshSpawnControlError: LocalizedError {
+    case invalidMemberID
+
+    var errorDescription: String? { "The agent session ID is not a safe Host resource ID." }
 }
