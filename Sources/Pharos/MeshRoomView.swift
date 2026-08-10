@@ -42,7 +42,9 @@ struct MeshRoomView: View {
         // navigationTitle painted ~7s late on a freshly created window tab).
         // Drop image/PDF files anywhere on the room to attach them (like "+"),
         // instead of the field's default of inserting the file path as text.
-        .dropDestination(for: URL.self) { urls, _ in acceptDroppedFiles(urls) }
+        .dropDestination(for: URL.self) { urls, _ in
+            return acceptDroppedFiles(urls)
+        }
         .task(id: brokerRouteID) { await resolveRemote() }   // resolve transport BEFORE first load
         .task(id: brokerRouteID + "|events") { await watchEvents() }
         .onReceive(recoveryTick) { _ in reload() }
@@ -837,40 +839,17 @@ struct MeshRoomView: View {
     }
 
     private var brokerRouteID: String {
-        let hosts = store.executionHosts.map { "\($0.id.uuidString):\($0.sshHost)" }.joined(separator: ",")
-        return "\(store.meshServerEndpoint)|\(hosts)|\(store.isMeshHub)"
+        "\(store.runtimeRole.rawValue)|\(store.meshServerEndpoint)"
     }
 
-    /// Point MeshClient at the explicitly configured Broker. The SSH Host
-    /// lookup below is only a migration bridge for pre-Broker configurations.
-    /// SSHing (off-main) to discover the peer's Tailscale IP and ensure its
-    /// broker is up. nil result ⇒ use the local broker. Runs before the first
-    /// load, whenever the peer host changes, and to self-heal a dead remote.
+    /// Activate the route owned by the shared runtime application service.
     private func resolveRemote() async {
         guard !resolving else { return }
         resolving = true
-        if let endpoint = store.validMeshServerEndpoint {
-            MeshClient.remoteEndpoint = endpoint
-            MeshPaths.setDialEndpointFile(endpoint)
-            resolving = false
-            resolved = true
-            reload()
-            return
-        }
-        let peer = store.peerHost
-        let hub = store.isMeshHub
-        let ep = await Task.detached { MeshRemote.resolve(peerHost: peer, isHub: hub) }.value
-        MeshClient.remoteEndpoint = ep
-        // Persist for CLI/hooks on this machine (Pharos#5 P3): satellite agents
-        // read the mesh-endpoint file and follow the hub with zero env config.
-        // Fail-open: a satellite whose peer is transiently unreachable keeps the
-        // last-known endpoint file instead of islanding its agents onto a local
-        // broker. The hub (and an unpaired Mac) does clear the file — it serves
-        // locally by design.
-        if hub || peer.isEmpty || ep != nil { MeshPaths.setDialEndpointFile(ep) }
+        let activated = await store.activateRuntimeRoute()
         resolving = false
-        resolved = true
-        reload()
+        resolved = activated
+        if activated { reload() }
     }
 
     private struct Snapshot {

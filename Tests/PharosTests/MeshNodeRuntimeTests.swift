@@ -90,3 +90,10 @@ final class MeshNodeShutdownLatchTests: XCTestCase {
         XCTAssertTrue(latch.isRequested())
     }
 }
+
+final class MeshPokeSubmissionTests: XCTestCase {
+    func testInjectedPromptsUseEnterForCodexAndClaude() {
+        XCTAssertEqual(MeshPaneSafety.submitKey(forAgentKind: "codex"), "Enter")
+        XCTAssertEqual(MeshPaneSafety.submitKey(forAgentKind: "claude"), "Enter")
+    }
+}

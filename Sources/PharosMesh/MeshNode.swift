@@ -526,11 +526,7 @@ enum MeshNode {
             return "tmux send-keys failed"
         }
         usleep(350_000)
-        // Codex's composer uses Ctrl+Enter to submit a pasted prompt. Plain
-        // Enter leaves the text in the composer, which makes poke look
-        // successful while never starting a turn. Claude continues to use
-        // plain Enter.
-        let submitKey = member.kind == "codex" ? "C-Enter" : "Enter"
+        let submitKey = MeshPaneSafety.submitKey(forAgentKind: member.kind)
         guard run(tmux, prefix + ["send-keys", "-t", pane, submitKey]).ok else {
             return "tmux submit failed"
         }

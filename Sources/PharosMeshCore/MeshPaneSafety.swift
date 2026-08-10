@@ -3,6 +3,13 @@ import Foundation
 /// Pure validation shared by the headless Host node and its tests. Client apps
 /// never receive an API that can write to tmux.
 public enum MeshPaneSafety {
+    /// Literal text injected with tmux `send-keys -l` is normal composer input.
+    /// Codex 0.146+ submits it with Enter; C-Enter can fire hooks and consume a
+    /// mailbox while leaving no visible turn, losing the delivered message.
+    public static func submitKey(forAgentKind kind: String?) -> String {
+        "Enter"
+    }
+
     public static let busyLeaseSeconds: Double = 180
     public static let blockedLeaseSeconds: Double = 900
 

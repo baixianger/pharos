@@ -1,4 +1,5 @@
 import Foundation
+import PharosRuntime
 
 /// The `pharos` command-line front door — Pharos's interface for agents and
 /// scripts. A thin shim: it parses argv, calls `PharosCore`, and prints the
@@ -37,6 +38,13 @@ enum CLI {
             print("pharos \(version)"); return 0
         default:
             break
+        }
+
+        // The CLI is a first-class front door and cannot rely on the SwiftUI
+        // app having run first. Activate the saved device route before any
+        // command can fall back to an islanded local UDS broker.
+        if command != "runtime" {
+            _ = try? PharosRuntimeCoordinator().activateSavedRoute()
         }
 
         let p = parse(rest)
@@ -119,6 +127,8 @@ enum CLI {
                 return ok(try PharosCore.setFlag(name: p.arg(0), flag: "tmux", value: try boolArg(p.arg(1), label: "on|off")))
             case "mesh":
                 return await runMesh(rest)
+            case "runtime":
+                return runRuntime(rest)
             case "skill", "skills":
                 return runSkill(rest)
 
@@ -135,6 +145,51 @@ enum CLI {
     }
 
     // MARK: Sub-dispatchers
+
+    private static func runRuntime(_ args: [String]) -> Int32 {
+        let parsed = parse(Array(args.dropFirst()))
+        let store = PharosRuntimeConfigurationStore()
+        let coordinator = PharosRuntimeCoordinator(store: store)
+        do {
+            let status: PharosRuntimeStatus
+            switch args.first {
+            case nil, "status":
+                status = try coordinator.currentStatus()
+            case "reconcile":
+                status = try coordinator.reconcileSavedConfiguration()
+            case "set":
+                guard let roleName = parsed.arg(0),
+                      let role = PharosRuntimeRole(rawValue: roleName) else {
+                    return usageError("usage: pharos runtime set node --endpoint HOST:PORT | broker")
+                }
+                let current = store.load()
+                let endpoint = parsed.opt("endpoint") ?? current.remoteBrokerEndpoint
+                status = try coordinator.apply(
+                    PharosRuntimeConfiguration(role: role, remoteBrokerEndpoint: endpoint)
+                )
+            case let sub?:
+                return usageError("Unknown runtime subcommand: \(sub) (use status | set | reconcile)")
+            }
+            if parsed.has("json") {
+                print(prettyJSON([
+                    "role": status.configuration.role.rawValue,
+                    "brokerEndpoint": status.effectiveBrokerEndpoint,
+                    "nodeRunning": status.nodeRunning,
+                    "brokerRunning": status.brokerRunning,
+                ]))
+            } else {
+                print("role: \(status.configuration.role.displayName)")
+                print("broker: \(status.effectiveBrokerEndpoint)")
+                print("node: \(status.nodeRunning ? "running" : "stopped")")
+                if status.configuration.role == .broker {
+                    print("local broker: \(status.brokerRunning ? "running" : "stopped")")
+                }
+            }
+            return 0
+        } catch {
+            return fail(error.localizedDescription)
+        }
+    }
 
     /// `pharos agent peek|say|kill <session> [--host <alias>]` — drive a live
     /// agent tmux session, local or on another machine (see `pharos agents`).
@@ -287,8 +342,10 @@ enum CLI {
                     return 1
                 }
             }
-            let memberID = a.firstIndex(of: "--member").flatMap { $0 + 1 < a.count ? a[$0 + 1] : nil }
-                ?? MeshHooks.currentSessionID()
+            let explicitMember = a.firstIndex(of: "--member")
+                .flatMap { $0 + 1 < a.count ? a[$0 + 1] : nil }
+            let memberID = messageMemberID(nick: a[1], explicit: explicitMember,
+                                           detected: MeshHooks.currentSessionID())
             var request = MeshRequest(cmd: "say", room: a[0], nick: a[1], memberID: memberID,
                                       text: a[2], to: to)
             request.replyToID = replyID
@@ -740,6 +797,11 @@ enum CLI {
 
     // MARK: Misc
 
+    static func messageMemberID(nick: String, explicit: String?, detected: String?) -> String? {
+        if let explicit { return explicit.isEmpty ? nil : explicit }
+        return nick == "human" ? nil : detected
+    }
+
     private static var version: String { "0.8.0" }
 
     private static func prettyJSON(_ obj: Any) -> String {
@@ -818,6 +880,11 @@ enum CLI {
           path <project>               Show THIS Host's local folder
           path <project> <path>        Set THIS machine's local folder for a project
           path <project> --clear       Forget this machine's local folder
+          runtime status [--json]      Show this Mac's Node/Broker runtime
+          runtime set node --endpoint HOST:PORT
+                                       Run a pure Node against a remote Broker
+          runtime set broker           Run a local Broker plus the required Node
+          runtime reconcile            Re-apply the saved runtime configuration
 
         OTHER
           help, version

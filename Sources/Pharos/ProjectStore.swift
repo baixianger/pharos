@@ -1,6 +1,7 @@
 import SwiftUI
 import Observation
 import AppKit
+import PharosRuntime
 @preconcurrency import UserNotifications
 
 /// On-disk shape of the registry.
@@ -8,17 +9,10 @@ struct StoreData: Codable {
     var projects: [Project] = []
     var groups: [String] = []   // user-defined groups (may be empty)
     var trash: [TrashedItem] = []   // soft-deleted items awaiting restore/purge
-    /// Which machine hosts the mesh (its `HostIdentity`). Lives in the synced
-    /// store — every Mac reads the SAME answer, so a second hub is impossible
-    /// by construction (Pharos#5 P2). nil = nobody hosts.
-    var meshHubHostID: String?
-
-    init(projects: [Project] = [], groups: [String] = [], trash: [TrashedItem] = [],
-         meshHubHostID: String? = nil) {
+    init(projects: [Project] = [], groups: [String] = [], trash: [TrashedItem] = []) {
         self.projects = projects
         self.groups = groups
         self.trash = trash
-        self.meshHubHostID = meshHubHostID
     }
 
     /// Tolerant decode — missing keys fall back to empty rather than failing the
@@ -32,7 +26,6 @@ struct StoreData: Codable {
         projects = try c.decodeIfPresent([Project].self, forKey: .projects) ?? []
         groups = try c.decodeIfPresent([String].self, forKey: .groups) ?? []
         trash = try c.decodeIfPresent([TrashedItem].self, forKey: .trash) ?? []
-        meshHubHostID = try c.decodeIfPresent(String.self, forKey: .meshHubHostID)
     }
 }
 
@@ -564,16 +557,24 @@ final class ProjectStore {
         // Compatibility for the CLI and older app builds during rolling update.
         PharosPrefs.shared.set(executionHosts.first?.sshHost ?? "", forKey: "pharos.peerHost")
     }
-    /// Optional always-on Mesh Broker endpoint. Broker routing is device-local;
-    /// it is not portable project data.
+    /// Device-local runtime role. A Broker always includes this Mac's Node.
+    var runtimeRole: PharosRuntimeRole = .node {
+        didSet {
+            PharosPrefs.shared.set(runtimeRole.rawValue,
+                                   forKey: PharosRuntimeConfigurationStore.roleKey)
+            PharosPrefs.shared.set(runtimeRole == .broker, forKey: "pharos.hostBroker")
+        }
+    }
+    /// Remote Broker used by a pure Node. Preserved while this Mac is a Broker
+    /// so switching back can be validated before the local Broker is stopped.
     var meshServerEndpoint = "" {
         didSet {
             PharosPrefs.shared.set(meshServerEndpoint, forKey: "pharos.meshServerEndpoint")
             let trimmed = meshServerEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-            if meshSplitHostPort(trimmed) != nil {
+            if runtimeRole == .node, meshSplitHostPort(trimmed) != nil {
                 MeshClient.remoteEndpoint = trimmed
                 MeshPaths.setDialEndpointFile(trimmed)
-            } else if trimmed.isEmpty {
+            } else if runtimeRole == .node, trimmed.isEmpty {
                 MeshClient.remoteEndpoint = nil
                 MeshPaths.setDialEndpointFile(nil)
             }
@@ -583,16 +584,6 @@ final class ProjectStore {
         let endpoint = meshServerEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         return meshSplitHostPort(endpoint) == nil ? nil : endpoint
     }
-    var launchMeshAtLogin = true {
-        didSet { PharosPrefs.shared.set(launchMeshAtLogin, forKey: "pharos.launchMeshAtLogin") }
-    }
-    /// Legacy-compatible display value for a Broker hosted on this Mac. The
-    /// choice itself is local and never written into the Broker registry.
-    private(set) var meshHubHostID: String?
-    /// Whether THIS Mac is the mesh hub (drives the broker's TCP bind — see
-    /// MeshHosting). Derived, never stored per-machine.
-    var isMeshHub: Bool { meshHubHostID == HostIdentity.current }
-
     /// Recover an existing pre-refactor Mac pairing without overwriting an
     /// explicit modern value. Runs once at app startup, offloading Tailscale +
     /// SSH probes so the window never blocks. The obsolete key is removed only
@@ -611,9 +602,28 @@ final class ProjectStore {
         PharosPrefs.shared.removeObject(forKey: "pharos.peerHostKey")
     }
 
-    func setMeshHub(_ on: Bool) {
-        meshHubHostID = on ? HostIdentity.current : nil
-        PharosPrefs.shared.set(on, forKey: "pharos.hostBroker")
+    var runtimeConfiguration: PharosRuntimeConfiguration {
+        PharosRuntimeConfiguration(role: runtimeRole,
+                                   remoteBrokerEndpoint: meshServerEndpoint)
+    }
+
+    @MainActor
+    @discardableResult
+    func applyRuntimeConfiguration(_ configuration: PharosRuntimeConfiguration) async throws
+        -> PharosRuntimeStatus {
+        let status = try await Task.detached(priority: .userInitiated) {
+            try PharosRuntimeCoordinator().apply(configuration)
+        }.value
+        runtimeRole = status.configuration.role
+        meshServerEndpoint = status.configuration.remoteBrokerEndpoint
+        return status
+    }
+
+    @MainActor
+    func activateRuntimeRoute() async -> Bool {
+        await Task.detached(priority: .utility) {
+            (try? PharosRuntimeCoordinator().activateSavedRoute()) != nil
+        }.value
     }
 
 
@@ -651,12 +661,13 @@ final class ProjectStore {
         } else if let legacy = d.string(forKey: "pharos.peerHost"), !legacy.isEmpty {
             executionHosts = [ExecutionHostProfile(name: legacy, sshHost: legacy)]
         }
-        meshServerEndpoint = d.string(forKey: "pharos.meshServerEndpoint") ?? ""
-        if d.object(forKey: "pharos.launchMeshAtLogin") != nil {
-            launchMeshAtLogin = d.bool(forKey: "pharos.launchMeshAtLogin")
+        let runtime = PharosRuntimeConfigurationStore(defaults: d).load()
+        runtimeRole = runtime.role
+        meshServerEndpoint = runtime.remoteBrokerEndpoint
+        d.set(true, forKey: "pharos.launchMeshAtLogin")
+        if runtimeRole == .node, let endpoint = validMeshServerEndpoint {
+            MeshClient.remoteEndpoint = endpoint
         }
-        meshHubHostID = d.bool(forKey: "pharos.hostBroker") ? HostIdentity.current : nil
-        if let endpoint = validMeshServerEndpoint { MeshClient.remoteEndpoint = endpoint }
         registrySync = BrokerRegistrySync(revision: d.string(forKey: "pharos.registryRevision")) { [weak self] event in
             Task { @MainActor in self?.handleRegistryEvent(event) }
         }
@@ -675,7 +686,7 @@ final class ProjectStore {
         // Migrate the old local preference without carrying it in project data.
         if d.bool(forKey: "pharos.hostMesh") {
             d.removeObject(forKey: "pharos.hostMesh")
-            setMeshHub(true)
+            runtimeRole = .broker
         }
         lastFileMtime = fileModificationDate()
         requestNotificationAuthorizationIfNeeded()

@@ -1,4 +1,5 @@
 import AppKit
+import PharosRuntime
 import SwiftUI
 
 /// A small "?" that reveals an explanation — click for a popover (reliable and
@@ -156,6 +157,9 @@ private struct MachinesSettingsTab: View {
     @State private var brokerStatus: BrokerConnectionStatus = .unchecked
     @State private var advertisedEndpoint: String?
     @State private var showsPairingAssistant = false
+    @State private var remoteEndpointDraft = ""
+    @State private var runtimeError: String?
+    @State private var isApplyingRuntime = false
 
     var body: some View {
         @Bindable var store = store
@@ -179,15 +183,34 @@ private struct MachinesSettingsTab: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Section("Mesh Broker") {
-                brokerStatusView
-                Toggle("Launch Mesh at Login", isOn: $store.launchMeshAtLogin)
-                    .onChange(of: store.launchMeshAtLogin) { _, _ in
-                        reconcileLoginServices()
+            Section("Runtime") {
+                Picker("This Mac", selection: Binding(
+                    get: { store.runtimeRole },
+                    set: { role in Task { await applyRuntime(role: role) } }
+                )) {
+                    ForEach(PharosRuntimeRole.allCases) { role in
+                        Text(role.displayName).tag(role)
                     }
-                Text(store.isMeshHub
-                     ? "Keeps this Mac's Broker and Host node running after login, independently of the Pharos app."
-                     : "Keeps this Mac's Host node connected to the Broker after login, independently of the Pharos app.")
+                }
+                .disabled(isApplyingRuntime)
+                if store.runtimeRole == .node {
+                    TextField("Broker endpoint", text: $remoteEndpointDraft,
+                              prompt: Text("100.x.y.z:47800"))
+                        .font(.system(.body, design: .monospaced))
+                        .onSubmit { Task { await applyRuntime(role: .node) } }
+                    Button("Apply Node Configuration") {
+                        Task { await applyRuntime(role: .node) }
+                    }
+                    .disabled(isApplyingRuntime || draftEndpointIsInvalid)
+                }
+                brokerStatusView
+                if let runtimeError {
+                    Label(runtimeError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                Text(store.runtimeRole == .broker
+                     ? "Broker mode always runs both the local Broker and this Mac's Host node."
+                     : "Node mode always keeps this Mac's Host node connected to the remote Broker.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Text(brokerTarget)
@@ -212,14 +235,10 @@ private struct MachinesSettingsTab: View {
             HostsSettingsSection()
         }
         .formStyle(.grouped)
-        .task(id: store.meshServerEndpoint) {
-            let configuredEndpoint = store.validMeshServerEndpoint
-            advertisedEndpoint = await Task.detached {
-                if let configuredEndpoint { return configuredEndpoint }
-                return PairingService.selfTailscaleIP().map { "\($0):47800" }
-            }.value
+        .task(id: "\(store.runtimeRole.rawValue)|\(store.meshServerEndpoint)") {
+            remoteEndpointDraft = store.meshServerEndpoint
+            advertisedEndpoint = await effectiveEndpoint()
             await checkBroker()
-            reconcileLoginServices()
             if !brokerTargetIsInvalid { store.syncRegistryNow() }
         }
         .sheet(isPresented: $showsPairingAssistant) {
@@ -229,19 +248,37 @@ private struct MachinesSettingsTab: View {
         }
     }
 
-    private func reconcileLoginServices() {
-        let enabled = store.launchMeshAtLogin
-        let remote = store.validMeshServerEndpoint
-        let broker = store.isMeshHub ? advertisedEndpoint : nil
-        let node = remote ?? broker
-        Task.detached {
-            MeshNodeBootstrap.reconcile(enabled: enabled, brokerEndpoint: broker, nodeEndpoint: node)
+    @MainActor
+    private func applyRuntime(role: PharosRuntimeRole) async {
+        isApplyingRuntime = true
+        runtimeError = nil
+        defer { isApplyingRuntime = false }
+        let endpoint = role == .node ? remoteEndpointDraft : store.meshServerEndpoint
+        do {
+            let status = try await store.applyRuntimeConfiguration(
+                PharosRuntimeConfiguration(role: role, remoteBrokerEndpoint: endpoint)
+            )
+            advertisedEndpoint = status.effectiveBrokerEndpoint
+            await checkBroker()
+        } catch {
+            runtimeError = error.localizedDescription
         }
     }
 
+    private func effectiveEndpoint() async -> String? {
+        let configuration = store.runtimeConfiguration
+        return await Task.detached {
+            try? PharosRuntimeCoordinator().effectiveEndpoint(for: configuration)
+        }.value
+    }
+
+    private var draftEndpointIsInvalid: Bool {
+        PharosRuntimeConfiguration(role: .node, remoteBrokerEndpoint: remoteEndpointDraft)
+            .validRemoteBrokerEndpoint == nil
+    }
+
     private var brokerTargetIsInvalid: Bool {
-        !store.meshServerEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && store.validMeshServerEndpoint == nil
+        store.runtimeRole == .node && store.validMeshServerEndpoint == nil
     }
 
     private var brokerTarget: String {
@@ -330,7 +367,7 @@ private struct MachinesSettingsTab: View {
             return
         }
         brokerStatus = .checking
-        let endpoint = store.validMeshServerEndpoint
+        let endpoint = advertisedEndpoint
         let started = ContinuousClock.now
         let response = await Task.detached {
             let request = MeshRequest(cmd: "capabilities")

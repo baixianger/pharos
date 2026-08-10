@@ -1,4 +1,5 @@
 import PharosMeshCore
+import PharosRuntime
 import SwiftUI
 
 struct BrokerSetupWindow: View {
@@ -275,10 +276,14 @@ struct BrokerSetupOnboardingView: View {
             errorMessage = "Update pharos-mesh on \(device.name) before using it as the Broker."
             return
         }
-        store.setMeshHub(false)
-        store.meshServerEndpoint = endpoint
-        MeshClient.remoteEndpoint = endpoint
-        MeshPaths.setDialEndpointFile(endpoint)
+        do {
+            try await store.applyRuntimeConfiguration(
+                PharosRuntimeConfiguration(role: .node, remoteBrokerEndpoint: endpoint)
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
         step = 2
     }
 
@@ -297,15 +302,19 @@ struct BrokerSetupOnboardingView: View {
                 errorMessage = "Install Tailscale, sign in, and make sure this Mac has a Tailscale IPv4 address."
                 return
             }
-            store.meshServerEndpoint = ""
-            store.setMeshHub(true)
-            let response = await Task.detached {
-                MeshHosting.apply(hosting: true)
-                return MeshClient.send(MeshRequest(cmd: "capabilities"), to: endpoint)
-            }.value
-            guard response.ok else {
-                store.setMeshHub(false)
-                errorMessage = response.error ?? "The Broker did not start on this Mac."
+            do {
+                let status = try await store.applyRuntimeConfiguration(
+                    PharosRuntimeConfiguration(
+                        role: .broker,
+                        remoteBrokerEndpoint: store.meshServerEndpoint
+                    )
+                )
+                guard status.effectiveBrokerEndpoint == endpoint else {
+                    errorMessage = "The local Broker resolved to an unexpected endpoint."
+                    return
+                }
+            } catch {
+                errorMessage = error.localizedDescription
                 return
             }
         case .anotherMac, .linux:
@@ -327,11 +336,17 @@ struct BrokerSetupOnboardingView: View {
                 errorMessage = response.error ?? "The Broker identity did not match the pairing link."
                 return
             }
-            store.setMeshHub(false)
-            store.meshServerEndpoint = invitation.endpoint
-            MeshClient.remoteEndpoint = invitation.endpoint
-            MeshPaths.setDialEndpointFile(invitation.endpoint)
             MeshPaths.setControlTokenFile(credential.controlToken)
+            do {
+                try PharosRuntimeCoordinator().recordCurrentCredential(for: invitation.endpoint)
+                try await store.applyRuntimeConfiguration(
+                    PharosRuntimeConfiguration(role: .node,
+                                               remoteBrokerEndpoint: invitation.endpoint)
+                )
+            } catch {
+                errorMessage = error.localizedDescription
+                return
+            }
         }
         step = 2
     }

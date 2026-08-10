@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import PharosRuntime
 
 /// Real entry point. Two front doors share one binary:
 ///   • a CLI subcommand   → the `pharos` CLI (e.g. `Pharos list`, `Pharos launch …`)
@@ -39,10 +40,8 @@ struct PharosApp: App {
     private let updaterController = UpdaterController()
 
     init() {
-        let prefs = PharosPrefs.shared
-        let alreadyConfigured = prefs.bool(forKey: "pharos.hostBroker")
-            || !(prefs.string(forKey: "pharos.meshServerEndpoint") ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let alreadyConfigured = PharosRuntimeConfigurationStore(defaults: PharosPrefs.shared)
+            .isConfigured
         _showsBrokerSetup = State(initialValue: !alreadyConfigured)
     }
 
@@ -60,71 +59,16 @@ struct PharosApp: App {
                 .environment(store)
                 .preferredColorScheme(store.appearance.colorScheme)
                 .task {
-                    // This mesh bootstrap is app-global state — run it once, not
-                    // for every window/tab. Re-running it per tab re-dialed the
-                    // broker and blocked the main thread, so a new tab's title
-                    // took ~8-10s to paint.
                     guard !store.didBootstrapMesh else { return }
                     store.didBootstrapMesh = true
-                    // Keep the menu-bar Agents/Chat-Rooms submenus warm.
                     store.startMeshSnapshotPolling()
-                    // Upgrade bridge: restore a reachable legacy Mac pairing
-                    // before mesh routing/spawn/poke reads `peerHost`.
                     await store.recoverLegacyPeerIfNeeded()
-                    // The hub role comes from the synced store (Pharos#5 P2), so
-                    // every Mac reads the same answer. Hub: bind the broker to TCP
-                    // so peers can dial in. Everyone else: demote any stray
-                    // TCP-bound broker (split-brain), then pair to the hub and
-                    // persist the dial endpoint so CLI/hooks on this Mac follow
-                    // it with zero env config — without waiting for the Rooms
-                    // view to be opened.
-                    if let endpoint = store.validMeshServerEndpoint {
-                        // A persistent headless broker supersedes the old
-                        // Mac-to-Mac hub election. Stop any stale local TCP hub
-                        // and persist the endpoint so CLI/hooks follow it too.
-                        if store.isMeshHub { store.setMeshHub(false) }
-                        await Task.detached { MeshHosting.demoteStrayHub() }.value
-                        MeshClient.hostTCPEndpoint = nil
-                        MeshClient.remoteEndpoint = endpoint
-                        MeshPaths.setDialEndpointFile(endpoint)
-                    } else if store.isMeshHub {
-                        await Task.detached { MeshHosting.apply(hosting: true) }.value
-                    } else {
-                        await Task.detached { MeshHosting.demoteStrayHub() }.value
-                        let peer = store.peerHost
-                        if !peer.isEmpty {
-                            let ep = await Task.detached { MeshRemote.resolve(peerHost: peer, isHub: false) }.value
-                            // Fail-open: an unreachable peer keeps the last-known
-                            // endpoint file rather than islanding this Mac's agents.
-                            if let ep {
-                                MeshClient.remoteEndpoint = ep
-                                MeshPaths.setDialEndpointFile(ep)
-                            }
-                        }
-                    }
-                    // One user-facing login toggle reconciles the two roles of
-                    // the embedded helper. A local Broker gets broker + node;
-                    // a Mac using a remote Broker gets only its Host node.
-                    let remoteEndpoint = store.validMeshServerEndpoint
-                    let localBrokerEndpoint = store.isMeshHub
-                        ? await Task.detached {
-                            PairingService.selfTailscaleIP().map { "\($0):\(MeshRemote.port)" }
-                        }.value
-                        : nil
-                    if store.launchMeshAtLogin, localBrokerEndpoint != nil {
-                        MeshClient.stopLocalDaemon()
-                    }
-                    let nodeEndpoint = remoteEndpoint ?? localBrokerEndpoint ?? MeshClient.remoteEndpoint
-                    let launchMeshAtLogin = store.launchMeshAtLogin
-                    await Task.detached {
-                        MeshNodeBootstrap.reconcile(enabled: launchMeshAtLogin,
-                                                    brokerEndpoint: localBrokerEndpoint,
-                                                    nodeEndpoint: nodeEndpoint)
-                    }.value
-                    if store.launchMeshAtLogin, let localBrokerEndpoint {
-                        MeshClient.hostTCPEndpoint = nil
-                        MeshClient.remoteEndpoint = localBrokerEndpoint
-                        MeshPaths.setDialEndpointFile(localBrokerEndpoint)
+                    // Runtime ownership lives in PharosRuntime. Startup only
+                    // asks the application service to converge saved intent.
+                    do {
+                        try await store.applyRuntimeConfiguration(store.runtimeConfiguration)
+                    } catch {
+                        fputs("Pharos runtime reconcile failed: \(error.localizedDescription)\n", stderr)
                     }
                 }
         }

@@ -645,6 +645,15 @@ final class CLIParseTests: XCTestCase {
         XCTAssertFalse(CLI.isCommand("-psn_0_12345")) // LaunchServices GUI arg
         XCTAssertFalse(CLI.isCommand("--mcp"))         // handled before isCommand
     }
+
+    func testHumanMessagesDoNotInheritStaleAgentSession() {
+        XCTAssertNil(CLI.messageMemberID(nick: "human", explicit: nil,
+                                         detected: "stale-session"))
+        XCTAssertEqual(CLI.messageMemberID(nick: "agent", explicit: nil,
+                                           detected: "agent-session"), "agent-session")
+        XCTAssertEqual(CLI.messageMemberID(nick: "human", explicit: "chosen-session",
+                                           detected: "stale-session"), "chosen-session")
+    }
 }
 
 // MARK: - PharosCore registry round-trip (shared by CLI + MCP)

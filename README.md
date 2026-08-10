@@ -144,7 +144,7 @@ Run `pharos help` for the authoritative list. Summary:
 | Registry | `add <name> [--path] [--remote] [--tag]… [--notes]` · `remove <project>` · `rename <project> <new>` · `describe <project> <text…>` · `group create\|delete\|add\|remove …` · `yolo`/`tmux <project> <on\|off>` · `trash restore <id>` · `trash empty` |
 | Mesh | `mesh create\|list\|join\|say\|recv\|who\|poke\|unread\|history\|leave\|rename\|delete` · `mesh install-hooks [--project <dir> \| --user]` (also invocable as `chat`) |
 | Cross-host | `launch <project> <agent> --host <ssh-alias>` · `issue start <project> <#> <agent> --host <alias>` · `agents [--host]` · `agent peek\|say\|kill <session> [--host]` |
-| Multi-machine | `host` · `path <project> <path>` · `path <project> --clear` |
+| Multi-machine | `host` · `path <project> <path>` · `path <project> --clear` · `runtime status` · `runtime set node --endpoint HOST:PORT` · `runtime set broker` · `runtime reconcile` |
 
 The headline differentiator — **issues wired to the agent loop**: `pharos issue
 start` moves an issue to *In Progress* and links the agent session; when that
@@ -170,6 +170,29 @@ each Host. A controller asks the selected Host to resolve its own project path;
 paths are never published in the portable registry. iCloud is no longer a live
 sync transport. Existing iCloud data is imported once and left untouched as a
 rollback copy. See [ADR-002](docs/ADR-002-BROKER-OWNED-DATA.md).
+
+### Runtime roles
+
+A configured Mac has exactly one persistent runtime role:
+
+- **Node** connects this Mac's always-on Host node to a remote Broker.
+- **Broker + Node** runs the Broker locally and always runs this Mac's Host node
+  against it. A Broker can never be configured without Node capability.
+
+There is no persistent client-only role. The app, CLI, hooks, and iOS app are
+transient clients of the configured Broker. Role changes are ordered to avoid
+split-brain: a remote Broker is verified and the Node is redirected before a
+local Broker stops; a local Broker is started and verified before its Node is
+redirected.
+
+### Component boundaries
+
+`PharosMeshCore` owns the wire protocol and Broker data model.
+`PharosRuntime` owns device-local role configuration, credential routing, and
+runtime reconciliation. The `pharos-mesh` helper executes Broker/Node services.
+The macOS executable provides two adapters over shared core behavior: CLI
+argument/output handling and SwiftUI presentation. SwiftUI code does not manage
+LaunchAgents or construct helper process commands.
 
 ---
 

@@ -10,6 +10,7 @@ let package = Package(
         .executable(name: "Pharos", targets: ["Pharos"]),
         .executable(name: "pharos-mesh", targets: ["PharosMesh"]),
         .library(name: "PharosMeshCore", targets: ["PharosMeshCore"]),
+        .library(name: "PharosRuntime", targets: ["PharosRuntime"]),
     ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
@@ -23,10 +24,16 @@ let package = Package(
             ],
             path: "Sources/PharosMeshCore"
         ),
+        .target(
+            name: "PharosRuntime",
+            dependencies: ["PharosMeshCore"],
+            path: "Sources/PharosRuntime"
+        ),
         .executableTarget(
             name: "Pharos",
             dependencies: [
                 "PharosMeshCore",
+                "PharosRuntime",
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/Pharos",
@@ -49,7 +56,7 @@ let package = Package(
         ),
         .testTarget(
             name: "PharosTests",
-            dependencies: ["Pharos", "PharosMeshCore"],
+            dependencies: ["Pharos", "PharosMeshCore", "PharosRuntime"],
             path: "Tests/PharosTests",
             resources: [.copy("Fixtures")]
         ),
