@@ -2,25 +2,21 @@ import SwiftUI
 
 struct SpawnAgentView: View {
     @Environment(AppSettings.self) private var settings
-    @Environment(SSHIdentityStore.self) private var identities
     @Environment(RoomStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let room: String
-    private enum SpawnDirChoice: Hashable { case scratch, project(String), custom }
+    private enum SpawnDirChoice: Hashable { case scratch, project(String) }
     @State private var nick = ""
     @State private var kind = MobileAgentKind.claude
-    @State private var hostID: UUID?
+    @State private var nodeID: String?
     @State private var isSpawning = false
     @State private var succeeded = false
     @State private var result: String?
     @State private var error: String?
     @State private var dirChoice: SpawnDirChoice = .scratch
-    @State private var customPath = ""
     @State private var projects: [RemoteProject] = []
     @State private var loadingProjects = false
     @State private var projectsError: String?
-    private let service = RemoteAgentService()
-
     var body: some View {
         NavigationStack {
             Form {
@@ -31,11 +27,11 @@ struct SpawnAgentView: View {
                     Picker("Agent", selection: $kind) {
                         ForEach(MobileAgentKind.allCases) { Text($0.title).tag($0) }
                     }
-                    Picker("Run on", selection: $hostID) {
-                        Text("Choose a host").tag(UUID?.none)
-                        ForEach(eligibleHosts) { profile in
-                            Text("\(profile.displayName) · \(profile.username)@\(profile.sshHost)")
-                                .tag(Optional(profile.id))
+                    Picker("Run on", selection: $nodeID) {
+                        Text("Choose a host").tag(String?.none)
+                        ForEach(store.nodes) { node in
+                            Text("\(node.host) · \(node.tailscaleIP ?? "no Tailscale IP")")
+                                .tag(Optional(node.id))
                         }
                     }
                 }
@@ -44,11 +40,6 @@ struct SpawnAgentView: View {
                     Picker("Directory", selection: $dirChoice) {
                         Text("Scratch (default)").tag(SpawnDirChoice.scratch)
                         ForEach(projects) { Text($0.name).tag(SpawnDirChoice.project($0.name)) }
-                        Text("Custom path…").tag(SpawnDirChoice.custom)
-                    }
-                    if dirChoice == .custom {
-                        TextField("/absolute/path/on/host", text: $customPath)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
                     }
                     Button {
                         Task { await loadProjects() }
@@ -59,18 +50,18 @@ struct SpawnAgentView: View {
                             if loadingProjects { Spacer(); ProgressView() }
                         }
                     }
-                    .disabled(hostID == nil || loadingProjects)
+                    .disabled(nodeID == nil || loadingProjects)
                     if let projectsError {
                         Label(projectsError, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
                     }
                 } header: {
                     Text("Working directory")
                 } footer: {
-                    Text("Scratch is a neutral per-agent folder. Pick a registered project (loaded from the host) or type any absolute path to start the agent there.")
+                    Text("Scratch or a project registered on the selected Host node. Filesystem paths stay Host-local and are not sent through the Broker.")
                 }
 
                 Section {
-                    Label("The selected host runs its installed `pharos mesh spawn` workflow.", systemImage: "arrow.triangle.branch")
+                    Label("The selected Host node runs the spawn command from the central Broker queue.", systemImage: "arrow.triangle.branch")
                     Label("The new agent gets a dedicated tmux session and the desktop workflow's approval-bypass flags.", systemImage: "exclamationmark.shield")
                 } header: { Text("Before spawning") }
                 footer: { Text("This is a live remote action. Pharos waits for the agent to announce that it joined before reporting success.") }
@@ -101,56 +92,56 @@ struct SpawnAgentView: View {
                 }
             }
             .interactiveDismissDisabled(isSpawning)
-            .onAppear { if hostID == nil { hostID = eligibleHosts.first?.id } }
-            .onChange(of: hostID) {
-                dirChoice = .scratch; customPath = ""; projects = []; projectsError = nil
+            .task {
+                if store.nodes.isEmpty { await store.refresh() }
+                if nodeID == nil { nodeID = store.nodes.first?.id }
+            }
+            .onChange(of: nodeID) {
+                dirChoice = .scratch; projects = []; projectsError = nil
             }
         }
     }
 
-    private var eligibleHosts: [SSHHostProfile] {
-        settings.sshHosts.filter { $0.acceptsUnverifiedHostKey && $0.identityID != nil }
-    }
-
     private var canSpawn: Bool {
-        hostID != nil && !nick.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        nodeID != nil && !nick.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var workDir: SpawnWorkDir {
         switch dirChoice {
         case .scratch: return .scratch
         case .project(let name): return .project(name)
-        case .custom:
-            let p = customPath.trimmingCharacters(in: .whitespacesAndNewlines)
-            return p.isEmpty ? .scratch : .path(p)
         }
     }
 
     private func loadProjects() async {
-        guard let profile = eligibleHosts.first(where: { $0.id == hostID }),
-              let identityID = profile.identityID else { return }
+        guard nodeID != nil else { return }
         loadingProjects = true
         projectsError = nil
         defer { loadingProjects = false }
-        do {
-            let key = try identities.privateKey(for: identityID)
-            let fetched = try await service.listProjects(profile: profile, privateKey: key)
-            projects = fetched
-            if fetched.isEmpty { projectsError = "No projects registered on this host." }
-        } catch { projectsError = error.localizedDescription }
+        let fetched = await store.fetchProjectsOverMesh() ?? []
+        projects = fetched
+        if fetched.isEmpty { projectsError = "No projects registered on this Broker." }
     }
 
     private func spawn() async {
-        guard let profile = eligibleHosts.first(where: { $0.id == hostID }),
-              let identityID = profile.identityID else { return }
+        guard let nodeID, !nodeID.isEmpty else { return }
         isSpawning = true
         error = nil
         result = nil
         do {
-            let key = try identities.privateKey(for: identityID)
-            result = try await service.spawn(room: room, nick: nick.trimmingCharacters(in: .whitespacesAndNewlines),
-                                             kind: kind, profile: profile, privateKey: key, workDir: workDir)
-            await store.refreshAfterRemoteAction()
+            let projectID: String
+            switch dirChoice {
+            case .scratch: projectID = "__scratch__"
+            case .project(let name):
+                guard let project = projects.first(where: { $0.name == name }),
+                      let id = project.projectID, !id.isEmpty else {
+                    throw RemoteActionError.spawnNotConfirmed("The selected project has no Broker project ID.")
+                }
+                projectID = id
+            }
+            result = try await store.spawnAgent(room: room,
+                                                nick: nick.trimmingCharacters(in: .whitespacesAndNewlines),
+                                                kind: kind, nodeID: nodeID, projectID: projectID)
             isSpawning = false
             succeeded = true
             // Give the confirmation a beat to register, then close automatically.

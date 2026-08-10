@@ -124,6 +124,7 @@ struct MeshRoom: Codable, Sendable, Equatable, Identifiable, Hashable {
 struct MeshMember: Codable, Sendable, Equatable, Identifiable {
     var id: String
     var nick: String
+    var nodeID: String? = nil
     var project: String?
     var session: String?
     var host: String?
@@ -146,6 +147,15 @@ struct MeshNodeInfo: Codable, Sendable, Equatable, Identifiable {
     var tailscaleIP: String?
     var lastSeen: Double
     var buildID: String?
+}
+
+struct MeshNodeSpawnPayload: Codable, Sendable, Equatable {
+    var projectID: String
+    var sessionName: String
+    var agent: String
+    var yolo: Bool
+    var room: String?
+    var nick: String?
 }
 
 struct MeshNodeCommand: Codable, Sendable, Equatable, Identifiable {

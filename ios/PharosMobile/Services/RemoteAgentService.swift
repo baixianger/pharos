@@ -47,6 +47,7 @@ struct RemoteProject: Identifiable, Sendable, Hashable {
     var notes: String = ""
     var issues: [RemoteIssue] = []
     var updates: [RemoteProjectUpdate] = []
+    var projectID: String? = nil
     var hasLocalPath: Bool { localPath != nil }
 }
 
@@ -253,7 +254,8 @@ actor RemoteAgentService {
                                  tags: (dict["tags"] as? [String]) ?? [],
                                  notes: dict["notes"] as? String ?? "",
                                  issues: issues,
-                                 updates: updates)
+                                 updates: updates,
+                                 projectID: dict["id"] as? String)
         }
     }
 

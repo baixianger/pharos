@@ -21,6 +21,7 @@ final class RoomStore {
     var autoSelectsFirstRoom = false
     private(set) var messages: [MeshMessage] = []
     private(set) var members: [String: MeshMember] = [:]
+    private(set) var nodes: [MeshNodeInfo] = []
     private(set) var isRefreshing = false
     private(set) var notice: String?
     private(set) var error: String?
@@ -57,11 +58,14 @@ final class RoomStore {
         do {
             async let list = request(MeshRequest(cmd: "list"))
             async let roster = request(MeshRequest(cmd: "who"))
-            let (listResponse, rosterResponse) = try await (list, roster)
+            async let nodeList = request(MeshRequest(cmd: "node-list"))
+            let (listResponse, rosterResponse, nodeResponse) = try await (list, roster, nodeList)
             let nextRooms = listResponse.rooms ?? []
             let nextMembers = RosterIndex.byNick(rosterResponse.members ?? [])
+            let nextNodes = nodeResponse.nodes ?? []
             if rooms != nextRooms { rooms = nextRooms }
             if members != nextMembers { members = nextMembers }
+            if nodes != nextNodes { nodes = nextNodes }
             // Drop a selection whose room disappeared, but never force-select a
             // room the user didn't pick on compact layouts — that is what kept
             // bouncing iPhone back into the conversation and away from Settings.
@@ -507,6 +511,47 @@ final class RoomStore {
 
     // MARK: Agent lifecycle
 
+    /// Spawn through the central Broker's durable Node command queue. The Host
+    /// node resolves projectID to its own local checkout and launches tmux;
+    /// iOS never SSHes into the host for agent lifecycle operations.
+    func spawnAgent(room: String, nick: String, kind: MobileAgentKind,
+                    nodeID: String, projectID: String) async throws -> String {
+        guard !room.isEmpty, !nick.isEmpty, !nodeID.isEmpty, !projectID.isEmpty else {
+            throw RemoteActionError.unsafeValue("spawn parameters")
+        }
+        let sessionName = "pharos-mesh-(safeSessionPart(room))-(safeSessionPart(nick))"
+        let payload = MeshNodeSpawnPayload(projectID: projectID, sessionName: sessionName,
+                                           agent: kind.rawValue, yolo: true,
+                                           room: room, nick: nick)
+        let data = try JSONEncoder().encode(payload)
+        var enqueue = MeshRequest(cmd: "node-command-enqueue")
+        enqueue.nodeID = nodeID
+        enqueue.action = "spawnAgent"
+        enqueue.payload = String(data: data, encoding: .utf8)
+        enqueue.idempotencyKey = "ios-spawn:(nodeID):(sessionName):(UUID().uuidString)"
+        enqueue.deadline = Date().timeIntervalSince1970 + 3_600
+        enqueue.maxAttempts = 120
+        let response = try await request(enqueue)
+        guard let initial = response.command else {
+            throw RemoteActionError.spawnNotConfirmed(response.error ?? "The Broker did not enqueue the Node spawn.")
+        }
+        for _ in 0..<120 {
+            var listRequest = MeshRequest(cmd: "node-command-list")
+            listRequest.nodeID = nodeID
+            let snapshot = try await request(listRequest)
+            if let command = snapshot.commands?.first(where: { $0.id == initial.id }),
+               ["succeeded", "failed", "expired", "canceled"].contains(command.state) {
+                guard command.state == "succeeded" else {
+                    throw RemoteActionError.spawnNotConfirmed(command.result ?? "The Host node rejected the spawn.")
+                }
+                await refreshAfterRemoteAction()
+                return command.result ?? "Node started (nick)."
+            }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        throw RemoteActionError.spawnNotConfirmed("Timed out waiting for the Host node.")
+    }
+
     /// Stop an agent by enqueuing a durable stopSession command on its Host
     /// node (same path the desktop uses). Requires a paired Broker (control
     /// token) and the member's Host node to be online.
@@ -597,6 +642,10 @@ final class RoomStore {
             authenticated.authToken = settings.mesh.controlToken
         }
         return try await mesh.send(authenticated, host: settings.mesh.host, port: settings.mesh.port)
+    }
+
+    private func safeSessionPart(_ value: String) -> String {
+        String(value.map { $0.isLetter || $0.isNumber || "._-".contains($0) ? $0 : "-" })
     }
 
     private func supportsAdvancedMessages() async -> Bool {
