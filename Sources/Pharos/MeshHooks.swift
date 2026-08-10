@@ -856,15 +856,24 @@ enum MeshHooks {
         return .installed
     }
 
-    /// The command written into settings.json for a given `pharos mesh <sub>`.
-    /// The absolute binary path is ALWAYS primary — a hook runs under the
-    /// session's runtime PATH, which need not contain `pharos` even when the
-    /// install-time PATH did. Bare `pharos` is only the fallback for a
-    /// moved/reinstalled app, and the closing `true` keeps the hook fail-open.
+    /// The command written into settings.json for a hook subcommand. Distributed
+    /// mode uses the independently deployed helper so lifecycle truth and
+    /// unread delivery survive app shutdown; Tailscale mode stays on the
+    /// Broker-backed app CLI. App and PATH fallbacks keep both installs safe.
     private static func hookCommand(_ sub: String) -> String {
         let exe = (Bundle.main.executableURL
                    ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath().path
-        return "if [ -x \"\(exe)\" ]; then \"\(exe)\" mesh \(sub); "
-             + "elif command -v pharos >/dev/null 2>&1; then pharos mesh \(sub); else true; fi"
+        let app = "if [ -x \"\(exe)\" ]; then \"\(exe)\" mesh \(sub); "
+            + "elif command -v pharos >/dev/null 2>&1; then pharos mesh \(sub); "
+            + "else true; fi"
+        guard PharosMeshRuntimeMode.usesDistributedMesh else { return app }
+        let helper = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "Library/Application Support/Pharos/Runtime/pharos-mesh"
+            ).path
+        return "if [ -x \"\(helper)\" ]; then \"\(helper)\" \(sub); "
+             + "elif [ -x \"\(exe)\" ]; then \"\(exe)\" mesh \(sub); "
+             + "elif command -v pharos >/dev/null 2>&1; then pharos mesh \(sub); "
+             + "else true; fi"
     }
 }

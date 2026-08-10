@@ -1588,6 +1588,27 @@ public actor DistributedMeshStore {
         )
     }
 
+    /// Counts replicated events that at least one current peer has not
+    /// acknowledged. This is a diagnostic only; sync vectors and signed event
+    /// ranges remain the authoritative replication protocol.
+    public func pendingEventCount(
+        for group: MeshTrustGroupID, peers: [MeshDeviceID]
+    ) throws -> Int {
+        guard !peers.isEmpty else { return 0 }
+        var total: UInt64 = 0
+        for head in try authorHeads(for: group) {
+            let minimum = try peers.map {
+                try acknowledgement(
+                    group: group, peer: $0, author: head.endpointID
+                ) ?? 0
+            }.min() ?? 0
+            let delta = head.sequence - min(minimum, head.sequence)
+            let ceiling = UInt64(Int.max)
+            total = delta >= ceiling - total ? ceiling : total + delta
+        }
+        return Int(total)
+    }
+
     public func materializedFields(for entity: MeshEntityReference,
                                    in group: MeshTrustGroupID) throws -> [MeshMaterializedField] {
         try ensureMaterializedState()

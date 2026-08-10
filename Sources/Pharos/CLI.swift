@@ -204,7 +204,7 @@ enum CLI {
     /// room/nick/text), not the flag parser. Non-blocking: `say` delivers into the
     /// target's mailbox, the Stop hook surfaces it; `recv` drains without blocking.
     private static func runMesh(_ args: [String]) async -> Int32 {
-        let legacyBrokerEnabled = ProcessInfo.processInfo.environment["PHAROS_LEGACY_BROKER"] == "1"
+        let legacyBrokerEnabled = !PharosMeshRuntimeMode.usesDistributedMesh
         guard let sub = args.first else {
             print(legacyBrokerEnabled ? legacyMeshUsage : distributedMeshUsage)
             return 0
@@ -616,7 +616,7 @@ enum CLI {
     """
 
     private static let legacyMeshUsage = """
-    pharos mesh — legacy Broker agent chat (rollback only)
+    pharos mesh — Broker agent chat
       create <room>                       create a room
       list                                list rooms + members
       join   <room> <nick> [--session <id>]   register this pane under a room-local alias

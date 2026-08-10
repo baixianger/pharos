@@ -435,8 +435,10 @@ struct ExecutionHostProfile: Codable, Equatable, Identifiable, Hashable, Sendabl
     var id = UUID()
     var name: String
     var sshHost: String
-    /// Exact `HostIdentity` reported by agents on this machine. This lets the
-    /// Dashboard route attach/stop actions without guessing from display names.
+    /// Stable Host Node identity learned from the Broker heartbeat. This is the
+    /// primary routing key; host name/IP remain display and migration fallbacks.
+    var nodeID: String?
+    /// Exact legacy `HostIdentity` reported by agents on this machine.
     var meshHostID: String?
 
     var displayName: String {
@@ -444,8 +446,13 @@ struct ExecutionHostProfile: Codable, Equatable, Identifiable, Hashable, Sendabl
         return trimmed.isEmpty ? sshHost : trimmed
     }
 
-    static func resolve(meshHostID: String?, tailscaleIP: String? = nil,
+    static func resolve(nodeID: String? = nil, meshHostID: String?, tailscaleIP: String? = nil,
                         in profiles: [Self]) -> Self? {
+        if let nodeID = normalized(nodeID) {
+            let matches = profiles.filter { normalized($0.nodeID) == nodeID }
+            if matches.count == 1 { return matches[0] }
+            if matches.count > 1 { return nil }
+        }
         if let tailscaleIP = normalized(tailscaleIP) {
             let matches = profiles.filter {
                 normalized($0.sshHost) == tailscaleIP || normalized($0.meshHostID) == tailscaleIP

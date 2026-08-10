@@ -156,6 +156,8 @@ public struct MeshReplicaRPCServer: Sendable {
     private let timestamp: @Sendable () -> MeshHybridTimestamp
     private let hostCommandHandler: (@Sendable (MeshHostCommand) async -> MeshHostCommandExecutionOutcome)?
     private let hostPresenceProvider: (@Sendable () async -> MeshAgentPresenceSnapshot)?
+    private let syncHintHandler:
+        (@Sendable (MeshEndpointID) async -> Void)?
     private let membershipTransitionObserver:
         (@Sendable (MeshMembershipTransition) async -> Void)?
 
@@ -166,6 +168,8 @@ public struct MeshReplicaRPCServer: Sendable {
         restrictToAllowedTrustGroup: Bool = false,
         membershipTransitionObserver:
             (@Sendable (MeshMembershipTransition) async -> Void)? = nil,
+        syncHintHandler:
+            (@Sendable (MeshEndpointID) async -> Void)? = nil,
         hostPresenceProvider: (@Sendable () async -> MeshAgentPresenceSnapshot)? = nil,
         timestamp: @escaping @Sendable () -> MeshHybridTimestamp = {
             MeshHybridTimestamp(
@@ -180,6 +184,7 @@ public struct MeshReplicaRPCServer: Sendable {
         self.restrictToAllowedTrustGroup = restrictToAllowedTrustGroup
         self.hostCommandHandler = nil
         self.hostPresenceProvider = hostPresenceProvider
+        self.syncHintHandler = syncHintHandler
         self.membershipTransitionObserver = membershipTransitionObserver
         self.timestamp = timestamp
     }
@@ -191,6 +196,8 @@ public struct MeshReplicaRPCServer: Sendable {
         restrictToAllowedTrustGroup: Bool = false,
         membershipTransitionObserver:
             (@Sendable (MeshMembershipTransition) async -> Void)? = nil,
+        syncHintHandler:
+            (@Sendable (MeshEndpointID) async -> Void)? = nil,
         hostPresenceProvider: (@Sendable () async -> MeshAgentPresenceSnapshot)? = nil,
         hostCommandHandler: @escaping @Sendable (MeshHostCommand) async
             -> MeshHostCommandExecutionOutcome,
@@ -207,6 +214,7 @@ public struct MeshReplicaRPCServer: Sendable {
         self.restrictToAllowedTrustGroup = restrictToAllowedTrustGroup
         self.hostCommandHandler = hostCommandHandler
         self.hostPresenceProvider = hostPresenceProvider
+        self.syncHintHandler = syncHintHandler
         self.membershipTransitionObserver = membershipTransitionObserver
         self.timestamp = timestamp
     }
@@ -331,6 +339,17 @@ public struct MeshReplicaRPCServer: Sendable {
 
         do {
             switch header.operation {
+            case .syncHint:
+                guard request.body == nil, header.metadata == nil else {
+                    throw MeshReplicaRPCError.invalidBody
+                }
+                // This is only an authenticated invalidation signal. It
+                // carries no replica data and no remote opinion about local
+                // agent state; the receiver schedules its normal verified
+                // pull and later consults Host-local presence truth.
+                await syncHintHandler?(remoteEndpointID)
+                return try success(for: header)
+
             case .syncVector:
                 guard request.body == nil, header.metadata == nil else {
                     throw MeshReplicaRPCError.invalidBody
@@ -703,6 +722,15 @@ public struct MeshReplicaRPCClient: Sendable {
             throw MeshReplicaRPCError.responseMismatch
         }
         return vector
+    }
+
+    public func sendSyncHint(
+        group: MeshTrustGroupID, membershipEpoch: UInt64
+    ) async throws {
+        _ = try await exchange(
+            operation: .syncHint, group: group,
+            membershipEpoch: membershipEpoch
+        )
     }
 
     public func eventRange(

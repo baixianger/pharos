@@ -1,6 +1,7 @@
 import Foundation
 
 public enum MeshReplicaRPCOperation: String, Codable, CaseIterable, Sendable {
+    case syncHint = "sync.hint.v1"
     case syncVector = "sync.vector.v1"
     case syncRange = "sync.range.v1"
     case syncAcknowledge = "sync.acknowledge.v1"

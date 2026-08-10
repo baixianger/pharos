@@ -284,13 +284,53 @@ enum LaunchService {
     /// finally the user's interactive login shell (needed for nvm/fnm setup).
     static func agentResolution(_ kind: AgentKind) async -> AgentResolution? {
         let environment = ProcessInfo.processInfo.environment
-        return await resolveAgent(
+        guard let resolution = await resolveAgent(
             kind,
             environment: environment,
             candidates: agentExecutableCandidates(kind),
             isExecutable: { FileManager.default.isExecutableFile(atPath: $0) },
             runShell: { Shell.run($0, $1, timeout: 8) }
+        ) else { return nil }
+        var launchEnvironment = resolution.environment
+        if let socket = systemSSHAgentSocket(environment: environment) {
+            launchEnvironment["SSH_AUTH_SOCK"] = socket
+        }
+        return AgentResolution(
+            executable: resolution.executable, environment: launchEnvironment
         )
+    }
+
+    /// Resolve a live macOS SSH agent instead of copying a possibly stale
+    /// `SSH_AUTH_SOCK`. Exit 0 means identities are loaded; exit 1 means the
+    /// agent is reachable but empty. Exit 2 is a dead/non-agent socket.
+    static func validatedSSHAgentSocket(
+        candidates: [String], probe: (String) -> Int32
+    ) -> String? {
+        for candidate in candidates where !candidate.isEmpty {
+            let status = probe(candidate)
+            if status == 0 || status == 1 { return candidate }
+        }
+        return nil
+    }
+
+    static func systemSSHAgentSocket(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        var candidates = environment["SSH_AUTH_SOCK"].map { [$0] } ?? []
+        if let entries = try? FileManager.default.contentsOfDirectory(atPath: "/var/run") {
+            candidates += entries
+                .filter { $0.hasPrefix("com.apple.launchd.") }
+                .map { "/var/run/\($0)/Listeners" }
+        }
+        var seen = Set<String>()
+        candidates = candidates.filter { seen.insert($0).inserted }
+        return validatedSSHAgentSocket(candidates: candidates) { socket in
+            Shell.run(
+                "/usr/bin/env",
+                ["SSH_AUTH_SOCK=\(socket)", "/usr/bin/ssh-add", "-l"],
+                timeout: 2
+            ).code
+        }
     }
 
     static func agentCommand(_ kind: AgentKind, yolo: Bool, extraArgs: String = "",

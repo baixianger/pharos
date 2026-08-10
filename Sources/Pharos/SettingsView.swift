@@ -366,7 +366,7 @@ private struct MachinesSettingsTab: View {
             }
             .disabled(
                 distributedMesh.activeTrustGroupID == nil ||
-                    distributedMesh.localAddress == nil ||
+                    !distributedMesh.isBackgroundServiceOnline ||
                     !distributedMesh.isLocalMeshAdmin
             )
             Button(joinMeshButtonTitle, systemImage: "link.badge.plus") {
@@ -403,8 +403,44 @@ private struct MachinesSettingsTab: View {
                 Label("This Mac is ready to join a Mesh", systemImage: "link.badge.plus")
                     .foregroundStyle(.secondary)
             } else {
-                Label("This Mac is connected", systemImage: "checkmark.shield.fill")
+                if distributedMesh.isBackgroundServiceOnline {
+                    Label(
+                        "Background Mesh service online",
+                        systemImage: "checkmark.shield.fill"
+                    )
                     .foregroundStyle(.green)
+                } else if distributedMesh.meshServiceLoaded {
+                    Label(
+                        "Background Mesh service starting",
+                        systemImage: "clock.arrow.circlepath"
+                    )
+                    .foregroundStyle(.orange)
+                } else {
+                    Label(
+                        "Background Mesh service unavailable",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .foregroundStyle(.orange)
+                }
+                if let status = distributedMesh.meshServiceStatus {
+                    Text(
+                        "PID \(status.processID) · " +
+                            "\(status.networkState.rawValue) · " +
+                            status.buildID
+                    )
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                }
+                if !distributedMesh.isBackgroundServiceOnline {
+                    Button("Repair Mesh Service") {
+                        Task {
+                            await distributedMesh.repairBackgroundService()
+                        }
+                    }
+                    .controlSize(.small)
+                }
             }
             Text(abbreviated(deviceID.rawValue.uuidString))
                 .font(.caption.monospaced()).foregroundStyle(.secondary)
@@ -429,15 +465,15 @@ private struct MachinesSettingsTab: View {
                 Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
             }
             Button("Sync now") { store.syncRegistryNow() }.controlSize(.small)
-            Text("The legacy Broker is the single source of truth. This diagnostic mode is retained only for migration and rollback testing.")
+            Text("The Broker is the single source of truth for projects, issues, rooms, messages, and attachments.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
 
     private var legacyBrokerSection: some View {
-        Section("Legacy Mesh Broker") {
+        Section("Mesh Broker") {
             brokerStatusView
-            Toggle("Launch legacy Mesh at Login", isOn: Binding(
+            Toggle("Launch Mesh at Login", isOn: Binding(
                 get: { store.launchMeshAtLogin },
                 set: {
                     store.launchMeshAtLogin = $0
@@ -454,7 +490,7 @@ private struct MachinesSettingsTab: View {
                     .controlSize(.small)
                     .disabled(brokerStatus.isChecking || brokerTargetIsInvalid)
             }
-            Button("Pair legacy client…", systemImage: "qrcode") {
+            Button("Pair iPhone…", systemImage: "qrcode") {
                 showsPairingAssistant = true
             }
             .disabled(advertisedEndpoint == nil || brokerStatus.isChecking)

@@ -40,7 +40,11 @@ struct PairDeviceSheet: View {
                 ContentUnavailableView(
                     "Device connected",
                     systemImage: "checkmark.circle.fill",
-                    description: Text("\(pairedDeviceName) joined your personal Mesh and can now replicate data.")
+                    description: Text(
+                        distributedMesh.isProductModeEnabled
+                            ? "\(pairedDeviceName) joined your personal Mesh and can now replicate data."
+                            : "\(pairedDeviceName) is paired with your Broker and can access rooms and agent controls."
+                    )
                 )
                 .symbolRenderingMode(.multicolor)
                 .frame(width: 300, height: 300)
@@ -62,7 +66,9 @@ struct PairDeviceSheet: View {
                         ? { Task { await createPairingLink() } } : nil
                 )
                 Label(
-                    "Lets this device sync your data and approve signed agent controls",
+                    distributedMesh.isProductModeEnabled
+                        ? "Lets this device sync your data and approve signed agent controls"
+                        : "Lets this device access Broker rooms and agent controls over Tailscale",
                     systemImage: "person.badge.key.fill"
                 )
                 .font(.caption)
@@ -79,7 +85,11 @@ struct PairDeviceSheet: View {
                     ShareLink(
                         item: url,
                         subject: Text("Join my Pharos Mesh"),
-                        message: Text("Open this signed, single-use invitation in Pharos. It expires after five minutes.")
+                        message: Text(
+                            distributedMesh.isProductModeEnabled
+                                ? "Open this signed, single-use invitation in Pharos. It expires after five minutes."
+                                : "Open this Pharos pairing link on the other device."
+                        )
                     ) {
                         Label("Share with AirDrop, Mail, or Messages", systemImage: "square.and.arrow.up")
                     }

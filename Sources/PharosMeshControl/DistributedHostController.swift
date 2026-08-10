@@ -4,7 +4,7 @@ import PharosMeshIroh
 import PharosMeshProtocol
 import PharosMeshReplica
 
-public struct DistributedAgentHostLocation: Equatable, Sendable {
+public struct DistributedAgentHostLocation: Codable, Equatable, Sendable {
     public var deviceID: MeshDeviceID
     public var endpointID: MeshEndpointID
     public var displayName: String
@@ -31,7 +31,9 @@ public struct DistributedAgentHostLocation: Equatable, Sendable {
     public var canPoke: Bool { allowedActions.contains(.poke) }
 }
 
-public enum DistributedAgentHostControlReadiness: String, Equatable, Sendable {
+public enum DistributedAgentHostControlReadiness:
+    String, Codable, Equatable, Sendable
+{
     case managed
     case unmanaged
 }
@@ -58,14 +60,19 @@ public enum DistributedHostController {
             resourceID: resourceID
         ), local.state == .active,
            local.hostEndpointID == localEndpointID {
-            matches.append(DistributedAgentHostLocation(
+            // Host-local ownership is authoritative for a local resource. Do
+            // not turn a live, exactly-bound local agent into `hostUnavailable`
+            // merely because an unrelated phone or remote Host is offline.
+            // A duplicated remote claim cannot override the owning Host's
+            // signed local resource and is reconciled through replication.
+            return DistributedAgentHostLocation(
                 deviceID: replica.identity.deviceID,
                 endpointID: localEndpointID,
                 displayName: "This device",
                 resourceGeneration: local.generation,
                 allowedActions: local.allowedActions,
                 isLocal: true
-            ))
+            )
         }
         for peer in peers where peer.descriptor.roles.contains(.host) {
             guard peer.descriptor.id != replica.identity.deviceID else { continue }

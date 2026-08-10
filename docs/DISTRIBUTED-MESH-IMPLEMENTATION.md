@@ -391,6 +391,80 @@ Exit: fault injection cannot produce duplicate spawn/stop effects; a stale
 command cannot target a replacement session; UI and CLI display accepted versus
 executed truthfully.
 
+## Phase 4.5 — independent macOS Mesh service
+
+**State:** implemented and live-verified on macOS.
+
+ADR-005 moves the macOS Iroh endpoint, anti-entropy loop, Host presence,
+signed-command execution, and agent wake delivery out of `Pharos.app` and into
+a user LaunchAgent. The app, CLI, and hooks retain direct access to the shared
+signed SQLite WAL replica and use a bounded same-UID Unix-domain control
+protocol for live service state and network-required operations.
+
+Implemented components:
+
+1. `DistributedMeshBackgroundSynchronizer` owns bounded anti-entropy,
+   per-peer isolation, presence refresh, and agent wake scheduling. A
+   content-free, authenticated `sync.hint.v1` RPC immediately prioritizes the
+   same verified pull from its exact transport-authenticated origin when that
+   peer's local sync vector changes. Repeated hints during an active pull
+   coalesce into one follow-up, and an unrelated offline peer cannot delay the
+   fast path. The one-second loop remains the lost-hint and reconnect repair
+   path.
+2. `DistributedMeshRuntimeLock` enforces exclusive Endpoint ownership and
+   distinguishes a live flock owner from stale PID metadata.
+3. `DistributedMeshLocalService` provides the bounded same-UID UDS for health,
+   sync scheduling, Host control, membership administration, and attachment
+   fetch scheduling. CLI mutations commit directly to SQLite, then request an
+   immediate service round and explicitly report either `replication
+   scheduled` or `Mesh service unavailable, replication pending`.
+4. `DistributedMeshLaunchAgent` installs and repairs
+   `me.pai.pharos.mesh-service`, stages helper upgrades, retains the previous
+   helper, validates exact identity, and preserves product data on uninstall.
+5. The packaged app is a service client during normal operation. Its temporary
+   in-process bind exists only for the explicit join/leave handoff while the
+   LaunchAgent is stopped and the same runtime lock is held.
+6. App-terminated room convergence, helper upgrade identity, direct peer sync,
+   abnormal crash recovery, and graceful signal shutdown are covered locally.
+   On 2026-07-25 a physical iPhone on `home-ts` sent a directed `misc` message
+   while `Pharos.app` was terminated and `pharos-dev` was idle. The independent
+   LaunchAgent synchronized it, issued exactly one nudge, and the resumed agent
+   drained message `82C0B17A-45C9-4450-AE01-8B784E7490FC` and replicated its
+   reply without any listener or polling command. This closes the production
+   idle-wake acceptance gate.
+7. Mobile mention eligibility now comes from durable room membership. Remote
+   presence only colors the status indicator; an unavailable or gone
+   projection cannot hide a valid addressee or pre-empt the owning Host's
+   local nudge decision.
+8. Host reconciliation runs before wake delivery and rebuilds its private
+   exact-seat binding from structured hook observations. The tmux inspector
+   uses a printable `|` separator because tmux rewrites control characters in
+   arguments from a launchd Session 0 client; the earlier tab separator made
+   the service misparse a valid seat and revoke nudge authority. Deleting the
+   live binding now causes the LaunchAgent to recreate the same verified seat.
+9. Installed Claude and Codex hooks invoke the stable Runtime `pharos-mesh`
+   helper first, with the app and PATH CLI retained only as rollback
+   fallbacks. Hook delivery and lifecycle truth therefore no longer require
+   launching `Pharos.app`.
+
+The hint is notification-only, following the Iroh Docs split between live
+update signals and authoritative range reconciliation. It carries neither
+replica payload nor presence. Remote presence remains a display projection;
+the owning Host alone consults structured local lifecycle truth and decides
+whether to nudge an agent.
+
+`pharos mesh service status --json` reports the live helper/build/protocol,
+launchd restart count, exact identity and epoch, last successful sync,
+per-peer path, Host-command recovery count, pending-event count, and the last
+bounded error without exposing payloads or local tmux details.
+
+Exit: with `Pharos.app` terminated, a new iPhone room reaches the Mac CLI, a
+directed message wakes the exact eligible local agent, the Mac remains
+available, launchd recovers a killed helper, and an upgrade preserves the exact
+device/Endpoint/trust-group identity.
+
+See [ADR-005](ADR-005-INDEPENDENT-MACOS-MESH-SERVICE.md).
+
 ## Phase 5 — iOS background wake and offline UX
 
 1. Register APNs device tokens as encrypted trust-group metadata visible only to

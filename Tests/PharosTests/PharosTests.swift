@@ -235,6 +235,45 @@ final class AgentKindCommandTests: XCTestCase {
         )
     }
 
+    func testMeshSpawnMergesStableSessionIntoResolvedEnvironment() {
+        let resolution = LaunchService.AgentResolution(
+            executable: "/resolved/bin/codex",
+            environment: [
+                "PATH": "/resolved/bin:/usr/bin:/bin",
+                "SSH_AUTH_SOCK": "/var/run/agent.sock",
+            ]
+        )
+        let command = MeshSpawn.launchCommand(
+            .codex, resolution: resolution,
+            environment: ["PHAROS_MESH_SESSION": "stable-member"]
+        )
+        XCTAssertTrue(command.contains("'PHAROS_MESH_SESSION=stable-member'"))
+        XCTAssertTrue(command.contains("'SSH_AUTH_SOCK=/var/run/agent.sock'"))
+    }
+
+    func testMeshJoinBriefUsesExactPreallocatedSession() {
+        let brief = MeshSpawn.joinBrief(
+            room: "misc", nick: "pharos-dev", kind: .codex,
+            memberID: "stable-member"
+        )
+        XCTAssertTrue(brief.contains(
+            "pharos mesh join misc pharos-dev --session stable-member --kind codex"
+        ))
+        XCTAssertTrue(brief.contains(
+            "pharos mesh claim --member stable-member --kind codex"
+        ))
+    }
+
+    func testSSHAgentSocketValidationSkipsDeadSocket() {
+        XCTAssertEqual(
+            LaunchService.validatedSSHAgentSocket(
+                candidates: ["/dead", "/reachable-empty", "/loaded"],
+                probe: { ["/dead": 2, "/reachable-empty": 1, "/loaded": 0][$0] ?? 2 }
+            ),
+            "/reachable-empty"
+        )
+    }
+
     func testMeshSpawnDoesNotMistakeTrustCursorOrBypassFlagForReadyComposer() {
         XCTAssertEqual(
             MeshSpawn.bootScreenState("""
@@ -657,17 +696,20 @@ final class CLIParseTests: XCTestCase {
         XCTAssertFalse(CLI.isCommand("--mcp"))         // handled before isCommand
     }
 
-    func testOnlyNetworkedMeshCommandsTakeExclusiveGUIRuntime() {
-        XCTAssertTrue(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+    func testServiceOwnedCommandsDoNotTerminateGUIRuntime() {
+        XCTAssertFalse(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
             meshArguments: ["pair", "invite"]
         ))
-        XCTAssertTrue(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+        XCTAssertFalse(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
             meshArguments: ["pair", "revoke", UUID().uuidString]
         ))
-        XCTAssertTrue(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+        XCTAssertFalse(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+            meshArguments: ["pair", "accept", "pharos://invite"]
+        ))
+        XCTAssertFalse(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
             meshArguments: ["presence"]
         ))
-        XCTAssertTrue(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
+        XCTAssertFalse(MacMeshRuntimeCoordinator.requiresExclusiveRuntime(
             meshArguments: ["stop", "room", "member"]
         ))
 
@@ -1460,6 +1502,16 @@ final class MeshStateMappingTests: XCTestCase {
         XCTAssertEqual(pre[0]["matcher"] as? String, "AskUserQuestion")
 
         var post = try XCTUnwrap(hooks["PostToolUse"] as? [[String: Any]])
+        let postHooks = try XCTUnwrap(
+            post[0]["hooks"] as? [[String: Any]]
+        )
+        let postCommand = try XCTUnwrap(postHooks.first?["command"] as? String)
+        XCTAssertFalse(
+            postCommand.contains(
+                "Library/Application Support/Pharos/Runtime/pharos-mesh"
+            )
+        )
+        XCTAssertTrue(postCommand.contains("mesh unread --hook-post-tool"))
         post[0]["matcher"] = "Edit"
         hooks["PostToolUse"] = post
         root["hooks"] = hooks

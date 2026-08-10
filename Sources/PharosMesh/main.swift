@@ -1,6 +1,11 @@
 import Foundation
 import PharosMeshCore
 import PharosMeshLifecycle
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 exit(await MeshHeadlessCLI.run(Array(CommandLine.arguments.dropFirst())))
 
@@ -10,17 +15,39 @@ private enum MeshHeadlessCLI {
             print(usage)
             return 2
         }
-        let legacyBrokerEnabled = ProcessInfo.processInfo.environment["PHAROS_LEGACY_BROKER"] == "1"
+        let environment = ProcessInfo.processInfo.environment
+        let distributedMeshEnabled =
+            (environment["PHAROS_DISTRIBUTED_MESH"] == "1" ||
+                environment["PHAROS_DISTRIBUTED"] == "1") &&
+            environment["PHAROS_LEGACY_BROKER"] != "1"
+        let legacyBrokerEnabled = !distributedMeshEnabled
         if command == "pair", !legacyBrokerEnabled {
             return await DistributedPairCLI.run(Array(args.dropFirst()))
+        }
+        if !legacyBrokerEnabled, command == "unread",
+           args.contains("--hook-stop") {
+            return await DistributedHookCLI.run("stop", args: args)
+        }
+        if !legacyBrokerEnabled, command == "unread",
+           args.contains("--hook-post-tool") {
+            return await DistributedHookCLI.run("post-tool", args: args)
+        }
+        if !legacyBrokerEnabled, command == "mark",
+           args.contains("--hook") {
+            return await DistributedHookCLI.run("mark", args: args)
+        }
+        if !legacyBrokerEnabled, command == "session-start" {
+            return await DistributedHookCLI.run(
+                "session-start", args: args
+            )
         }
         if DistributedAgentCLI.commands.contains(command), !legacyBrokerEnabled {
             return await DistributedAgentCLI.run(args)
         }
         if ["serve", "daemon", "node"].contains(command), !legacyBrokerEnabled {
             let message = "error: the legacy Broker/Node runtime is retired; use " +
-                "distributed sync-serve or set PHAROS_LEGACY_BROKER=1 only for " +
-                "rollback recovery\n"
+                "distributed sync-serve with PHAROS_DISTRIBUTED_MESH=1, or use " +
+                "the default legacy Broker/Node runtime\n"
             FileHandle.standardError.write(Data(message.utf8))
             return 1
         }
@@ -249,9 +276,10 @@ private enum MeshHeadlessCLI {
             "host-resource-show", "host-presence", "host-command-send",
             "host-command-replay",
         ]
+        let legacyImportCommand = "legacy-import"
         guard command == "status" || command == "init" ||
                 migrationCommands.contains(command) || probeCommands.contains(command) ||
-                deviceCommands.contains(command) else {
+                deviceCommands.contains(command) || command == legacyImportCommand else {
             return usageError(
                 "distributed status|init|device-invite|device-accept|" +
                 "device-list|device-roles-set|sync-serve|sync|entity-set|entity-dump|" +
@@ -302,6 +330,9 @@ private enum MeshHeadlessCLI {
                 return try await runDistributedDeviceCommand(
                     command, args: args, replica: replica
                 )
+            }
+            if command == legacyImportCommand {
+                return try await runLegacyImport(args, replica: replica)
             }
             let activeGroup: MeshTrustGroupID?
             if command == "init" {
@@ -505,17 +536,41 @@ private enum MeshHeadlessCLI {
             }
 
         case "sync-serve":
+            let termination = MeshServiceTerminationSignals()
+            defer { termination.cancel() }
+            let runtimeLock = try DistributedMeshRuntimeLock.acquire(
+                dataDirectory: replica.rootURL,
+                owner: args.contains("--host")
+                    ? "pharos-mesh distributed sync-serve --host"
+                    : "pharos-mesh distributed sync-serve",
+                buildID: option("--build-id", in: args)
+            )
+            defer { runtimeLock.release() }
             let (group, epoch) = try await activeMembership(replica)
             let runtime = try await distributedRuntime(args, replica: replica)
             let address = try await runtime.localAddress()
+            let initialLocalStatus = DistributedMeshLocalServiceStatus(
+                buildID: option("--build-id", in: args) ?? "development",
+                deviceID: replica.identity.deviceID,
+                endpointID: address.endpointID,
+                trustGroupID: group,
+                membershipEpoch: epoch,
+                networkState: .starting
+            )
+            let localServiceControl = DistributedMeshLocalServiceControl(
+                status: initialLocalStatus
+            )
+            let syncHintRelay = DistributedMeshSyncHintRelay()
             let router: MeshReplicaRPCServer
+            let hostCommandRecoveryCount: Int
             if args.contains("--host") {
                 let executor = DistributedHostCommandExecutor(
                     bindings: DistributedHostResourceBindings(
                         dataDirectory: replica.rootURL
                     )
                 )
-                await DistributedHostCommandRecovery.recover(
+                hostCommandRecoveryCount =
+                    await DistributedHostCommandRecovery.recover(
                     replica: replica, group: group, executor: executor
                 )
                 let hostEndpointID = try replica.identity.endpointID()
@@ -524,6 +579,9 @@ private enum MeshHeadlessCLI {
                     localAuthorRoles: try replica.activeRoles(),
                     membershipTransitionObserver: { transition in
                         try? replica.reconcileActiveMembership(after: transition)
+                    },
+                    syncHintHandler: { endpointID in
+                        await syncHintRelay.receive(from: endpointID)
                     },
                     hostPresenceProvider: {
                         (try? await DistributedHookCLI.hostPresenceSnapshot(
@@ -554,13 +612,20 @@ private enum MeshHeadlessCLI {
                     }
                 )
             } else {
+                hostCommandRecoveryCount = 0
                 router = MeshReplicaRPCServer(
                     store: replica.store, hostIdentity: replica.identity,
                     localAuthorRoles: try replica.activeRoles(),
                     membershipTransitionObserver: { transition in
                         try? replica.reconcileActiveMembership(after: transition)
+                    },
+                    syncHintHandler: { endpointID in
+                        await syncHintRelay.receive(from: endpointID)
                     }
                 )
+            }
+            localServiceControl.update {
+                $0.hostCommandRecoveryCount = hostCommandRecoveryCount
             }
             await runtime.startServing { request, remoteEndpointID in
                 if let pairing = try? MeshTrustPairingRPCRequest.decode(
@@ -621,9 +686,42 @@ private enum MeshHeadlessCLI {
                 membershipEpoch: epoch,
                 networkState: "serving"
             )
-            var line = try sortedJSON(status)
+            var line: Data
+            if args.contains("--service-mode") {
+                line = try sortedJSON(initialLocalStatus)
+            } else {
+                line = try sortedJSON(status)
+            }
             line.append(0x0A)
             try FileHandle.standardOutput.write(contentsOf: line)
+            let localRuntimeCommands = DistributedMeshLocalRuntimeCommands(
+                replica: replica, runtime: runtime,
+                localAddress: address, group: group
+            )
+            let localService = try DistributedMeshLocalServiceServer(
+                dataDirectory: replica.rootURL
+            ) { request in
+                switch request.operation {
+                case .health, .status:
+                    return localServiceControl.response(to: request)
+                case .syncNow:
+                    let response = localServiceControl.response(to: request)
+                    await syncHintRelay.receiveFullSync()
+                    return response
+                case .locateAgent, .stopAgent,
+                     .issueInvitation, .revokeDevice, .fetchAttachment:
+                    return await localRuntimeCommands.response(to: request)
+                }
+            }
+            try localService.start()
+            defer { localService.stop() }
+            Task {
+                await runtime.waitUntilOnline()
+                localServiceControl.update {
+                    $0.networkState = .online
+                    $0.lastError = nil
+                }
+            }
             // Membership recovery is control-plane work and can spend a full
             // request timeout probing an offline controller. Keep it on an
             // independent loop so a stale phone never sits in front of the
@@ -646,46 +744,39 @@ private enum MeshHeadlessCLI {
                 }
             }
             defer { membershipCatchUpTask.cancel() }
+            let agentWakeCoordinator = DistributedAgentWakeCoordinator()
+            let backgroundSynchronizer =
+                DistributedMeshBackgroundSynchronizer(
+                    replica: replica, runtime: runtime, group: group,
+                    hostMode: args.contains("--host"),
+                    control: localServiceControl,
+                    wakeCoordinator: agentWakeCoordinator
+                )
+            await syncHintRelay.install { endpointID in
+                if let endpointID {
+                    await backgroundSynchronizer.scheduleHint(
+                        from: endpointID
+                    )
+                } else {
+                    await backgroundSynchronizer.schedule()
+                }
+            }
 
             // A server-only Linux replica must also initiate pulls. Replica
             // synchronization is intentionally pull-based, so merely serving
             // RPC leaves a headless third device permanently empty while GUI
             // peers can only pull its empty vector. Start immediately: the
             // endpoint is already online and serving at this point.
-            while !Task.isCancelled {
+            while !Task.isCancelled &&
+                !termination.latch.isRequested() {
                 guard try replica.activeTrustGroup() == group else {
                     try await runtime.close()
                     return 0
                 }
-                guard let currentEpoch = try await replica.store.membershipEpoch(
-                    for: group
-                ) else {
-                    throw DistributedDeviceCommandError.missingMembership
+                await backgroundSynchronizer.schedule()
+                if !localServiceControl.consumeImmediateSyncRequest() {
+                    try await Task.sleep(for: .seconds(1))
                 }
-                let peers = try await replica.store.trustedDevices(
-                    in: group, membershipEpoch: currentEpoch
-                )
-                await withTaskGroup(of: Void.self) { tasks in
-                    for peer in peers {
-                        tasks.addTask {
-                            let transport = IrohMeshTransport(
-                                runtime: runtime,
-                                remote: MeshIrohEndpointAddress(
-                                    endpointID: peer.descriptor.endpointID,
-                                    ticket: peer.addressTicket
-                                )
-                            )
-                            _ = try? await MeshReplicaSyncSession(
-                                store: replica.store,
-                                client: MeshReplicaRPCClient(transport: transport),
-                                remoteEndpointID: peer.descriptor.endpointID
-                            ).synchronize(
-                                group: group, membershipEpoch: currentEpoch
-                            )
-                        }
-                    }
-                }
-                try await Task.sleep(for: .seconds(1))
             }
             try await runtime.close()
             return 0
@@ -1103,6 +1194,74 @@ private enum MeshHeadlessCLI {
                 "host-command-send|host-command-replay …"
             )
         }
+    }
+
+    /// Restore the local-first chat projection into a Tailscale Broker.
+    /// The source replica remains untouched; the target transcript is appended
+    /// only for messages whose stable ID is not already present.
+    private static func runLegacyImport(
+        _ args: [String], replica: MeshLocalReplica
+    ) async throws -> Int32 {
+        guard let targetPath = option("--legacy-data-dir", in: args),
+              targetPath.hasPrefix("/"), !targetPath.hasPrefix("--") else {
+            return usageError(
+                "distributed legacy-import --legacy-data-dir ABSOLUTE-PATH " +
+                "--data-dir ABSOLUTE-PATH"
+            )
+        }
+        let target = URL(fileURLWithPath: targetPath, isDirectory: true)
+        let transcriptDir = target.appendingPathComponent("mesh", isDirectory: true)
+        try FileManager.default.createDirectory(at: transcriptDir, withIntermediateDirectories: true)
+        let (group, _) = try await activeMembership(replica)
+        let chat = DistributedChatRegistry(replica: replica, group: group)
+        let rooms = try await chat.rooms()
+        var importedRooms = 0
+        var importedMembers = 0
+        var importedMessages = 0
+
+        for room in rooms {
+            let create = MeshClient.send(MeshRequest(cmd: "create", room: room.name))
+            guard create.ok else { throw NSError(domain: "PharosMigration", code: 1,
+                                                 userInfo: [NSLocalizedDescriptionKey:
+                                                    "could not create legacy room \(room.name): \(create.error ?? "unknown error")"]) }
+            importedRooms += 1
+            let members = try await chat.members(in: room)
+            for member in members {
+                var request = MeshRequest(cmd: "join", room: room.name, nick: member.nick,
+                                          memberID: member.id, session: member.id)
+                request.project = "distributed-import"
+                let joined = MeshClient.send(request)
+                guard joined.ok else { throw NSError(domain: "PharosMigration", code: 2,
+                                                    userInfo: [NSLocalizedDescriptionKey:
+                                                       "could not restore member \(member.nick) in \(room.name): \(joined.error ?? "unknown error")"]) }
+                importedMembers += 1
+            }
+
+            let destination = transcriptDir.appendingPathComponent(safeLegacyPathComponent(room.name) + ".jsonl")
+            let existingData = (try? Data(contentsOf: destination)) ?? Data()
+            let existingIDs = Set(existingData.split(separator: 10).compactMap {
+                try? JSONDecoder().decode(MeshMsg.self, from: Data($0)).stableID
+            })
+            var output = Data()
+            for message in try await chat.messages(in: room) where !existingIDs.contains(message.stableID) {
+                output.append(try JSONEncoder().encode(message))
+                output.append(10)
+                importedMessages += 1
+            }
+            if !output.isEmpty {
+                if let handle = try? FileHandle(forWritingTo: destination) {
+                    try handle.seekToEnd(); try handle.write(contentsOf: output); try handle.close()
+                } else {
+                    try output.write(to: destination, options: .atomic)
+                }
+            }
+        }
+        print("legacy import complete: rooms=\(importedRooms) members=\(importedMembers) messages=\(importedMessages)")
+        return 0
+    }
+
+    private static func safeLegacyPathComponent(_ value: String) -> String {
+        String(value.map { $0.isLetter || $0.isNumber || "._-".contains($0) ? $0 : "_" })
     }
 
     private static func distributedRuntime(
@@ -1896,7 +2055,33 @@ private enum MeshHeadlessCLI {
       distributed cutover --group UUID --inventory SHA256 --generation N --data-dir ABSOLUTE-PATH
       distributed rollback --group UUID --inventory SHA256 --generation N --data-dir ABSOLUTE-PATH
 
-    There is no Broker endpoint in Pharos 2.0. Legacy Broker/Node rollback
-    commands are hidden unless PHAROS_LEGACY_BROKER=1 is set explicitly.
+    The Tailscale Broker/Node runtime is the default. Set
+    PHAROS_DISTRIBUTED_MESH=1 to opt into the distributed replica runtime.
     """
+}
+
+private final class MeshServiceTerminationSignals {
+    let latch = DistributedMeshShutdownLatch()
+    private var sources: [DispatchSourceSignal] = []
+
+    init() {
+        for number in [SIGTERM, SIGINT] {
+            signal(number, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(
+                signal: number, queue: .global(qos: .utility)
+            )
+            source.setEventHandler { [latch] in
+                latch.request()
+            }
+            source.resume()
+            sources.append(source)
+        }
+    }
+
+    func cancel() {
+        for source in sources {
+            source.cancel()
+        }
+        sources.removeAll()
+    }
 }

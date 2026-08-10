@@ -450,7 +450,7 @@ struct AddMemberSheet: View {
                 }
             } else {
                 Text("Spawns \(kind == .claude ? "Claude" : "Codex") in a tmux session "
-                     + (selectedHost.map { "on \($0.displayName) over SSH" } ?? "on this Mac")
+                     + (selectedHost.map { "on \($0.displayName) through its Host Node" } ?? "on this Mac")
                      + ", then has it join the room. Confirms once it's in.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -483,8 +483,10 @@ struct AddMemberSheet: View {
         phase = .booting; detail = "starting…"
         let k = kind
         let host = selectedHost?.sshHost
+        let nodeID = selectedHost?.nodeID
         Task.detached {
-            await MeshSpawn.spawn(room: room, nick: n, kind: k, host: host, workDir: workDir) { p in
+            await MeshSpawn.spawn(room: room, nick: n, kind: k, host: host,
+                                  nodeID: nodeID, workDir: workDir) { p in
                 Task { @MainActor in
                     phase = p.phase; detail = p.detail
                     if p.phase == .joined || p.phase == .failed { spawning = false }

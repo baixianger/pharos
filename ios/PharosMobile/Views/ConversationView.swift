@@ -33,6 +33,10 @@ struct ConversationView: View {
             if let error = store.error { errorBar(error) }
         }
         .navigationBarTitleDisplayMode(.inline)
+        // Keep the navigation identity explicit. A principal toolbar item can
+        // temporarily disappear while the keyboard rebuilds the toolbar;
+        // without a navigation title SwiftUI falls back to the app title.
+        .navigationTitle(store.selectedRoom ?? "Chat")
         .toolbar(.hidden, for: .tabBar)
         .toolbar { channelToolbar }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
@@ -77,13 +81,17 @@ struct ConversationView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(transcriptCells.reversed())) { cell in
-                        transcriptCellView(cell).flipUpsideDown()
+                        transcriptCellView(cell)
                     }
                     Group {
                         if store.hasMoreHistory { historyLoader } else { channelWelcome }
                     }
-                    .flipUpsideDown()
                 }
+                // Flip the complete layout once, rather than each row.
+                // Reply cards are nested inside MessageRow; keeping them in
+                // the same transform layer avoids SwiftUI applying an extra
+                // 180° transform to quoted content.
+                .flipUpsideDown()
                 .scrollTargetLayout()
                 .padding(.vertical, 8)
             }
@@ -181,23 +189,6 @@ struct ConversationView: View {
 
     @ToolbarContentBuilder
     private var channelToolbar: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            VStack(spacing: 1) {
-                HStack(spacing: 4) {
-                    Image(systemName: "number")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.secondary)
-                    Text(store.selectedRoom ?? "Chat")
-                        .font(.headline)
-                        .lineLimit(1)
-                }
-                Text(channelSubtitle)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .accessibilityElement(children: .combine)
-        }
-
         ToolbarItem(placement: .topBarTrailing) {
             Button("Add agent", systemImage: "person.badge.plus") { destination = .spawn }
                 .labelStyle(.iconOnly)
@@ -239,8 +230,8 @@ struct ConversationView: View {
     @ViewBuilder
     private var composer: some View {
         VStack(spacing: 7) {
-            if !availableMembers.isEmpty {
-                RoomMentionStrip(members: availableMembers) { member in
+            if !mentionableMembers.isEmpty {
+                RoomMentionStrip(members: mentionableMembers) { member in
                     store.insertMention(member.nick, into: &draft)
                     showAttachmentPanel = false
                     focused = true
@@ -333,19 +324,12 @@ struct ConversationView: View {
         .padding(.vertical, 6)
     }
 
-    /// Room members eligible to @mention: live agents only. A gone agent can't
-    /// be poked, so surfacing it in the mention strip is misleading.
-    private var availableMembers: [MeshMember] {
+    /// Durable room membership controls addressing. Presence only colors the
+    /// status dot; the owning Host decides whether an addressed agent is idle
+    /// and eligible for a nudge.
+    private var mentionableMembers: [MeshMember] {
         guard let room = store.rooms.first(where: { $0.name == store.selectedRoom }) else { return [] }
-        return store.members(in: room)
-            .filter { $0.nick != "human" }
-            .filter { ($0.state.flatMap(MeshSessionState.init(rawValue:))) != .gone }
-            .sorted { $0.nick.localizedCaseInsensitiveCompare($1.nick) == .orderedAscending }
-    }
-
-    private var channelSubtitle: String {
-        let total = availableMembers.count
-        return total == 0 ? "No active agents" : (total == 1 ? "1 agent" : "\(total) agents")
+        return RosterIndex.mentionableAgents(store.members(in: room))
     }
 
     private var trimmedDraft: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }

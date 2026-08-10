@@ -4,12 +4,15 @@ import PharosMeshControl
 import PharosMeshCore
 import PharosMeshLifecycle
 
-/// Product builds use the signed, device-to-device replica by default. The
-/// legacy Broker path is retained only as an explicit migration diagnostic;
-/// normal launches never need an environment flag to enable the new mesh.
+/// Product builds use the proven Tailscale + Broker/SSH path by default. The
+/// signed device-to-device replica remains available as an explicit opt-in so
+/// it can be exercised without changing the normal app runtime.
 enum PharosMeshRuntimeMode {
     static var usesDistributedMesh: Bool {
-        ProcessInfo.processInfo.environment["PHAROS_LEGACY_BROKER"] != "1"
+        let environment = ProcessInfo.processInfo.environment
+        return (environment["PHAROS_DISTRIBUTED_MESH"] == "1" ||
+            environment["PHAROS_DISTRIBUTED"] == "1") &&
+            environment["PHAROS_LEGACY_BROKER"] != "1"
     }
 }
 
@@ -32,6 +35,10 @@ final class DistributedMeshSupport {
     private(set) var trustedDevices: [MeshPairedDevice] = []
     private(set) var membershipAudit: [MeshMembershipAuditEntry] = []
     private(set) var lastSyncError: String?
+    private(set) var meshServiceInstalled = false
+    private(set) var meshServiceLoaded = false
+    private(set) var meshServiceStatus:
+        DistributedMeshLocalServiceStatus?
     private(set) var presenceDiagnostics: [MeshDeviceID: String] = [:]
     /// Ephemeral presence is deliberately not part of the durable registry,
     /// so views use this generation to refresh visible agent rows immediately.
@@ -46,19 +53,26 @@ final class DistributedMeshSupport {
         trustedDevices.filter { $0.descriptor.roles.contains(.controller) }.count +
             (isLocalMeshAdmin ? 1 : 0)
     }
+    var isBackgroundServiceOnline: Bool {
+        meshServiceLoaded &&
+            meshServiceStatus?.networkState == .online
+    }
     @ObservationIgnored private var runtime: IrohEndpointRuntime?
+    @ObservationIgnored private var runtimeLock: DistributedMeshRuntimeLock?
+    @ObservationIgnored private var backgroundServicePlan:
+        DistributedMeshLaunchAgentPlan?
     @ObservationIgnored private var chatRegistry: DistributedChatRegistry?
     @ObservationIgnored private var attachmentRegistry: DistributedAttachmentRegistry?
-    /// The distributed endpoint belongs to the application, not to any one
-    /// SwiftUI window. macOS can restore Pharos with only its menu-bar item;
-    /// tying this task to the main WindowGroup made the device silently stop
-    /// serving presence until a window was reopened.
+    /// The application task observes the independent Mesh service and refreshes
+    /// local views. It never owns the packaged product's Iroh endpoint.
     @ObservationIgnored private var applicationRuntimeTask: Task<Void, Never>?
     @ObservationIgnored private var membershipCatchUpTask: Task<Void, Never>?
     @ObservationIgnored private var synchronizationTasksInFlight = 0
+    @ObservationIgnored private var lastHintedVector: MeshSyncVector?
     @ObservationIgnored private let peerSynchronizationGate =
         MacPeerSynchronizationGate()
-    @ObservationIgnored private var lastAgentWakeMessageIDs: [String: String] = [:]
+    @ObservationIgnored private let agentWakeCoordinator =
+        DistributedAgentWakeCoordinator()
     @ObservationIgnored private var remotePresenceByHost:
         [MeshDeviceID: [String: CachedAgentPresence]] = [:]
     /// Concurrent anti-entropy rounds may finish out of order. Never let an
@@ -80,13 +94,10 @@ final class DistributedMeshSupport {
         applicationRuntimeTask = Task { [weak self, weak store] in
             guard let self, let store else { return }
             await self.start()
-            await self.startNetwork()
+            await self.ensureBackgroundService()
             var activatedGroup: MeshTrustGroupID?
             while !Task.isCancelled {
-                // A transient bind/bootstrap failure must not strand the app
-                // offline for the rest of its process lifetime. `startNetwork`
-                // is idempotent once a runtime exists.
-                await self.startNetwork()
+                await self.refreshBackgroundServiceStatus()
                 if let replica = self.localReplica,
                    let group = self.activeTrustGroupID {
                     if group != activatedGroup {
@@ -96,7 +107,6 @@ final class DistributedMeshSupport {
                         )
                         activatedGroup = group
                     }
-                    self.scheduleSynchronization()
                     // CLI and GUI are independent writers to the same local
                     // replica. Refresh even without a remote event.
                     store.syncRegistryNow()
@@ -108,8 +118,172 @@ final class DistributedMeshSupport {
         }
     }
 
+    /// Installs the configured-Mac runtime as a user LaunchAgent. The GUI never
+    /// falls back to binding the same Endpoint ID when an installed service is
+    /// slow or unhealthy; that would create two owners during startup races.
+    private func ensureBackgroundService(forceInstall: Bool = false) async {
+        guard let replica = localReplica,
+              let helper = DistributedMeshLaunchAgent.defaultSourceHelper()
+        else {
+            lastSyncError = "Could not find the packaged Mesh service helper."
+            return
+        }
+        do {
+            let plan = try DistributedMeshLaunchAgentPlan(
+                homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+                dataDirectory: replica.rootURL, sourceHelper: helper,
+                buildID: Self.applicationBuildID
+            )
+            backgroundServicePlan = plan
+            guard let group = try replica.activeTrustGroup(),
+                  let epoch = try await replica.store.membershipEpoch(
+                    for: group
+                  )
+            else {
+                return
+            }
+            let expectedIdentity = DistributedMeshServiceIdentity(
+                deviceID: replica.identity.deviceID,
+                endpointID: try replica.identity.endpointID(),
+                trustGroupID: group,
+                membershipEpoch: epoch
+            )
+            let status = await Task.detached {
+                DistributedMeshLaunchAgent.status(plan)
+            }.value
+            meshServiceInstalled = status.installed
+            meshServiceLoaded = status.loaded
+            meshServiceStatus = status.runtime
+            if let runtime = status.runtime {
+                try DistributedMeshLaunchAgent.validateReplacementIdentity(
+                    expected: expectedIdentity, status: runtime
+                )
+            }
+            let wrongBuild = status.runtime.map {
+                $0.buildID != Self.applicationBuildID
+            } ?? false
+            if forceInstall || !status.installed || !status.loaded ||
+                wrongBuild {
+                try await Task.detached {
+                    try DistributedMeshLaunchAgent.install(plan)
+                }.value
+                try await verifyBackgroundServiceUpgrade(
+                    plan: plan, expectedIdentity: expectedIdentity,
+                    expectedBuildID: Self.applicationBuildID
+                )
+                let verified = await Task.detached {
+                    DistributedMeshLaunchAgent.status(plan)
+                }.value
+                meshServiceInstalled = verified.installed
+                meshServiceLoaded = verified.loaded
+                meshServiceStatus = verified.runtime
+            }
+        } catch {
+            lastSyncError = "Could not install Mesh service: \(error)"
+        }
+    }
+
+    func repairBackgroundService() async {
+        await ensureBackgroundService(forceInstall: true)
+        await refreshBackgroundServiceStatus()
+    }
+
+    private func verifyBackgroundServiceUpgrade(
+        plan: DistributedMeshLaunchAgentPlan,
+        expectedIdentity: DistributedMeshServiceIdentity,
+        expectedBuildID: String
+    ) async throws {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
+            let status = await Task.detached {
+                DistributedMeshLaunchAgent.status(plan)
+            }.value
+            if let runtime = status.runtime {
+                try DistributedMeshLaunchAgent.validateReplacementIdentity(
+                    expected: expectedIdentity, status: runtime
+                )
+                if runtime.buildID == expectedBuildID,
+                   runtime.networkState == .online {
+                    return
+                }
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        throw DistributedMeshLaunchAgentError
+            .replacementDidNotBecomeHealthy
+    }
+
+    private static var applicationBuildID: String {
+        let commit = Bundle.main.object(
+            forInfoDictionaryKey: "GitCommit"
+        ) as? String ?? "development"
+        let timestamp = Bundle.main.object(
+            forInfoDictionaryKey: "BuildTimestamp"
+        ) as? String ?? "unknown-time"
+        return "\(commit)@\(timestamp)"
+    }
+
+    private func refreshBackgroundServiceStatus() async {
+        guard let plan = backgroundServicePlan else {
+            await ensureBackgroundService()
+            return
+        }
+        let status = await Task.detached {
+            DistributedMeshLaunchAgent.status(plan)
+        }.value
+        meshServiceInstalled = status.installed
+        meshServiceLoaded = status.loaded
+        meshServiceStatus = status.runtime
+        guard let service = status.runtime else {
+            connections = [:]
+            lastSyncError = status.loaded
+                ? "Mesh service is starting or unavailable."
+                : "Mesh service is not loaded."
+            return
+        }
+        connections = Dictionary(
+            uniqueKeysWithValues: service.connections.map {
+                ($0.peer, $0)
+            }
+        )
+        let oldPresence = effectiveRemotePresence()
+        remotePresenceByHost = Dictionary(
+            uniqueKeysWithValues: service.presence.map { snapshot in
+                (
+                    snapshot.hostDeviceID,
+                    Dictionary(uniqueKeysWithValues: snapshot.records.map {
+                        (
+                            $0.resourceID.rawValue,
+                            CachedAgentPresence(
+                                record: $0,
+                                hostDeviceID: snapshot.hostDeviceID,
+                                hostDisplayName: trustedDevices.first {
+                                    $0.descriptor.id == snapshot.hostDeviceID
+                                }?.descriptor.displayName ?? "Mesh Host",
+                                expiresAtMilliseconds:
+                                    snapshot.expiresAtMilliseconds
+                            )
+                        )
+                    })
+                )
+            }
+        )
+        if effectiveRemotePresence() != oldPresence {
+            presenceRevision &+= 1
+        }
+        lastSyncError = service.lastError
+        if activeTrustGroupID != service.trustGroupID {
+            activeTrustGroupID = service.trustGroupID
+            if let replica = localReplica {
+                configureRegistries(
+                    replica: replica, group: service.trustGroupID
+                )
+            }
+        }
+    }
+
     func start() async {
-        guard localReplica == nil else { return }
+        guard isProductModeEnabled, localReplica == nil else { return }
         state = .opening
         do {
             let replica = try await Task.detached {
@@ -136,6 +310,13 @@ final class DistributedMeshSupport {
         guard isProductModeEnabled, runtime == nil,
               let replica = localReplica else { return }
         do {
+            let endpointLock = try DistributedMeshRuntimeLock.acquire(
+                dataDirectory: replica.rootURL,
+                owner: "Pharos.app",
+                buildID: Bundle.main.object(
+                    forInfoDictionaryKey: "GitCommit"
+                ) as? String
+            )
             let endpoint = try await IrohEndpointRuntime.bind(
                 secretKey: replica.identity.irohSecretKeyBytes(),
                 expectedEndpointID: try replica.identity.endpointID()
@@ -159,6 +340,9 @@ final class DistributedMeshSupport {
                 restrictToAllowedTrustGroup: true,
                 membershipTransitionObserver: { transition in
                     try? replica.reconcileActiveMembership(after: transition)
+                },
+                syncHintHandler: { [weak self] _ in
+                    await self?.receiveSyncHint()
                 },
                 hostPresenceProvider: {
                     guard let group = try? replica.activeTrustGroup() else {
@@ -225,6 +409,7 @@ final class DistributedMeshSupport {
                     request, remoteEndpointID: remoteEndpointID
                 )
             }
+            runtimeLock = endpointLock
             runtime = endpoint
             localAddress = address
             lastSyncError = nil
@@ -248,7 +433,7 @@ final class DistributedMeshSupport {
         activeTrustGroupID = group
         configureRegistries(replica: replica, group: group)
         try await refreshTrustedDevices()
-        await restartNetwork()
+        await restartBackgroundService()
         return group
     }
 
@@ -257,36 +442,42 @@ final class DistributedMeshSupport {
         displayName: String,
         existingGroupDisposition: MeshExistingGroupDisposition
     ) async throws {
-        await startNetwork()
-        guard let replica = localReplica, let runtime, let localAddress else {
-            throw DistributedMeshSupportError.networkNotReady
-        }
-        let current = try replica.activeTrustGroup()
-        if let current, current != invitation.trustGroupID,
-           existingGroupDisposition == .leave {
-            _ = try await MeshTrustGroupLifecycle.leaveCurrentMesh(
+        try await stopBackgroundServiceForExclusiveOperation()
+        do {
+            await startNetwork()
+            guard let replica = localReplica, let runtime, let localAddress else {
+                throw DistributedMeshSupportError.networkNotReady
+            }
+            let current = try replica.activeTrustGroup()
+            if let current, current != invitation.trustGroupID,
+               existingGroupDisposition == .leave {
+                _ = try await MeshTrustGroupLifecycle.leaveCurrentMesh(
+                    replica: replica,
+                    runtime: runtime,
+                    localAddress: localAddress,
+                    displayName: displayName
+                )
+                activeTrustGroupID = nil
+                clearActiveGroupState()
+            }
+            let group = try await MeshTrustGroupLifecycle.join(
+                invitation,
                 replica: replica,
                 runtime: runtime,
                 localAddress: localAddress,
-                displayName: displayName
+                displayName: displayName,
+                inviterDisplayName: "Inviting device",
+                replacingExisting: current != nil
             )
-            activeTrustGroupID = nil
-            clearActiveGroupState()
+            activeTrustGroupID = group
+            configureRegistries(replica: replica, group: group)
+            try await refreshTrustedDevices()
+            _ = await synchronizeOnce()
+            await startBackgroundServiceAfterExclusiveOperation()
+        } catch {
+            await startBackgroundServiceAfterExclusiveOperation()
+            throw error
         }
-        let group = try await MeshTrustGroupLifecycle.join(
-            invitation,
-            replica: replica,
-            runtime: runtime,
-            localAddress: localAddress,
-            displayName: displayName,
-            inviterDisplayName: "Inviting device",
-            replacingExisting: current != nil
-        )
-        activeTrustGroupID = group
-        configureRegistries(replica: replica, group: group)
-        try await refreshTrustedDevices()
-        await restartNetwork()
-        _ = await synchronizeOnce()
     }
 
     @discardableResult
@@ -299,8 +490,7 @@ final class DistributedMeshSupport {
         )
         activeTrustGroupID = nil
         clearActiveGroupState()
-        await stopNetwork()
-        await startNetwork()
+        await restartBackgroundService()
         return group
     }
 
@@ -313,43 +503,35 @@ final class DistributedMeshSupport {
         guard try replica.activeTrustGroup() != nil else {
             throw MeshTrustGroupLifecycleError.noActiveTrustGroup
         }
-        await startNetwork()
-        guard let runtime, let localAddress else {
-            throw DistributedMeshSupportError.networkNotReady
+        try await stopBackgroundServiceForExclusiveOperation()
+        do {
+            await startNetwork()
+            guard let runtime, let localAddress else {
+                throw DistributedMeshSupportError.networkNotReady
+            }
+            let result = try await MeshTrustGroupLifecycle.leaveCurrentMesh(
+                replica: replica,
+                runtime: runtime,
+                localAddress: localAddress,
+                displayName: displayName
+            )
+            activeTrustGroupID = nil
+            clearActiveGroupState()
+            await startBackgroundServiceAfterExclusiveOperation()
+            return result
+        } catch {
+            await startBackgroundServiceAfterExclusiveOperation()
+            throw error
         }
-        let result = try await MeshTrustGroupLifecycle.leaveCurrentMesh(
-            replica: replica,
-            runtime: runtime,
-            localAddress: localAddress,
-            displayName: displayName
-        )
-        activeTrustGroupID = nil
-        clearActiveGroupState()
-        await stopNetwork()
-        await startNetwork()
-        return result
     }
 
     func issueInvitation() async throws -> URL {
-        guard let replica = localReplica, let group = activeTrustGroupID,
-              let address = localAddress,
-              let epoch = try await replica.store.membershipEpoch(for: group)
-        else { throw DistributedMeshSupportError.networkNotReady }
-        guard try replica.activeRoles().contains(.controller) else {
-            throw DistributedMeshSupportError.administratorRequired
-        }
-        let invitation = try await MeshTrustPairingService(
-            identity: replica.identity, invitationStore: replica.store
-        ).issueInvitation(
-            trustGroupID: group, membershipEpoch: epoch,
-            inviterAddressTicket: address.ticket,
-            inviterRoles: try replica.activeRoles(),
-            // A paired Mac may host coding agents even if it initially joins
-            // only as a viewer. Grant Host capability up front so its signed
-            // presence/resource ownership is discoverable on every peer.
-            requestedRoles: [.controller, .host, .replica]
-        )
-        return try MeshTrustInvitationLink.encode(invitation)
+        let client = try requireBackgroundServiceClient()
+        return try await Task.detached {
+            try client.issueInvitation(
+                requestedRoles: [.controller, .host, .replica]
+            )
+        }.value
     }
 
     private func configureRegistries(
@@ -374,6 +556,7 @@ final class DistributedMeshSupport {
         remotePresenceExpirationByHost = [:]
         presenceDiagnostics = [:]
         lastSyncError = nil
+        lastHintedVector = nil
     }
 
     private func stopNetwork() async {
@@ -381,6 +564,8 @@ final class DistributedMeshSupport {
         membershipCatchUpTask = nil
         if let runtime { try? await runtime.close() }
         runtime = nil
+        runtimeLock?.release()
+        runtimeLock = nil
         localAddress = nil
     }
 
@@ -401,6 +586,42 @@ final class DistributedMeshSupport {
         await startNetwork()
     }
 
+    private func restartBackgroundService() async {
+        guard let plan = backgroundServicePlan else {
+            await ensureBackgroundService()
+            return
+        }
+        do {
+            try await Task.detached {
+                try DistributedMeshLaunchAgent.restart(plan)
+            }.value
+        } catch {
+            lastSyncError = "Could not restart Mesh service: \(error)"
+        }
+    }
+
+    private func stopBackgroundServiceForExclusiveOperation() async throws {
+        guard let plan = backgroundServicePlan else { return }
+        try await Task.detached {
+            try DistributedMeshLaunchAgent.stop(plan)
+        }.value
+    }
+
+    private func startBackgroundServiceAfterExclusiveOperation() async {
+        await stopNetwork()
+        guard let plan = backgroundServicePlan else {
+            await ensureBackgroundService()
+            return
+        }
+        do {
+            try await Task.detached {
+                try DistributedMeshLaunchAgent.start(plan)
+            }.value
+        } catch {
+            lastSyncError = "Could not resume Mesh service: \(error)"
+        }
+    }
+
     /// Refreshes the user-visible device roster from the current membership
     /// epoch. Old-epoch rows stay in the database for audit, but never appear
     /// as currently trusted devices.
@@ -419,51 +640,14 @@ final class DistributedMeshSupport {
     }
 
     func revokeDevice(_ device: MeshPairedDevice) async throws {
-        guard let runtime, let replica = localReplica,
-              let group = activeTrustGroupID, let address = localAddress,
-              let epoch = try await replica.store.membershipEpoch(for: group)
-        else { throw DistributedMeshSupportError.networkNotReady }
-        guard try replica.activeRoles().contains(.controller) else {
-            throw DistributedMeshSupportError.administratorRequired
-        }
-        let peers = try await replica.store.trustedDevices(
-            in: group, membershipEpoch: epoch
-        )
-        guard peers.contains(where: { $0.descriptor.id == device.descriptor.id }) else {
-            return
-        }
-        let localMember = MeshPairedDevice(
-            descriptor: MeshDeviceDescriptor(
-                id: replica.identity.deviceID,
-                endpointID: try replica.identity.endpointID(),
-                displayName: Host.current().localizedName ?? "This Mac",
-                roles: try replica.activeRoles()
-            ),
-            signingPublicKey: try replica.identity.signingPublicKeyBytes(),
-            addressTicket: address.ticket
-        )
-        let survivors = peers.filter { $0.descriptor.id != device.descriptor.id }
-        let transition = try await MeshTrustGroupLifecycle.certifyMembershipTransition(
-            replica: replica, runtime: runtime, group: group,
-            previousEpoch: epoch, roster: survivors + [localMember]
-        )
-        // Best effort before the local CAS. Offline survivors receive the same
-        // signed transition from the retry path in synchronizeOnce().
-        for peer in survivors {
-            let transport = IrohMeshTransport(
-                runtime: runtime,
-                remote: MeshIrohEndpointAddress(
-                    endpointID: peer.descriptor.endpointID,
-                    ticket: peer.addressTicket
-                )
+        let client = try requireBackgroundServiceClient()
+        _ = try await Task.detached {
+            try client.revokeDevice(
+                device.descriptor.id,
+                localDisplayName:
+                    Host.current().localizedName ?? "This Mac"
             )
-            try? await MeshReplicaRPCClient(transport: transport)
-                .applyMembershipTransition(transition)
-        }
-        try await replica.store.applyMembershipTransition(
-            transition, localIdentity: replica.identity,
-            localAuthorRoles: try replica.activeRoles()
-        )
+        }.value
         connections.removeValue(forKey: device.descriptor.id)
         try await refreshTrustedDevices()
     }
@@ -562,65 +746,39 @@ final class DistributedMeshSupport {
     }
 
     func stopAgent(memberID: String) async throws {
-        guard let runtime, let replica = localReplica,
-              let group = activeTrustGroupID else {
-            throw DistributedMeshSupportError.networkNotReady
-        }
-        let location = try await DistributedHostController.locateAgent(
-            memberID: memberID, runtime: runtime,
-            replica: replica, group: group
-        )
-        if location.isLocal {
-            guard location.canStop,
-                  let resourceID = MeshResourceID(rawValue: memberID) else {
-                throw DistributedHostControllerError.agentNotControllable
-            }
-            let now = MeshHybridTimestamp(
-                wallTimeMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
-            )
-            let bindings = DistributedHostResourceBindings(
-                dataDirectory: replica.rootURL
-            )
-            let command = MeshHostCommand(
-                trustGroupID: group,
-                senderDeviceID: replica.identity.deviceID,
-                targetHostDeviceID: location.deviceID,
-                targetHostEndpointID: location.endpointID,
-                resourceID: resourceID,
-                expectedResourceGeneration: location.resourceGeneration,
-                action: .stop,
-                idempotencyKey: "local-stop-\(UUID().uuidString)",
-                createdAt: now,
-                deadlineMilliseconds: now.wallTimeMilliseconds + 30_000
-            )
-            switch await DistributedHostCommandExecutor(
-                bindings: bindings
-            ).execute(command) {
-            case .executed:
-                try await DistributedAgentTerminationFinalizer.finalize(
-                    resourceID: resourceID, replica: replica,
-                    group: group, bindings: bindings
-                )
-                return
-            case .failed(let code):
-                throw DistributedHostControllerError.commandFailed(code)
-            }
-        }
-        try await DistributedHostController.stopAgent(
-            memberID: memberID, runtime: runtime,
-            replica: replica, group: group
-        )
+        let client = try requireBackgroundServiceClient()
+        try await Task.detached {
+            try client.stopAgent(memberID: memberID)
+        }.value
     }
 
     func locateAgentHost(memberID: String) async throws -> DistributedAgentHostLocation {
-        guard let runtime, let replica = localReplica,
-              let group = activeTrustGroupID else {
-            throw DistributedMeshSupportError.networkNotReady
+        // Local Host state is the authority for a locally-owned resource. The
+        // Dashboard must not hide Attach or label a live local agent unknown
+        // while an unrelated remote peer is offline or the service is between
+        // presence refreshes.
+        if let replica = localReplica, let group = activeTrustGroupID,
+           let resourceID = MeshResourceID(rawValue: memberID) {
+            let endpointID = try replica.identity.endpointID()
+            if let local = try await replica.store.hostResource(
+                in: group, hostDeviceID: replica.identity.deviceID,
+                resourceID: resourceID
+            ), local.state == .active,
+               local.hostEndpointID == endpointID {
+                return DistributedAgentHostLocation(
+                    deviceID: replica.identity.deviceID,
+                    endpointID: endpointID,
+                    displayName: Host.current().localizedName ?? "This Mac",
+                    resourceGeneration: local.generation,
+                    allowedActions: local.allowedActions,
+                    isLocal: true
+                )
+            }
         }
-        return try await DistributedHostController.locateAgent(
-            memberID: memberID, runtime: runtime,
-            replica: replica, group: group
-        )
+        let client = try requireBackgroundServiceClient()
+        return try await Task.detached {
+            try client.locateAgent(memberID: memberID)
+        }.value
     }
 
     /// Re-runs Host-local proof for a legacy session. It can upgrade only an
@@ -698,6 +856,16 @@ final class DistributedMeshSupport {
             throw DistributedMeshSupportError.attachmentNotFound
         }
         if let data = try await registry.localData(for: attachment) { return data }
+        if runtime == nil {
+            let client = try requireBackgroundServiceClient()
+            try await Task.detached {
+                try client.fetchAttachment(attachment)
+            }.value
+            guard let data = try await registry.localData(for: attachment) else {
+                throw DistributedMeshSupportError.attachmentUnavailable
+            }
+            return data
+        }
         guard let runtime, let replica = localReplica,
               let group = activeTrustGroupID,
               let epoch = try await replica.store.membershipEpoch(for: group)
@@ -729,6 +897,22 @@ final class DistributedMeshSupport {
     /// writers converge after either side reconnects.
     @discardableResult
     func synchronizeOnce() async -> Int {
+        guard isProductModeEnabled else { return 0 }
+        if runtime == nil {
+            guard let replica = localReplica else { return 0 }
+            do {
+                _ = try await Task.detached {
+                    try DistributedMeshLocalServiceClient(
+                        dataDirectory: replica.rootURL
+                    ).request(.syncNow)
+                }.value
+                return 0
+            } catch {
+                lastSyncError =
+                    "Mesh service could not schedule synchronization: \(error)"
+                return 0
+            }
+        }
         guard let runtime, let replica = localReplica,
               let group = activeTrustGroupID
         else { return 0 }
@@ -750,6 +934,13 @@ final class DistributedMeshSupport {
                 in: group, membershipEpoch: epoch
             )
             trustedDevices = peers
+            let localVector = try? await replica.store.syncVector(for: group)
+            let shouldSendHint = localVector.map {
+                $0 != lastHintedVector
+            } ?? false
+            if shouldSendHint {
+                lastHintedVector = localVector
+            }
             let pendingTransition = try await replica.store.latestMembershipTransition(
                 for: group
             )
@@ -785,6 +976,11 @@ final class DistributedMeshSupport {
                             requestTimeoutMilliseconds: MeshReplicaRPCClient
                                 .backgroundRequestTimeoutMilliseconds
                         )
+                        if shouldSendHint {
+                            try? await client.sendSyncHint(
+                                group: group, membershipEpoch: epoch
+                            )
+                        }
                         let presenceFetcher:
                             (@Sendable () async throws -> MeshAgentPresenceSnapshot)?
                         // Presence is safe to probe on every authenticated
@@ -898,6 +1094,7 @@ final class DistributedMeshSupport {
     /// events are immutable/idempotent and the store serializes writes. The
     /// cap prevents an unreachable fleet from creating an unbounded task pile.
     func scheduleSynchronization() {
+        guard isProductModeEnabled else { return }
         guard synchronizationTasksInFlight < 2 else { return }
         synchronizationTasksInFlight += 1
         Task { [weak self] in
@@ -905,6 +1102,10 @@ final class DistributedMeshSupport {
             defer { self.synchronizationTasksInFlight -= 1 }
             _ = await self.synchronizeOnce()
         }
+    }
+
+    private func receiveSyncHint() {
+        scheduleSynchronization()
     }
 
     /// Membership recovery must remain active, but an offline phone must not
@@ -939,30 +1140,12 @@ final class DistributedMeshSupport {
     /// resources, only while structured hooks say the composer is safe, and
     /// types a fixed prompt that never contains untrusted message content.
     private func wakeIdleLocalAgents() async {
-        guard let replica = localReplica, let group = activeTrustGroupID else { return }
-        let presence = DistributedHookCLI.verifiedLocalAgentPresence(
-            rootURL: replica.rootURL
-        )
-        let chat = DistributedAgentChat(replica: replica, group: group)
-        let executor = DistributedHostCommandExecutor(
-            bindings: DistributedHostResourceBindings(dataDirectory: replica.rootURL)
-        )
-        for (memberID, observation) in presence {
-            guard observation.state == "idle" || observation.state == "stopped",
-                  let resourceID = MeshResourceID(rawValue: memberID),
-                  let messages = try? await chat.peek(memberID: memberID),
-                  let newest = messages.last, !messages.isEmpty,
-                  lastAgentWakeMessageIDs[memberID] != newest.stableID
-            else { continue }
-            let rooms = Array(Set(messages.map(\.room))).sorted().joined(separator: ", ")
-            let prompt = "You have new Pharos mesh messages in \(rooms). " +
-                "Run `pharos mesh recv --member \(memberID)` now, reply where needed, " +
-                "then return to the idle composer."
-            let outcome = await executor.pokeLocal(resourceID: resourceID, text: prompt)
-            if case .executed = outcome {
-                lastAgentWakeMessageIDs[memberID] = newest.stableID
-            }
+        guard let replica = localReplica, let group = activeTrustGroupID else {
+            return
         }
+        await agentWakeCoordinator.wakeEligibleAgents(
+            replica: replica, group: group
+        )
     }
 
     private func requireChatRegistry() throws -> DistributedChatRegistry {
@@ -977,6 +1160,16 @@ final class DistributedMeshSupport {
             throw DistributedMeshSupportError.noActiveTrustGroup
         }
         return attachmentRegistry
+    }
+
+    private func requireBackgroundServiceClient() throws
+        -> DistributedMeshLocalServiceClient {
+        guard let replica = localReplica else {
+            throw DistributedMeshSupportError.networkNotReady
+        }
+        return try DistributedMeshLocalServiceClient(
+            dataDirectory: replica.rootURL
+        )
     }
 
     private func pruneExpiredRemotePresence() {

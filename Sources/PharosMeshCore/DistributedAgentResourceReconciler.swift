@@ -62,9 +62,10 @@ public struct DistributedAgentResourceReconciler: Sendable {
 
         if let pane = presence.tmuxPane, !pane.isEmpty,
            let socket = presence.tmuxSocket, !socket.isEmpty {
+            let priorBinding = try? bindings.load(resourceID)
             do {
                 let seat = try seatInspector.resolve(socket: socket, pane: pane)
-                if let old = try? bindings.load(resourceID),
+                if let old = priorBinding,
                    old.tmuxSession != seat.sessionName {
                     try? bindings.remove(resourceID)
                     let resource = try await setActions(
@@ -94,6 +95,14 @@ public struct DistributedAgentResourceReconciler: Sendable {
                     resource: resource, readiness: .managed
                 )
             } catch {
+                if priorBinding != nil {
+                    let message =
+                        "host-seat-reconcile-failed resource=\(memberID) " +
+                        "error=\(error.localizedDescription)\n"
+                    try? FileHandle.standardError.write(
+                        contentsOf: Data(message.utf8)
+                    )
+                }
                 try? bindings.remove(resourceID)
                 let resource = try await setActions(
                     [.presence], resourceID: resourceID,
@@ -203,14 +212,16 @@ public enum DistributedHostCommandRecovery {
     /// Completes accepted/executing stop commands whose Host process crashed
     /// between journaling, killing tmux, roster cleanup, and signing the final
     /// receipt.
+    @discardableResult
     public static func recover(
         replica: MeshLocalReplica,
         group: MeshTrustGroupID,
         executor: DistributedHostCommandExecutor
-    ) async {
+    ) async -> Int {
         guard let receipts = try? await replica.store.unfinishedCommandReceipts(
             on: replica.identity
-        ) else { return }
+        ) else { return 0 }
+        var recovered = 0
         for signed in receipts where signed.receipt.action == .stop {
             var receipt = signed
             if receipt.receipt.state == .accepted {
@@ -240,19 +251,23 @@ public enum DistributedHostCommandRecovery {
                         at: recoveryTimestamp(after: receipt.receipt.updatedAt),
                         result: result
                     )
+                    recovered += 1
                 } catch {
                     // Keep the executing receipt durable; the next Host launch
                     // retries the idempotent stop/finalization sequence.
                 }
             case .failed(let code):
-                _ = try? await replica.store.finishExecution(
+                if (try? await replica.store.finishExecution(
                     commandID: receipt.receipt.commandID,
                     on: replica.identity, outcome: .failed,
                     at: recoveryTimestamp(after: receipt.receipt.updatedAt),
                     failureCode: code
-                )
+                )) != nil {
+                    recovered += 1
+                }
             }
         }
+        return recovered
     }
 
     private static func now() -> MeshHybridTimestamp {

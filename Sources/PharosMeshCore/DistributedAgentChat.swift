@@ -397,7 +397,7 @@ public enum DistributedAgentCLI {
     public static let commands: Set<String> = [
         "capabilities", "create", "list", "history", "join", "claim", "say", "send",
         "recv", "who", "leave", "rename-member", "rename", "delete", "rm",
-        "attachment", "stop", "attach-local", "presence",
+        "attachment", "stop", "attach-local", "presence", "service",
     ]
 
     public static func run(_ args: [String]) async -> Int32 {
@@ -416,15 +416,20 @@ public enum DistributedAgentCLI {
             } else {
                 replica = try MeshLocalReplica.openDefault(headless: true)
             }
+            if command == "service" {
+                return try runServiceCommand(args, replica: replica)
+            }
             let group = try await replica.ensureActiveTrustGroup()
             let agent = DistributedAgentChat(replica: replica, group: group)
             let chat = DistributedChatRegistry(replica: replica, group: group)
+            var schedulesReplication = false
             switch command {
             case "capabilities":
                 print("distributed-mesh-v1\nlocal-first\nfield-level-conflicts\nagent-delivery-v1\nagent-presence-v1\nblob-sha256")
             case "create":
                 guard args.count >= 2 else { return usage("create <room>") }
                 _ = try await chat.createRoom(named: args[1]); print("created \(args[1])")
+                schedulesReplication = true
             case "list":
                 let rooms = try await agent.rooms()
                 if rooms.isEmpty { print("(no rooms)") }
@@ -448,6 +453,7 @@ public enum DistributedAgentCLI {
                     )
                 }
                 print("joined \(args[1]) as \(args[2])")
+                schedulesReplication = true
             case "claim":
                 guard let memberID = option("--member", in: args)
                         ?? ProcessInfo.processInfo.environment["PHAROS_MESH_SESSION"],
@@ -513,6 +519,7 @@ public enum DistributedAgentCLI {
                     throw DistributedAgentCLIError.agentResourceNotLocal
                 }
                 print("claimed \(memberID) on this Host")
+                schedulesReplication = true
             case "say":
                 guard args.count >= 4,
                       let memberID = option("--member", in: args)
@@ -527,6 +534,7 @@ public enum DistributedAgentCLI {
                     replyToID: option("--reply", in: args), attachments: attachments
                 )
                 print("sent")
+                schedulesReplication = true
             case "send":
                 guard args.count >= 2, !args[1].hasPrefix("--"),
                       let memberID = option("--member", in: args)
@@ -542,6 +550,7 @@ public enum DistributedAgentCLI {
                     replyToID: option("--reply", in: args), attachments: attachments
                 )
                 print("sent")
+                schedulesReplication = true
             case "recv":
                 guard let memberID = option("--member", in: args)
                         ?? ProcessInfo.processInfo.environment["PHAROS_MESH_SESSION"],
@@ -575,103 +584,53 @@ public enum DistributedAgentCLI {
                     }
                     return 0
                 }
-                let runtime = try await IrohEndpointRuntime.bind(
-                    secretKey: replica.identity.irohSecretKeyBytes(),
-                    expectedEndpointID: try replica.identity.endpointID()
-                )
-                do {
-                    guard let epoch = try await replica.store.membershipEpoch(
-                        for: group
-                    ) else { throw DistributedAgentCLIError.missingMembership }
-                    let peers = try await replica.store.trustedDevices(
-                        in: group, membershipEpoch: epoch
-                    ).filter { $0.descriptor.roles.contains(.host) }
-                    var count = 0
-                    for peer in peers {
-                        let transport = IrohMeshTransport(
-                            runtime: runtime,
-                            remote: MeshIrohEndpointAddress(
-                                endpointID: peer.descriptor.endpointID,
-                                ticket: peer.addressTicket
-                            )
-                        )
-                        let client = MeshReplicaRPCClient(transport: transport)
-                        let snapshot: MeshAgentPresenceSnapshot
-                        do {
-                            snapshot = try await client.hostPresence(
-                                group: group, membershipEpoch: epoch
-                            )
-                        } catch {
-                            FileHandle.standardError.write(Data(
-                                "presence \(peer.descriptor.displayName): \(error)\n".utf8
-                            ))
-                            continue
-                        }
-                        guard snapshot.hostDeviceID == peer.descriptor.id,
-                              snapshot.hostEndpointID == peer.descriptor.endpointID,
-                              snapshot.isFresh(at: Int64(
-                                Date().timeIntervalSince1970 * 1_000
-                              )) else {
-                            FileHandle.standardError.write(Data(
-                                "presence \(peer.descriptor.displayName): rejected stale or mismatched snapshot\n".utf8
-                            ))
-                            continue
-                        }
-                        for record in snapshot.records {
-                            guard let resource = try? await client.hostResource(
-                                record.resourceID, group: group,
-                                membershipEpoch: epoch
-                            ), resource.state == .active,
-                              resource.hostDeviceID == peer.descriptor.id,
-                              resource.hostEndpointID == peer.descriptor.endpointID
-                            else { continue }
-                            count += 1
-                            print([
-                                peer.descriptor.displayName,
-                                record.resourceID.rawValue,
-                                record.state.rawValue,
-                                record.kind ?? "unknown",
-                                String(record.observedAtMilliseconds),
-                            ].joined(separator: "\t"))
-                        }
-                    }
-                    if count == 0 { print("(no verified remote agent presence)") }
-                    try await runtime.close()
-                } catch {
-                    try? await runtime.close()
-                    throw error
+                guard let status = try DistributedMeshLocalServiceClient(
+                    dataDirectory: replica.rootURL
+                ).request(.status).status else {
+                    throw DistributedMeshLocalServiceError.invalidFrame
                 }
+                let peers = try await replica.store.trustedDevices(
+                    in: group, membershipEpoch: status.membershipEpoch
+                )
+                let names = Dictionary(uniqueKeysWithValues: peers.map {
+                    ($0.descriptor.id, $0.descriptor.displayName)
+                })
+                var count = 0
+                for snapshot in status.presence {
+                    for record in snapshot.records {
+                        count += 1
+                        print([
+                            names[snapshot.hostDeviceID] ?? "Mesh Host",
+                            record.resourceID.rawValue,
+                            record.state.rawValue,
+                            record.kind ?? "unknown",
+                            String(record.observedAtMilliseconds),
+                        ].joined(separator: "\t"))
+                    }
+                }
+                if count == 0 { print("(no verified remote agent presence)") }
             case "leave":
                 guard args.count >= 3 else { return usage("leave <room> <nick|member-id> [--member ID]") }
                 let memberID = try await resolveMemberID(
                     room: args[1], value: option("--member", in: args) ?? args[2], chat: chat
                 )
                 try await agent.leave(room: args[1], memberID: memberID); print("left \(args[1])")
+                schedulesReplication = true
             case "stop":
                 guard args.count >= 3 else { return usage("stop <room> <nick|member-id> [--member ID]") }
                 let memberID = try await resolveMemberID(
                     room: args[1], value: option("--member", in: args) ?? args[2], chat: chat
                 )
-                let runtime = try await IrohEndpointRuntime.bind(
-                    secretKey: replica.identity.irohSecretKeyBytes(),
-                    expectedEndpointID: try replica.identity.endpointID()
-                )
-                do {
-                    try await DistributedHostController.stopAgent(
-                        memberID: memberID, runtime: runtime,
-                        replica: replica, group: group
-                    )
-                    try await runtime.close()
-                } catch {
-                    try? await runtime.close()
-                    throw error
-                }
+                try DistributedMeshLocalServiceClient(
+                    dataDirectory: replica.rootURL
+                ).stopAgent(memberID: memberID)
                 for joinedRoom in try await chat.rooms() {
                     if try await chat.members(in: joinedRoom).contains(where: { $0.id == memberID }) {
                         try await chat.leave(room: joinedRoom, memberID: memberID)
                     }
                 }
                 print("stopped \(args[2])")
+                schedulesReplication = true
             case "attach-local":
                 guard args.count >= 2,
                       let resourceID = MeshResourceID(rawValue: args[1]),
@@ -693,13 +652,16 @@ public enum DistributedAgentCLI {
                 )
                 try await agent.renameMember(room: args[1], memberID: memberID, to: args[3])
                 print("renamed member to \(args[3])")
+                schedulesReplication = true
             case "rename":
                 guard args.count >= 3 else { return usage("rename <room> <new-name>") }
                 try await chat.renameRoom(try await agent.room(named: args[1]), to: args[2])
                 print("renamed \(args[1]) to \(args[2])")
+                schedulesReplication = true
             case "delete", "rm":
                 guard args.count >= 2 else { return usage("delete <room>") }
                 try await chat.deleteRoom(try await agent.room(named: args[1])); print("deleted \(args[1])")
+                schedulesReplication = true
             case "attachment":
                 guard args.count >= 3 else { return usage("attachment put|get …") }
                 let registry = DistributedAttachmentRegistry(replica: replica, group: group)
@@ -711,6 +673,7 @@ public enum DistributedAgentCLI {
                         mediaType: option("--mime", in: args) ?? "application/octet-stream"
                     )
                     print(value.id)
+                    schedulesReplication = true
                 } else if args[1] == "get" {
                     guard let metadata = try await registry.metadata(id: args[2]),
                           let data = try await registry.localData(for: metadata) else {
@@ -722,6 +685,9 @@ public enum DistributedAgentCLI {
                 } else { return usage("attachment put|get …") }
             default:
                 return 2
+            }
+            if schedulesReplication {
+                reportReplicationScheduling(replica: replica)
             }
             return 0
         } catch {
@@ -762,6 +728,107 @@ public enum DistributedAgentCLI {
     private static func option(_ name: String, in args: [String]) -> String? {
         guard let index = args.firstIndex(of: name), index + 1 < args.count else { return nil }
         return args[index + 1]
+    }
+
+    private static func reportReplicationScheduling(
+        replica: MeshLocalReplica
+    ) {
+        do {
+            _ = try DistributedMeshLocalServiceClient(
+                dataDirectory: replica.rootURL
+            ).request(.syncNow)
+            print("committed locally; replication scheduled")
+        } catch {
+            print(
+                "committed locally; Mesh service unavailable, " +
+                "replication pending"
+            )
+        }
+    }
+
+    private static func runServiceCommand(
+        _ args: [String], replica: MeshLocalReplica
+    ) throws -> Int32 {
+        let operation = args.dropFirst().first ?? "status"
+        let helper: URL
+        if let value = option("--helper", in: args) {
+            guard value.hasPrefix("/") else {
+                return usage(
+                    "service install [--helper ABSOLUTE-PATH] | " +
+                    "status [--json] | restart | repair | uninstall"
+                )
+            }
+            helper = URL(fileURLWithPath: value)
+        } else if let resolved = DistributedMeshLaunchAgent.defaultSourceHelper() {
+            helper = resolved
+        } else if operation == "status" || operation == "uninstall" {
+            // These operations do not read the source helper, but the plan
+            // still requires a deterministic absolute placeholder.
+            helper = replica.rootURL.appendingPathComponent(
+                "unavailable-pharos-mesh"
+            )
+        } else {
+            throw DistributedMeshLaunchAgentError.helperNotFound
+        }
+        let plan = try DistributedMeshLaunchAgentPlan(
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            dataDirectory: replica.rootURL, sourceHelper: helper
+        )
+        switch operation {
+        case "install":
+            try DistributedMeshLaunchAgent.install(plan)
+            print("installed \(DistributedMeshLaunchAgentPlan.label)")
+        case "restart":
+            try DistributedMeshLaunchAgent.restart(plan)
+            print("restarted \(DistributedMeshLaunchAgentPlan.label)")
+        case "repair":
+            try DistributedMeshLaunchAgent.install(plan)
+            print("repaired \(DistributedMeshLaunchAgentPlan.label)")
+        case "uninstall":
+            try DistributedMeshLaunchAgent.uninstall(plan)
+            print("uninstalled \(DistributedMeshLaunchAgentPlan.label); Mesh data preserved")
+        case "status":
+            let status = DistributedMeshLaunchAgent.status(plan)
+            if args.contains("--json") {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+                print(String(
+                    decoding: try encoder.encode(status), as: UTF8.self
+                ))
+            } else {
+                print("installed\t\(status.installed ? "yes" : "no")")
+                print("loaded\t\(status.loaded ? "yes" : "no")")
+                if let restartCount = status.restartCount {
+                    print("restarts\t\(restartCount)")
+                }
+                if let owner = status.lockOwner {
+                    print("owner\t\(owner.owner)\tpid=\(owner.processID)")
+                }
+                if let runtime = status.runtime {
+                    print(
+                        "network\t\(runtime.networkState.rawValue)\t" +
+                        "build=\(runtime.buildID)"
+                    )
+                    if let recovered = runtime.hostCommandRecoveryCount {
+                        print("host-command-recoveries\t\(recovered)")
+                    }
+                    if let pending = runtime.pendingLocalEventCount {
+                        print("pending-events\t\(pending)")
+                    }
+                } else {
+                    print("network\tunavailable")
+                }
+                if let diagnostic = status.diagnostic {
+                    print("diagnostic\t\(diagnostic)")
+                }
+            }
+        default:
+            return usage(
+                "service install [--helper ABSOLUTE-PATH] | " +
+                "status [--json] | restart | repair | uninstall"
+            )
+        }
+        return 0
     }
 
     private static func targets(in args: [String], text: String) -> [String] {
@@ -1145,11 +1212,21 @@ public enum DistributedHookCLI {
             .max { $0.value.updatedAt < $1.value.updatedAt }?.key
     }
 
+    static func sessionID(
+        payload: [String: Any]?,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        environment["PHAROS_MESH_SESSION"] ?? (payload?["session_id"] as? String)
+    }
+
     public static func run(_ mode: String, args: [String]) async -> Int32 {
         do {
             let payload = readHookPayload()
-            let session = (payload?["session_id"] as? String)
-                ?? ProcessInfo.processInfo.environment["PHAROS_MESH_SESSION"]
+            // A Pharos spawn preallocates the stable Mesh resource ID. Agent
+            // runtimes may emit their own resume/session ID in hook payloads;
+            // the explicit launch contract wins so membership, presence and
+            // Host control never split across two identities.
+            let session = sessionID(payload: payload)
             let replica = try MeshLocalReplica.openDefault(headless: true)
             let group = try await replica.ensureActiveTrustGroup()
             if mode == "session-start" {

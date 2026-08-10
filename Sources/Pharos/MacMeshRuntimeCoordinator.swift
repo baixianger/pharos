@@ -27,14 +27,10 @@ enum MacMeshRuntimeCoordinator {
     static func requiresExclusiveRuntime(meshArguments: [String]) -> Bool {
         guard let command = meshArguments.first else { return false }
         if command == "pair" {
-            guard meshArguments.count >= 2 else { return false }
-            return ["invite", "create", "accept", "revoke", "remove"]
-                .contains(meshArguments[1])
+            return false
         }
-        if command == "presence" {
-            return !meshArguments.contains("--local")
-        }
-        return command == "stop"
+        if command == "presence" { return false }
+        return false
     }
 
     @MainActor

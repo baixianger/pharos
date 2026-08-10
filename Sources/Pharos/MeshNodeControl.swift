@@ -4,8 +4,12 @@ import PharosMeshCore
 /// App-side façade for durable Node commands. SSH remains a bootstrap/rescue
 /// fallback only when no matching live Node exists.
 enum MeshNodeControl {
-    static func activeNode(for host: String?) -> MeshNodeInfo? {
+    static func activeNode(for host: String?, nodeID: String? = nil) -> MeshNodeInfo? {
         let nodes = MeshClient.send(MeshRequest(cmd: "node-list")).nodes ?? []
+        if let nodeID, !nodeID.isEmpty,
+           let exact = nodes.first(where: { $0.id == nodeID }) {
+            return exact
+        }
         if host == nil {
             if let ip = HostIdentity.tailscaleIP,
                let match = nodes.first(where: { $0.tailscaleIP == ip }) { return match }
