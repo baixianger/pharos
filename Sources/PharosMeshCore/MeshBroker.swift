@@ -163,14 +163,15 @@ public struct MeshNodeStopPayload: Codable, Sendable, Equatable {
 public struct MeshNodeSpawnPayload: Codable, Sendable, Equatable {
     public var projectID: String
     public var sessionName: String
+    public var memberID: String?
     public var agent: String
     public var yolo: Bool
     public var room: String?
     public var nick: String?
 
-    public init(projectID: String, sessionName: String, agent: String, yolo: Bool,
+    public init(projectID: String, sessionName: String, memberID: String? = nil, agent: String, yolo: Bool,
                 room: String? = nil, nick: String? = nil) {
-        self.projectID = projectID; self.sessionName = sessionName; self.agent = agent
+        self.projectID = projectID; self.sessionName = sessionName; self.memberID = memberID; self.agent = agent
         self.yolo = yolo; self.room = room; self.nick = nick
     }
 }

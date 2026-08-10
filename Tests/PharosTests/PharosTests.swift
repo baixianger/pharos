@@ -253,8 +253,16 @@ final class AgentKindCommandTests: XCTestCase {
     func testMeshJoinBriefUsesHookSessionIdentity() {
         let brief = MeshSpawn.joinBrief(room: "room", nick: "agent", kind: .codex,
                                         session: "tmux-session-id")
-        XCTAssertTrue(brief.contains("pharos mesh join room agent --kind codex"))
-        XCTAssertFalse(brief.contains("--session tmux-session-id"))
+        XCTAssertTrue(brief.contains("pharos mesh join room agent --session tmux-session-id --kind codex"))
+        XCTAssertTrue(brief.contains("pharos mesh send \"agent joined\""))
+    }
+
+    func testMeshSpawnUsesDistinctSocketPerMemberIdentity() {
+        let one = MeshSpawn.localTmuxSocket(memberID: "member-one")
+        let two = MeshSpawn.localTmuxSocket(memberID: "member-two")
+        XCTAssertNotEqual(one, two)
+        XCTAssertTrue(one.hasSuffix("/.pharos/tmux/mesh-member-one.sock"))
+        XCTAssertTrue(two.hasSuffix("/.pharos/tmux/mesh-member-two.sock"))
     }
 
     func testCodexResolverIncludesDesktopAppAndVersionManagerShims() {

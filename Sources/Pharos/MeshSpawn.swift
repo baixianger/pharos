@@ -100,7 +100,7 @@ enum MeshSpawn {
             // `mesh join` resolves that id from the current tmux seat. Using
             // the tmux name made later Stop/@mention hooks address a different
             // identity and left the real session stuck busy.
-            + "pharos mesh join \(room) \(nick) --kind \(kind.rawValue). "
+            + "pharos mesh join \(room) \(nick) --session \(session) --kind \(kind.rawValue). "
             + "Then run  pharos mesh send \"\(nick) joined\". "
             + "Return to the idle composer after announcing; do not run a listener or polling command. "
             + "Pharos hooks and nudges will wake you for new messages. Do nothing else."
@@ -122,10 +122,12 @@ enum MeshSpawn {
         }
         if let projectID, let node = MeshNodeControl.activeNode(for: host) {
             let name = sessionName(room: room, nick: nick)
+            let memberID = UUID().uuidString.lowercased()
             onProgress(Progress(phase: .booting, detail: "asking Node \(node.host) to start \(kind.rawValue)…"))
             let command = await MeshNodeControl.spawn(
                 node: node,
                 payload: MeshNodeSpawnPayload(projectID: projectID, sessionName: name,
+                                              memberID: memberID,
                                               agent: kind.rawValue, yolo: true,
                                               room: room, nick: nick)
             )
@@ -136,7 +138,7 @@ enum MeshSpawn {
             onProgress(Progress(phase: .joining, detail: "waiting for \(nick) to join \(room)…"))
             for _ in 0..<40 {
                 try? await Task.sleep(for: .seconds(1))
-                if didJoin(room: room, nick: nick) {
+                if didJoin(room: room, nick: nick, memberID: memberID) {
                     onProgress(Progress(phase: .joined, detail: "joined \(room) via Node"))
                     return
                 }
@@ -181,44 +183,55 @@ enum MeshSpawn {
             return
         }
         let name = sessionName(room: room, nick: nick)
-        _ = Shell.run(tmux, ["kill-session", "-t", name])   // clear a stale one
-        let command = "/usr/bin/env PHAROS_MESH_SESSION='\(name)' "
+        let memberID = UUID().uuidString.lowercased()
+        let socket = localTmuxSocket(memberID: memberID)
+        try? FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: socket).deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        _ = runTmux(tmux, socket: socket, ["kill-server"])
+        try? FileManager.default.removeItem(atPath: socket)
+        let command = "/usr/bin/env PHAROS_MESH_SESSION='\(memberID)' "
             + launchCommand(kind, resolution: resolution)
-        guard Shell.run(tmux, ["new-session", "-d", "-s", name, "-c", dir,
-                               "-x", "200", "-y", "50", command]).ok else {
+        guard runTmux(tmux, socket: socket, ["new-session", "-d", "-s", name, "-c", dir,
+                                             "-x", "200", "-y", "50", command]).ok else {
             onProgress(Progress(phase: .failed, detail: "couldn't start the tmux session")); return
         }
         // Size the window to whichever client is currently driving it, instead of
         // the smallest attached one — so a phone/desktop attaching later doesn't
         // make the agent's TUI redraw-fight (the "flushing" screen). Best-effort.
-        _ = Shell.run(tmux, ["set-option", "-t", name, "window-size", "latest"])
-        _ = Shell.run(tmux, ["set-window-option", "-t", name, "aggressive-resize", "on"])
+        _ = runTmux(tmux, socket: socket, ["set-option", "-t", name, "window-size", "latest"])
+        _ = runTmux(tmux, socket: socket, ["set-window-option", "-t", name, "aggressive-resize", "on"])
         let where_ = workDir.isDefault ? "" : " in \((dir as NSString).abbreviatingWithTildeInPath)"
         onProgress(Progress(phase: .booting, detail: "starting \(kind.rawValue)\(where_)…"))
 
-        guard waitForBoot(tmux, name) else {
+        guard waitForBoot(tmux, socket: socket, name) else {
             onProgress(Progress(phase: .failed,
-                                detail: "\(kind.rawValue) didn't reach its prompt — peek: tmux attach -t \(name)"))
+                                detail: "\(kind.rawValue) didn't reach its prompt — peek: tmux -S \(socket) attach -t \(name)"))
             return
         }
         onProgress(Progress(phase: .joining, detail: "asking it to join \(room)…"))
-        sendLine(tmux, name, joinBrief(room: room, nick: nick, kind: kind, session: name))
+        sendLine(tmux, socket: socket, name,
+                 joinBrief(room: room, nick: nick, kind: kind, session: memberID))
 
         // Confirm it actually joined (~40s).
         for _ in 0..<20 {
             usleep(2_000_000)
-            if didJoin(room: room, nick: nick) {
+            if didJoin(room: room, nick: nick, memberID: memberID) {
                 onProgress(Progress(phase: .joined, detail: "joined \(room)")); return
             }
         }
         onProgress(Progress(phase: .failed,
-                            detail: "spawned but hasn't joined yet — check: tmux attach -t \(name)"))
+                            detail: "spawned but hasn't joined yet — check: tmux -S \(socket) attach -t \(name)"))
     }
 
     /// True once `nick` is a member of `room` per the broker.
-    static func didJoin(room: String, nick: String) -> Bool {
-        let rooms = MeshClient.send(MeshRequest(cmd: "list")).rooms ?? []
-        return rooms.first { $0.name == room }?.members.contains(nick) ?? false
+    static func didJoin(room: String, nick: String, memberID: String? = nil) -> Bool {
+        let roster = MeshClient.send(MeshRequest(cmd: "who"))
+        return roster.members?.contains { member in
+            member.nick == nick && member.rooms.contains(room)
+                && (memberID == nil || member.id == memberID)
+        } ?? false
     }
 
     // MARK: tmux drive
@@ -253,17 +266,17 @@ enum MeshSpawn {
     }
 
     /// Poll the pane until the agent's real composer appears. ~40s ceiling.
-    private static func waitForBoot(_ tmux: String, _ name: String) -> Bool {
+    private static func waitForBoot(_ tmux: String, socket: String, _ name: String) -> Bool {
         for _ in 0..<20 {
-            let pane = Shell.run(tmux, ["capture-pane", "-p", "-t", name]).out
+            let pane = runTmux(tmux, socket: socket, ["capture-pane", "-p", "-t", name]).out
             switch bootScreenState(pane) {
             case .ready:
                 return true
             case .skipUpdate:
-                _ = Shell.run(tmux, ["send-keys", "-t", name, "Down", "Enter"])
+                _ = runTmux(tmux, socket: socket, ["send-keys", "-t", name, "Down", "Enter"])
                 usleep(1_500_000)
             case .submitInterstitial:
-                _ = Shell.run(tmux, ["send-keys", "-t", name, "Enter"])
+                _ = runTmux(tmux, socket: socket, ["send-keys", "-t", name, "Enter"])
                 usleep(1_500_000)
             case .waiting:
                 usleep(2_000_000)
@@ -278,5 +291,22 @@ enum MeshSpawn {
         _ = Shell.run(tmux, ["send-keys", "-t", name, "-l", "--", text])
         usleep(400_000)
         _ = Shell.run(tmux, ["send-keys", "-t", name, "Enter"])
+    }
+
+    private static func sendLine(_ tmux: String, socket: String, _ name: String, _ text: String) {
+        _ = runTmux(tmux, socket: socket, ["send-keys", "-t", name, "-l", "--", text])
+        usleep(400_000)
+        _ = runTmux(tmux, socket: socket, ["send-keys", "-t", name, "Enter"])
+    }
+
+    private static func runTmux(_ tmux: String, socket: String, _ args: [String]) -> Shell.Result {
+        Shell.run(tmux, ["-S", socket] + args)
+    }
+
+    static func localTmuxSocket(memberID: String) -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".pharos/tmux", isDirectory: true)
+            .appendingPathComponent("mesh-\(safe(memberID)).sock")
+            .path
     }
 }

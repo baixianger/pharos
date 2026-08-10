@@ -161,7 +161,8 @@ enum MeshNode {
         // report "room not found" for rooms that exist on the central broker.
         // Pass the endpoint explicitly so hooks and the agent CLI use the same
         // broker as the node.  Keep the session identity separate and stable.
-        var environment = ["PHAROS_MESH_SESSION=\(payload.sessionName)"]
+        let memberID = payload.memberID ?? payload.sessionName
+        var environment = ["PHAROS_MESH_SESSION=\(memberID)"]
         if let endpoint = MeshClient.remoteEndpoint, !endpoint.isEmpty {
             environment.append("PHAROS_MESH_TCP=\(endpoint)")
         }
@@ -203,10 +204,11 @@ enum MeshNode {
             update(command, state: .succeeded, result: "session already exists")
             return
         }
+        let memberID = payload.memberID ?? payload.sessionName
 
         let roster = MeshClient.send(MeshRequest(cmd: "who"))
         if roster.ok, roster.members?.contains(where: {
-            $0.nick == nick && $0.rooms.contains(room) && owns($0)
+            $0.id == (payload.memberID ?? $0.id) && $0.nick == nick && $0.rooms.contains(room) && owns($0)
                 && $0.tmuxSocket == nodeTmuxSocket
         }) == true {
             update(command, state: .running, result: "agent joined room")
@@ -235,7 +237,7 @@ enum MeshNode {
             return
         }
         if MeshPaneSafety.paneLooksIdle(capture.output) {
-            let prompt = "Join the Pharos mesh room \(room) as \(nick). Run pharos mesh join \(room) \(nick) --kind \(payload.agent), then run pharos mesh send \"\(nick) joined\" --room \(room), then return to the idle composer. Use the session identity supplied by the SessionStart hook; do not invent or pass the tmux session name."
+            let prompt = "Join the Pharos mesh room \(room) as \(nick). Run pharos mesh join \(room) \(nick) --session \(memberID) --kind \(payload.agent), then run pharos mesh send \"\(nick) joined\" --room \(room), then return to the idle composer. Use this exact session identity; do not use the tmux session name."
             let typed = run(tmux, prefix + ["send-keys", "-t", payload.sessionName, "-l", "--", prompt])
             if typed.ok { usleep(350_000) }
             let submitted = typed.ok
