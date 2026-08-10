@@ -5,20 +5,83 @@ import PharosMeshProtocol
 import UIKit
 
 struct MeshSetupGuide: View {
+    @Environment(AppSettings.self) private var settings
     @Environment(PairingCoordinator.self) private var pairing
     @Environment(DistributedMeshSupport.self) private var distributedMesh
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showsScanner = false
     @State private var showsManualEntry = false
     @State private var manualLink = ""
+    @State private var meshHost = ""
+    @State private var meshPort = "47800"
     @State private var isCreating = false
     @State private var createError: String?
     @State private var isResetting = false
     @State private var showsResetConfirmation = false
 
     var body: some View {
+        if PharosMeshRuntimeMode.usesDistributedMesh {
+            distributedBody
+        } else {
+            legacyBody
+        }
+    }
+
+    private var legacyBody: some View {
+        return NavigationStack {
+            Form {
+                Section {
+                    Label("Connect to your Mesh Broker", systemImage: "network")
+                        .font(.headline)
+                    Text("Use the private Tailscale address of the Mac running the Pharos Broker. Agents still run over SSH and tmux on your configured hosts.")
+                        .foregroundStyle(.secondary)
+                }
+                Section("Broker address") {
+                    TextField("Tailscale host or IP", text: $meshHost)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Port", text: Binding(
+                        get: { meshPort },
+                        set: { meshPort = $0 }
+                    ))
+                    Button("Save and connect") {
+                        settings.updateMesh(
+                            host: meshHost,
+                            port: UInt16(meshPort) ?? settings.mesh.port
+                        )
+                        pairing.showsSetupGuide = false
+                    }
+                    .disabled(meshHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                Section {
+                    Text("You can also pair with a Broker link from Settings → Pair Broker.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Button("Open pairing scanner") { showsScanner = true }
+                }
+            }
+            .navigationTitle("Connect to Pharos")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { pairing.showsSetupGuide = false }
+                }
+            }
+            .sheet(isPresented: $showsScanner) {
+                PairingScannerSheet(allowsLegacyBrokerLinks: true) { value in
+                    showsScanner = false
+                    pairing.receive(value)
+                }
+            }
+            .onAppear {
+                meshHost = settings.mesh.host
+                meshPort = String(settings.mesh.port)
+            }
+        }
+    }
+
+    private var distributedBody: some View {
         @Bindable var pairing = pairing
-        NavigationStack {
+        return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     if horizontalSizeClass == .regular {

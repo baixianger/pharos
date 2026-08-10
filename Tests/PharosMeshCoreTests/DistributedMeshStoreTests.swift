@@ -235,8 +235,16 @@ final class DistributedMeshStoreTests: XCTestCase {
         )
 
         let executionCounter = HostExecutionCounter()
+        let syncHintCounter = SyncHintCounter()
+        let pendingBeforeSync = try await hostStore.pendingEventCount(
+            for: fixture.group, peers: [controller.deviceID]
+        )
+        XCTAssertEqual(pendingBeforeSync, 1)
         let server = MeshReplicaRPCServer(
             store: hostStore, hostIdentity: host,
+            syncHintHandler: { _ in
+                await syncHintCounter.record()
+            },
             hostPresenceProvider: {
                 MeshAgentPresenceSnapshot(
                     hostDeviceID: host.deviceID,
@@ -261,6 +269,11 @@ final class DistributedMeshStoreTests: XCTestCase {
             advertisedAddressTicket: "fresh-controller-address-ticket"
         )
         let client = MeshReplicaRPCClient(transport: transport)
+        try await client.sendSyncHint(
+            group: fixture.group, membershipEpoch: 1
+        )
+        let syncHintCount = await syncHintCounter.count
+        XCTAssertEqual(syncHintCount, 1)
         let report = try await MeshReplicaSyncSession(
             store: clientStore, client: client
         ).synchronize(group: fixture.group, membershipEpoch: 1, rangeLimit: 1)
@@ -290,6 +303,10 @@ final class DistributedMeshStoreTests: XCTestCase {
             for: fixture.group, peer: controller.deviceID
         )
         XCTAssertEqual(acknowledged, hostVector)
+        let pendingAfterSync = try await hostStore.pendingEventCount(
+            for: fixture.group, peers: [controller.deviceID]
+        )
+        XCTAssertEqual(pendingAfterSync, 0)
 
         let fetchedManifest = try await client.blobManifest(
             manifest.digest, group: fixture.group, membershipEpoch: 1
@@ -356,6 +373,17 @@ final class DistributedMeshStoreTests: XCTestCase {
         let unauthorized = MeshReplicaRPCClient(transport: ReplicaRPCServerTransport(
             server: server, remoteEndpointID: try unknown.endpointID()
         ))
+        do {
+            try await unauthorized.sendSyncHint(
+                group: fixture.group, membershipEpoch: 1
+            )
+            XCTFail("an unpaired Endpoint ID must not send a sync hint")
+        } catch {
+            XCTAssertEqual(
+                error as? MeshReplicaRPCError,
+                .remoteFailure("peer-not-trusted")
+            )
+        }
         do {
             _ = try await unauthorized.syncVector(
                 for: fixture.group, membershipEpoch: 1
@@ -2055,13 +2083,14 @@ final class DistributedMeshStoreTests: XCTestCase {
         )
         XCTAssertTrue(claim.shouldExecute)
 
-        await DistributedHostCommandRecovery.recover(
+        let recoveryCount = await DistributedHostCommandRecovery.recover(
             replica: replica, group: fixture.group,
             executor: DistributedHostCommandExecutor(
                 bindings: bindings,
                 seatInspector: MissingTmuxSeatInspector()
             )
         )
+        XCTAssertEqual(recoveryCount, 1)
 
         let storedReceipt = try await store.commandReceipt(id: command.id)
         let recovered = try XCTUnwrap(storedReceipt)
@@ -3433,6 +3462,14 @@ private actor HostExecutionCounter {
     func record(_ command: MeshCommandID) {
         count += 1
         commands.append(command)
+    }
+}
+
+private actor SyncHintCounter {
+    private(set) var count = 0
+
+    func record() {
+        count += 1
     }
 }
 

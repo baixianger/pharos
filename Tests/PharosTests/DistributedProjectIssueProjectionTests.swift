@@ -382,15 +382,19 @@ final class DistributedProjectIssueProjectionTests: XCTestCase {
         ))
     }
 
-    func testDefaultProjectAndIssueCLIMutatesDistributedReplicaAndTrash() async throws {
+    func testOptedInDistributedProjectAndIssueCLIMutatesReplicaAndTrash() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "pharos-distributed-cli-\(UUID().uuidString)", isDirectory: true
         )
         defer { try? FileManager.default.removeItem(at: root) }
         setenv("PHAROS_DISTRIBUTED_DATA_DIR", root.path, 1)
+        setenv("PHAROS_DISTRIBUTED_MESH", "1", 1)
         unsetenv("PHAROS_LEGACY_BROKER")
         unsetenv("PHAROS_REGISTRY")
-        defer { unsetenv("PHAROS_DISTRIBUTED_DATA_DIR") }
+        defer {
+            unsetenv("PHAROS_DISTRIBUTED_DATA_DIR")
+            unsetenv("PHAROS_DISTRIBUTED_MESH")
+        }
 
         let addProjectStatus = await CLI.run([
             "add", "CLI Project", "--path", "/host-only/cli-project",

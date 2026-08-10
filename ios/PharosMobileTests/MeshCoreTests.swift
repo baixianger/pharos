@@ -217,6 +217,27 @@ struct MeshCoreTests {
         #expect(RosterIndex.idsByNick(index)["codex"] == Set(["session-a", "session-b"]))
     }
 
+    @Test func mentionRosterUsesDurableMembershipInsteadOfRemotePresence() {
+        let unavailable = MeshMember(
+            id: "agent-unavailable", nick: "pharos-dev", state: nil,
+            rooms: ["misc"], lastSeen: 0, nodeOnline: false
+        )
+        let gone = MeshMember(
+            id: "agent-gone", nick: "archived-agent", state: "gone",
+            rooms: ["misc"], lastSeen: 1, nodeOnline: false
+        )
+        let human = MeshMember(
+            id: "human", nick: "human", state: nil,
+            rooms: ["misc"], lastSeen: 0, nodeOnline: true
+        )
+
+        let result = RosterIndex.mentionableAgents([
+            unavailable, human, gone,
+        ])
+
+        #expect(result.map(\.id) == ["agent-gone", "agent-unavailable"])
+    }
+
     @Test func attachCommandTargetsExactPaneSession() throws {
         let command = try RemoteCommandBuilder.attach(pane: "%12", socket: "/private/tmp/tmux-501/agent")
         #expect(command.contains("display-message -p -t '%12'"))

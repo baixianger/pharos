@@ -7,11 +7,14 @@ import PharosMeshLifecycle
 import PharosMeshProtocol
 import PharosMeshReplica
 
-/// PharosMobile opens its signed local replica by default. The old Broker path
-/// remains available only for bounded migration diagnostics.
+/// PharosMobile uses the proven Tailscale + Broker/SSH path by default. The
+/// signed local replica remains available as an explicit opt-in for testing.
 enum PharosMeshRuntimeMode {
     static var usesDistributedMesh: Bool {
-        ProcessInfo.processInfo.environment["PHAROS_LEGACY_BROKER"] != "1"
+        let environment = ProcessInfo.processInfo.environment
+        return (environment["PHAROS_DISTRIBUTED_MESH"] == "1" ||
+            environment["PHAROS_DISTRIBUTED"] == "1") &&
+            environment["PHAROS_LEGACY_BROKER"] != "1"
     }
 }
 
@@ -35,7 +38,8 @@ final class MobileMeshStartupGate {
 /// The iOS target imports the same transport contracts as macOS and the Mesh
 /// CLI and opens the exact same replica schema in its sandbox. Demo mode never
 /// opens storage or networking; the real app binds only identity-addressed Iroh
-/// and never dials a legacy Broker.
+/// and only opens its local replica when distributed mode is explicitly opted
+/// into.
 @Observable
 @MainActor
 final class DistributedMeshSupport {
@@ -87,6 +91,7 @@ final class DistributedMeshSupport {
         [MeshDeviceID: Int64] = [:]
     @ObservationIgnored private var membershipCatchUpTask: Task<Void, Never>?
     @ObservationIgnored private var synchronizationTasksInFlight = 0
+    @ObservationIgnored private var lastHintedVector: MeshSyncVector?
     @ObservationIgnored private let peerSynchronizationGate =
         MobilePeerSynchronizationGate()
     private let isDemo: Bool
@@ -97,7 +102,8 @@ final class DistributedMeshSupport {
     }
 
     func start() async {
-        guard !isDemo, localReplica == nil else { return }
+        guard !isDemo, PharosMeshRuntimeMode.usesDistributedMesh,
+              localReplica == nil else { return }
         await startupGate.run { [self] in
             guard localReplica == nil else { return }
             state = .opening
@@ -131,7 +137,7 @@ final class DistributedMeshSupport {
     /// or an iOS foreground transition. The scene's convergence loop calls
     /// this idempotently; an already-running endpoint is untouched.
     func ensureNetworkRunning() async {
-        guard !isDemo else { return }
+        guard !isDemo, PharosMeshRuntimeMode.usesDistributedMesh else { return }
         if localReplica == nil {
             await start()
             return
@@ -619,6 +625,7 @@ final class DistributedMeshSupport {
 
     @discardableResult
     func synchronizeOnce() async -> Int {
+        guard PharosMeshRuntimeMode.usesDistributedMesh else { return 0 }
         guard let runtime, let replica = localReplica,
               let group = activeTrustGroupID
         else { return 0 }
@@ -637,6 +644,13 @@ final class DistributedMeshSupport {
                 in: group, membershipEpoch: epoch
             )
             trustedDevices = peers
+            let localVector = try? await replica.store.syncVector(for: group)
+            let shouldSendHint = localVector.map {
+                $0 != lastHintedVector
+            } ?? false
+            if shouldSendHint {
+                lastHintedVector = localVector
+            }
             let pendingTransition = try await replica.store.latestMembershipTransition(
                 for: group
             )
@@ -672,6 +686,11 @@ final class DistributedMeshSupport {
                             requestTimeoutMilliseconds: MeshReplicaRPCClient
                                 .backgroundRequestTimeoutMilliseconds
                         )
+                        if shouldSendHint {
+                            try? await client.sendSyncHint(
+                                group: group, membershipEpoch: epoch
+                            )
+                        }
                         let presenceFetcher:
                             (@Sendable () async throws -> MeshAgentPresenceSnapshot)?
                         // Probe every authenticated replica for compatibility
@@ -794,6 +813,7 @@ final class DistributedMeshSupport {
     /// consumes its timeout. Replica events are immutable and deduplicated;
     /// bounding overlap at two rounds prevents retry buildup.
     func scheduleSynchronization() {
+        guard PharosMeshRuntimeMode.usesDistributedMesh else { return }
         guard synchronizationTasksInFlight < 2 else { return }
         synchronizationTasksInFlight += 1
         Task { [weak self] in
@@ -801,6 +821,10 @@ final class DistributedMeshSupport {
             defer { self.synchronizationTasksInFlight -= 1 }
             _ = await self.synchronizeOnce()
         }
+    }
+
+    private func receiveSyncHint() {
+        scheduleSynchronization()
     }
 
     /// Keep signed membership recovery independent from high-frequency data
@@ -845,6 +869,9 @@ final class DistributedMeshSupport {
             restrictToAllowedTrustGroup: true,
             membershipTransitionObserver: { transition in
                 try? replica.reconcileActiveMembership(after: transition)
+            },
+            syncHintHandler: { [weak self] _ in
+                await self?.receiveSyncHint()
             }
         )
         await endpoint.startServing { request, remoteEndpointID in
@@ -901,6 +928,7 @@ final class DistributedMeshSupport {
         remotePresenceExpirationByHost = [:]
         presenceDiagnostics = [:]
         lastSyncError = nil
+        lastHintedVector = nil
         registryRevision += 1
     }
 

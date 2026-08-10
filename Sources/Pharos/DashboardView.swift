@@ -492,7 +492,7 @@ struct DashboardView: View {
                 let local = member.host == nil
                     || HostIdentity.isCurrent(host: member.host, tailscaleIP: member.tailscaleIP)
                 let sshHost = local ? nil : ExecutionHostProfile.resolve(
-                    meshHostID: member.host, tailscaleIP: member.tailscaleIP,
+                    nodeID: member.nodeID, meshHostID: member.host, tailscaleIP: member.tailscaleIP,
                     in: hostProfiles
                 )?.sshHost
                 guard local || sshHost != nil else { continue }
@@ -504,6 +504,19 @@ struct DashboardView: View {
             }
             let resolvedSessions = resolved
             await MainActor.run {
+                // Learn the stable Node ID from the Broker roster. Existing
+                // profiles may only contain a display name or SSH address;
+                // upgrade them in place so future spawn/stop routing does not
+                // depend on a renameable host string.
+                for member in roster {
+                    guard let nodeID = member.nodeID, !nodeID.isEmpty,
+                          var profile = store.executionHost(
+                              forMeshHost: member.host,
+                              tailscaleIP: member.tailscaleIP
+                          ), profile.nodeID != nodeID else { continue }
+                    profile.nodeID = nodeID
+                    store.upsertExecutionHost(profile)
+                }
                 meshMessages = sortedMessages
                 meshAgents = roster
                 meshAgentSessions = resolvedSessions
@@ -819,9 +832,14 @@ private struct DashboardMeshAgentRow: View {
             Spacer(minLength: 8)
             Button("Rename", systemImage: "pencil", action: onRename)
                 .labelStyle(.iconOnly).help("Rename agent")
+            // Attach is a local terminal action backed by the exact observed
+            // tmux socket+pane. It does not require signed remote stop/poke
+            // authority and must remain available during peer outages.
+            if member.tmuxPane != nil && member.tmuxSocket != nil {
+                Button("Attach", action: onAttach)
+            }
             if supportsSignedHostControl {
                 if hostLocation?.controlReadiness == .managed {
-                    if member.tmuxPane != nil { Button("Attach", action: onAttach) }
                     Button("Stop", role: .destructive, action: onStop)
                         .foregroundStyle(.red)
                 } else {
@@ -833,7 +851,7 @@ private struct DashboardMeshAgentRow: View {
                 Button("Remove", role: .destructive, action: onRemove)
                     .foregroundStyle(.red)
             } else if member.tmuxPane != nil {
-                Button("Attach", action: onAttach)
+                if member.tmuxSocket == nil { Button("Attach", action: onAttach) }
                 Button("Stop", role: .destructive, action: onStop)
                     .foregroundStyle(.red)
             } else {

@@ -15,19 +15,7 @@ struct MessageRow: View {
     private let replyThreshold: CGFloat = 60
 
     var body: some View {
-        HStack(alignment: .top, spacing: 11) {
-            if showsHeader {
-                ChatAvatar(name: displayName, member: member, isHuman: isHuman)
-            } else {
-                Color.clear.frame(width: 38, height: 1)
-            }
-
-            VStack(alignment: .leading, spacing: showsHeader ? 5 : 2) {
-                if showsHeader { identityLine }
-                messageBody
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        rowContent
         .padding(.horizontal, 16)
         .padding(.top, showsHeader ? 8 : 1)
         .padding(.bottom, 2)
@@ -54,6 +42,28 @@ struct MessageRow: View {
             Button("Copy message", systemImage: "doc.on.doc") {
                 UIPasteboard.general.string = message.text
             }
+        } preview: {
+            // Do not let the inverted transcript transform leak into the
+            // system's long-press preview. This is a separate source view,
+            // so a quoted message stays upright in the context menu preview.
+            rowContent
+                .padding(16)
+                .background(.background, in: RoundedRectangle(cornerRadius: 14))
+        }
+    }
+
+    private var rowContent: some View {
+        HStack(alignment: .top, spacing: 11) {
+            if showsHeader {
+                ChatAvatar(name: displayName, member: member, isHuman: isHuman)
+            } else {
+                Color.clear.frame(width: 38, height: 1)
+            }
+            VStack(alignment: .leading, spacing: showsHeader ? 5 : 2) {
+                if showsHeader { identityLine }
+                messageBody
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

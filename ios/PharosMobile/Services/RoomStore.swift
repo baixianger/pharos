@@ -63,6 +63,15 @@ final class RoomStore {
             defer { isRefreshing = false }
             do {
                 let nextRooms = try await distributedMesh.rooms()
+                // A replica can briefly expose an empty room snapshot while a
+                // sync/reopen is converging. Do not tear down the visible
+                // ConversationView for that transient result; doing so makes
+                // the navigation bar fall back to the app title and flicker
+                // on every foreground sync or send.
+                if nextRooms.isEmpty, !rooms.isEmpty, selectedRoom != nil {
+                    error = nil
+                    return
+                }
                 rooms = nextRooms
                 var allMemberships: [MeshMember] = []
                 for room in nextRooms {
@@ -100,6 +109,13 @@ final class RoomStore {
             let (listResponse, rosterResponse) = try await (list, roster)
             let nextRooms = listResponse.rooms ?? []
             let nextMembers = RosterIndex.byID(rosterResponse.members ?? [])
+            // Keep the current room mounted across a transient empty broker
+            // response. A brief nil selection destroys the detail navigation
+            // stack and causes the app title to flash in its place.
+            if nextRooms.isEmpty, !rooms.isEmpty, selectedRoom != nil {
+                error = nil
+                return
+            }
             if rooms != nextRooms { rooms = nextRooms }
             if members != nextMembers { members = nextMembers }
             // Drop a selection whose room disappeared, but never force-select a

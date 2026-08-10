@@ -52,4 +52,18 @@ enum RosterIndex {
         let ids = idsByNick(membersByID)[nick.lowercased()] ?? []
         return ids.compactMap { membersByID[$0] }.sorted { $0.id < $1.id }
     }
+
+    /// Mention eligibility comes from durable room membership, never from a
+    /// remote presence projection. The owning Host alone decides whether the
+    /// addressed local agent is currently eligible for a nudge.
+    static func mentionableAgents(_ members: [MeshMember]) -> [MeshMember] {
+        members
+            .filter {
+                $0.nick.caseInsensitiveCompare("human") != .orderedSame
+            }
+            .sorted {
+                let order = $0.nick.localizedCaseInsensitiveCompare($1.nick)
+                return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
+            }
+    }
 }

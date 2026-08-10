@@ -562,8 +562,9 @@ final class ProjectStore {
         executionHosts.removeAll { $0.id == id }
     }
 
-    func executionHost(forMeshHost hostID: String?, tailscaleIP: String? = nil) -> ExecutionHostProfile? {
-        ExecutionHostProfile.resolve(meshHostID: hostID, tailscaleIP: tailscaleIP,
+    func executionHost(forMeshHost hostID: String?, tailscaleIP: String? = nil,
+                       nodeID: String? = nil) -> ExecutionHostProfile? {
+        ExecutionHostProfile.resolve(nodeID: nodeID, meshHostID: hostID, tailscaleIP: tailscaleIP,
                                      in: executionHosts)
     }
 

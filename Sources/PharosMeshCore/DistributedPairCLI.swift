@@ -28,6 +28,13 @@ public enum DistributedPairCLI {
             let replica = try openReplica(args)
             switch command {
             case "invite", "create":
+                if option("--data-dir", in: args) == nil {
+                    let url = try DistributedMeshLocalServiceClient(
+                        dataDirectory: replica.rootURL
+                    ).issueInvitation(requestedRoles: try roles(args))
+                    print(url.absoluteString)
+                    return 0
+                }
                 let group = try await replica.ensureActiveTrustGroup()
                 guard try replica.activeRoles().contains(.controller) else {
                     throw PairCLIError.administratorRequired
@@ -35,9 +42,9 @@ public enum DistributedPairCLI {
                 guard let epoch = try await replica.store.membershipEpoch(
                     for: group
                 ) else { throw PairCLIError.missingMembership }
-                let runtime = try await bindRuntime(args, replica: replica)
+                let bound = try await bindRuntime(args, replica: replica)
                 do {
-                    let address = try await runtime.localAddress()
+                    let address = try await bound.runtime.localAddress()
                     let invitation = try await MeshTrustPairingService(
                         identity: replica.identity,
                         invitationStore: replica.store
@@ -47,11 +54,11 @@ public enum DistributedPairCLI {
                         inviterRoles: try replica.activeRoles(),
                         requestedRoles: try roles(args)
                     )
-                    try await runtime.close()
+                    await bound.close()
                     print(try MeshTrustInvitationLink.encode(invitation).absoluteString)
                     return 0
                 } catch {
-                    try? await runtime.close()
+                    await bound.close()
                     throw error
                 }
 
@@ -61,21 +68,32 @@ public enum DistributedPairCLI {
                     return usageError("pair accept INVITATION --name NAME")
                 }
                 let invitation = try decodeInvitation(value)
-                let runtime = try await bindRuntime(args, replica: replica)
+                let pausedService = try pauseDefaultServiceIfNeeded(
+                    args, replica: replica
+                )
+                var bound: BoundRuntime?
                 do {
-                    let address = try await runtime.localAddress()
+                    bound = try await bindRuntime(args, replica: replica)
+                    guard let bound else {
+                        throw PairCLIError.runtimeUnavailable
+                    }
+                    let address = try await bound.runtime.localAddress()
                     let group = try await MeshTrustGroupLifecycle.join(
-                        invitation, replica: replica, runtime: runtime,
+                        invitation, replica: replica, runtime: bound.runtime,
                         localAddress: address, displayName: name,
                         inviterDisplayName: option("--inviter-name", in: args)
                             ?? "Inviter",
                         replacingExisting: try replica.activeTrustGroup() != nil
                     )
-                    try await runtime.close()
+                    await bound.close()
+                    try resumeService(pausedService)
                     print("joined\t\(group.rawValue.uuidString)")
                     return 0
                 } catch {
-                    try? await runtime.close()
+                    if let bound {
+                        await bound.close()
+                    }
+                    try? resumeService(pausedService)
                     throw error
                 }
 
@@ -138,6 +156,17 @@ public enum DistributedPairCLI {
                       let epoch = try await replica.store.membershipEpoch(for: group)
                 else { throw PairCLIError.missingMembership }
                 let target = MeshDeviceID(rawValue: uuid)
+                if option("--data-dir", in: args) == nil {
+                    let nextEpoch = try DistributedMeshLocalServiceClient(
+                        dataDirectory: replica.rootURL
+                    ).revokeDevice(
+                        target,
+                        localDisplayName: option("--name", in: args)
+                            ?? ProcessInfo.processInfo.hostName
+                    )
+                    print("revoked\t\(rawID)\tepoch\t\(nextEpoch)")
+                    return 0
+                }
                 guard try replica.activeRoles().contains(.controller) else {
                     throw PairCLIError.administratorRequired
                 }
@@ -147,9 +176,9 @@ public enum DistributedPairCLI {
                 guard peers.contains(where: { $0.descriptor.id == target }) else {
                     throw PairCLIError.deviceNotFound
                 }
-                let runtime = try await bindRuntime(args, replica: replica)
+                let bound = try await bindRuntime(args, replica: replica)
                 do {
-                    let address = try await runtime.localAddress()
+                    let address = try await bound.runtime.localAddress()
                     let localMember = MeshPairedDevice(
                         descriptor: MeshDeviceDescriptor(
                             id: replica.identity.deviceID,
@@ -164,12 +193,12 @@ public enum DistributedPairCLI {
                     let survivors = peers.filter { $0.descriptor.id != target }
                     let transition = try await MeshTrustGroupLifecycle
                         .certifyMembershipTransition(
-                            replica: replica, runtime: runtime, group: group,
+                            replica: replica, runtime: bound.runtime, group: group,
                             previousEpoch: epoch, roster: survivors + [localMember]
                         )
                     for peer in survivors {
                         let transport = IrohMeshTransport(
-                            runtime: runtime,
+                            runtime: bound.runtime,
                             remote: MeshIrohEndpointAddress(
                                 endpointID: peer.descriptor.endpointID,
                                 ticket: peer.addressTicket
@@ -182,11 +211,11 @@ public enum DistributedPairCLI {
                         transition, localIdentity: replica.identity,
                         localAuthorRoles: try replica.activeRoles()
                     )
-                    try await runtime.close()
+                    await bound.close()
                     print("revoked\t\(rawID)\tepoch\t\(transition.nextEpoch)")
                     return 0
                 } catch {
-                    try? await runtime.close()
+                    await bound.close()
                     throw error
                 }
 
@@ -220,20 +249,58 @@ public enum DistributedPairCLI {
 
     private static func bindRuntime(
         _ args: [String], replica: MeshLocalReplica
-    ) async throws -> IrohEndpointRuntime {
+    ) async throws -> BoundRuntime {
         let policy: MeshIrohRelayPolicy
         switch option("--relay", in: args) ?? "production" {
         case "production": policy = .production
         case "disabled": policy = .disabled
         default: throw PairCLIError.invalidRelayPolicy
         }
-        let runtime = try await IrohEndpointRuntime.bind(
-            secretKey: replica.identity.irohSecretKeyBytes(),
-            expectedEndpointID: try replica.identity.endpointID(),
-            relayPolicy: policy
+        let lock = try DistributedMeshRuntimeLock.acquire(
+            dataDirectory: replica.rootURL,
+            owner: "pharos mesh pair",
+            buildID: nil
         )
-        await runtime.waitUntilOnline()
-        return runtime
+        do {
+            let runtime = try await IrohEndpointRuntime.bind(
+                secretKey: replica.identity.irohSecretKeyBytes(),
+                expectedEndpointID: try replica.identity.endpointID(),
+                relayPolicy: policy
+            )
+            await runtime.waitUntilOnline()
+            return BoundRuntime(runtime: runtime, lock: lock)
+        } catch {
+            lock.release()
+            throw error
+        }
+    }
+
+    private static func pauseDefaultServiceIfNeeded(
+        _ args: [String], replica: MeshLocalReplica
+    ) throws -> DistributedMeshLaunchAgentPlan? {
+        guard option("--data-dir", in: args) == nil else { return nil }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let fallback = home.appendingPathComponent(
+            "Library/Application Support/Pharos/Runtime/pharos-mesh"
+        )
+        let plan = try DistributedMeshLaunchAgentPlan(
+            homeDirectory: home,
+            dataDirectory: replica.rootURL,
+            sourceHelper: DistributedMeshLaunchAgent.defaultSourceHelper()
+                ?? fallback
+        )
+        guard DistributedMeshLaunchAgent.status(plan).loaded else {
+            return nil
+        }
+        try DistributedMeshLaunchAgent.stop(plan)
+        return plan
+    }
+
+    private static func resumeService(
+        _ plan: DistributedMeshLaunchAgentPlan?
+    ) throws {
+        guard let plan else { return }
+        try DistributedMeshLaunchAgent.start(plan)
     }
 
     private static func roles(_ args: [String]) throws -> Set<MeshDeviceRole> {
@@ -272,5 +339,24 @@ public enum DistributedPairCLI {
         case invalidRoles
         case deviceNotFound
         case administratorRequired
+        case runtimeUnavailable
+    }
+
+    private final class BoundRuntime {
+        let runtime: IrohEndpointRuntime
+        private let lock: DistributedMeshRuntimeLock
+
+        init(
+            runtime: IrohEndpointRuntime,
+            lock: DistributedMeshRuntimeLock
+        ) {
+            self.runtime = runtime
+            self.lock = lock
+        }
+
+        func close() async {
+            try? await runtime.close()
+            lock.release()
+        }
     }
 }

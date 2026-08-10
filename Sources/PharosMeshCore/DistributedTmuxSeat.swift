@@ -59,25 +59,35 @@ public struct DistributedTmuxSeatInspector: DistributedTmuxSeatInspecting {
         process.executableURL = executable
         process.arguments = (socket.map { ["-S", $0] } ?? []) + [
             "display-message", "-p", "-t", pane,
-            "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}",
+            // tmux sanitizes control characters in argv to "_" when its
+            // client is launched from a launchd Session 0 process. Use a
+            // printable separator that none of these validated fields admits.
+            "#{session_name}|#{session_id}|#{session_created}|#{pane_id}|#{pane_pid}",
         ]
         let output = Pipe()
+        let errorOutput = Pipe()
         process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
+        process.standardError = errorOutput
         try process.run()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
-            throw DistributedHostExecutorError.runtimeSeatMismatch
+            let detail = String(
+                decoding: errorOutput.fileHandleForReading.readDataToEndOfFile(),
+                as: UTF8.self
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw DistributedTmuxSeatInspectionError.commandFailed(
+                status: process.terminationStatus, detail: detail
+            )
         }
         let value = String(
             decoding: output.fileHandleForReading.readDataToEndOfFile(),
             as: UTF8.self
         ).trimmingCharacters(in: .whitespacesAndNewlines)
-        let fields = value.split(separator: "\t", omittingEmptySubsequences: false)
+        let fields = value.split(separator: "|", omittingEmptySubsequences: false)
         guard fields.count == 5,
               let createdAt = Int64(fields[2]),
               let panePID = Int32(fields[4]) else {
-            throw DistributedHostExecutorError.runtimeSeatMismatch
+            throw DistributedTmuxSeatInspectionError.invalidOutput(value)
         }
         return DistributedTmuxSeat(
             sessionName: String(fields[0]), socket: socket,
@@ -96,5 +106,21 @@ public struct DistributedTmuxSeatInspector: DistributedTmuxSeatInspecting {
             throw DistributedHostExecutorError.tmuxUnavailable
         }
         return URL(fileURLWithPath: path)
+    }
+}
+
+enum DistributedTmuxSeatInspectionError: LocalizedError {
+    case commandFailed(status: Int32, detail: String)
+    case invalidOutput(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .commandFailed(let status, let detail):
+            let suffix = detail.isEmpty ? "" : ": \(detail)"
+            return "tmux display-message exited \(status)\(suffix)"
+        case .invalidOutput(let value):
+            return "tmux display-message returned invalid output: " +
+                String(reflecting: value)
+        }
     }
 }
