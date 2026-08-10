@@ -28,6 +28,9 @@ public struct MeshTrustInvitation: Codable, Equatable, Sendable, CustomStringCon
     public var inviterEndpointID: MeshEndpointID
     public var inviterAddressTicket: String
     public var inviterSigningPublicKey: Data
+    /// Signed capabilities of the inviting device. Optional preserves
+    /// verification of version-1 links issued before this field existed.
+    public var inviterRoles: [MeshDeviceRole]?
     public var requestedRoles: [MeshDeviceRole]
     public var issuedAtMilliseconds: Int64
     public var expiresAtMilliseconds: Int64
@@ -41,6 +44,7 @@ public struct MeshTrustInvitation: Codable, Equatable, Sendable, CustomStringCon
         inviterEndpointID: MeshEndpointID,
         inviterAddressTicket: String,
         inviterSigningPublicKey: Data,
+        inviterRoles: Set<MeshDeviceRole>? = nil,
         requestedRoles: Set<MeshDeviceRole>,
         issuedAtMilliseconds: Int64,
         expiresAtMilliseconds: Int64,
@@ -55,6 +59,7 @@ public struct MeshTrustInvitation: Codable, Equatable, Sendable, CustomStringCon
         self.inviterEndpointID = inviterEndpointID
         self.inviterAddressTicket = inviterAddressTicket
         self.inviterSigningPublicKey = inviterSigningPublicKey
+        self.inviterRoles = inviterRoles?.sorted { $0.rawValue < $1.rawValue }
         self.requestedRoles = requestedRoles.sorted { $0.rawValue < $1.rawValue }
         self.issuedAtMilliseconds = issuedAtMilliseconds
         self.expiresAtMilliseconds = expiresAtMilliseconds
@@ -75,6 +80,16 @@ public struct MeshTrustInvitation: Codable, Equatable, Sendable, CustomStringCon
         }
         guard inviterSigningPublicKey.count == 32 else {
             throw MeshTrustInvitationValidationError.invalidPublicKey
+        }
+        if let inviterRoles {
+            let normalizedInviterRoles = Set(inviterRoles)
+            guard normalizedInviterRoles.contains(.controller),
+                  normalizedInviterRoles.count == inviterRoles.count,
+                  inviterRoles == normalizedInviterRoles.sorted(by: {
+                    $0.rawValue < $1.rawValue
+                  }) else {
+                throw MeshTrustInvitationValidationError.invalidRoles
+            }
         }
         let normalizedRoles = Set(requestedRoles)
         guard !normalizedRoles.isEmpty, normalizedRoles.count == requestedRoles.count,
@@ -118,6 +133,7 @@ public struct MeshTrustInvitation: Codable, Equatable, Sendable, CustomStringCon
         var inviterEndpointID: MeshEndpointID
         var inviterAddressTicket: String
         var inviterSigningPublicKey: Data
+        var inviterRoles: [MeshDeviceRole]?
         var requestedRoles: [MeshDeviceRole]
         var issuedAtMilliseconds: Int64
         var expiresAtMilliseconds: Int64
@@ -131,6 +147,7 @@ public struct MeshTrustInvitation: Codable, Equatable, Sendable, CustomStringCon
             inviterEndpointID = invitation.inviterEndpointID
             inviterAddressTicket = invitation.inviterAddressTicket
             inviterSigningPublicKey = invitation.inviterSigningPublicKey
+            inviterRoles = invitation.inviterRoles
             requestedRoles = invitation.requestedRoles
             issuedAtMilliseconds = invitation.issuedAtMilliseconds
             expiresAtMilliseconds = invitation.expiresAtMilliseconds

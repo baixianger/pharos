@@ -194,6 +194,48 @@ public struct MeshFileIdentityStorage: MeshIdentityStorage, Sendable {
 #endif
     }
 
+    /// Removes an explicitly replaceable protected value without following a
+    /// symlink. Device identities never call this; it exists for small local
+    /// selection profiles such as the active trust group.
+    public func remove() throws {
+#if canImport(Darwin) || canImport(Glibc)
+        let directory = fileURL.deletingLastPathComponent()
+        guard try validatePrivateDirectory(directory, allowMissing: true) else {
+            return
+        }
+        let fd = fileURL.path.withCString {
+            open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        }
+        if fd < 0 {
+            let code = errno
+            if code == ENOENT { return }
+            if code == ELOOP { throw MeshFileIdentityStorageError.notRegularFile }
+            throw MeshFileIdentityStorageError.io(operation: "open", code: code)
+        }
+        defer { _ = close(fd) }
+
+        var info = stat()
+        guard fstat(fd, &info) == 0 else {
+            throw MeshFileIdentityStorageError.io(operation: "fstat", code: errno)
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
+            throw MeshFileIdentityStorageError.notRegularFile
+        }
+        let permissions = UInt16(info.st_mode & 0o777)
+        guard permissions & 0o077 == 0 else {
+            throw MeshFileIdentityStorageError.insecureFilePermissions(permissions)
+        }
+        guard fileURL.path.withCString({ unlink($0) }) == 0 else {
+            let code = errno
+            if code == ENOENT { return }
+            throw MeshFileIdentityStorageError.io(operation: "unlink", code: code)
+        }
+        try syncDirectory(directory)
+#else
+        throw MeshFileIdentityStorageError.unsupportedPlatform
+#endif
+    }
+
 #if canImport(Darwin) || canImport(Glibc)
     private func ensurePrivateDirectory(_ directory: URL) throws {
         if try validatePrivateDirectory(directory, allowMissing: true) { return }

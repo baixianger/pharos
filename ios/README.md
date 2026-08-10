@@ -16,8 +16,23 @@ signed Pharos Mesh replica from iPhone and iPad.
 | Non-secret configuration | one iOS device | `UserDefaults` | Host profiles stay device-local |
 | SSH private key | one iOS device | Keychain, `AfterFirstUnlockThisDeviceOnly` | never iCloud-synced |
 
-The iOS wire structs intentionally mirror `PharosMeshCore`; all Pharos clients
-and services are released as one protocol generation during rapid development.
+The iOS app consumes the shared protocol, identity, replica, transport, and
+trust-group lifecycle packages; all Pharos clients and services are released as
+one protocol generation during rapid development.
+
+## Create, invite, join, and leave
+
+- First launch offers **Create personal Mesh** and **Join an existing Mesh**.
+- **Invite a device** creates a signed, single-use link that expires after five
+  minutes. Share it with the system sheet through AirDrop, Mail, or Messages,
+  copy it, or let the other device scan its QR code.
+- Opening a `pharos://device` link in iOS enters the same signed review and join
+  flow as scanning the QR code.
+- When joining another trust group, **Archive current Mesh and switch** retains
+  the previous local replica without claiming remote revocation.
+- **Leave current Mesh and switch** publishes a signed membership transition
+  and clears the active selection only after a surviving Mesh admin device
+  confirms it. Keep a second admin device online for this path.
 
 ## Deliberate boundaries
 
@@ -26,9 +41,11 @@ and services are released as one protocol generation during rapid development.
   intentionally not replicated.
 - iOS suspends arbitrary sockets in the background. This version refreshes in
   the foreground; reliable background notifications require an APNs relay.
-- Removing a trusted device advances a controller-signed membership epoch.
+- Removing a trusted device advances a Mesh-admin-signed membership epoch.
+  The local signed-invitation role is persisted; replica-only devices cannot
+  invite or revoke devices, and those controls remain unavailable in Settings.
   Rotate keys by pairing and verifying a replacement, then removing the old key;
-  keep a second controller so a lost device can be recovered safely.
+  keep a second Mesh admin device so a lost device can be recovered safely.
 - SSH host-key pinning is not yet wired. The app requires a per-host risk toggle
   before using Citadel's `acceptAnything()` validator, and should only connect
   through the private tailnet.

@@ -57,6 +57,14 @@ public protocol MeshInvitationUseStore: Sendable {
     func register(_ record: MeshInvitationUseRecord) async throws
     func consume(_ record: MeshInvitationUseRecord, accepting device: MeshPairedDevice,
                  at milliseconds: Int64) async throws -> MeshInvitationConsumption
+    /// Burns a one-time invitation after validating the accepting identity,
+    /// but deliberately does not grant trust. Product pairing uses this path
+    /// and installs the device only through a quorum-certified membership
+    /// transition.
+    func consumeForMembershipTransition(
+        _ record: MeshInvitationUseRecord, accepting device: MeshPairedDevice,
+        at milliseconds: Int64
+    ) async throws -> MeshInvitationConsumption
     func installVerifiedPeer(_ device: MeshPairedDevice,
                              in group: MeshTrustGroupID,
                              membershipEpoch: UInt64) async throws
@@ -83,6 +91,26 @@ public actor MeshMemoryInvitationUseStore: MeshInvitationUseStore {
     public func consume(_ record: MeshInvitationUseRecord, accepting device: MeshPairedDevice,
                         at milliseconds: Int64)
         throws -> MeshInvitationConsumption {
+        try consume(
+            record, accepting: device, at: milliseconds,
+            installTrustedDevice: true
+        )
+    }
+
+    public func consumeForMembershipTransition(
+        _ record: MeshInvitationUseRecord, accepting device: MeshPairedDevice,
+        at milliseconds: Int64
+    ) throws -> MeshInvitationConsumption {
+        try consume(
+            record, accepting: device, at: milliseconds,
+            installTrustedDevice: false
+        )
+    }
+
+    private func consume(
+        _ record: MeshInvitationUseRecord, accepting device: MeshPairedDevice,
+        at milliseconds: Int64, installTrustedDevice: Bool
+    ) throws -> MeshInvitationConsumption {
         try record.validate()
         try device.validateBinding()
         guard var state = records[record.nonceDigest] else { return .unknown }
@@ -100,7 +128,9 @@ public actor MeshMemoryInvitationUseStore: MeshInvitationUseStore {
         }
         state.consumed = true
         records[record.nonceDigest] = state
-        trustedDevices[record.trustGroupID, default: [:]][device.descriptor.id] = device
+        if installTrustedDevice {
+            trustedDevices[record.trustGroupID, default: [:]][device.descriptor.id] = device
+        }
         return .consumed
     }
 
@@ -189,6 +219,7 @@ public struct MeshTrustPairingService: Sendable {
         trustGroupID: MeshTrustGroupID,
         membershipEpoch: UInt64,
         inviterAddressTicket: String,
+        inviterRoles: Set<MeshDeviceRole>? = nil,
         requestedRoles: Set<MeshDeviceRole>,
         now: Date = Date(),
         lifetimeMilliseconds: Int64 = Self.defaultLifetimeMilliseconds
@@ -207,6 +238,7 @@ public struct MeshTrustPairingService: Sendable {
             inviterEndpointID: try identity.endpointID(),
             inviterAddressTicket: inviterAddressTicket,
             inviterSigningPublicKey: try identity.signingPublicKeyBytes(),
+            inviterRoles: inviterRoles,
             requestedRoles: requestedRoles,
             issuedAtMilliseconds: issuedAt,
             expiresAtMilliseconds: expiresAt,
@@ -269,7 +301,7 @@ public struct MeshTrustPairingService: Sendable {
                 // this device. `requestedRoles` belongs exclusively to the
                 // accepting device; mirroring it here could accidentally turn
                 // a Host-only invitation into a non-controller inviter.
-                roles: [.controller, .replica],
+                roles: Set(invitation.inviterRoles ?? [.controller, .replica]),
                 protocolVersion: invitation.protocolVersion
             ),
             signingPublicKey: invitation.inviterSigningPublicKey,
@@ -294,18 +326,34 @@ public struct MeshTrustPairingService: Sendable {
         try verifyInvitation(invitation, now: now)
         try verifyAcceptance(acceptance, for: invitation, now: now)
         let record = try useRecord(for: invitation)
-        let pairedDevice = MeshPairedDevice(
-            descriptor: MeshDeviceDescriptor(
-                id: acceptance.acceptingDeviceID,
-                endpointID: acceptance.acceptingEndpointID,
-                displayName: acceptance.displayName,
-                roles: Set(acceptance.roles),
-                protocolVersion: acceptance.protocolVersion
-            ),
-            signingPublicKey: acceptance.acceptingSigningPublicKey,
-            addressTicket: acceptance.acceptingAddressTicket
-        )
+        let pairedDevice = pairedDevice(from: acceptance)
         switch try await invitationStore.consume(
+            record, accepting: pairedDevice, at: milliseconds(now)
+        ) {
+        case .consumed: break
+        case .unknown: throw MeshTrustPairingError.invitationUnknown
+        case .alreadyConsumed: throw MeshTrustPairingError.invitationAlreadyConsumed
+        case .mismatch: throw MeshTrustPairingError.invitationRecordMismatch
+        case .expired: throw MeshTrustPairingError.invitationExpired
+        case .deviceAlreadyTrusted: throw MeshTrustPairingError.deviceAlreadyTrusted
+        case .membershipEpochMismatch: throw MeshTrustPairingError.membershipEpochMismatch
+        }
+        return pairedDevice
+    }
+
+    /// Verifies and consumes an invitation without changing the trusted
+    /// roster. The caller must next commit `pairedDevice` through a certified
+    /// membership transition; returning success alone grants no RPC access.
+    public func redeemForMembershipTransition(
+        _ acceptance: MeshTrustAcceptance,
+        for invitation: MeshTrustInvitation,
+        now: Date = Date()
+    ) async throws -> MeshPairedDevice {
+        try verifyInvitation(invitation, now: now)
+        try verifyAcceptance(acceptance, for: invitation, now: now)
+        let record = try useRecord(for: invitation)
+        let pairedDevice = pairedDevice(from: acceptance)
+        switch try await invitationStore.consumeForMembershipTransition(
             record, accepting: pairedDevice, at: milliseconds(now)
         ) {
         case .consumed: break
@@ -376,6 +424,22 @@ public struct MeshTrustPairingService: Sendable {
             invitationDigest: try digest(invitation.canonicalBytes()),
             nonceDigest: digest(invitation.nonce),
             expiresAtMilliseconds: invitation.expiresAtMilliseconds
+        )
+    }
+
+    private func pairedDevice(
+        from acceptance: MeshTrustAcceptance
+    ) -> MeshPairedDevice {
+        MeshPairedDevice(
+            descriptor: MeshDeviceDescriptor(
+                id: acceptance.acceptingDeviceID,
+                endpointID: acceptance.acceptingEndpointID,
+                displayName: acceptance.displayName,
+                roles: Set(acceptance.roles),
+                protocolVersion: acceptance.protocolVersion
+            ),
+            signingPublicKey: acceptance.acceptingSigningPublicKey,
+            addressTicket: acceptance.acceptingAddressTicket
         )
     }
 

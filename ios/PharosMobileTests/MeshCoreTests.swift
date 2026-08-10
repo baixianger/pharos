@@ -4,7 +4,29 @@ import PharosMeshReplica
 import Testing
 @testable import PharosMobile
 
+private actor StartupCounter {
+    private(set) var value = 0
+    func increment() { value += 1 }
+}
+
 struct MeshCoreTests {
+    @Test @MainActor
+    func startupGateCoalescesConcurrentOpenRequests() async {
+        let gate = MobileMeshStartupGate()
+        let starts = StartupCounter()
+
+        async let first: Void = gate.run {
+            await starts.increment()
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        async let second: Void = gate.run {
+            await starts.increment()
+        }
+        _ = await (first, second)
+
+        #expect(await starts.value == 1)
+    }
+
     @Test func distributedRegistryPreservesAdvancedProjectAndIssueFields() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "pharos-mobile-registry-\(UUID().uuidString)",

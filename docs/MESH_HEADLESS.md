@@ -38,15 +38,13 @@ sudo -u pharos-mesh pharos-mesh distributed init \
 ```
 
 Normally, pair it into the existing group instead. Create an invitation on an
-existing controller, accept it on Linux, and redeem the returned acceptance on
-the inviter. The shared CLI exposes the exact two-step commands:
+existing controller, then accept it on Linux while an admin quorum is online.
+The accepting command completes the certified membership transition:
 
 ```sh
 pharos-mesh distributed device-invite --data-dir ABSOLUTE-PATH
 pharos-mesh distributed device-accept INVITATION --name linux \
   --data-dir /var/lib/pharos-mesh
-pharos-mesh distributed device-redeem INVITATION ACCEPTANCE \
-  --data-dir ABSOLUTE-PATH
 ```
 
 Pairing secrets are bearer credentials: transfer them privately and do not put

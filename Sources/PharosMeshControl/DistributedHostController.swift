@@ -3,7 +3,54 @@ import PharosMeshIroh
 import PharosMeshProtocol
 import PharosMeshReplica
 
+public struct DistributedAgentHostLocation: Equatable, Sendable {
+    public var deviceID: MeshDeviceID
+    public var endpointID: MeshEndpointID
+    public var displayName: String
+
+    public init(deviceID: MeshDeviceID, endpointID: MeshEndpointID, displayName: String) {
+        self.deviceID = deviceID
+        self.endpointID = endpointID
+        self.displayName = displayName
+    }
+}
+
 public enum DistributedHostController {
+    public static func locateAgent(
+        memberID: String, runtime: IrohEndpointRuntime,
+        replica: MeshLocalReplica, group: MeshTrustGroupID
+    ) async throws -> DistributedAgentHostLocation {
+        guard let resourceID = MeshResourceID(rawValue: memberID) else {
+            throw DistributedHostControllerError.invalidAgentResource
+        }
+        guard let epoch = try await replica.store.membershipEpoch(for: group) else {
+            throw DistributedHostControllerError.noActiveTrustGroup
+        }
+        let peers = try await replica.store.trustedDevices(
+            in: group, membershipEpoch: epoch
+        )
+        for peer in peers where peer.descriptor.roles.contains(.host) {
+            let client = MeshReplicaRPCClient(transport: IrohMeshTransport(
+                runtime: runtime,
+                remote: MeshIrohEndpointAddress(
+                    endpointID: peer.descriptor.endpointID,
+                    ticket: peer.addressTicket
+                )
+            ))
+            guard let resource = try? await client.hostResource(
+                resourceID, group: group, membershipEpoch: epoch
+            ), resource.state == .active,
+               resource.hostDeviceID == peer.descriptor.id,
+               resource.hostEndpointID == peer.descriptor.endpointID else { continue }
+            return DistributedAgentHostLocation(
+                deviceID: peer.descriptor.id,
+                endpointID: peer.descriptor.endpointID,
+                displayName: peer.descriptor.displayName
+            )
+        }
+        throw DistributedHostControllerError.agentResourceNotFound
+    }
+
     public static func stopAgent(
         memberID: String, runtime: IrohEndpointRuntime,
         replica: MeshLocalReplica, group: MeshTrustGroupID

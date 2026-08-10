@@ -54,6 +54,15 @@ public struct MeshKeychainIdentityStorage: MeshIdentityStorage, Sendable {
         return true
     }
 
+    /// Explicitly forgets this installation identity. Normal lifecycle code
+    /// never calls this: it is reserved for a user-confirmed full device reset.
+    public func remove() throws {
+        let status = SecItemDelete(baseQuery as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw MeshKeychainIdentityStorageError.unexpectedStatus(status)
+        }
+    }
+
     private var baseQuery: [CFString: Any] {
         var value: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,

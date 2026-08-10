@@ -56,6 +56,7 @@ public enum MeshIrohAvailability {
 /// delegating endpoint and QUIC lifecycle to the reusable MeshKit package.
 public actor IrohEndpointRuntime {
     private let endpoint: MeshKitIroh.IrohEndpoint
+    private let coldConnectionGate = MeshColdConnectionGate()
 
     private init(endpoint: MeshKitIroh.IrohEndpoint) {
         self.endpoint = endpoint
@@ -159,26 +160,128 @@ public actor IrohEndpointRuntime {
         with remoteEndpointID: PharosMeshProtocol.MeshEndpointID,
         addressTicket: String? = nil
     ) async throws -> MeshTransportResponse {
-        do {
-            guard let endpointID = MeshKit.MeshEndpointID(
-                rawValue: remoteEndpointID.rawValue
-            ) else { throw MeshIrohError.invalidEndpointID }
+        guard let endpointID = MeshKit.MeshEndpointID(
+            rawValue: remoteEndpointID.rawValue
+        ) else { throw MeshIrohError.invalidEndpointID }
+        // Sync and presence intentionally run concurrently, but two first
+        // requests must not both observe an empty connection pool and create
+        // competing QUIC dials for the same peer. Once either request has
+        // established a path, Iroh can safely multiplex both RPC streams.
+        if await endpoint.path(to: endpointID) == .unavailable {
+            await coldConnectionGate.acquire(remoteEndpointID)
+            if await endpoint.path(to: endpointID) != .unavailable {
+                // Another first request completed while this caller waited.
+                // Release immediately so all queued RPCs can multiplex on the
+                // established connection instead of serializing whole bodies.
+                await coldConnectionGate.release(remoteEndpointID)
+                return try await exchangeAfterColdPathGate(
+                    request, endpointID: endpointID,
+                    remoteEndpointID: remoteEndpointID,
+                    addressTicket: addressTicket
+                )
+            }
+            do {
+                let response = try await exchangeAfterColdPathGate(
+                    request, endpointID: endpointID,
+                    remoteEndpointID: remoteEndpointID,
+                    addressTicket: addressTicket
+                )
+                await coldConnectionGate.release(remoteEndpointID)
+                return response
+            } catch {
+                await coldConnectionGate.release(remoteEndpointID)
+                throw error
+            }
+        }
+        return try await exchangeAfterColdPathGate(
+            request, endpointID: endpointID,
+            remoteEndpointID: remoteEndpointID,
+            addressTicket: addressTicket
+        )
+    }
+
+    private func exchangeAfterColdPathGate(
+        _ request: MeshTransportRequest,
+        endpointID: MeshKit.MeshEndpointID,
+        remoteEndpointID: PharosMeshProtocol.MeshEndpointID,
+        addressTicket: String?
+    ) async throws -> MeshTransportResponse {
+        let deadline = Date().addingTimeInterval(
+            Double(request.timeoutMilliseconds) / 1_000
+        )
+        var attempt = 0
+        while true {
+            let remainingMilliseconds = Int(
+                (deadline.timeIntervalSinceNow * 1_000).rounded(.down)
+            )
+            guard remainingMilliseconds > 0 else { throw MeshIrohError.timeout }
+            let hasEstablishedPath: Bool
+            switch await endpoint.path(to: endpointID) {
+            case .direct, .relay:
+                hasEstablishedPath = true
+            case .unavailable:
+                hasEstablishedPath = false
+            }
             let transport = MeshKitIroh.IrohTransport(
                 endpoint: endpoint,
                 target: MeshKitIroh.MeshDialTarget(
                     endpointID: endpointID,
-                    addressTicket: addressTicket
+                    // A ticket is bootstrap material, not a connection key.
+                    // Once either side's canonical path exists, dialing again
+                    // with the ticket can keep manufacturing duplicates instead
+                    // of opening a stream on the surviving connection.
+                    addressTicket: Self.effectiveAddressTicket(
+                        addressTicket,
+                        hasEstablishedPath: hasEstablishedPath,
+                        isDuplicateRecovery: attempt > 0
+                    )
                 )
             )
-            let response = try await transport.exchange(MeshKit.MeshRequest(
-                header: request.header,
-                body: request.body,
-                timeout: .milliseconds(request.timeoutMilliseconds)
-            ))
-            return MeshTransportResponse(header: response.header, body: response.body)
-        } catch {
-            throw mapIrohError(error)
+            do {
+                let response = try await transport.exchange(MeshKit.MeshRequest(
+                    header: request.header,
+                    body: request.body,
+                    timeout: .milliseconds(remainingMilliseconds)
+                ))
+                return MeshTransportResponse(
+                    header: response.header, body: response.body
+                )
+            } catch {
+                attempt += 1
+                guard attempt < 8,
+                      Self.isDuplicateConnectionDescription(
+                        String(reflecting: error) + " " + error.localizedDescription
+                      )
+                else { throw mapIrohError(error) }
+                // Simultaneous dials are resolved by Iroh retaining one
+                // canonical connection and closing the duplicate. Re-open the
+                // stream on that surviving connection after a bounded settling
+                // delay. Immediate retries can repeatedly hit the same closing
+                // connection before the canonical path reaches the pool.
+                let delay = Self.duplicateConnectionRetryDelayMilliseconds(
+                    attempt: attempt
+                )
+                guard deadline.timeIntervalSinceNow * 1_000 > Double(delay + 50)
+                else { throw mapIrohError(error) }
+                try await Task.sleep(for: .milliseconds(delay))
+            }
         }
+    }
+
+    static func isDuplicateConnectionDescription(_ value: String) -> Bool {
+        value.localizedCaseInsensitiveContains("duplicate connection")
+    }
+
+    static func duplicateConnectionRetryDelayMilliseconds(attempt: Int) -> Int {
+        let exponent = min(max(attempt - 1, 0), 3)
+        return min(150 * (1 << exponent), 1_000)
+    }
+
+    static func effectiveAddressTicket(
+        _ ticket: String?, hasEstablishedPath: Bool,
+        isDuplicateRecovery: Bool
+    ) -> String? {
+        hasEstablishedPath || isDuplicateRecovery ? nil : ticket
     }
 
     public func path(
@@ -258,6 +361,31 @@ public actor IrohEndpointRuntime {
             receivedBytes: status.receivedBytes,
             lostBytes: status.lostBytes
         )
+    }
+}
+
+private actor MeshColdConnectionGate {
+    private var held: Set<PharosMeshProtocol.MeshEndpointID> = []
+    private var waiters: [
+        PharosMeshProtocol.MeshEndpointID: [CheckedContinuation<Void, Never>]
+    ] = [:]
+
+    func acquire(_ peer: PharosMeshProtocol.MeshEndpointID) async {
+        guard !held.insert(peer).inserted else { return }
+        await withCheckedContinuation { continuation in
+            waiters[peer, default: []].append(continuation)
+        }
+    }
+
+    func release(_ peer: PharosMeshProtocol.MeshEndpointID) {
+        guard var queue = waiters[peer], !queue.isEmpty else {
+            held.remove(peer)
+            waiters[peer] = nil
+            return
+        }
+        let next = queue.removeFirst()
+        waiters[peer] = queue.isEmpty ? nil : queue
+        next.resume()
     }
 }
 

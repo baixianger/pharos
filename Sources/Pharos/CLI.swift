@@ -583,6 +583,7 @@ enum CLI {
       pair invite|accept|redeem|list|revoke manage signed trusted-device pairing
       leave <room> <nick|member-id>       leave replicated room membership
       stop <room> <nick|member-id>        send a signed stop to the owning Host
+      attach-local <member-id>            SSH-only: attach via Host-private tmux binding
       rename-member <room> <member> <new> rename replicated membership
       rename <room> <new-name>            rename a replicated room
       delete <room>                       delete a replicated room
@@ -847,7 +848,10 @@ enum CLI {
 
     // MARK: Misc
 
-    private static var version: String { "0.8.0" }
+    private static var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+            as? String ?? "2.0.0"
+    }
 
     private static func prettyJSON(_ obj: Any) -> String {
         guard

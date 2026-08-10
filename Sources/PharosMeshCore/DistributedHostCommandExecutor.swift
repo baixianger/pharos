@@ -104,6 +104,47 @@ public struct DistributedHostCommandExecutor: Sendable {
         self.bindings = bindings
     }
 
+    /// Wake a Host-local coding session with a fixed product-authored prompt.
+    /// Remote callers must still use a signed host command; this entry point is
+    /// for the owning Pharos process after it has verified local idle presence.
+    public func pokeLocal(
+        resourceID: MeshResourceID, text: String
+    ) async -> MeshHostCommandExecutionOutcome {
+        do {
+            let payload = DistributedHostPokePayload(text: text)
+            try payload.validate()
+            let binding = try bindings.load(resourceID)
+            try await poke(binding: binding, text: text)
+            return .executed(Data("poke-ok".utf8))
+        } catch let error as DistributedHostExecutorError {
+            return .failed(code: error.failureCode)
+        } catch {
+            return .failed(code: "host-execution-failed")
+        }
+    }
+
+    /// Runs an interactive tmux client for a resource owned by this Host. SSH
+    /// callers provide only the opaque resource ID; the private socket/session
+    /// binding never leaves the Host.
+    public func attachLocal(resourceID: MeshResourceID) throws -> Int32 {
+        let binding = try bindings.load(resourceID)
+        let executable = try tmuxExecutable()
+        if let socket = binding.tmuxSocket {
+            let attributes = try FileManager.default.attributesOfItem(atPath: socket)
+            guard attributes[.type] as? FileAttributeType == .typeSocket else {
+                throw DistributedHostExecutorError.tmuxSocketUnavailable
+            }
+        }
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = (binding.tmuxSocket.map { ["-S", $0] } ?? []) + [
+            "attach-session", "-d", "-t", "=\(binding.tmuxSession)",
+        ]
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus
+    }
+
     public func execute(_ command: MeshHostCommand) async -> MeshHostCommandExecutionOutcome {
         do {
             let binding = try bindings.load(command.resourceID)
@@ -114,17 +155,7 @@ public struct DistributedHostCommandExecutor: Sendable {
                     DistributedHostPokePayload.self, from: command.payload
                 )
                 try payload.validate()
-                try runTmux(
-                    executable, binding: binding,
-                    // `send-keys` resolves a pane target. The trailing colon
-                    // turns the exact session match into its active pane;
-                    // `=session` alone is valid only for session commands.
-                    arguments: ["send-keys", "-t", "=\(binding.tmuxSession):", "-l", "--", payload.text]
-                )
-                try runTmux(
-                    executable, binding: binding,
-                    arguments: ["send-keys", "-t", "=\(binding.tmuxSession):", "Enter"]
-                )
+                try await poke(executable: executable, binding: binding, text: payload.text)
                 return .executed(Data("poke-ok".utf8))
             case .stop:
                 guard command.payload.isEmpty else {
@@ -143,6 +174,30 @@ public struct DistributedHostCommandExecutor: Sendable {
         } catch {
             return .failed(code: "host-execution-failed")
         }
+    }
+
+    private func poke(
+        binding: DistributedHostResourceBinding, text: String
+    ) async throws {
+        try await poke(executable: tmuxExecutable(), binding: binding, text: text)
+    }
+
+    private func poke(
+        executable: URL, binding: DistributedHostResourceBinding, text: String
+    ) async throws {
+        try runTmux(
+            executable, binding: binding,
+            // `send-keys` resolves a pane target. The trailing colon turns the
+            // exact session match into its active pane.
+            arguments: ["send-keys", "-t", "=\(binding.tmuxSession):", "-l", "--", text]
+        )
+        // Full-screen coding-agent TUIs need one render turn before Enter;
+        // sending both back-to-back can leave the text sitting in the composer.
+        try await Task.sleep(for: .milliseconds(350))
+        try runTmux(
+            executable, binding: binding,
+            arguments: ["send-keys", "-t", "=\(binding.tmuxSession):", "Enter"]
+        )
     }
 
     private func tmuxExecutable() throws -> URL {

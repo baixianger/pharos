@@ -86,6 +86,32 @@ final class MeshTrustPairingTests: XCTestCase {
         XCTAssertEqual(stored?.descriptor.roles, [.controller, .replica])
     }
 
+    func testSignedInviterRolesPreserveHostCapability() async throws {
+        let fixture = Fixture()
+        let invitation = try await fixture.inviterService.issueInvitation(
+            trustGroupID: fixture.group,
+            membershipEpoch: 4,
+            inviterAddressTicket: "iroh-inviter-ticket",
+            inviterRoles: [.controller, .host, .replica],
+            requestedRoles: [.controller, .replica],
+            now: now
+        )
+
+        _ = try await fixture.acceptorService.acceptAndTrustInviter(
+            invitation,
+            acceptingAddressTicket: "iroh-acceptor-ticket",
+            displayName: "iPhone",
+            inviterDisplayName: "Mac mini",
+            now: now
+        )
+
+        let stored = await fixture.acceptorStore.trustedDevice(
+            in: fixture.group, id: fixture.inviter.deviceID
+        )
+        XCTAssertEqual(stored?.descriptor.roles, [.controller, .host, .replica])
+        XCTAssertEqual(invitation.inviterRoles, [.controller, .host, .replica])
+    }
+
     func testRequestedHostRolesDoNotRemoveInviterControllerAuthority() async throws {
         let fixture = Fixture()
         let invitation = try await fixture.inviterService.issueInvitation(
@@ -143,6 +169,42 @@ final class MeshTrustPairingTests: XCTestCase {
             try await fixture.inviterService.redeem(acceptance, for: invitation, now: now)
         ) {
             XCTAssertEqual($0 as? MeshTrustPairingError, .invitationAlreadyConsumed)
+        }
+    }
+
+    func testMembershipRedemptionBurnsInvitationWithoutGrantingTrust() async throws {
+        let fixture = Fixture()
+        let invitation = try await fixture.inviterService.issueInvitation(
+            trustGroupID: fixture.group,
+            membershipEpoch: 3,
+            inviterAddressTicket: "iroh-inviter-ticket",
+            requestedRoles: [.controller, .replica],
+            now: now
+        )
+        let acceptance = try fixture.acceptorService.createAcceptance(
+            for: invitation,
+            acceptingAddressTicket: "iroh-acceptor-ticket",
+            displayName: "Joining device",
+            now: now
+        )
+
+        let paired = try await fixture.inviterService
+            .redeemForMembershipTransition(
+                acceptance, for: invitation, now: now
+            )
+        XCTAssertEqual(paired.descriptor.id, fixture.acceptor.deviceID)
+        let prematurelyTrusted = await fixture.store.trustedDevice(
+            in: fixture.group, id: fixture.acceptor.deviceID
+        )
+        XCTAssertNil(prematurelyTrusted)
+        await XCTAssertThrowsErrorAsync(
+            try await fixture.inviterService.redeemForMembershipTransition(
+                acceptance, for: invitation, now: now
+            )
+        ) {
+            XCTAssertEqual(
+                $0 as? MeshTrustPairingError, .invitationAlreadyConsumed
+            )
         }
     }
 

@@ -122,6 +122,7 @@ struct DashboardView: View {
         // instead, which draws with the window's first frame.
         .onAppear { loadMesh() }
         .onReceive(meshTick) { _ in loadMesh() }
+        .onChange(of: distributedMesh.presenceRevision) { _, _ in loadMesh() }
         .confirmationDialog("Stop agent on \(agentToStop?.label ?? "")?",
                             isPresented: Binding(get: { agentToStop != nil },
                                                  set: { if !$0 { agentToStop = nil } }),
@@ -208,9 +209,26 @@ struct DashboardView: View {
     }
 
     private var unregisteredSessions: [DashboardAgentSession] {
-        DashboardAgentSession.unregistered(running: store.allRunningSessions,
-                                           remoteHosts: store.remoteSessionHosts,
-                                           registered: Set(meshAgentSessions.values))
+        var registered = Set(meshAgentSessions.values)
+        // A remote Host's structured observation is intentionally not
+        // replicated, so this dashboard may know the signed room member but
+        // not its tmux binding. Pharos-spawned mesh sessions have one exact,
+        // deterministic name; use that name only for display deduplication.
+        // Identity and Host control continue to route by stable member ID.
+        for member in liveMeshAgents {
+            for room in member.rooms {
+                let session = MeshSpawn.sessionName(room: room, nick: member.nick)
+                registered.insert(DashboardAgentSession(
+                    session: session,
+                    sshHost: store.remoteSessionHosts[session]
+                ))
+            }
+        }
+        return DashboardAgentSession.unregistered(
+            running: store.allRunningSessions,
+            remoteHosts: store.remoteSessionHosts,
+            registered: registered
+        )
     }
 
     private func beginRename(_ member: MeshMemberInfo) {
@@ -355,30 +373,34 @@ struct DashboardView: View {
                     let rooms = try await distributedMesh.chatRooms()
                     var messages: [MeshMsg] = []
                     var members: [String: MeshMemberInfo] = [:]
+                    var sessions: [String: DashboardAgentSession] = [:]
                     for room in rooms {
                         messages.append(contentsOf: try await distributedMesh
                             .chatMessages(in: room, limit: 20))
-                        for member in try await distributedMesh.chatMembers(in: room) {
+                        for member in try await distributedMesh.chatMemberInfos(in: room) {
                             if var existing = members[member.id] {
                                 existing.rooms = Array(
                                     Set(existing.rooms + [room.name])
                                 ).sorted()
                                 members[member.id] = existing
                             } else {
-                                members[member.id] = MeshMemberInfo(
-                                    id: member.id, nick: member.nick,
-                                    rooms: [room.name], lastSeen: 0,
-                                    nodeOnline: nil
+                                members[member.id] = member
+                            }
+                            if let pane = member.tmuxPane,
+                               let session = RemoteLaunch.sessionName(
+                                pane: pane, host: nil, socket: member.tmuxSocket
+                               ) {
+                                sessions[member.id] = DashboardAgentSession(
+                                    session: session, sshHost: nil
                                 )
                             }
                         }
                     }
                     meshMessages = messages.sorted { $0.ts > $1.ts }
                     meshAgents = Array(members.values)
-                    // Distributed Host controls bind opaque resource IDs on
-                    // the owning device; legacy SSH/tmux discovery is never
-                    // used to infer a command route.
-                    meshAgentSessions = [:]
+                    // Display-only deduplication. Signed Host control still
+                    // routes exclusively by opaque resource ID.
+                    meshAgentSessions = sessions
                 } catch {
                     meshMessages = []
                     meshAgents = []

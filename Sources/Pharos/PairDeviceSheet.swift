@@ -22,8 +22,11 @@ struct PairDeviceSheet: View {
         VStack(spacing: 18) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Pair a device").font(.title2.weight(.semibold))
-                    Text("Open Pharos on the other device and scan this code")
+                    Text(distributedMesh.isProductModeEnabled ? "Invite a device" : "Pair a device")
+                        .font(.title2.weight(.semibold))
+                    Text(distributedMesh.isProductModeEnabled
+                         ? "Scan nearby, or send the magic link privately"
+                         : "Open Pharos on the other device and scan this code")
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -47,7 +50,7 @@ struct PairDeviceSheet: View {
                     .resizable()
                     .scaledToFit()
                     .frame(width: 260, height: 260)
-                    .accessibilityLabel("Pharos trusted-device pairing QR code")
+                    .accessibilityLabel("Pharos trusted-device invitation QR code")
                 if !distributedMesh.isProductModeEnabled {
                     Text(endpoint)
                         .font(.caption.monospaced())
@@ -64,9 +67,22 @@ struct PairDeviceSheet: View {
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                Button("Copy pairing link", systemImage: "doc.on.doc") {
+                Button(
+                    distributedMesh.isProductModeEnabled
+                        ? "Copy invitation link" : "Copy pairing link",
+                    systemImage: "doc.on.doc"
+                ) {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(pairingLink, forType: .string)
+                }
+                if let url = URL(string: pairingLink) {
+                    ShareLink(
+                        item: url,
+                        subject: Text("Join my Pharos Mesh"),
+                        message: Text("Open this signed, single-use invitation in Pharos. It expires after five minutes.")
+                    ) {
+                        Label("Share with AirDrop, Mail, or Messages", systemImage: "square.and.arrow.up")
+                    }
                 }
             } else {
                 ContentUnavailableView("Pairing unavailable",

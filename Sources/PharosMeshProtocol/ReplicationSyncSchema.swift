@@ -175,7 +175,8 @@ public struct MeshEventRangeResponse: Codable, Equatable, Sendable {
             var expected = request.afterSequence + 1
             for event in events {
                 guard event.trustGroupID == request.trustGroupID,
-                      event.membershipEpoch == request.membershipEpoch,
+                      event.membershipEpoch > 0,
+                      event.membershipEpoch <= request.membershipEpoch,
                       event.authorEndpointID == request.authorEndpointID,
                       event.authorSequence == expected else {
                     throw MeshReplicationValidationError.invalidRangeResponse
@@ -189,7 +190,8 @@ public struct MeshEventRangeResponse: Codable, Equatable, Sendable {
             try snapshot.snapshot.validate()
             try snapshot.state.validate()
             guard snapshot.snapshot.trustGroupID == request.trustGroupID,
-                  snapshot.snapshot.membershipEpoch == request.membershipEpoch,
+                  snapshot.snapshot.membershipEpoch > 0,
+                  snapshot.snapshot.membershipEpoch <= request.membershipEpoch,
                   snapshot.snapshot.authorHeads.contains(where: {
                       $0.endpointID == request.authorEndpointID &&
                           $0.sequence > request.afterSequence

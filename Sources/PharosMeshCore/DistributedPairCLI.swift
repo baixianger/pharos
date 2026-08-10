@@ -1,6 +1,7 @@
 import Foundation
 import PharosMeshIdentity
 import PharosMeshIroh
+import PharosMeshLifecycle
 import PharosMeshProtocol
 import PharosMeshReplica
 
@@ -9,10 +10,10 @@ import PharosMeshReplica
 /// silently falling back to Broker-era credentials.
 public enum DistributedPairCLI {
     public static let usage = """
-    pair invite [--roles controller,replica] [--relay production|disabled]
+    pair invite [--roles controller,host,replica] [--relay production|disabled]
     pair accept INVITATION --name NAME [--inviter-name NAME]
-    pair redeem INVITATION ACCEPTANCE
     pair list
+    pair audit
     pair revoke DEVICE-ID [--name THIS-DEVICE-NAME]
     """
 
@@ -28,6 +29,9 @@ public enum DistributedPairCLI {
             switch command {
             case "invite", "create":
                 let group = try await replica.ensureActiveTrustGroup()
+                guard try replica.activeRoles().contains(.controller) else {
+                    throw PairCLIError.administratorRequired
+                }
                 guard let epoch = try await replica.store.membershipEpoch(
                     for: group
                 ) else { throw PairCLIError.missingMembership }
@@ -40,6 +44,7 @@ public enum DistributedPairCLI {
                 ).issueInvitation(
                     trustGroupID: group, membershipEpoch: epoch,
                     inviterAddressTicket: address.ticket,
+                    inviterRoles: try replica.activeRoles(),
                     requestedRoles: try roles(args)
                 )
                 print(try MeshTrustInvitationLink.encode(invitation).absoluteString)
@@ -54,35 +59,21 @@ public enum DistributedPairCLI {
                 let runtime = try await bindRuntime(args, replica: replica)
                 defer { Task { try? await runtime.close() } }
                 let address = try await runtime.localAddress()
-                let acceptance = try await MeshTrustPairingService(
-                    identity: replica.identity,
-                    invitationStore: replica.store
-                ).acceptAndTrustInviter(
-                    invitation, acceptingAddressTicket: address.ticket,
-                    displayName: name,
+                let group = try await MeshTrustGroupLifecycle.join(
+                    invitation, replica: replica, runtime: runtime,
+                    localAddress: address, displayName: name,
                     inviterDisplayName: option("--inviter-name", in: args)
-                        ?? "Inviter"
+                        ?? "Inviter",
+                    replacingExisting: try replica.activeTrustGroup() != nil
                 )
-                try replica.adoptActiveTrustGroup(
-                    invitation.trustGroupID, replacingExisting: true
-                )
-                print(try MeshTrustAcceptanceTicket.encode(acceptance))
+                print("joined\t\(group.rawValue.uuidString)")
                 return 0
 
             case "redeem":
-                guard remaining.count >= 2 else {
-                    return usageError("pair redeem INVITATION ACCEPTANCE")
-                }
-                let invitation = try decodeInvitation(remaining[0])
-                let acceptance = try MeshTrustAcceptanceTicket.decode(
-                    remaining[1]
+                return usageError(
+                    "pair redeem is retired; run pair accept on the joining device " +
+                        "so the admin quorum can certify the new membership"
                 )
-                let paired = try await MeshTrustPairingService(
-                    identity: replica.identity,
-                    invitationStore: replica.store
-                ).redeem(acceptance, for: invitation)
-                print("trusted\t\(paired.descriptor.id.rawValue.uuidString)")
-                return 0
 
             case "list":
                 guard let group = try replica.activeTrustGroup(),
@@ -103,6 +94,31 @@ public enum DistributedPairCLI {
                 }
                 return 0
 
+            case "audit":
+                guard let group = try replica.activeTrustGroup() else {
+                    throw PairCLIError.missingMembership
+                }
+                let entries = try await replica.store.membershipAudit(
+                    for: group
+                )
+                if entries.isEmpty {
+                    print("no membership transitions")
+                    return 0
+                }
+                for entry in entries {
+                    let removed = entry.removedDevices.map {
+                        "\($0.descriptor.id.rawValue.uuidString):" +
+                            $0.descriptor.displayName
+                    }.sorted().joined(separator: ",")
+                    print(
+                        "epoch\t\(entry.previousEpoch)->\(entry.nextEpoch)\t" +
+                        "author\t\(entry.authorDeviceID.rawValue.uuidString)\t" +
+                        "removed\t\(removed.isEmpty ? "-" : removed)\t" +
+                        "sha256\t\(entry.transitionSHA256)"
+                    )
+                }
+                return 0
+
             case "revoke", "remove":
                 guard let rawID = remaining.first,
                       let uuid = UUID(uuidString: rawID) else {
@@ -112,6 +128,9 @@ public enum DistributedPairCLI {
                       let epoch = try await replica.store.membershipEpoch(for: group)
                 else { throw PairCLIError.missingMembership }
                 let target = MeshDeviceID(rawValue: uuid)
+                guard try replica.activeRoles().contains(.controller) else {
+                    throw PairCLIError.administratorRequired
+                }
                 let peers = try await replica.store.trustedDevices(
                     in: group, membershipEpoch: epoch
                 )
@@ -127,16 +146,17 @@ public enum DistributedPairCLI {
                         endpointID: try replica.identity.endpointID(),
                         displayName: option("--name", in: args)
                             ?? ProcessInfo.processInfo.hostName,
-                        roles: [.controller, .host, .replica]
+                        roles: try replica.activeRoles()
                     ),
                     signingPublicKey: try replica.identity.signingPublicKeyBytes(),
                     addressTicket: address.ticket
                 )
                 let survivors = peers.filter { $0.descriptor.id != target }
-                let transition = try MeshMembershipTransitionSigner.sign(
-                    trustGroupID: group, previousEpoch: epoch,
-                    identity: replica.identity, roster: survivors + [localMember]
-                )
+                let transition = try await MeshTrustGroupLifecycle
+                    .certifyMembershipTransition(
+                        replica: replica, runtime: runtime, group: group,
+                        previousEpoch: epoch, roster: survivors + [localMember]
+                    )
                 for peer in survivors {
                     let transport = IrohMeshTransport(
                         runtime: runtime,
@@ -149,7 +169,8 @@ public enum DistributedPairCLI {
                         .applyMembershipTransition(transition)
                 }
                 try await replica.store.applyMembershipTransition(
-                    transition, localIdentity: replica.identity
+                    transition, localIdentity: replica.identity,
+                    localAuthorRoles: try replica.activeRoles()
                 )
                 print("revoked\t\(rawID)\tepoch\t\(transition.nextEpoch)")
                 return 0
@@ -196,7 +217,7 @@ public enum DistributedPairCLI {
     }
 
     private static func roles(_ args: [String]) throws -> Set<MeshDeviceRole> {
-        let values = (option("--roles", in: args) ?? "controller,replica")
+        let values = (option("--roles", in: args) ?? "controller,host,replica")
             .split(separator: ",")
         let parsed = values.compactMap { MeshDeviceRole(rawValue: String($0)) }
         guard !parsed.isEmpty, parsed.count == values.count else {
@@ -230,5 +251,6 @@ public enum DistributedPairCLI {
         case invalidRelayPolicy
         case invalidRoles
         case deviceNotFound
+        case administratorRequired
     }
 }

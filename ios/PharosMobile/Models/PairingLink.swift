@@ -54,9 +54,8 @@ final class PairingCoordinator {
     var pendingDevice: PendingDeviceInvitation?
     var errorMessage: String?
     var showsError = false
-    /// Drives the broker-setup wizard cover. Auto-shown on first run (no
-    /// broker) and re-openable from Settings; the wizard's close button and a
-    /// successful pairing both clear it.
+    /// Drives the personal-Mesh setup cover. It is auto-shown until this
+    /// device creates or joins a trust group and remains reopenable later.
     var showsSetupGuide = false
 
     func receive(_ url: URL) {

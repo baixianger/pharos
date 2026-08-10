@@ -13,9 +13,14 @@ struct SettingsView: View {
     @State private var meshPort = "47800"
     @State private var showHostEditor = false
     @State private var showsPairingScanner = false
+    @State private var showsInviteDevice = false
+    @State private var showsLeaveOptions = false
     @State private var brokerStatus: MobileBrokerConnectionStatus = .unchecked
     @State private var deviceToRevoke: MeshPairedDevice?
     @State private var revokeError: String?
+    @State private var lifecycleError: String?
+    @State private var isChangingMeshMembership = false
+    @State private var showsResetDeviceConfirmation = false
     private let meshClient = MeshTCPClient()
 
     var body: some View {
@@ -105,6 +110,9 @@ struct SettingsView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showsInviteDevice) {
+                InviteDeviceSheet().environment(distributedMesh)
+            }
             .alert(
                 "Remove trusted device?",
                 isPresented: Binding(
@@ -124,6 +132,45 @@ struct SettingsView: View {
             } message: { device in
                 Text("\(device.descriptor.displayName) will lose Mesh access. Use this for a lost or replaced device.")
             }
+            .confirmationDialog(
+                "Leave this personal Mesh?",
+                isPresented: $showsLeaveOptions,
+                titleVisibility: .visible
+            ) {
+                Button("Remove this device from Mesh", role: .destructive) {
+                    leaveMesh()
+                }
+                Button("Disconnect and archive locally") {
+                    archiveMeshLocally()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Leaving publishes a signed self-removal and requires another online Mesh admin device. Disconnecting only archives this iPhone locally; revoke it later from another admin device.")
+            }
+            .confirmationDialog(
+                "Reset this iPhone as a new Mesh device?",
+                isPresented: $showsResetDeviceConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Delete Local Mesh Data and Identity", role: .destructive) {
+                    resetAsNewMeshDevice()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This permanently deletes every local Mesh replica and creates a new device identity. Other devices keep their data and may still list the old iPhone until you remove it there.")
+            }
+            .alert(
+                "Couldn’t Leave Mesh",
+                isPresented: Binding(
+                    get: { lifecycleError != nil },
+                    set: { if !$0 { lifecycleError = nil } }
+                )
+            ) {
+                Button("Archive on This iPhone") { archiveMeshLocally() }
+                Button("Keep Connected", role: .cancel) { lifecycleError = nil }
+            } message: {
+                Text(lifecycleError ?? "The leave request could not be completed.")
+            }
             .onAppear { load() }
             .onChange(of: settings.mesh) { load() }
             .task {
@@ -139,10 +186,20 @@ struct SettingsView: View {
     @ViewBuilder
     private var distributedDevicesSection: some View {
         Section {
-            Button("Pair a trusted device", systemImage: "qrcode.viewfinder") {
+            if distributedMesh.activeTrustGroupID != nil {
+                Button("Invite a device", systemImage: "person.badge.plus") {
+                    showsInviteDevice = true
+                }
+                .disabled(!distributedMesh.isLocalMeshAdmin)
+            }
+            Button("Join another Mesh", systemImage: "qrcode.viewfinder") {
                 showsPairingScanner = true
             }
             distributedStateView
+            LabeledContent("Mesh admins") {
+                Text("\(distributedMesh.meshAdminCount)")
+                    .font(.caption.monospaced())
+            }
             if distributedMesh.trustedDevices.isEmpty {
                 ContentUnavailableView {
                     Label("No trusted peers yet", systemImage: "person.crop.circle.badge.plus")
@@ -153,12 +210,36 @@ struct SettingsView: View {
                 ForEach(distributedMesh.trustedDevices, id: \.descriptor.id) { device in
                     trustedDeviceRow(device)
                         .swipeActions(edge: .trailing) {
+                            if distributedMesh.isLocalMeshAdmin {
                             Button(role: .destructive) {
                                 deviceToRevoke = device
                             } label: {
                                 Label("Remove", systemImage: "trash")
                             }
+                            }
                         }
+                }
+            }
+            if !distributedMesh.membershipAudit.isEmpty {
+                LabeledContent("Membership audit") {
+                    Text("\(distributedMesh.membershipAudit.count)")
+                        .font(.caption.monospaced())
+                }
+                ForEach(Array(distributedMesh.membershipAudit.suffix(3).reversed())) { entry in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(entry.removedDevices.isEmpty
+                             ? "Roster updated"
+                             : "Removed " + entry.removedDevices.map {
+                                $0.descriptor.displayName
+                             }.joined(separator: ", "))
+                        Text(
+                            "epoch \(entry.previousEpoch)→\(entry.nextEpoch) · " +
+                            "admin \(entry.authorDeviceID.rawValue.uuidString.prefix(8)) · " +
+                            "sha256 \(entry.transitionSHA256.prefix(12))…"
+                        )
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                    }
                 }
             }
             if !distributedMesh.trustedDevices.isEmpty,
@@ -174,8 +255,35 @@ struct SettingsView: View {
             if let revokeError {
                 Text(revokeError).font(.caption).foregroundStyle(.red)
             }
-            Button("Sync now", systemImage: "arrow.triangle.2.circlepath") {
-                Task { _ = await distributedMesh.synchronizeOnce() }
+            if distributedMesh.activeTrustGroupID != nil {
+                Button("Sync now", systemImage: "arrow.triangle.2.circlepath") {
+                    Task { _ = await distributedMesh.synchronizeOnce() }
+                }
+                Button("Leave this Mesh", systemImage: "rectangle.portrait.and.arrow.right") {
+                    lifecycleError = nil
+                    showsLeaveOptions = true
+                }
+                .foregroundStyle(.red)
+                .disabled(isChangingMeshMembership)
+            } else {
+                Text("This iPhone is not joined to a Mesh. Reset it if you want a completely new device identity before scanning an invitation.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Reset as New Mesh Device", systemImage: "arrow.counterclockwise.circle", role: .destructive) {
+                    showsResetDeviceConfirmation = true
+                }
+                .disabled(isChangingMeshMembership)
+            }
+            if isChangingMeshMembership {
+                HStack {
+                    ProgressView()
+                    Text("Updating Mesh membership…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let lifecycleError {
+                Text(lifecycleError).font(.caption).foregroundStyle(.red)
             }
         } header: {
             Text("Trusted devices").textCase(nil)
@@ -189,12 +297,25 @@ struct SettingsView: View {
     private func trustedDeviceRow(_ device: MeshPairedDevice) -> some View {
         let connection = distributedMesh.connections[device.descriptor.id]
         VStack(alignment: .leading, spacing: 4) {
-            Label(
-                device.descriptor.displayName,
-                systemImage: connection?.connected == true
-                    ? "checkmark.circle.fill" : "circle.dashed"
-            )
-            .foregroundStyle(connection?.connected == true ? .green : .primary)
+            HStack(spacing: 8) {
+                Label(
+                    device.descriptor.displayName,
+                    systemImage: connection?.connected == true
+                        ? "checkmark.circle.fill" : "circle.dashed"
+                )
+                .foregroundStyle(connection?.connected == true ? .green : .primary)
+                if device.descriptor.roles.contains(.controller) {
+                    Text("Mesh Admin")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(.tint.opacity(0.12), in: Capsule())
+                }
+                if localDeviceID == device.descriptor.id {
+                    Text("This iPhone")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
             Text([
                 deviceAccessSummary(device.descriptor.roles),
                 connection.map { String(describing: $0.path) } ?? "not connected yet",
@@ -203,6 +324,11 @@ struct SettingsView: View {
             .font(.caption.monospaced())
             .foregroundStyle(.secondary)
         }
+    }
+
+    private var localDeviceID: MeshDeviceID? {
+        guard case .ready(let deviceID, _) = distributedMesh.state else { return nil }
+        return deviceID
     }
 
     @ViewBuilder
@@ -268,6 +394,50 @@ struct SettingsView: View {
 
     private func abbreviated(_ value: String) -> String {
         value.count > 16 ? "\(value.prefix(8))…\(value.suffix(8))" : value
+    }
+
+    private func leaveMesh() {
+        lifecycleError = nil
+        isChangingMeshMembership = true
+        Task {
+            defer { isChangingMeshMembership = false }
+            do {
+                _ = try await distributedMesh.leaveCurrentMesh(
+                    displayName: UIDevice.current.name
+                )
+                pairing.showsSetupGuide = true
+            } catch {
+                lifecycleError = error.localizedDescription
+            }
+        }
+    }
+
+    private func archiveMeshLocally() {
+        lifecycleError = nil
+        isChangingMeshMembership = true
+        Task {
+            defer { isChangingMeshMembership = false }
+            do {
+                _ = try await distributedMesh.archiveCurrentMesh()
+                pairing.showsSetupGuide = true
+            } catch {
+                lifecycleError = error.localizedDescription
+            }
+        }
+    }
+
+    private func resetAsNewMeshDevice() {
+        lifecycleError = nil
+        isChangingMeshMembership = true
+        Task {
+            defer { isChangingMeshMembership = false }
+            do {
+                try await distributedMesh.resetAsNewMeshDevice()
+                pairing.showsSetupGuide = true
+            } catch {
+                lifecycleError = error.localizedDescription
+            }
+        }
     }
 
     private func deviceAccessSummary(_ roles: Set<MeshDeviceRole>) -> String {

@@ -37,7 +37,7 @@ private struct AppContainer: View {
     var body: some View {
         @Bindable var pairing = pairing
         // The main app is always the root; the setup wizard is a dismissible
-        // cover (auto-shown until a Broker is configured, re-openable from
+        // cover (auto-shown until a personal Mesh is configured, re-openable from
         // Settings) rather than an inescapable root screen.
         MainTabView()
             .environment(settings)
@@ -47,11 +47,12 @@ private struct AppContainer: View {
             .environment(distributedMesh)
             .onOpenURL { receivePairingURL($0) }
             .fullScreenCover(isPresented: $pairing.showsSetupGuide) {
-                BrokerSetupGuide()
+                MeshSetupGuide()
                     .environment(settings)
                     .environment(identities)
                     .environment(rooms)
                     .environment(pairing)
+                    .environment(distributedMesh)
             }
             .sheet(item: $pairing.pending) { invitation in
                 PairBrokerConfirmation(invitation: invitation)
@@ -60,6 +61,7 @@ private struct AppContainer: View {
             .sheet(item: $pairing.pendingDevice) { pending in
                 PairDeviceConfirmation(invitation: pending.invitation)
                     .environment(distributedMesh)
+                    .environment(pairing)
             }
             .alert("Pairing link unavailable", isPresented: $pairing.showsError) {
                 Button("OK") {}
@@ -79,8 +81,12 @@ private struct AppContainer: View {
                     }
                 }
                 while !Task.isCancelled, !isDemo {
-                    _ = await distributedMesh.synchronizeOnce()
-                    try? await Task.sleep(for: .seconds(5))
+                    await distributedMesh.ensureNetworkRunning()
+                    distributedMesh.scheduleSynchronization()
+                    // The task is scene-bound and is suspended with the app,
+                    // so foreground chat can converge quickly without a
+                    // permanent background polling cost.
+                    try? await Task.sleep(for: .seconds(1))
                 }
             }
             .onChange(of: settings.mesh.host) { _, host in
@@ -120,7 +126,9 @@ private struct AppContainer: View {
             }
             do {
                 try await distributedMesh.accept(
-                    pending.invitation, displayName: UIDevice.current.name
+                    pending.invitation,
+                    displayName: UIDevice.current.name,
+                    existingGroupDisposition: .archive
                 )
                 print("PHAROS_DEVICE_TEST pairing-accepted")
             } catch {

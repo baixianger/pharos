@@ -167,16 +167,33 @@ are verified before publication.
 Settings → **Machines** shows cryptographically identified trusted devices and
 the observed direct/relay/offline path. Removing a lost or replaced device
 advances the signed membership epoch; the omitted key can no longer authenticate.
-Keep at least two controller devices. To rotate a device key, pair and verify the
+Keep at least two Mesh admin devices. This is a replicated authorization role,
+not a central server. Non-admin replicas cannot invite or revoke devices even
+when they hold a valid device key. To rotate a device key, pair and verify the
 replacement first, then remove the old device. Checkout paths, SSH keys, tool
 paths, and tmux state remain Host-local. See [ADR-003](docs/ADR-003-LOCAL-FIRST-DISTRIBUTED-MESH.md).
 The Iroh feature and best-practice decisions are tracked in the
 [Iroh capability adoption roadmap](docs/IROH-CAPABILITY-ADOPTION.md).
 
-Pair a phone or another Mac from Settings → **Machines** → **Pair a device**.
+On first launch, choose **Create personal Mesh** or open a signed invitation
+from another device. To add a device later, open Settings → **Machines** →
+**Invite a device**. The system share sheet can send the five-minute,
+single-use magic link through AirDrop, Mail, or Messages; the same invitation
+is available as a QR code or copyable link.
+
+Use **Join another Mesh** to switch trust groups. **Archive current Mesh and
+switch** keeps its signed local replica for history but does not revoke this
+device remotely. **Leave current Mesh and switch** first publishes a signed
+membership transition and requires an online surviving Mesh admin device to
+acknowledge it. A device never silently abandons one trust group while claiming
+to have revoked itself from the others.
+
 For headless Linux pairing and service commands, see
 [Pharos Mesh on Linux](docs/MESH_HEADLESS.md). No public TCP port, fixed Broker,
 or Tailscale configuration is required in the distributed product mode.
+`pharos mesh pair audit` prints the verified membership epoch chain, signing
+Admin device, removed device aliases, and canonical transition SHA-256 digest;
+old rows remain audit evidence but never reappear in the active device list.
 
 ---
 

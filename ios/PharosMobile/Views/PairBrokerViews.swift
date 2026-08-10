@@ -1,16 +1,23 @@
 import SwiftUI
 import VisionKit
+import PharosMeshLifecycle
 import PharosMeshProtocol
 import UIKit
 
-struct BrokerSetupGuide: View {
+struct MeshSetupGuide: View {
     @Environment(PairingCoordinator.self) private var pairing
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showsScanner = false
     @State private var showsManualEntry = false
     @State private var manualLink = ""
+    @State private var isCreating = false
+    @State private var createError: String?
+    @State private var isResetting = false
+    @State private var showsResetConfirmation = false
 
     var body: some View {
+        @Bindable var pairing = pairing
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
@@ -20,7 +27,11 @@ struct BrokerSetupGuide: View {
                             .padding(.bottom, 4)
                     }
                     SetupIntroSection()
-                    BrokerDeploymentSection()
+                    CreatePersonalMeshSection(
+                        isCreating: isCreating,
+                        create: { Task { await createPersonalMesh() } }
+                    )
+                    ExistingMeshAvailabilitySection()
                     PairPhoneSection {
                         showsScanner = true
                     }
@@ -38,8 +49,22 @@ struct BrokerSetupGuide: View {
                                 pairing.receive(manualLink)
                             }
                             .disabled(manualLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            Divider()
+                            Button(
+                                isResetting ? "Resetting…" : "Reset as a new Mesh device",
+                                role: .destructive
+                            ) {
+                                showsResetConfirmation = true
+                            }
+                            .disabled(isResetting)
+                            Text("Deletes this iPhone's local Mesh data and device identity. Other devices and their data are not changed.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                         .padding(.top, 12)
+                    }
+                    if let createError {
+                        Text(createError).foregroundStyle(.red)
                     }
                 }
                 .padding(.horizontal, horizontalSizeClass == .regular ? 44 : 20)
@@ -70,7 +95,60 @@ struct BrokerSetupGuide: View {
                     }
                 }
             }
+            .sheet(item: $pairing.pendingDevice) { pending in
+                PairDeviceConfirmation(invitation: pending.invitation)
+                    .environment(distributedMesh)
+                    .environment(pairing)
+            }
+            .alert(
+                "Couldn’t set up Mesh",
+                isPresented: Binding(
+                    get: { createError != nil },
+                    set: { if !$0 { createError = nil } }
+                )
+            ) {
+                Button("OK") { createError = nil }
+            } message: {
+                Text(createError ?? "Try again in a moment.")
+            }
+            .confirmationDialog(
+                "Reset this iPhone as a new Mesh device?",
+                isPresented: $showsResetConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Delete Local Mesh Data and Identity", role: .destructive) {
+                    Task { await resetAsNewMeshDevice() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("After the reset, scan a fresh invitation. Other devices may still list the old iPhone until you remove it there.")
+            }
         }
+    }
+
+    @MainActor
+    private func createPersonalMesh() async {
+        isCreating = true
+        createError = nil
+        do {
+            _ = try await distributedMesh.createPersonalMesh()
+            pairing.showsSetupGuide = false
+        } catch {
+            createError = error.localizedDescription
+        }
+        isCreating = false
+    }
+
+    @MainActor
+    private func resetAsNewMeshDevice() async {
+        isResetting = true
+        createError = nil
+        do {
+            try await distributedMesh.resetAsNewMeshDevice()
+        } catch {
+            createError = error.localizedDescription
+        }
+        isResetting = false
     }
 }
 
@@ -80,7 +158,7 @@ private struct SetupIntroSection: View {
             Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(.largeTitle)
                 .foregroundStyle(.tint)
-            Text("Join your personal Mesh")
+            Text("Set up your personal Mesh")
                 .font(.title2.weight(.semibold))
             Text("Every trusted device keeps its own signed local replica. No Broker or cloud service is the source of truth.")
                 .foregroundStyle(.secondary)
@@ -88,10 +166,36 @@ private struct SetupIntroSection: View {
     }
 }
 
-private struct BrokerDeploymentSection: View {
+private struct CreatePersonalMeshSection: View {
+    let isCreating: Bool
+    let create: () -> Void
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("1. Keep a trusted device available", systemImage: "1.circle.fill")
+            Label("1. Create a new Mesh", systemImage: "plus.circle.fill")
+                .font(.headline)
+            Text("Start here when this is your first Pharos device. This iPhone becomes a Mesh admin device with its own signed local replica; it is not a central server.")
+                .foregroundStyle(.secondary)
+            Button(action: create) {
+                if isCreating {
+                    HStack { ProgressView(); Text("Creating…") }
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Text("Create personal Mesh")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(isCreating)
+        }
+    }
+}
+
+private struct ExistingMeshAvailabilitySection: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Or join an existing Mesh", systemImage: "link.badge.plus")
                 .font(.headline)
             DeploymentOption(
                 symbol: "desktopcomputer",
@@ -138,9 +242,9 @@ private struct PairPhoneSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("2. Pair this iPhone", systemImage: "2.circle.fill")
+            Label("Join from another trusted device", systemImage: "qrcode.viewfinder")
                 .font(.headline)
-            Text("On a Mac, open Pharos → Settings → Machines → Pair a device. Scan its code here. For a headless Linux replica, run:")
+            Text("On another device, choose Invite a device. Open its magic link from AirDrop, Mail, or Messages, or scan its QR code here. For a headless Linux replica, run:")
                 .foregroundStyle(.secondary)
             Text("pharos-mesh distributed sync-serve --data-dir /var/lib/pharos-mesh --invite-file /tmp/pharos-invite.txt")
                 .font(.callout.monospaced())
@@ -274,6 +378,8 @@ struct PairDeviceConfirmation: View {
     @State private var errorMessage: String?
     @State private var didConnect = false
     @State private var now = Date()
+    @State private var requiresDeviceReset = false
+    @State private var showsResetConfirmation = false
 
     var body: some View {
         NavigationStack {
@@ -333,21 +439,35 @@ struct PairDeviceConfirmation: View {
                 if let errorMessage {
                     Section {
                         Text(errorMessage).foregroundStyle(.red)
+                        if requiresDeviceReset {
+                            Button("Reset This iPhone and Retry", role: .destructive) {
+                                showsResetConfirmation = true
+                            }
+                            .disabled(isConnecting || isExpired)
+                        }
                     }
                 }
                 Section {
                     Button {
-                        Task { await connect() }
+                        Task { await connect(.archive) }
                     } label: {
                         if isConnecting {
                             HStack { ProgressView(); Text("Pairing…") }
                         } else if isExpired {
                             Text("Code expired")
+                        } else if switchesPersonalMesh {
+                            Text("Archive current Mesh and switch")
                         } else {
-                            Text(switchesPersonalMesh ? "Switch Mesh and connect" : "Trust and connect")
+                            Text("Trust and connect")
                         }
                     }
                     .disabled(isConnecting || isExpired)
+                    if switchesPersonalMesh {
+                        Button("Leave current Mesh and switch", role: .destructive) {
+                            Task { await connect(.leave) }
+                        }
+                        .disabled(isConnecting || isExpired)
+                    }
                 } footer: {
                     Text(
                         "The code is single-use. No IP address, password, " +
@@ -369,6 +489,18 @@ struct PairDeviceConfirmation: View {
                 try? await Task.sleep(for: .seconds(1))
                 now = Date()
             }
+        }
+        .confirmationDialog(
+            "Reset this iPhone and retry pairing?",
+            isPresented: $showsResetConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Local Mesh Data and Retry", role: .destructive) {
+                Task { await resetAndRetry() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This creates a completely new device identity. Other devices keep their data and may still list the old iPhone until it is removed there.")
         }
     }
 
@@ -404,17 +536,44 @@ struct PairDeviceConfirmation: View {
     }
 
     @MainActor
-    private func connect() async {
+    private func connect(_ disposition: MeshExistingGroupDisposition) async {
         isConnecting = true
         errorMessage = nil
+        requiresDeviceReset = false
         do {
             try await distributedMesh.accept(
-                invitation, displayName: UIDevice.current.name
+                invitation,
+                displayName: UIDevice.current.name,
+                existingGroupDisposition: disposition
             )
             didConnect = true
             pairing.showsSetupGuide = false
         } catch {
             errorMessage = "Pairing failed: \(error.localizedDescription)"
+            requiresDeviceReset = (error as? MeshTrustGroupLifecycleError) ==
+                .archivedReplicaNeedsReset
+        }
+        isConnecting = false
+    }
+
+    @MainActor
+    private func resetAndRetry() async {
+        isConnecting = true
+        errorMessage = nil
+        requiresDeviceReset = false
+        do {
+            try await distributedMesh.resetAsNewMeshDevice()
+            try await distributedMesh.accept(
+                invitation,
+                displayName: UIDevice.current.name,
+                existingGroupDisposition: .archive
+            )
+            didConnect = true
+            pairing.showsSetupGuide = false
+        } catch {
+            errorMessage = "Pairing failed: \(error.localizedDescription)"
+            requiresDeviceReset = (error as? MeshTrustGroupLifecycleError) ==
+                .archivedReplicaNeedsReset
         }
         isConnecting = false
     }

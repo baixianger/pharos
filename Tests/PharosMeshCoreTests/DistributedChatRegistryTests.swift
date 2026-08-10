@@ -6,6 +6,242 @@ import PharosMeshProtocol
 import PharosMeshReplica
 
 final class DistributedChatRegistryTests: XCTestCase {
+    func testHostSnapshotKeepsLastStructuredStateForBoundLiveSeat() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let replica = try fixture.replica(named: "presence-last-known")
+        try await replica.store.setMembershipEpoch(1, for: fixture.group)
+        let registry = DistributedChatRegistry(replica: replica, group: fixture.group)
+        _ = try await registry.createRoom(named: "pharos-dev")
+        let agent = DistributedAgentChat(replica: replica, group: fixture.group)
+        _ = try await agent.join(
+            room: "pharos-dev", nick: "builder", memberID: "session-live"
+        )
+        let observation: [String: Any] = [
+            "version": 1,
+            "sessions": [
+                "session-live": [
+                    "state": "busy", "updatedAt": 1.0,
+                    "cwd": "/workspace", "kind": "codex",
+                    "tmuxPane": "%1", "tmuxSocket": "/tmp/tmux-live",
+                ],
+            ],
+        ]
+        try JSONSerialization.data(
+            withJSONObject: observation, options: [.sortedKeys]
+        ).write(
+            to: replica.rootURL.appendingPathComponent(
+                "agent-host-observations-v1.json"
+            ),
+            options: .atomic
+        )
+
+        let snapshot = try await DistributedHookCLI.hostPresenceSnapshot(
+            replica: replica, group: fixture.group,
+            nowMilliseconds: 1_000_000
+        )
+
+        XCTAssertEqual(snapshot.records.count, 1)
+        XCTAssertEqual(snapshot.records.first?.resourceID.rawValue, "session-live")
+        XCTAssertEqual(snapshot.records.first?.state, .busy)
+        XCTAssertEqual(snapshot.records.first?.observedAtMilliseconds, 1_000)
+    }
+
+    func testHostSnapshotPublishesEverySimultaneouslyBusyAgent() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let replica = try fixture.replica(named: "presence-two-busy-agents")
+        try await replica.store.setMembershipEpoch(1, for: fixture.group)
+        let registry = DistributedChatRegistry(replica: replica, group: fixture.group)
+        _ = try await registry.createRoom(named: "pharos-dev")
+        let agent = DistributedAgentChat(replica: replica, group: fixture.group)
+        for memberID in ["busy-session-a", "busy-session-b"] {
+            _ = try await agent.join(
+                room: "pharos-dev", nick: memberID, memberID: memberID
+            )
+        }
+        let observation: [String: Any] = [
+            "version": 1,
+            "sessions": [
+                "busy-session-a": [
+                    "state": "busy", "updatedAt": 10.0,
+                    "cwd": "/workspace/a", "kind": "codex",
+                    "tmuxPane": "%1", "tmuxSocket": "/tmp/tmux-a",
+                ],
+                "busy-session-b": [
+                    "state": "busy", "updatedAt": 11.0,
+                    "cwd": "/workspace/b", "kind": "claude",
+                    "tmuxPane": "%2", "tmuxSocket": "/tmp/tmux-b",
+                ],
+            ],
+        ]
+        try JSONSerialization.data(
+            withJSONObject: observation, options: [.sortedKeys]
+        ).write(
+            to: replica.rootURL.appendingPathComponent(
+                "agent-host-observations-v1.json"
+            ),
+            options: .atomic
+        )
+
+        let snapshot = try await DistributedHookCLI.hostPresenceSnapshot(
+            replica: replica, group: fixture.group,
+            nowMilliseconds: 20_000
+        )
+
+        XCTAssertEqual(
+            snapshot.records.map(\.resourceID.rawValue),
+            ["busy-session-a", "busy-session-b"]
+        )
+        XCTAssertEqual(snapshot.records.map(\.state), [.busy, .busy])
+        XCTAssertEqual(snapshot.records.map(\.kind), ["codex", "claude"])
+    }
+
+    func testHostSnapshotExpiresStaleUnboundHookGhost() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let replica = try fixture.replica(named: "presence-unbound-expiry")
+        try await replica.store.setMembershipEpoch(1, for: fixture.group)
+        let registry = DistributedChatRegistry(replica: replica, group: fixture.group)
+        _ = try await registry.createRoom(named: "pharos-dev")
+        let agent = DistributedAgentChat(replica: replica, group: fixture.group)
+        _ = try await agent.join(
+            room: "pharos-dev", nick: "builder", memberID: "session-ghost"
+        )
+        let observation: [String: Any] = [
+            "version": 1,
+            "sessions": [
+                "session-ghost": [
+                    "state": "busy", "updatedAt": 1.0,
+                    "cwd": "/workspace", "kind": "codex",
+                ],
+            ],
+        ]
+        try JSONSerialization.data(
+            withJSONObject: observation, options: [.sortedKeys]
+        ).write(
+            to: replica.rootURL.appendingPathComponent(
+                "agent-host-observations-v1.json"
+            ), options: .atomic
+        )
+
+        let snapshot = try await DistributedHookCLI.hostPresenceSnapshot(
+            replica: replica, group: fixture.group,
+            nowMilliseconds: 1_000 + Int64(
+                (DistributedHookCLI.unboundPresenceLeaseSeconds + 1) * 1_000
+            )
+        )
+
+        XCTAssertTrue(snapshot.records.isEmpty)
+        let resource = try await replica.store.hostResource(
+            in: fixture.group, hostDeviceID: replica.identity.deviceID,
+            resourceID: try XCTUnwrap(MeshResourceID(rawValue: "session-ghost"))
+        )
+        XCTAssertEqual(resource?.state, .active)
+    }
+
+    func testHostSnapshotUpgradesLegacyControlResourceWithPresenceCapability() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let replica = try fixture.replica(named: "presence-capability-upgrade")
+        try await replica.store.setMembershipEpoch(1, for: fixture.group)
+        let registry = DistributedChatRegistry(replica: replica, group: fixture.group)
+        _ = try await registry.createRoom(named: "pharos-dev")
+        let agent = DistributedAgentChat(replica: replica, group: fixture.group)
+        let memberID = "legacy-control-session"
+        _ = try await agent.join(
+            room: "pharos-dev", nick: "builder", memberID: memberID
+        )
+        let resourceID = try XCTUnwrap(MeshResourceID(rawValue: memberID))
+        let initialResource = try await replica.store.hostResource(
+            in: fixture.group, hostDeviceID: replica.identity.deviceID,
+            resourceID: resourceID
+        )
+        let initial = try XCTUnwrap(initialResource)
+        _ = try await replica.store.replaceHostResource(
+            in: fixture.group, on: replica.identity, resourceID: resourceID,
+            allowedActions: [.poke, .stop],
+            at: initial.updatedAt
+        )
+        let snapshotNow = initial.updatedAt.wallTimeMilliseconds + 1
+        let observation: [String: Any] = [
+            "version": 1,
+            "sessions": [
+                memberID: [
+                    "state": "idle",
+                    "updatedAt": Double(snapshotNow) / 1_000,
+                    "cwd": "/workspace", "kind": "codex",
+                ],
+            ],
+        ]
+        try JSONSerialization.data(
+            withJSONObject: observation, options: [.sortedKeys]
+        ).write(
+            to: replica.rootURL.appendingPathComponent(
+                "agent-host-observations-v1.json"
+            ),
+            options: .atomic
+        )
+
+        let snapshot = try await DistributedHookCLI.hostPresenceSnapshot(
+            replica: replica, group: fixture.group,
+            nowMilliseconds: snapshotNow
+        )
+        let upgraded = try await replica.store.hostResource(
+            in: fixture.group, hostDeviceID: replica.identity.deviceID,
+            resourceID: resourceID
+        )
+
+        XCTAssertEqual(snapshot.records.map(\.resourceID), [resourceID])
+        XCTAssertEqual(
+            Set(upgraded?.allowedActions ?? []),
+            Set([MeshHostAction.presence, .poke, .stop])
+        )
+        XCTAssertEqual(upgraded?.generation, 3)
+    }
+
+    func testHostSnapshotRetiresLegacyObservationWithoutMembership() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let replica = try fixture.replica(named: "presence-orphan-cleanup")
+        try await replica.store.setMembershipEpoch(1, for: fixture.group)
+        let agent = DistributedAgentChat(replica: replica, group: fixture.group)
+        let memberID = "orphan-session"
+        let resourceID = try XCTUnwrap(MeshResourceID(rawValue: memberID))
+        try await agent.ensureLocalPresenceAuthority(memberID: memberID)
+        let observation: [String: Any] = [
+            "version": 1,
+            "sessions": [
+                memberID: [
+                    "state": "gone", "updatedAt": 1.0,
+                    "cwd": "/workspace", "kind": "codex",
+                ],
+            ],
+        ]
+        try JSONSerialization.data(
+            withJSONObject: observation, options: [.sortedKeys]
+        ).write(
+            to: replica.rootURL.appendingPathComponent(
+                "agent-host-observations-v1.json"
+            ),
+            options: .atomic
+        )
+
+        let snapshot = try await DistributedHookCLI.hostPresenceSnapshot(
+            replica: replica, group: fixture.group
+        )
+        let resource = try await replica.store.hostResource(
+            in: fixture.group, hostDeviceID: replica.identity.deviceID,
+            resourceID: resourceID
+        )
+
+        XCTAssertTrue(snapshot.records.isEmpty)
+        XCTAssertEqual(resource?.state, .retired)
+        XCTAssertNil(DistributedHookCLI.localAgentPresence(
+            rootURL: replica.rootURL
+        )[memberID])
+    }
+
     func testAgentDeliveryUsesStableMembershipAndDeviceLocalExactOnceReceipts() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -17,6 +253,12 @@ final class DistributedChatRegistryTests: XCTestCase {
         _ = try await agent.join(
             room: "pharos-dev", nick: "builder", memberID: "session-stable"
         )
+        let presenceResource = try await replica.store.hostResource(
+            in: fixture.group, hostDeviceID: replica.identity.deviceID,
+            resourceID: try XCTUnwrap(MeshResourceID(rawValue: "session-stable"))
+        )
+        XCTAssertEqual(presenceResource?.state, .active)
+        XCTAssertEqual(presenceResource?.allowedActions, [.presence])
         let room = try await agent.room(named: "pharos-dev")
         let human = try await registry.localHumanMember(in: room)
 
@@ -44,6 +286,121 @@ final class DistributedChatRegistryTests: XCTestCase {
                 as? NSNumber
         )
         XCTAssertEqual(permissions.intValue & 0o777, 0o600)
+    }
+
+    func testFinalRoomLeaveRetiresPresenceAuthorityAndRemovesLocalObservation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let replica = try fixture.replica(named: "agent-final-leave")
+        try await replica.store.setMembershipEpoch(1, for: fixture.group)
+        let registry = DistributedChatRegistry(replica: replica, group: fixture.group)
+        _ = try await registry.createRoom(named: "first")
+        _ = try await registry.createRoom(named: "second")
+        let agent = DistributedAgentChat(replica: replica, group: fixture.group)
+        let memberID = "session-final-leave"
+        _ = try await agent.join(room: "first", nick: "builder", memberID: memberID)
+        _ = try await agent.join(room: "second", nick: "builder", memberID: memberID)
+        let resourceID = try XCTUnwrap(MeshResourceID(rawValue: memberID))
+        let observationURL = replica.rootURL.appendingPathComponent(
+            "agent-host-observations-v1.json"
+        )
+        let observation: [String: Any] = [
+            "version": 1,
+            "sessions": [
+                memberID: [
+                    "state": "busy", "updatedAt": 1.0,
+                    "cwd": "/workspace", "kind": "codex",
+                ],
+            ],
+        ]
+        try JSONSerialization.data(
+            withJSONObject: observation, options: [.sortedKeys]
+        ).write(to: observationURL, options: .atomic)
+
+        try await agent.leave(room: "first", memberID: memberID)
+        let stillActive = try await replica.store.hostResource(
+            in: fixture.group, hostDeviceID: replica.identity.deviceID,
+            resourceID: resourceID
+        )
+        XCTAssertEqual(stillActive?.state, .active)
+        XCTAssertNotNil(DistributedHookCLI.localAgentPresence(
+            rootURL: replica.rootURL
+        )[memberID])
+
+        try await agent.leave(room: "second", memberID: memberID)
+        let retired = try await replica.store.hostResource(
+            in: fixture.group, hostDeviceID: replica.identity.deviceID,
+            resourceID: resourceID
+        )
+        XCTAssertEqual(retired?.state, .retired)
+        XCTAssertNil(DistributedHookCLI.localAgentPresence(
+            rootURL: replica.rootURL
+        )[memberID])
+        let snapshot = try await DistributedHookCLI.hostPresenceSnapshot(
+            replica: replica, group: fixture.group
+        )
+        XCTAssertFalse(snapshot.records.contains { $0.resourceID == resourceID })
+    }
+
+    func testVerifiedSessionRebindMovesMembershipAndPendingDelivery() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let replica = try fixture.replica(named: "agent-rebind")
+        try await replica.store.setMembershipEpoch(1, for: fixture.group)
+        let registry = DistributedChatRegistry(replica: replica, group: fixture.group)
+        _ = try await registry.createRoom(named: "pharos-dev")
+        let agent = DistributedAgentChat(replica: replica, group: fixture.group)
+        _ = try await agent.join(
+            room: "pharos-dev", nick: "builder", memberID: "session-old"
+        )
+        let room = try await agent.room(named: "pharos-dev")
+        let human = try await registry.localHumanMember(in: room)
+        _ = try await agent.say(
+            room: "pharos-dev", memberID: human.id, text: "before clear",
+            targets: ["builder"]
+        )
+        let oldResourceID = try XCTUnwrap(MeshResourceID(rawValue: "session-old"))
+        let newResourceID = try XCTUnwrap(MeshResourceID(rawValue: "session-new"))
+        let bindings = DistributedHostResourceBindings(dataDirectory: replica.rootURL)
+        try bindings.save(
+            try DistributedHostResourceBinding(
+                resourceID: oldResourceID, tmuxSession: "pharos-builder",
+                tmuxSocket: "/tmp/pharos-tmux"
+            ),
+            for: oldResourceID
+        )
+        _ = try await replica.store.replaceHostResource(
+            in: fixture.group, on: replica.identity, resourceID: oldResourceID,
+            allowedActions: [.presence, .poke, .stop],
+            at: MeshHybridTimestamp(
+                wallTimeMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+            )
+        )
+
+        let rebound = try await agent.rebindMember(
+            from: "session-old", to: "session-new"
+        )
+        XCTAssertTrue(rebound)
+        let members = try await registry.members(in: room)
+        XCTAssertNil(members.first(where: { $0.id == "session-old" }))
+        XCTAssertEqual(
+            members.first(where: { $0.id == "session-new" })?.nick, "builder"
+        )
+        XCTAssertEqual(try bindings.load(newResourceID).tmuxSession, "pharos-builder")
+        let retiredResource = try await replica.store.hostResource(
+            in: fixture.group, hostDeviceID: replica.identity.deviceID,
+            resourceID: oldResourceID
+        )
+        XCTAssertEqual(retiredResource?.state, .retired)
+        let activeResource = try await replica.store.hostResource(
+            in: fixture.group, hostDeviceID: replica.identity.deviceID,
+            resourceID: newResourceID
+        )
+        XCTAssertEqual(activeResource?.state, .active)
+        let delivered = try await agent.receive(memberID: "session-new")
+        XCTAssertEqual(delivered.map(\.text), ["before clear"])
+        let repeated = try await agent.receive(memberID: "session-new")
+        XCTAssertTrue(repeated.isEmpty)
     }
 
     func testRoomLifecycleKeepsImmutableHistoryAcrossRename() async throws {

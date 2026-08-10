@@ -157,8 +157,11 @@ private struct MachinesSettingsTab: View {
     @State private var brokerStatus: BrokerConnectionStatus = .unchecked
     @State private var advertisedEndpoint: String?
     @State private var showsPairingAssistant = false
+    @State private var showsJoinMeshAssistant = false
+    @State private var showsLeaveOptions = false
     @State private var deviceToRevoke: MeshPairedDevice?
     @State private var revokeError: String?
+    @State private var lifecycleError: String?
 
     var body: some View {
         @Bindable var store = store
@@ -194,6 +197,9 @@ private struct MachinesSettingsTab: View {
                 PairDeviceSheet(endpoint: advertisedEndpoint)
             }
         }
+        .sheet(isPresented: $showsJoinMeshAssistant) {
+            JoinMeshSheet().environment(distributedMesh)
+        }
         .alert(
             "Remove trusted device?",
             isPresented: Binding(
@@ -212,6 +218,32 @@ private struct MachinesSettingsTab: View {
             }
         } message: { device in
             Text("\(device.descriptor.displayName) will immediately lose access after the signed membership update reaches your other devices. Use this when a device is lost or being replaced.")
+        }
+        .confirmationDialog(
+            "Leave this personal Mesh?",
+            isPresented: $showsLeaveOptions,
+            titleVisibility: .visible
+        ) {
+            Button("Remove this Mac from Mesh", role: .destructive) {
+                Task {
+                    do {
+                        _ = try await distributedMesh.leaveCurrentMesh(
+                            displayName: Host.current().localizedName ?? "This Mac"
+                        )
+                    } catch {
+                        lifecycleError = error.localizedDescription
+                    }
+                }
+            }
+            Button("Disconnect and archive locally") {
+                Task {
+                    do { _ = try await distributedMesh.archiveCurrentMesh() }
+                    catch { lifecycleError = error.localizedDescription }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Leaving publishes a signed self-removal and requires another online Mesh admin device. Disconnecting only archives this Mac locally; revoke it later from another admin device.")
         }
     }
 
@@ -237,6 +269,7 @@ private struct MachinesSettingsTab: View {
                 }
             }
             .controlSize(.small)
+            .disabled(distributedMesh.activeTrustGroupID == nil)
             Text("Projects, issues, rooms, messages, and attachments are signed into a local replica on every trusted device. Concurrent edits merge field by field; no device is a central source of truth.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -247,19 +280,41 @@ private struct MachinesSettingsTab: View {
     private var distributedDevicesSection: some View {
         Section("Trusted devices") {
             distributedStateView
+            LabeledContent("Mesh admins") {
+                Text("\(distributedMesh.meshAdminCount)")
+                    .font(.caption.monospaced())
+            }
             if distributedMesh.trustedDevices.isEmpty {
-                Text("No peer devices yet. Pair another Mac or iPhone to replicate your data.")
-                    .font(.callout).foregroundStyle(.secondary)
+                if distributedMesh.activeTrustGroupID == nil {
+                    Text("This Mac is disconnected. Join a Mesh to resume replication.")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    Text("No peer devices yet. Pair another Mac or iPhone to replicate your data.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
             } else {
                 ForEach(distributedMesh.trustedDevices, id: \.descriptor.id) { device in
                     let connection = distributedMesh.connections[device.descriptor.id]
                     VStack(alignment: .leading, spacing: 3) {
-                        Label(
-                            device.descriptor.displayName,
-                            systemImage: connection?.connected == true
-                                ? "checkmark.circle.fill" : "circle.dashed"
-                        )
-                        .foregroundStyle(connection?.connected == true ? .green : .primary)
+                        HStack(spacing: 8) {
+                            Label(
+                                device.descriptor.displayName,
+                                systemImage: connection?.connected == true
+                                    ? "checkmark.circle.fill" : "circle.dashed"
+                            )
+                            .foregroundStyle(connection?.connected == true ? .green : .primary)
+                            if device.descriptor.roles.contains(.controller) {
+                                Text("Mesh Admin")
+                                    .font(.caption2.weight(.semibold))
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(.tint.opacity(0.12), in: Capsule())
+                            }
+                            if localDeviceID == device.descriptor.id {
+                                Text("This Mac")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         Text([
                             device.descriptor.roles.map(\.rawValue).sorted().joined(separator: ", "),
                             connection.map { String(describing: $0.path) } ?? "not connected yet",
@@ -272,6 +327,30 @@ private struct MachinesSettingsTab: View {
                         Button("Remove trusted device", role: .destructive) {
                             deviceToRevoke = device
                         }
+                        .disabled(!distributedMesh.isLocalMeshAdmin)
+                    }
+                }
+            }
+            if !distributedMesh.membershipAudit.isEmpty {
+                Divider()
+                LabeledContent("Membership audit") {
+                    Text("\(distributedMesh.membershipAudit.count) signed updates")
+                        .font(.caption.monospaced())
+                }
+                ForEach(Array(distributedMesh.membershipAudit.suffix(3).reversed())) { entry in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(entry.removedDevices.isEmpty
+                             ? "Roster updated"
+                             : "Removed " + entry.removedDevices.map {
+                                $0.descriptor.displayName
+                             }.joined(separator: ", "))
+                        Text(
+                            "epoch \(entry.previousEpoch)→\(entry.nextEpoch) · " +
+                            "admin \(abbreviated(entry.authorDeviceID.rawValue.uuidString)) · " +
+                            "sha256 \(String(entry.transitionSHA256.prefix(12)))…"
+                        )
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -281,14 +360,37 @@ private struct MachinesSettingsTab: View {
             if let revokeError {
                 Text(revokeError).font(.caption).foregroundStyle(.red)
             }
-            Button("Pair a device…", systemImage: "qrcode") {
+            Button("Invite a device…", systemImage: "qrcode") {
+                lifecycleError = nil
                 showsPairingAssistant = true
             }
-            .disabled(distributedMesh.localAddress == nil)
+            .disabled(
+                distributedMesh.activeTrustGroupID == nil ||
+                    distributedMesh.localAddress == nil ||
+                    !distributedMesh.isLocalMeshAdmin
+            )
+            Button(joinMeshButtonTitle, systemImage: "link.badge.plus") {
+                lifecycleError = nil
+                showsJoinMeshAssistant = true
+            }
+            Button("Leave this Mesh…", systemImage: "rectangle.portrait.and.arrow.right") {
+                lifecycleError = nil
+                showsLeaveOptions = true
+            }
+            .foregroundStyle(.red)
+            .disabled(distributedMesh.activeTrustGroupID == nil)
+            if let lifecycleError {
+                Text(lifecycleError).font(.caption).foregroundStyle(.red)
+            }
             Text("Pairing codes expire after five minutes and work once. Device identity is its signing key—not an IP address—so direct and relay paths can change without changing trust.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var localDeviceID: MeshDeviceID? {
+        guard case .ready(let deviceID, _) = distributedMesh.state else { return nil }
+        return deviceID
     }
 
     @ViewBuilder
@@ -297,8 +399,13 @@ private struct MachinesSettingsTab: View {
         case .opening:
             HStack { ProgressView().controlSize(.small); Text("Opening private Mesh…") }
         case .ready(let deviceID, _):
-            Label("This Mac is ready", systemImage: "checkmark.shield.fill")
-                .foregroundStyle(.green)
+            if distributedMesh.activeTrustGroupID == nil {
+                Label("This Mac is ready to join a Mesh", systemImage: "link.badge.plus")
+                    .foregroundStyle(.secondary)
+            } else {
+                Label("This Mac is connected", systemImage: "checkmark.shield.fill")
+                    .foregroundStyle(.green)
+            }
             Text(abbreviated(deviceID.rawValue.uuidString))
                 .font(.caption.monospaced()).foregroundStyle(.secondary)
         case .failed(let message):
@@ -352,6 +459,11 @@ private struct MachinesSettingsTab: View {
             }
             .disabled(advertisedEndpoint == nil || brokerStatus.isChecking)
         }
+    }
+
+    private var joinMeshButtonTitle: LocalizedStringResource {
+        distributedMesh.activeTrustGroupID == nil
+            ? "Join a Mesh…" : "Join another Mesh…"
     }
 
     private func abbreviated(_ value: String) -> String {
@@ -638,7 +750,31 @@ private struct CLISettingsTab: View {
         guard let exec = Bundle.main.executablePath else { return "Couldn't locate the Pharos binary." }
         let fm = FileManager.default
         let home = NSHomeDirectory()
-        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "\(home)/.local/bin", "\(home)/bin"] {
+        let directories = [
+            "/opt/homebrew/bin", "/usr/local/bin",
+            "\(home)/.local/bin", "\(home)/bin",
+        ]
+
+        // Repair every existing Pharos-owned link, not just the first writable
+        // PATH directory. A stale ~/.local/bin link can outrank a freshly
+        // installed /opt/homebrew/bin link and launch an older mesh schema.
+        var repaired: [String] = []
+        for dir in directories where fm.isWritableFile(atPath: dir) {
+            let dest = "\(dir)/\(name)"
+            guard let target = try? fm.destinationOfSymbolicLink(atPath: dest),
+                  target.contains("Pharos.app/Contents/MacOS/Pharos")
+            else { continue }
+            do {
+                try fm.removeItem(atPath: dest)
+                try fm.createSymbolicLink(atPath: dest, withDestinationPath: exec)
+                repaired.append(dest.replacingOccurrences(of: home, with: "~"))
+            } catch { continue }
+        }
+        if !repaired.isEmpty {
+            return "Updated → \(repaired.joined(separator: ", "))"
+        }
+
+        for dir in directories {
             if !fm.fileExists(atPath: dir) {
                 guard dir.hasPrefix(home) else { continue }
                 try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)

@@ -1,3 +1,4 @@
+import PharosMeshControl
 import SwiftUI
 
 /// Shared presentation for a mesh agent's live session state.
@@ -190,6 +191,9 @@ struct AgentDetailView: View {
     @State private var terminal: TerminalTarget?
     @State private var showingStopConfirm = false
     @State private var isStopping = false
+    @State private var distributedHost: DistributedAgentHostLocation?
+    @State private var hostLookupError: String?
+    @State private var isLocatingHost = false
 
     var body: some View {
         List {
@@ -213,14 +217,7 @@ struct AgentDetailView: View {
             }
 
             if PharosMeshRuntimeMode.usesDistributedMesh {
-                Section {
-                    Label("Interactive attach stays on the owning Mac.",
-                          systemImage: "rectangle.connected.to.line.below")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } footer: {
-                    Text("The phone uses signed Host commands for lifecycle control and never infers SSH or tmux routing from replicated chat data.")
-                }
+                distributedAttachSection
             } else if let profile = sshProfile {
                 Section {
                     Button {
@@ -264,6 +261,18 @@ struct AgentDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .fullScreenCover(item: $terminal) { RemoteTerminalView(target: $0) }
+        .task(id: member.id) {
+            guard PharosMeshRuntimeMode.usesDistributedMesh else { return }
+            isLocatingHost = true
+            defer { isLocatingHost = false }
+            do {
+                distributedHost = try await store.locateAgentHost(memberID: member.id)
+                hostLookupError = nil
+            } catch {
+                distributedHost = nil
+                hostLookupError = error.localizedDescription
+            }
+        }
         .confirmationDialog("Stop @\(member.nick)?", isPresented: $showingStopConfirm, titleVisibility: .visible) {
             Button("Stop agent", role: .destructive) {
                 isStopping = true
@@ -282,5 +291,42 @@ struct AgentDetailView: View {
         guard let profile = settings.sshHost(for: member.host),
               profile.identityID != nil, profile.acceptsUnverifiedHostKey else { return nil }
         return profile
+    }
+
+    @ViewBuilder
+    private var distributedAttachSection: some View {
+        if let host = distributedHost,
+           let profile = settings.sshHost(for: host.displayName),
+           profile.identityID != nil, profile.acceptsUnverifiedHostKey {
+            Section {
+                Button {
+                    terminal = TerminalTarget(
+                        member: member, profile: profile,
+                        distributedResourceID: member.id
+                    )
+                } label: {
+                    Label("Remote Control (SSH → tmux attach)", systemImage: "terminal")
+                }
+            } footer: {
+                Text("Connects to \(profile.username)@\(profile.sshHost). The Host resolves resource \(member.id.prefix(8))… to its private tmux binding.")
+            }
+        } else if isLocatingHost {
+            Section { HStack { ProgressView(); Text("Locating owning Host…") } }
+        } else {
+            Section {
+                Label(
+                    distributedHost.map {
+                        "Add an SSH host mapping for \($0.displayName) in Settings."
+                    } ?? "Owning Host is offline or no longer advertises this agent.",
+                    systemImage: "info.circle"
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                if let hostLookupError {
+                    Text(hostLookupError).font(.caption2).foregroundStyle(.orange)
+                }
+            } footer: {
+                Text("P2P identifies the trusted Host; SSH provides the interactive byte stream. Private tmux socket and session names never leave that Host.")
+            }
+        }
     }
 }

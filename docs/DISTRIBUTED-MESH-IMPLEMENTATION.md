@@ -145,6 +145,12 @@ Implemented on `feat/distributed-iroh`:
   and competing same-epoch transitions fail closed. macOS/iOS UI and
   `pair revoke` expose the workflow; offline survivors receive the transition
   before their next ordinary sync;
+- active membership profile v2 persists the local device's signed invitation
+  roles. Every local transition path checks that persisted controller grant;
+  possessing a valid replica key alone cannot self-promote into Mesh Admin.
+  Legacy product profiles migrate to their historically granted platform roles.
+  `pair audit` verifies and prints the complete transition chain plus removed
+  old-epoch rows and canonical transition hashes;
 - the iOS project consumes `PharosMeshIdentity` and the portable
   `PharosMeshReplica` product; isolated simulator builds compile and link
   Keychain, identity, pairing, Crypto, SQLite, replica persistence, and Iroh for
