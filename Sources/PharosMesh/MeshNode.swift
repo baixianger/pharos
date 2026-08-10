@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import PharosMeshCore
 #if canImport(Darwin)
 import Darwin
@@ -13,6 +14,24 @@ import Glibc
 enum MeshNode {
     static func run(endpoint: String?, buildID: String? = nil) -> Int32 {
         if let endpoint { MeshClient.remoteEndpoint = endpoint }
+        let runtimeLock: MeshNodeRuntimeLock
+        do {
+            runtimeLock = try MeshNodeRuntimeLock.acquire(
+                runtimeDirectory: MeshPaths.nodeRuntimeDirectory,
+                owner: nodeID,
+                buildID: buildID
+            )
+        } catch {
+            log("startup refused: \(error.localizedDescription)")
+            return 1
+        }
+        let shutdown = MeshNodeShutdownLatch()
+        let signalSources = installSignalHandlers(shutdown: shutdown)
+        defer {
+            signalSources.forEach { $0.cancel() }
+            runtimeLock.release()
+            log("stopped")
+        }
         var state = LoopState()
         FileHandle.standardError.write(Data("pharos node: starting as \(hostName)\(tailscaleIP.map { " (\($0))" } ?? "")\n".utf8))
 
@@ -23,13 +42,14 @@ enum MeshNode {
         // silently loses every authenticated Broker call (heartbeat, command
         // drain, mark). Linux Foundation has no autorelease semantics; the
         // explicit pipe closes in run(_:_:) are sufficient there.
-        while true {
+        while !shutdown.isRequested() {
             #if canImport(Darwin)
-            autoreleasepool { iterate(&state, buildID: buildID) }
+            autoreleasepool { iterate(&state, buildID: buildID, shutdown: shutdown) }
             #else
-            iterate(&state, buildID: buildID)
+            iterate(&state, buildID: buildID, shutdown: shutdown)
             #endif
         }
+        return 0
     }
 
     private struct LoopState {
@@ -40,7 +60,11 @@ enum MeshNode {
         var heartbeatHealthy = true
     }
 
-    private static func iterate(_ state: inout LoopState, buildID: String?) {
+    private static func iterate(
+        _ state: inout LoopState,
+        buildID: String?,
+        shutdown: MeshNodeShutdownLatch
+    ) {
         heartbeat(buildID: buildID, healthy: &state.heartbeatHealthy)
         drainNodeCommands(missingProbeCounts: &state.missingProbeCounts)
         if Date() >= state.nextReconcile {
@@ -54,12 +78,37 @@ enum MeshNode {
         guard response.ok, let next = response.cursor else {
             let detail = response.error ?? (response.ok ? "missing event cursor" : "request failed")
             FileHandle.standardError.write(Data("pharos node: broker unavailable (\(detail)); retrying\n".utf8))
-            sleep(state.backoff)
+            waitForRetry(seconds: state.backoff, shutdown: shutdown)
             state.backoff = min(state.backoff * 2, 15)
             return
         }
         state.backoff = 1
         state.cursor = next
+    }
+
+    private static func installSignalHandlers(
+        shutdown: MeshNodeShutdownLatch
+    ) -> [any DispatchSourceSignal] {
+        [SIGTERM, SIGINT].map { signalNumber in
+            signal(signalNumber, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(
+                signal: signalNumber,
+                queue: .global(qos: .utility)
+            )
+            source.setEventHandler { shutdown.request() }
+            source.activate()
+            return source
+        }
+    }
+
+    private static func waitForRetry(
+        seconds: UInt32,
+        shutdown: MeshNodeShutdownLatch
+    ) {
+        for _ in 0..<seconds {
+            guard !shutdown.isRequested() else { return }
+            sleep(1)
+        }
     }
 
     private static func drainNodeCommands(missingProbeCounts: inout [String: Int]) {

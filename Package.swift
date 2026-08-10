@@ -49,7 +49,7 @@ let package = Package(
         ),
         .testTarget(
             name: "PharosTests",
-            dependencies: ["Pharos"],
+            dependencies: ["Pharos", "PharosMeshCore"],
             path: "Tests/PharosTests",
             resources: [.copy("Fixtures")]
         ),

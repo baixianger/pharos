@@ -37,6 +37,8 @@ enum MeshNodeService {
           </array>
           <key>RunAtLoad</key><true/>
           <key>KeepAlive</key><true/>
+          <key>ThrottleInterval</key><integer>5</integer>
+          <key>ExitTimeOut</key><integer>15</integer>
           <key>ProcessType</key><string>Background</string>
           <key>StandardOutPath</key><string>\(xml(logDirectory.appendingPathComponent("mesh-node.log").path))</string>
           <key>StandardErrorPath</key><string>\(xml(logDirectory.appendingPathComponent("mesh-node.log").path))</string>
@@ -63,6 +65,7 @@ enum MeshNodeService {
         ExecStart=\(executablePath) node run\(endpoint.map { " --endpoint \($0)" } ?? "")
         Restart=always
         RestartSec=2
+        TimeoutStopSec=15
         NoNewPrivileges=true
 
         [Install]

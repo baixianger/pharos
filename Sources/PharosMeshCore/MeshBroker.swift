@@ -440,6 +440,9 @@ public enum MeshPaths {
     /// the hub's address.
     public static var endpointFile: URL { supportDir.appendingPathComponent("mesh-endpoint") }
     public static var controlTokenFile: URL { supportDir.appendingPathComponent("mesh-control-token") }
+    public static var nodeRuntimeDirectory: URL {
+        supportDir.appendingPathComponent("Runtime", isDirectory: true)
+    }
     public static var brokerControlTokenFile: URL { dataDirectory.appendingPathComponent("mesh-control-token") }
     public static var nodeCommandsFile: URL { dataDirectory.appendingPathComponent("mesh-node-commands.json") }
     public static var mailboxesFile: URL { dataDirectory.appendingPathComponent("mesh-mailboxes.json") }

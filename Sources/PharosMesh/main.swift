@@ -239,6 +239,19 @@ private enum MeshHeadlessCLI {
                 FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
                 return 1
             }
+        case "status":
+            guard let metadata = MeshNodeRuntimeLock.currentMetadata(
+                runtimeDirectory: MeshPaths.nodeRuntimeDirectory
+            ) else {
+                print("not running")
+                return 1
+            }
+            let started = Date(
+                timeIntervalSince1970: Double(metadata.startedAtMilliseconds) / 1_000
+            ).formatted(.iso8601)
+            let build = metadata.buildID.flatMap { $0.isEmpty ? nil : $0 } ?? "-"
+            print("running node=\(metadata.owner) pid=\(metadata.processID) build=\(build) started=\(started)")
+            return 0
         case "path":
             guard args.count >= 2 else { return usageError("node path list|set|clear …") }
             do {
@@ -302,7 +315,7 @@ private enum MeshHeadlessCLI {
                                      idempotencyKey: "stop:\(args[1]):\(args[2]):\(UUID().uuidString)",
                                      wait: args.contains("--wait"))
         default:
-            return usageError("node run|install|uninstall|list|commands|path|spawn|stop|reconcile …")
+            return usageError("node run|install|uninstall|status|list|commands|path|spawn|stop|reconcile …")
         }
     }
 
@@ -448,6 +461,7 @@ private enum MeshHeadlessCLI {
       node run --endpoint HOST:PORT
       node install [--endpoint HOST:PORT]
       node uninstall
+      node status
       capabilities [--endpoint HOST:PORT]
       pair --endpoint HOST:PORT
       create <room>
