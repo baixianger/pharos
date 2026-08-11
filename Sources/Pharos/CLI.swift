@@ -802,7 +802,7 @@ enum CLI {
         return nick == "human" ? nil : detected
     }
 
-    private static var version: String { "0.8.0" }
+    private static var version: String { "0.11.1" }
 
     private static func prettyJSON(_ obj: Any) -> String {
         guard
