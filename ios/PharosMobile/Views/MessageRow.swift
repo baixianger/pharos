@@ -16,25 +16,17 @@ struct MessageRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
-            if isHuman { Spacer(minLength: 24) }
-
-            if !isHuman {
-                avatarOrSpacer
+            if showsHeader {
+                ChatAvatar(name: displayName, member: member, isHuman: isHuman)
+            } else {
+                Color.clear.frame(width: 38, height: 1)
             }
 
-            VStack(alignment: isHuman ? .trailing : .leading,
-                   spacing: showsHeader ? 5 : 2) {
+            VStack(alignment: .leading, spacing: showsHeader ? 5 : 2) {
                 if showsHeader { identityLine }
                 messageBody
             }
-            .frame(maxWidth: .infinity,
-                   alignment: isHuman ? .trailing : .leading)
-
-            if isHuman {
-                avatarOrSpacer
-            } else {
-                Spacer(minLength: 24)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 16)
         .padding(.top, showsHeader ? 8 : 1)
@@ -55,15 +47,6 @@ struct MessageRow: View {
             }
         }
         .gesture(replyDragGesture)
-    }
-
-    @ViewBuilder
-    private var avatarOrSpacer: some View {
-        if showsHeader {
-            ChatAvatar(name: displayName, member: member, isHuman: isHuman)
-        } else {
-            Color.clear.frame(width: 38, height: 1)
-        }
     }
 
     private var replyDragGesture: some Gesture {
@@ -111,19 +94,17 @@ struct MessageRow: View {
                     .lineLimit(1)
             }
         }
-        .frame(maxWidth: .infinity, alignment: isHuman ? .trailing : .leading)
     }
 
     @ViewBuilder
     private var messageBody: some View {
-        VStack(alignment: isHuman ? .trailing : .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 7) {
             if let reply = message.replyTo { replyCard(reply) }
 
             if !message.text.isEmpty {
                 if isHuman {
                     Text(message.text)
                         .font(.body)
-                        .multilineTextAlignment(.trailing)
                         .textSelection(.enabled)
                 } else {
                     StableMarkdownView(content: message.text).equatable()
