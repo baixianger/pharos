@@ -519,16 +519,17 @@ final class RoomStore {
         guard !room.isEmpty, !nick.isEmpty, !nodeID.isEmpty, !projectID.isEmpty else {
             throw RemoteActionError.unsafeValue("spawn parameters")
         }
-        let sessionName = "pharos-mesh-(safeSessionPart(room))-(safeSessionPart(nick))"
+        let memberID = UUID().uuidString.lowercased()
+        let sessionName = "pharos-mesh-\(safeSessionPart(room))-\(safeSessionPart(nick))-\(safeSessionPart(String(memberID.prefix(8))))"
         let payload = MeshNodeSpawnPayload(projectID: projectID, sessionName: sessionName,
-                                           agent: kind.rawValue, yolo: true,
+                                           memberID: memberID, agent: kind.rawValue, yolo: true,
                                            room: room, nick: nick)
         let data = try JSONEncoder().encode(payload)
         var enqueue = MeshRequest(cmd: "node-command-enqueue")
         enqueue.nodeID = nodeID
         enqueue.action = "spawnAgent"
         enqueue.payload = String(data: data, encoding: .utf8)
-        enqueue.idempotencyKey = "ios-spawn:(nodeID):(sessionName):(UUID().uuidString)"
+        enqueue.idempotencyKey = "ios-spawn:\(nodeID):\(sessionName):\(UUID().uuidString)"
         enqueue.deadline = Date().timeIntervalSince1970 + 3_600
         enqueue.maxAttempts = 120
         let response = try await request(enqueue)

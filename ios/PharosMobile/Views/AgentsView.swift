@@ -272,7 +272,7 @@ struct AgentDetailView: View {
     }
 
     private var sshProfile: SSHHostProfile? {
-        guard let profile = settings.sshHost(for: member.host),
+        guard let profile = settings.sshHost(for: member),
               profile.identityID != nil, profile.acceptsUnverifiedHostKey else { return nil }
         return profile
     }

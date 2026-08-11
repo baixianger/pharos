@@ -25,9 +25,9 @@ Broker configuration and execution Hosts are independent:
   delivery goes Broker → Host node → locally owned tmux.
 - This Mac may be the Broker, or every client may dial one explicit remote
   Tailscale endpoint. Selecting a remote Broker clears the obsolete Mac-hub role.
-- SSH remains the bootstrap and recovery channel. `pharos mesh node` replaces
-  routine Poke operations with an outbound Broker event subscription; the
-  Broker itself still does not become a shell executor.
+- SSH is limited to explicit interactive attach and bootstrap/recovery. Agent
+  creation, stop, poke, and lifecycle reconciliation go through the Host Node;
+  the Broker itself still does not become a shell executor.
 
 ## Options considered
 

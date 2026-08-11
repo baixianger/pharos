@@ -9,6 +9,9 @@ struct MeshProfile: Codable, Equatable, Sendable {
 
 struct SSHHostProfile: Codable, Equatable, Identifiable, Sendable {
     var id = UUID()
+    /// Stable Broker Host Node identity. This is the authoritative association;
+    /// meshHost/sshHost remain human-readable and routable SSH fields.
+    var nodeID: String? = nil
     var meshHost: String
     var sshHost: String
     var port: UInt16 = 22
@@ -73,7 +76,8 @@ final class AppSettings {
     }
 
     func sshHost(for member: MeshMember) -> SSHHostProfile? {
-        SSHHostResolver.profile(forHost: member.host, tailscaleIP: member.tailscaleIP, in: sshHosts)
+        SSHHostResolver.profile(nodeID: member.nodeID, forHost: member.host,
+                                tailscaleIP: member.tailscaleIP, in: sshHosts)
     }
 
     private func load() {
@@ -100,8 +104,13 @@ final class AppSettings {
 }
 
 enum SSHHostResolver {
-    static func profile(forHost host: String?, tailscaleIP: String?,
+    static func profile(nodeID: String? = nil, forHost host: String?, tailscaleIP: String?,
                         in profiles: [SSHHostProfile]) -> SSHHostProfile? {
+        if let nodeID, let exact = uniqueMatch(in: profiles, where: {
+            canonical($0.nodeID) == canonical(nodeID)
+        }) {
+            return exact
+        }
         let host = canonical(host)
         let tailscaleIP = canonical(tailscaleIP)
 

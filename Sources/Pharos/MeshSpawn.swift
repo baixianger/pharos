@@ -102,13 +102,16 @@ enum MeshSpawn {
             // identity and left the real session stuck busy.
             + "pharos mesh join \(room) \(nick) --session \(session) --kind \(kind.rawValue). "
             + "Then run  pharos mesh send \"\(nick) joined\". "
-            + "Return to the idle composer after announcing; do not run a listener or polling command. "
-            + "Pharos hooks and nudges will wake you for new messages. Do nothing else."
+            + "Finish this turn normally; do not run a listener or polling command. "
+            + "When Pharos wakes you for a message, run recv, handle every direct or actionable request, "
+            + "and reply in the room with pharos mesh send; never stop after only reading."
     }
 
-    /// One entry point for GUI and CLI. `host == nil` means this Mac; otherwise
-    /// it is an SSH alias/IP for the paired Mac.
+    /// One entry point for GUI and CLI. Agent creation is Node-only: the
+    /// selected Host Node is the security boundary and the only component
+    /// allowed to create the tmux/agent process.
     static func spawn(room: String, nick: String, kind: AgentKind, host: String? = nil,
+                      nodeID: String? = nil,
                       workDir: WorkDir = .scratch,
                       onProgress: @escaping (Progress) -> Void) async {
         let projectID: String?
@@ -118,9 +121,11 @@ enum MeshSpawn {
         case .project(let name):
             projectID = PharosCore.findProject(name)?.id.uuidString
         case .path:
-            projectID = nil // explicit paths remain an SSH/local rescue path
+            onProgress(Progress(phase: .failed,
+                                detail: "Node spawn only supports Scratch or a registered project; custom paths are not available."))
+            return
         }
-        if let projectID, let node = MeshNodeControl.activeNode(for: host) {
+        if let projectID, let node = MeshNodeControl.activeNode(for: host, nodeID: nodeID) {
             let name = sessionName(room: room, nick: nick)
             let memberID = UUID().uuidString.lowercased()
             onProgress(Progress(phase: .booting, detail: "asking Node \(node.host) to start \(kind.rawValue)…"))
@@ -146,14 +151,9 @@ enum MeshSpawn {
             onProgress(Progress(phase: .failed, detail: "Node started the agent but it did not join the room"))
             return
         }
-        if let host, !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            RemoteLaunch.spawnMeshAgent(room: room, nick: nick, kind: kind,
-                                        host: host.trimmingCharacters(in: .whitespacesAndNewlines),
-                                        workDir: workDir, onProgress: onProgress)
-        } else {
-            await spawnLocal(room: room, nick: nick, kind: kind,
-                             workDir: workDir, onProgress: onProgress)
-        }
+        let target = nodeID.map { "Node \($0)" } ?? host.map { "Host \($0)" } ?? "a Host Node"
+        onProgress(Progress(phase: .failed,
+                            detail: "No online \(target) is registered with the Broker; agent spawn requires the Node path."))
     }
 
     /// Spawn `kind` locally in tmux and brief it to join `room` as `nick`.

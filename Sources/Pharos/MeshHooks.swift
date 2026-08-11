@@ -919,13 +919,10 @@ enum MeshHooks {
     }
 
     /// The command written into settings.json for a given `pharos mesh <sub>`.
-    /// The absolute binary path is ALWAYS primary — a hook runs under the
-    /// session's runtime PATH, which need not contain `pharos` even when the
-    /// install-time PATH did. Bare `pharos` is only the fallback for a
-    /// moved/reinstalled app, and the closing `true` keeps the hook fail-open.
+    /// The installed CLI path is primary. Bare `pharos` remains a fallback for
+    /// unusual PATH setups, while `true` keeps hooks fail-open when unavailable.
     private static func hookCommand(_ sub: String) -> String {
-        let exe = (Bundle.main.executableURL
-                   ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath().path
+        let exe = CLIInstaller.installedExecutablePath() ?? CLIInstaller.executablePath()
         return "if [ -x \"\(exe)\" ]; then \"\(exe)\" mesh \(sub); "
              + "elif command -v pharos >/dev/null 2>&1; then pharos mesh \(sub); else true; fi"
     }

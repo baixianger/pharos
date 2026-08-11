@@ -234,7 +234,7 @@ struct DashboardView: View {
     }
 
     private func stopMeshAgent(_ m: MeshMemberInfo) {
-        if let node = MeshNodeControl.activeNode(for: m.tailscaleIP ?? m.host) {
+        if let node = MeshNodeControl.activeNode(for: m.tailscaleIP ?? m.host, nodeID: m.nodeID) {
             let registrations = meshAgents.filter { $0.id == m.id }.flatMap { member in
                 member.rooms.map { (room: $0, nick: member.nick) }
             }
@@ -253,7 +253,8 @@ struct DashboardView: View {
         guard let pane = m.tmuxPane else { return }
         let local = m.host == nil || HostIdentity.isCurrent(host: m.host, tailscaleIP: m.tailscaleIP)
         let host = local ? nil : store.executionHost(forMeshHost: m.host,
-                                                     tailscaleIP: m.tailscaleIP)?.sshHost
+                                                     tailscaleIP: m.tailscaleIP,
+                                                     nodeID: m.nodeID)?.sshHost
         guard local || !(host?.isEmpty ?? true) else {
             agentActionError = "No paired Mac SSH host is configured."
             return
@@ -330,7 +331,8 @@ struct DashboardView: View {
         )
         if local { return inner }
         guard let peer = store.executionHost(forMeshHost: m.host,
-                                             tailscaleIP: m.tailscaleIP)?.sshHost,
+                                             tailscaleIP: m.tailscaleIP,
+                                             nodeID: m.nodeID)?.sshHost,
               !peer.isEmpty else { return nil }
         let escaped = inner.replacingOccurrences(of: "\\", with: "\\\\")
                            .replacingOccurrences(of: "$", with: "\\$")
@@ -362,7 +364,7 @@ struct DashboardView: View {
                 let local = member.host == nil
                     || HostIdentity.isCurrent(host: member.host, tailscaleIP: member.tailscaleIP)
                 let sshHost = local ? nil : ExecutionHostProfile.resolve(
-                    meshHostID: member.host, tailscaleIP: member.tailscaleIP,
+                    nodeID: member.nodeID, meshHostID: member.host, tailscaleIP: member.tailscaleIP,
                     in: hostProfiles
                 )?.sshHost
                 guard local || sshHost != nil else { continue }

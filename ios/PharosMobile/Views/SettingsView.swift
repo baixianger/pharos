@@ -277,6 +277,10 @@ private struct SSHHostEditor: View {
         }?.tailscaleIP
     }
 
+    private func reportedNodeID(for host: String) -> String? {
+        store.members.values.first { $0.host == host }?.nodeID
+    }
+
     var body: some View {
         Form {
             Section {
@@ -360,6 +364,7 @@ private struct SSHHostEditor: View {
                 value.sshHost = ip
                 lastAutoIP = ip
             }
+            value.nodeID = reportedNodeID(for: h)
         }
         .onAppear {
             let cur = value.meshHost.trimmingCharacters(in: .whitespaces)

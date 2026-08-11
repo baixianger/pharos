@@ -152,6 +152,7 @@ struct MeshNodeInfo: Codable, Sendable, Equatable, Identifiable {
 struct MeshNodeSpawnPayload: Codable, Sendable, Equatable {
     var projectID: String
     var sessionName: String
+    var memberID: String?
     var agent: String
     var yolo: Bool
     var room: String?

@@ -482,7 +482,7 @@ private struct HostsSettingsSection: View {
                     }
                 }
             }
-            Text("Hosts execute agents through SSH and tmux. They may be macOS or Linux and do not need to run the Mesh Broker. Pharos validates the exact Host identity so Dashboard attach and stop actions route safely.")
+            Text("Hosts execute agents through their registered Node and tmux. SSH is retained only for explicit attach/stop terminal actions. Pharos binds the SSH route to the Broker-reported Node identity when available.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -502,9 +502,14 @@ private struct HostsSettingsSection: View {
         guard r.ok else { return }
         let identity = r.hostIdentity
         let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Pair the SSH route to the Broker's stable Host Node identity when
+        // this machine can currently see that Node. Later attach/stop/spawn
+        // operations use nodeID first and address fields only as fallback.
+        let nodeID = MeshNodeControl.activeNode(for: host)?.id
         store.upsertExecutionHost(ExecutionHostProfile(
             name: name.isEmpty ? (identity ?? host) : name,
             sshHost: host,
+            nodeID: nodeID,
             meshHostID: identity
         ))
         draftName = ""
@@ -522,47 +527,6 @@ private struct CLISettingsTab: View {
     @State private var meshHookStatus: String?
     @State private var codexHookInstalled = false
     @State private var codexHookStatus: String?
-
-    private static var exec: String { Bundle.main.executablePath ?? "<Pharos.app>/Contents/MacOS/Pharos" }
-
-    /// First user-writable dir on a typical PATH — so neither the button nor the
-    /// copy-command needs `sudo` (the old `/usr/local/bin` snippet did).
-    private static var installDir: String {
-        let home = NSHomeDirectory()
-        let fm = FileManager.default
-        for d in ["/opt/homebrew/bin", "/usr/local/bin", "\(home)/.local/bin", "\(home)/bin"] {
-            if fm.fileExists(atPath: d) { if fm.isWritableFile(atPath: d) { return d } }
-            else if d.hasPrefix(home) { return d }   // we'll create it
-        }
-        return "\(home)/.local/bin"
-    }
-
-    private static func snippet(_ name: String) -> String { "ln -sf \"\(exec)\" \"\(installDir)/\(name)\"" }
-
-    /// Symlink the bundled binary under `name` into the first writable PATH dir.
-    private static func install(_ name: String) -> String {
-        guard let exec = Bundle.main.executablePath else { return "Couldn't locate the Pharos binary." }
-        let fm = FileManager.default
-        let home = NSHomeDirectory()
-        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "\(home)/.local/bin", "\(home)/bin"] {
-            if !fm.fileExists(atPath: dir) {
-                guard dir.hasPrefix(home) else { continue }
-                try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-            }
-            guard fm.isWritableFile(atPath: dir) else { continue }
-            let dest = "\(dir)/\(name)"
-            if (try? fm.destinationOfSymbolicLink(atPath: dest)) != nil { try? fm.removeItem(atPath: dest) }
-            else if fm.fileExists(atPath: dest) { continue }     // don't clobber a real file
-            do {
-                try fm.createSymbolicLink(atPath: dest, withDestinationPath: exec)
-                let short = dest.replacingOccurrences(of: home, with: "~")
-                return dir.hasPrefix(home)
-                    ? "Installed → \(short)  (ensure \(dir.replacingOccurrences(of: home, with: "~")) is on your PATH)"
-                    : "Installed → \(short)"
-            } catch { continue }
-        }
-        return "Couldn't auto-install — copy the command below (no sudo needed)."
-    }
 
     private enum SubTab: String, CaseIterable, Identifiable {
         case cli = "CLI", claude = "Claude", codex = "Codex"
@@ -692,15 +656,19 @@ private struct CLISettingsTab: View {
 
     @ViewBuilder
     private func commandRow(_ name: String, status: Binding<String?>, help: String) -> some View {
-        Text(Self.snippet(name))
+        Text(CLIInstaller.commandSnippet(name))
             .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
             .padding(8).frame(maxWidth: .infinity, alignment: .leading)
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
         HStack {
-            Button("Install `\(name)`") { status.wrappedValue = Self.install(name) }
+            Button("Install `\(name)`") {
+                status.wrappedValue = CLIInstaller.install(name)
+                _ = MeshHooks.installHooks(["--user"])
+                _ = MeshHooks.installHooks(["--codex"])
+            }
                 .buttonStyle(.borderedProminent)
             Button("Copy command") {
-                let pb = NSPasteboard.general; pb.clearContents(); pb.setString(Self.snippet(name), forType: .string)
+                let pb = NSPasteboard.general; pb.clearContents(); pb.setString(CLIInstaller.commandSnippet(name), forType: .string)
             }
             .buttonStyle(.borderless)
             Spacer()

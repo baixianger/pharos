@@ -521,7 +521,10 @@ enum MeshNode {
         // Name the room(s) so a post-compaction agent reads with `recv` instead
         // of re-`join`ing a half-remembered name (which silently makes a new room).
         let roomHint = rooms.isEmpty ? "" : " (in \(rooms.joined(separator: ", ")); you are already a member — do not re-join)"
-        let message = "You have new mesh messages\(roomHint). Run: pharos mesh recv \(member.nick) --member \(member.id)"
+        let message = "You have new mesh messages\(roomHint). Run: pharos mesh recv \(member.nick) --member \(member.id). "
+            + "Read every message, handle direct/actionable requests, and reply in the room with "
+            + "pharos mesh send; if a message asks you to confirm or reply, always do so. "
+            + "Do not stop after only reading the mailbox."
         guard run(tmux, prefix + ["send-keys", "-t", pane, "-l", "--", message]).ok else {
             return "tmux send-keys failed"
         }
