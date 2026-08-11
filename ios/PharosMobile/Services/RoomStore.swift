@@ -530,13 +530,18 @@ final class RoomStore {
         enqueue.action = "spawnAgent"
         enqueue.payload = String(data: data, encoding: .utf8)
         enqueue.idempotencyKey = "ios-spawn:\(nodeID):\(sessionName):\(UUID().uuidString)"
-        enqueue.deadline = Date().timeIntervalSince1970 + 3_600
-        enqueue.maxAttempts = 120
+        // A spawn is interactive bootstrap, not a background job. Keep the
+        // Node retry budget bounded so a dead/login-expired agent cannot leave
+        // the phone spinner alive while the Broker retries for ten minutes.
+        enqueue.deadline = Date().timeIntervalSince1970 + 180
+        enqueue.maxAttempts = 30
         let response = try await request(enqueue)
         guard let initial = response.command else {
             throw RemoteActionError.spawnNotConfirmed(response.error ?? "The Broker did not enqueue the Node spawn.")
         }
-        for _ in 0..<120 {
+        // Node retries every few seconds; poll long enough to observe its
+        // terminal result, including a fast authentication failure.
+        for _ in 0..<360 {
             var listRequest = MeshRequest(cmd: "node-command-list")
             listRequest.nodeID = nodeID
             let snapshot = try await request(listRequest)

@@ -120,6 +120,16 @@ public enum MeshPaneSafety {
                 && output.contains("Press enter to continue"))
     }
 
+    /// Native authentication failures are terminal for a newly spawned
+    /// coding-agent session. Treating these panes as merely "not idle" makes
+    /// the Node retry for minutes while the client appears stuck.
+    public static func isKnownAuthenticationFailure(_ output: String) -> Bool {
+        let value = output.lowercased()
+        return value.contains("login expired")
+            || value.contains("not logged in")
+            || value.contains("please run /login")
+    }
+
     private static func isAgent(_ path: String, kind: String?) -> Bool {
         let executable = URL(fileURLWithPath: path).lastPathComponent
         let codex = executable.hasPrefix("codex")

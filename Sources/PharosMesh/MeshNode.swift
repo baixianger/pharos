@@ -285,6 +285,11 @@ enum MeshNode {
                    retryAt: confirmed.ok ? Date().timeIntervalSince1970 + 2 : nil)
             return
         }
+        if MeshPaneSafety.isKnownAuthenticationFailure(capture.output) {
+            update(command, state: .failed,
+                   result: "\(payload.agent) is not authenticated on this Host node; sign in there and retry")
+            return
+        }
         if MeshPaneSafety.paneLooksIdle(capture.output) {
             let prompt = "Join the Pharos mesh room \(room) as \(nick). Run pharos mesh join \(room) \(nick) --session \(memberID) --kind \(payload.agent), then run pharos mesh send \"\(nick) joined\" --room \(room), then return to the idle composer. Use this exact session identity; do not use the tmux session name."
             let typed = run(tmux, prefix + ["send-keys", "-t", payload.sessionName, "-l", "--", prompt])

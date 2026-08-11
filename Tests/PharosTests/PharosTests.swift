@@ -1547,6 +1547,11 @@ final class MeshSessionContextTests: XCTestCase {
 }
 
 final class MeshPaneSafetyTests: XCTestCase {
+    func testAuthenticationFailureIsTerminal() {
+        XCTAssertTrue(MeshPaneSafety.isKnownAuthenticationFailure("Login expired · Please run /login"))
+        XCTAssertTrue(MeshPaneSafety.isKnownAuthenticationFailure("Not logged in"))
+        XCTAssertFalse(MeshPaneSafety.isKnownAuthenticationFailure("ready\n❯"))
+    }
     func testOnlyExplicitTurnBoundaryStatesAllowNodePoke() {
         XCTAssertTrue(MeshPaneSafety.allowsPoke(state: "stopped"))
         XCTAssertTrue(MeshPaneSafety.allowsPoke(state: "idle"))
