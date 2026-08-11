@@ -1691,6 +1691,55 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         try? FileManager.default.removeItem(at: dir)
     }
 
+    func testRoomNamesCannotEscapeTranscriptDirectory() {
+        let broker = MeshBroker()
+        for room in ["../escape", "nested/room", ".."] {
+            let response = broker.process(MeshRequest(cmd: "join", room: room, nick: "agent",
+                                                       session: "sid"))
+            XCTAssertFalse(response.ok, "unsafe room should be rejected: \(room)")
+            XCTAssertEqual(response.error, "invalid room name")
+        }
+        XCTAssertEqual(MeshPaths.transcript("../escape").deletingLastPathComponent(),
+                       MeshPaths.transcriptDir)
+    }
+
+    func testRenameRejectsExistingRoomWithoutLosingEitherRoom() {
+        let broker = MeshBroker()
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "source", nick: "agent",
+                                                 session: "source-session")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "target", nick: "agent",
+                                                 session: "target-session")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "source", nick: "human",
+                                                 text: "source message")).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "target", nick: "human",
+                                                 text: "target message")).ok)
+
+        let response = broker.process(MeshRequest(cmd: "rename", room: "source", text: "target"))
+        XCTAssertFalse(response.ok)
+        XCTAssertEqual(response.error, "room already exists")
+        XCTAssertEqual(broker.process(MeshRequest(cmd: "history", room: "source"))
+            .messages?.map(\.text), ["source message"])
+        XCTAssertEqual(broker.process(MeshRequest(cmd: "history", room: "target"))
+            .messages?.map(\.text), ["target message"])
+    }
+
+    func testConcurrentSaysProduceACompleteValidTranscript() {
+        let broker = MeshBroker()
+        let room = "parallel"
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: room, nick: "agent",
+                                                 session: "parallel-session")).ok)
+        let count = 256
+        DispatchQueue.concurrentPerform(iterations: count) { index in
+            _ = broker.process(MeshRequest(cmd: "say", room: room, nick: "agent",
+                                            memberID: "parallel-session", text: "message-\(index)"))
+        }
+
+        let messages = broker.process(MeshRequest(cmd: "history", room: room, limit: count)).messages ?? []
+        XCTAssertEqual(messages.count, count)
+        XCTAssertEqual(Set(messages.map(\.stableID)).count, count)
+        XCTAssertEqual(Set(messages.map(\.text)).count, count)
+    }
+
     func testSameAliasInTwoRoomsRoutesToEachSession() {
         let broker = MeshBroker()
         XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "orbidash-dev", nick: "codex",

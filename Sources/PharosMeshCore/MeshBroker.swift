@@ -526,7 +526,18 @@ public enum MeshPaths {
     }
 
     public static func transcript(_ room: String) -> URL {
-        transcriptDir.appendingPathComponent("\(room).jsonl")
+        transcriptDir.appendingPathComponent("\(safePathComponent(room)).jsonl")
+    }
+
+    /// Room names are also transcript filenames. Keep them as one safe path
+    /// component so request data cannot escape the Broker data directory.
+    public static func isSafeRoomName(_ room: String) -> Bool {
+        guard !room.isEmpty, room != ".", room != "..", room.count <= 200 else { return false }
+        for scalar in room.unicodeScalars {
+            if scalar == "/" || scalar == "\\" || scalar.value == 0
+                || CharacterSet.controlCharacters.contains(scalar) { return false }
+        }
+        return true
     }
 
     public static func attachmentDirectory(_ id: String) -> URL {
@@ -625,6 +636,9 @@ func meshReadExactly(_ fd: Int32, count: Int) -> Data? {
 /// is by @mention into its mailbox; the Stop hook surfaces it at the next turn.
 public final class MeshBroker: @unchecked Sendable {
     private let lock = NSLock()
+    /// Narrow I/O lock for transcript reads, appends, deletes, and renames.
+    /// It intentionally does not extend across mailbox/state work under `lock`.
+    private let transcriptLock = NSLock()
     private let eventCondition = NSCondition()
     private var eventSequence: UInt64 = 0
     private var events: [MeshEvent] = []
@@ -784,6 +798,12 @@ public final class MeshBroker: @unchecked Sendable {
     }
 
     public func process(_ req: MeshRequest, trustedLocal: Bool = true) -> MeshResponse {
+        if let room = req.room, !MeshPaths.isSafeRoomName(room) {
+            return .fail("invalid room name")
+        }
+        if req.cmd == "rename", let new = req.text, !MeshPaths.isSafeRoomName(new) {
+            return .fail("invalid room name")
+        }
         switch req.cmd {
         case "capabilities":
             return MeshResponse(ok: true, capabilities: [
@@ -1274,21 +1294,51 @@ public final class MeshBroker: @unchecked Sendable {
             writeMailboxesLocked()
             writePresenceLocked()
             lock.unlock()
+            transcriptLock.lock()
             try? FileManager.default.removeItem(at: MeshPaths.transcript(r))
+            transcriptLock.unlock()
             return .okay()
 
         case "rename":
             // room = old name, text = new name.
             guard let old = req.room, let new = req.text, !new.isEmpty else { return .fail("room and new name required") }
             lock.lock()
-            if let existing = rooms[old] { rooms[old] = nil; rooms[new] = existing }
+            guard let existing = rooms[old] else {
+                lock.unlock()
+                return .fail("room not found")
+            }
+            if old != new, rooms[new] != nil {
+                lock.unlock()
+                return .fail("room already exists")
+            }
+            if old != new {
+                let oldTranscript = MeshPaths.transcript(old)
+                let newTranscript = MeshPaths.transcript(new)
+                transcriptLock.lock()
+                if FileManager.default.fileExists(atPath: newTranscript.path) {
+                    transcriptLock.unlock()
+                    lock.unlock()
+                    return .fail("room transcript already exists")
+                }
+                if FileManager.default.fileExists(atPath: oldTranscript.path) {
+                    do {
+                        try FileManager.default.moveItem(at: oldTranscript, to: newTranscript)
+                    } catch {
+                        transcriptLock.unlock()
+                        lock.unlock()
+                        return .fail("could not move room transcript")
+                    }
+                }
+                transcriptLock.unlock()
+                rooms[old] = nil
+                rooms[new] = existing
+            }
             for memberID in rooms[new]?.members.values ?? Dictionary<String, String>().values {
                 syncUnreadLocked(memberID); refreshPresenceRoomsLocked(memberID)
             }
             writeMailboxesLocked()
             writePresenceLocked()
             lock.unlock()
-            try? FileManager.default.moveItem(at: MeshPaths.transcript(old), to: MeshPaths.transcript(new))
             return .okay()
 
         case "shutdown":
@@ -2072,6 +2122,8 @@ public final class MeshBroker: @unchecked Sendable {
     }
 
     private func transcript(_ room: String) -> [MeshMsg] {
+        transcriptLock.lock()
+        defer { transcriptLock.unlock() }
         guard let data = try? String(contentsOf: MeshPaths.transcript(room), encoding: .utf8) else { return [] }
         let dec = JSONDecoder()
         return data.split(separator: "\n").compactMap { try? dec.decode(MeshMsg.self, from: Data($0.utf8)) }
@@ -2097,6 +2149,8 @@ public final class MeshBroker: @unchecked Sendable {
         let url = MeshPaths.transcript(m.room)
         guard var data = try? JSONEncoder().encode(m) else { return }
         data.append(0x0A)
+        transcriptLock.lock()
+        defer { transcriptLock.unlock() }
         if let fh = try? FileHandle(forWritingTo: url) {
             defer { try? fh.close() }
             _ = try? fh.seekToEnd()
