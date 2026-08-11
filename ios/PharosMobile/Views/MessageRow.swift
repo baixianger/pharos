@@ -16,17 +16,22 @@ struct MessageRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
-            if showsHeader {
-                ChatAvatar(name: displayName, member: member, isHuman: isHuman)
+            if isHuman {
+                Spacer(minLength: 40)
+                humanMessageBody
             } else {
-                Color.clear.frame(width: 38, height: 1)
-            }
+                if showsHeader {
+                    ChatAvatar(name: displayName, member: member, isHuman: false)
+                } else {
+                    Color.clear.frame(width: 38, height: 1)
+                }
 
-            VStack(alignment: .leading, spacing: showsHeader ? 5 : 2) {
-                if showsHeader { identityLine }
-                messageBody
+                VStack(alignment: .leading, spacing: showsHeader ? 5 : 2) {
+                    if showsHeader { identityLine }
+                    messageBody
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 16)
         .padding(.top, showsHeader ? 8 : 1)
@@ -47,6 +52,18 @@ struct MessageRow: View {
             }
         }
         .gesture(replyDragGesture)
+    }
+
+    private var humanMessageBody: some View {
+        messageBody
+            .padding(.horizontal, 13)
+            .padding(.vertical, 9)
+            .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 17))
+            .overlay {
+                RoundedRectangle(cornerRadius: 17)
+                    .stroke(.secondary.opacity(0.12), lineWidth: 0.7)
+            }
+            .frame(maxWidth: 320, alignment: .trailing)
     }
 
     private var replyDragGesture: some Gesture {
