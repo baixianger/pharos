@@ -193,8 +193,15 @@ final class RoomStore {
             outgoing.replyToID = replyTo?.id
             outgoing.attachments = attachments.isEmpty ? nil : attachments
             _ = try await request(outgoing)
-            try await loadLatestPage(for: room)
-            error = nil
+            // `say` is the commit point. A follow-up history refresh may fail
+            // during a transient reconnect; that must not make the UI keep a
+            // message that was already delivered in the composer.
+            do {
+                try await loadLatestPage(for: room)
+                error = nil
+            } catch {
+                self.error = "Message sent, but history refresh failed: \(error.localizedDescription)"
+            }
             return true
         } catch {
             self.error = error.localizedDescription
