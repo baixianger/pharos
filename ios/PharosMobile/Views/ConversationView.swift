@@ -24,6 +24,10 @@ struct ConversationView: View {
     /// Bumped after a successful send to force a scroll to the newest message,
     /// independent of whether the reloaded tail's last id changed.
     @State private var scrollBottomTick = 0
+    @State private var didInitialScroll = false
+    @State private var isNearLatest = true
+    @State private var composerHeight: CGFloat = 0
+    @State private var keyboardExtraHeight: CGFloat = 0
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -36,10 +40,26 @@ struct ConversationView: View {
         .toolbar(.hidden, for: .tabBar)
         .toolbar { channelToolbar }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+        // Some iOS container configurations do not propagate the keyboard's
+        // safe-area change into a nested NavigationSplitView detail. Apply
+        // only the portion not already represented by the window safe area.
+        .safeAreaPadding(.bottom, keyboardExtraHeight)
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardWillChangeFrameNotification
+        )) { notification in
+            keyboardExtraHeight = Self.keyboardExtraHeight(from: notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardWillHideNotification
+        )) { _ in
+            keyboardExtraHeight = 0
+        }
         .onAppear { draft = MobileRoomDraftCache.draft(for: store.selectedRoom) }
         .onChange(of: store.selectedRoom) { _, room in
             draft = MobileRoomDraftCache.draft(for: room)
             allowsHistoryPaging = false
+            didInitialScroll = false
+            isNearLatest = true
         }
         .onChange(of: draft) { _, nextDraft in
             MobileRoomDraftCache.save(nextDraft, for: store.selectedRoom)
@@ -88,6 +108,13 @@ struct ConversationView: View {
             .scrollIndicators(.hidden)
             .background(Color(uiColor: .systemBackground))
             .scrollDismissesKeyboard(.interactively)
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                max(0, geometry.contentSize.height
+                    - geometry.containerSize.height
+                    - geometry.contentOffset.y)
+            } action: { _, distanceFromLatest in
+                isNearLatest = distanceFromLatest < 80
+            }
             // Arm history paging only after the first page has loaded and the
             // view has settled at the bottom, so the top sentinel can't page
             // during the opening layout.
@@ -100,18 +127,75 @@ struct ConversationView: View {
                 try? await Task.sleep(for: .milliseconds(300))
                 if let last = store.messages.last?.id {
                     proxy.scrollTo(last, anchor: .bottom)
+                    didInitialScroll = true
                 }
                 allowsHistoryPaging = true
+            }
+            // The first history response may arrive after the opening task's
+            // initial layout pass. Anchor once the actual tail is available.
+            .onChange(of: store.messages.last?.id) { _, lastID in
+                guard let lastID else { return }
+                if !didInitialScroll {
+                    Task { @MainActor in
+                        await Task.yield()
+                        proxy.scrollTo(lastID, anchor: .bottom)
+                        didInitialScroll = true
+                        allowsHistoryPaging = true
+                    }
+                } else if isNearLatest {
+                    // Follow incoming messages while the user is at the tail.
+                    // A manual upward scroll changes isNearLatest to false.
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                        proxy.scrollTo(lastID, anchor: .bottom)
+                    }
+                }
             }
             // On send, return to the newest message even if the user had
             // scrolled up.
             .onChange(of: scrollBottomTick) {
                 guard let last = store.messages.last?.id else { return }
+                isNearLatest = true
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
                     proxy.scrollTo(last, anchor: .bottom)
                 }
             }
+            // Composer content changes the bottom safe-area inset. Re-anchor
+            // at the tail so mentions, replies, and attachment trays cannot
+            // cover the newest row.
+            .onChange(of: composerHeight) { _, _ in
+                guard didInitialScroll, isNearLatest,
+                      let last = store.messages.last?.id else { return }
+                Task { @MainActor in
+                    await Task.yield()
+                    proxy.scrollTo(last, anchor: .bottom)
+                }
+            }
+            .onChange(of: keyboardExtraHeight) { _, _ in
+                guard didInitialScroll, isNearLatest,
+                      let last = store.messages.last?.id else { return }
+                Task { @MainActor in
+                    // Wait for the keyboard animation/layout transaction so
+                    // the newest row is positioned below the full obstruction:
+                    // keyboard plus composer accessories.
+                    try? await Task.sleep(for: .milliseconds(80))
+                    proxy.scrollTo(last, anchor: .bottom)
+                }
+            }
         }
+    }
+
+    private static func keyboardExtraHeight(from notification: Notification) -> CGFloat {
+        guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey]
+                as? CGRect else { return 0 }
+        guard let window = UIApplication.shared.connectedScenes
+            .compactMap({ ($0 as? UIWindowScene)?.windows.first(where: \.isKeyWindow) })
+            .first else { return 0 }
+        // The notification frame is in screen coordinates. Converting it is
+        // required for iPad Split View, Slide Over, and Stage Manager.
+        let frameInWindow = window.screen.coordinateSpace.convert(frame, to: window)
+        let overlap = max(0, window.bounds.maxY - frameInWindow.minY)
+        let windowSafeBottom = window.safeAreaInsets.bottom
+        return max(0, overlap - windowSafeBottom)
     }
 
     private enum TranscriptCell: Identifiable {
@@ -156,7 +240,8 @@ struct ConversationView: View {
                 },
                 onOpenAttachment: { attachment in
                     Task { previewURL = await store.downloadAttachment(attachment) }
-                }
+                },
+                onTap: { focused = false }
             )
             .id(id)
             // Keep the context-menu modifier outside the per-cell 180°
@@ -188,6 +273,7 @@ struct ConversationView: View {
 
     private func requestOlderPage() {
         guard allowsHistoryPaging, !store.isLoadingOlder else { return }
+        isNearLatest = false
         Task { await store.loadOlderMessages() }
     }
 
@@ -294,6 +380,15 @@ struct ConversationView: View {
         .padding(.top, 7)
         .padding(.bottom, 6)
         .background(.bar.opacity(0.82))
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: ComposerHeightKey.self,
+                                       value: proxy.size.height)
+            }
+        }
+        .onPreferenceChange(ComposerHeightKey.self) { height in
+            if abs(composerHeight - height) > 0.5 { composerHeight = height }
+        }
     }
 
     private var composerField: some View {
@@ -546,6 +641,14 @@ private struct RoomMentionStrip: View {
         }
         .scrollIndicators(.hidden)
         .frame(height: 34)   // a horizontal ScrollView otherwise grabs vertical space
+    }
+}
+
+private struct ComposerHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

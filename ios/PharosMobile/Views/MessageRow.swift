@@ -9,6 +9,7 @@ struct MessageRow: View {
     var showsHeader = true
     var onReply: (() -> Void)?
     var onOpenAttachment: ((MeshAttachment) -> Void)?
+    var onTap: (() -> Void)?
 
     @State private var swipeOffset: CGFloat = 0
     @State private var didTrigger = false
@@ -38,6 +39,7 @@ struct MessageRow: View {
         .padding(.bottom, 2)
         .contentShape(.rect)
         .offset(x: swipeOffset)
+        .simultaneousGesture(TapGesture().onEnded { onTap?() })
         // Swipe-to-reply: a reply glyph trails the row as you drag right and
         // fires once past the threshold — avoids the long-press full-screen
         // preview for the common case.
