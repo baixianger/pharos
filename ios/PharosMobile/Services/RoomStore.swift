@@ -624,13 +624,31 @@ final class RoomStore {
             enqueue.payload = "{\"memberID\":\"\(member.id)\"}"
             enqueue.idempotencyKey = "ios-stop:\(node.id):\(member.id):\(UUID().uuidString)"
             let response = try await request(enqueue)
-            guard response.ok else {
+            guard response.ok, let initial = response.command else {
                 error = response.error ?? "Could not stop the agent."
                 return false
             }
-            error = nil
-            await refresh()
-            return true
+            // Enqueueing is not stopping. Wait for the Host node's terminal
+            // result so the UI cannot report success while tmux rejected the
+            // command or the node is offline.
+            for _ in 0..<120 {
+                var listRequest = MeshRequest(cmd: "node-command-list")
+                listRequest.nodeID = node.id
+                let snapshot = try await request(listRequest)
+                if let command = snapshot.commands?.first(where: { $0.id == initial.id }),
+                   ["succeeded", "failed", "expired", "canceled"].contains(command.state) {
+                    guard command.state == "succeeded" else {
+                        error = command.result ?? "The Host node could not stop the agent."
+                        return false
+                    }
+                    error = nil
+                    await refresh()
+                    return true
+                }
+                try await Task.sleep(for: .milliseconds(500))
+            }
+            error = "Timed out waiting for the Host node to stop the agent."
+            return false
         } catch {
             self.error = error.localizedDescription
             return false

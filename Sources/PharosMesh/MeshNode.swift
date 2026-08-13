@@ -324,19 +324,46 @@ enum MeshNode {
         }
         let prefix = target.socket.map { ["-S", $0] } ?? []
         update(command, state: .running, result: "stopping managed tmux session")
-        let lookup = run(tmux, prefix + ["display-message", "-p", "-t", target.pane, "#{session_name}"])
+        // Use tmux's numeric session identity rather than the display name.
+        // A session name may be user-controlled (and can contain whitespace),
+        // while the session id is stable for the lifetime of this tmux
+        // session. This also avoids rejecting otherwise valid managed sessions
+        // merely because their name does not use Pharos' safe-name alphabet.
+        let lookup = run(tmux, prefix + ["display-message", "-p", "-t", target.pane, "#{session_id}"])
         guard lookup.ok else {
+            markStopped(member, reason: "session already absent")
             update(command, state: .succeeded, result: "session already absent")
             return
         }
-        let sessionName = lookup.output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard validSessionName(sessionName) else {
-            update(command, state: .failed, result: "tmux returned an unsafe session name")
+        let sessionID = lookup.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A stale Broker presence can outlive the tmux pane by a poll or two.
+        // tmux may exit successfully but return no session id for that target;
+        // the desired end state is already true, so treat it as idempotent.
+        guard !sessionID.isEmpty else {
+            markStopped(member, reason: "session already absent")
+            update(command, state: .succeeded, result: "session already absent")
             return
         }
-        let result = run(tmux, prefix + ["kill-session", "-t", sessionName])
+        guard validSessionID(sessionID) else {
+            update(command, state: .failed, result: "tmux returned an unsafe session id")
+            return
+        }
+        let result = run(tmux, prefix + ["kill-session", "-t", sessionID])
+        if result.ok { markStopped(member, reason: "stopped by user") }
         update(command, state: result.ok ? .succeeded : .failed,
-               result: result.ok ? "stopped \(sessionName)" : result.output)
+               result: result.ok ? "stopped \(sessionID)" : result.output)
+    }
+
+    private static func markStopped(_ member: MeshMemberInfo, reason: String) {
+        guard let nodeID = member.nodeID, nodeID == self.nodeID else { return }
+        var request = MeshRequest(cmd: "node-session-stopped", memberID: member.id,
+                                  payload: reason, nodeID: nodeID)
+        request.expectedState = member.state
+        request.expectedStateTs = member.stateTs
+        request.tmuxPane = member.tmuxPane
+        request.tmuxSocket = member.tmuxSocket
+        let response = MeshClient.send(request)
+        if !response.ok { log("could not mark @\(member.nick) gone: \(response.error ?? "unknown error")") }
     }
 
     /// Resolve stop authority from Broker-owned member identity, never from a
@@ -365,6 +392,11 @@ enum MeshNode {
         let directory = URL(fileURLWithPath: nodeTmuxSocket).deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
+    }
+
+    private static func validSessionID(_ value: String) -> Bool {
+        let digits = value.first == "$" ? value.dropFirst() : Substring(value)
+        return value.first == "$" && !digits.isEmpty && digits.allSatisfy(\.isNumber)
     }
 
     private static func validSessionName(_ value: String) -> Bool {

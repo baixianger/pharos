@@ -859,6 +859,33 @@ public final class MeshBroker: @unchecked Sendable {
             publish(kind: .roster)
             return .okay()
 
+        case "node-session-stopped":
+            // An explicit user stop is authoritative once the Host node has
+            // verified the member's tmux seat. Make the result idempotent:
+            // stopping an already absent session still converges the roster
+            // to gone instead of leaving a stale actionable agent behind.
+            guard authorizeControl(req, trustedLocal: trustedLocal) else {
+                return .fail("valid control credential required")
+            }
+            guard let nodeID = req.nodeID, !nodeID.isEmpty,
+                  let memberID = req.memberID, !memberID.isEmpty else {
+                return .fail("node id and member id required")
+            }
+            lock.lock()
+            guard var entry = presence[memberID], entry.nodeID == nodeID,
+                  Self.markMatchesSnapshot(entry, request: req) else {
+                lock.unlock()
+                return .okay()
+            }
+            entry.state = MeshSessionState.gone.rawValue
+            entry.stateTs = Date().timeIntervalSince1970
+            entry.stateReason = req.payload ?? "stopped by user"
+            presence[memberID] = entry
+            writePresenceLocked()
+            lock.unlock()
+            publish(kind: .roster)
+            return .okay()
+
         case "node-command-enqueue":
             guard authorizeControl(req, trustedLocal: trustedLocal) else {
                 return .fail("valid control credential required")
