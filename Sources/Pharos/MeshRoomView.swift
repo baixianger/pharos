@@ -533,7 +533,7 @@ struct MeshRoomView: View {
                 .strokeBorder(.tertiary.opacity(0.7)))
             .overlay(alignment: .topLeading) {
                 if draft.isEmpty {
-                    Text("Message the room — @nick to poke someone, plain text broadcasts")
+                    Text("Message the room — use @nick to deliver to an agent")
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 9).padding(.vertical, 7)
                         .allowsHitTesting(false)
@@ -760,8 +760,8 @@ struct MeshRoomView: View {
         replyingTo = nil
         pendingAttachments = []
         // @tokens in the human text become directed (poke) targets; with no
-        // @, `to` stays nil and the broker broadcasts to the whole room (no
-        // poke). Shared parser with the CLI `say` so both surfaces match.
+        // @, `to` stays nil and the broker keeps the message transcript-only.
+        // Shared parser with the CLI `say` so both surfaces match.
         let mentions = MeshHooks.parseTextMentions(text)
         let to = mentions.isEmpty ? nil : mentions
         Task {

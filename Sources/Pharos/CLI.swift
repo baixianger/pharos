@@ -234,8 +234,9 @@ enum CLI {
     }
 
     /// `pharos mesh …` — the agent chat room. Uses raw tokens (positional
-    /// room/nick/text), not the flag parser. Non-blocking: `say` delivers into the
-    /// target's mailbox, the Stop hook surfaces it; `recv` drains without blocking.
+    /// room/nick/text), not the flag parser. Non-blocking: `say` delivers only
+    /// explicit @-targets into mailboxes; plain text remains transcript-only.
+    /// The Stop hook surfaces directed messages; `recv` drains without blocking.
     private static func runMesh(_ args: [String]) async -> Int32 {
         guard let sub = args.first else { print(meshUsage); return 2 }
         let a = Array(args.dropFirst())

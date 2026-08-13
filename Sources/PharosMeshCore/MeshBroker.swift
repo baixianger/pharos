@@ -632,8 +632,8 @@ func meshReadExactly(_ fd: Int32, count: Int) -> Data? {
 
 /// In-memory chat broker. Holds rooms → members → per-member durable mailboxes,
 /// mirrors each nick's unread to a signal file for the hooks, and appends every
-/// message to a per-room transcript file for the GUI to read. Delivery to an agent
-/// is by @mention into its mailbox; the Stop hook surfaces it at the next turn.
+/// message to a per-room transcript file for the GUI to read. Only @mentioned
+/// messages enter an agent mailbox; the Stop hook surfaces them at the next turn.
 public final class MeshBroker: @unchecked Sendable {
     private let lock = NSLock()
     /// Narrow I/O lock for transcript reads, appends, deletes, and renames.
@@ -1403,14 +1403,10 @@ public final class MeshBroker: @unchecked Sendable {
         return created
     }
 
-    /// Post a message (delivery model B, 2026-07-13):
-    ///  • `@mention`  → DIRECTED: the named agents get it, and it pokes them
-    ///    (a directed message carries a non-empty `to`).
-    ///  • no mention  → BROADCAST: every OTHER room member gets it in their
-    ///    mailbox (carries an empty `to`), so everyone receives it — but it does
-    ///    NOT poke; each recipient sees it at its next turn boundary (Stop hook).
-    /// The empty-vs-non-empty `to` on the stored `MeshMsg` is exactly what the
-    /// poke path keys on, so no separate flag is needed.
+    /// Post a message:
+    ///  • `@mention`  → DIRECTED: resolve the named agent and enqueue it.
+    ///  • no mention  → TRANSCRIPT ONLY: append it for the GUI, but do not
+    ///    enqueue it for any agent or trigger a Stop hook.
     private func deliver(room r: String, from n: String, text t: String, to: [String]?,
                          replyTo: MeshReply?, attachments: [MeshAttachment]?)
         -> (message: MeshMsg, targets: [MeshMemberInfo]) {
@@ -1419,15 +1415,9 @@ public final class MeshBroker: @unchecked Sendable {
                           replyTo: replyTo, attachments: attachments)
         lock.lock()
         if rooms[r] == nil { rooms[r] = Room() }
-        let targetIDs: [String]
-        if let to, !to.isEmpty {
-            targetIDs = to.compactMap { rooms[r]!.members[$0] }   // resolve aliases inside THIS room
-        } else {
-            // Broadcast → everyone in the room except the sender (and never the
-            // human, who reads the transcript in the GUI and has no mailbox/hook).
-            targetIDs = rooms[r]!.members
-                .filter { $0.key != n && $0.key != "human" }.map(\.value).sorted()
-        }
+        // Only explicit @ targets create mailbox entries. Plain room chatter
+        // remains in the transcript but is invisible to agent delivery hooks.
+        let targetIDs = (to ?? []).compactMap { rooms[r]!.members[$0] }
         for memberID in targetIDs { rooms[r]!.mailboxes[memberID, default: []].append(msg) }
         for memberID in targetIDs { syncUnreadLocked(memberID) }
         if let senderID = rooms[r]!.members[n] { touchPresenceLocked(senderID) }

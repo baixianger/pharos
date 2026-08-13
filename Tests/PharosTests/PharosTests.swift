@@ -2715,21 +2715,18 @@ final class LegacyPeerMigrationTests: XCTestCase {
     }
 }
 
-final class MeshBroadcastTests: XCTestCase {
-    /// Delivery model B: a directed message carries a non-empty `to`; a
-    /// broadcast carries an empty `to`. The poke paths key on exactly this to
-    /// tell "@you, wake up" from ambient room chatter.
-    func testToDiscriminatesDirectedFromBroadcast() {
+final class MeshDeliveryTests: XCTestCase {
+    /// Only a non-empty `to` is an agent delivery. Empty `to` remains visible
+    /// in transcript history but must not be copied into agent mailboxes.
+    func testToDiscriminatesDirectedFromTranscriptOnly() {
         let directed = MeshMsg(from: "alice", room: "r", text: "hi", ts: 1, to: ["bob"])
-        let broadcast = MeshMsg(from: "alice", room: "r", text: "standup!", ts: 1, to: [])
-        // "directed at bob" ⇔ bob ∈ to; broadcast is directed at nobody.
+        let transcriptOnly = MeshMsg(from: "alice", room: "r", text: "standup!", ts: 1, to: [])
+        // "delivered to bob" ⇔ bob ∈ to; empty `to` is not an agent delivery.
         XCTAssertTrue(directed.to.contains("bob"))
-        XCTAssertFalse(broadcast.to.contains("bob"))
-        // The mid-turn/poke filter (`to.contains(me)`) keeps only the directed one.
-        let mailbox = [broadcast, directed]
+        XCTAssertFalse(transcriptOnly.to.contains("bob"))
+        let mailbox = [directed]
         XCTAssertEqual(mailbox.filter { $0.to.contains("bob") }.map(\.text), ["hi"])
-        // recv drains everything — bob still RECEIVES the broadcast.
-        XCTAssertEqual(mailbox.count, 2)
+        XCTAssertEqual(mailbox.count, 1)
     }
 }
 
