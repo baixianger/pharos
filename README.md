@@ -114,6 +114,25 @@ it onto your `PATH` as `pharos`:
 
 **Claude *and* Codex.** The mesh works across runtimes: install the hooks per agent (Settings → CLI → **Claude** / **Codex**, or `pharos mesh install-hooks [--codex]`), and Claude and Codex agents share the same chat rooms — each shown with its own avatar.
 
+### Mesh message delivery
+
+Mesh chat separates room history from agent delivery:
+
+- A message with `@agent` is delivered to that agent's mailbox and surfaced by
+  the Stop hook. Use this for work that needs an agent's attention.
+- A message without `@` is transcript-only. It remains visible in room history,
+  but is not delivered to any agent and does not block an agent at its Stop hook.
+
+For example:
+
+```bash
+pharos mesh send "Please inspect the iOS build" @designer --room beiou-dev
+pharos mesh send "A note for the room history" --room beiou-dev
+```
+
+The Broker is authoritative for this rule; macOS, Linux, and iOS clients share
+the same behavior.
+
 ```bash
 ln -s /Applications/Pharos.app/Contents/MacOS/Pharos /usr/local/bin/pharos
 pharos help                              # discover every command
