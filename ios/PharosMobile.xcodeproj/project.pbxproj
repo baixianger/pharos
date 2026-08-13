@@ -20,6 +20,7 @@
 		4902E474ADE5F8A58510ACAD /* PharosDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5306A1D53DF86E0C36475E8 /* PharosDesign.swift */; };
 		4BE334EC910DCEE6D384603B /* SSHIdentityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4EEE4B12F0CADE232BED280 /* SSHIdentityStore.swift */; };
 		5C851F7438B59E50BCA92FD6 /* RoomListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B98C9EA551F79B1E2F610EA /* RoomListView.swift */; };
+		6597A49EC3C5095127AA4C12 /* ChatRoomFlowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DE5BE7DACC252D1F762B3A3 /* ChatRoomFlowUITests.swift */; };
 		7237CCB3A61A6ABC7F4C450C /* MeshTCPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FF7F26A2AD53C1C21F2EC36 /* MeshTCPClient.swift */; };
 		726C04B3396A0C926F18D327 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01A1958E7B3D76D91A3B1081 /* SettingsView.swift */; };
 		7F1BDE768D8B320243656FC4 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 0D9BD0AD6FE2B9D70C3D9B01 /* SwiftTerm */; };
@@ -38,6 +39,7 @@
 		D2B1822CAB067921E37324FA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CEF8FD397F7D9F1C61EA3BAF /* Assets.xcassets */; };
 		DCD21D275D0668C3890A6C7C /* PairBrokerViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9330688B2F8752D883096C6D /* PairBrokerViews.swift */; };
 		DD62AC67C8371A27078C66E4 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B59AA89BEDF3EEEE53EA9CD /* RootView.swift */; };
+		EAD501BADF0E88AD8C9FD042 /* UIKitChatMessageList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0211F4FB343E5F38719E521B /* UIKitChatMessageList.swift */; };
 		F734C7FF9F1D8085C013CDD0 /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE66DE546D2C518478A6D7D4 /* ConversationView.swift */; };
 /* End PBXBuildFile section */
 
@@ -49,15 +51,24 @@
 			remoteGlobalIDString = 54D0FFBF4AEBD7CCA89AF5F3;
 			remoteInfo = PharosMobile;
 		};
+		B7C748043BEEC4035D0D4222 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 312BF5CD3279A089A6699B3E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 54D0FFBF4AEBD7CCA89AF5F3;
+			remoteInfo = PharosMobile;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		01A1958E7B3D76D91A3B1081 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		0211F4FB343E5F38719E521B /* UIKitChatMessageList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIKitChatMessageList.swift; sourceTree = "<group>"; };
 		0D814929863D6BC8982DAD23 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		108EB4DA1F813A618204D5D7 /* IssuesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IssuesView.swift; sourceTree = "<group>"; };
 		15E29A27C4B67A17956B427B /* PharosDemoData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PharosDemoData.swift; sourceTree = "<group>"; };
 		1B98C9EA551F79B1E2F610EA /* RoomListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomListView.swift; sourceTree = "<group>"; };
 		27F4A3C6DE1C3611722ACCF5 /* PharosMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PharosMarkdown.swift; sourceTree = "<group>"; };
+		3DE5BE7DACC252D1F762B3A3 /* ChatRoomFlowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatRoomFlowUITests.swift; sourceTree = "<group>"; };
 		4943F19EA86159D3DD4EB0F4 /* RoomStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomStore.swift; sourceTree = "<group>"; };
 		4C964FEBE89EF146AD7C6AF4 /* AgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsView.swift; sourceTree = "<group>"; };
 		4F69EBEAE42D0113CD39B2BC /* PharosMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PharosMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -68,6 +79,7 @@
 		5F2817C51018E7CAF0BF7175 /* IPadWorkspaceShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPadWorkspaceShell.swift; sourceTree = "<group>"; };
 		6B59AA89BEDF3EEEE53EA9CD /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		81DA9594F9E9536D3C2B9D94 /* PharosMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PharosMobileApp.swift; sourceTree = "<group>"; };
+		87EB0ACBE938B291D6035421 /* PharosMobileUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PharosMobileUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8FF7F26A2AD53C1C21F2EC36 /* MeshTCPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshTCPClient.swift; sourceTree = "<group>"; };
 		9330688B2F8752D883096C6D /* PairBrokerViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairBrokerViews.swift; sourceTree = "<group>"; };
 		9DA45AD4654541D589FEEB66 /* RemoteTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTerminalView.swift; sourceTree = "<group>"; };
@@ -105,6 +117,7 @@
 			children = (
 				F1E1516DF727C7F92AC7FC01 /* PharosMobile.app */,
 				4F69EBEAE42D0113CD39B2BC /* PharosMobileTests.xctest */,
+				87EB0ACBE938B291D6035421 /* PharosMobileUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -152,8 +165,17 @@
 			children = (
 				5A0210FDFA6699D3DF1CF1C6 /* PharosMobile */,
 				6734775EC3F565C2FBA0048A /* PharosMobileTests */,
+				62BF246963A7A4FF2FCAFF0F /* PharosMobileUITests */,
 				15912F71DF5197646F2A6257 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		62BF246963A7A4FF2FCAFF0F /* PharosMobileUITests */ = {
+			isa = PBXGroup;
+			children = (
+				3DE5BE7DACC252D1F762B3A3 /* ChatRoomFlowUITests.swift */,
+			);
+			path = PharosMobileUITests;
 			sourceTree = "<group>";
 		};
 		6734775EC3F565C2FBA0048A /* PharosMobileTests */ = {
@@ -189,6 +211,7 @@
 				6B59AA89BEDF3EEEE53EA9CD /* RootView.swift */,
 				01A1958E7B3D76D91A3B1081 /* SettingsView.swift */,
 				E6F859A1C7BBEF2D3E51676E /* SpawnAgentView.swift */,
+				0211F4FB343E5F38719E521B /* UIKitChatMessageList.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -196,6 +219,24 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		3EFCFE7F6984251C8D44B152 /* PharosMobileUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6DAA2C8BB657BBD0860BE14C /* Build configuration list for PBXNativeTarget "PharosMobileUITests" */;
+			buildPhases = (
+				FB00049E9C61CB5A98160C0D /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				4FF7D26D373FEE572AB37B95 /* PBXTargetDependency */,
+			);
+			name = PharosMobileUITests;
+			packageProductDependencies = (
+			);
+			productName = PharosMobileUITests;
+			productReference = 87EB0ACBE938B291D6035421 /* PharosMobileUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		40CC24EB7309C3762082C06D /* PharosMobileTests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 609851E422A632E1E38A4DF1 /* Build configuration list for PBXNativeTarget "PharosMobileTests" */;
@@ -246,6 +287,11 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					3EFCFE7F6984251C8D44B152 = {
+						DevelopmentTeam = TN7ZDD72P2;
+						ProvisioningStyle = Automatic;
+						TestTargetID = 54D0FFBF4AEBD7CCA89AF5F3;
+					};
 					40CC24EB7309C3762082C06D = {
 						DevelopmentTeam = TN7ZDD72P2;
 						ProvisioningStyle = Automatic;
@@ -277,6 +323,7 @@
 			targets = (
 				54D0FFBF4AEBD7CCA89AF5F3 /* PharosMobile */,
 				40CC24EB7309C3762082C06D /* PharosMobileTests */,
+				3EFCFE7F6984251C8D44B152 /* PharosMobileUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -331,6 +378,15 @@
 				4BE334EC910DCEE6D384603B /* SSHIdentityStore.swift in Sources */,
 				726C04B3396A0C926F18D327 /* SettingsView.swift in Sources */,
 				A3405FB84FF614549626759D /* SpawnAgentView.swift in Sources */,
+				EAD501BADF0E88AD8C9FD042 /* UIKitChatMessageList.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FB00049E9C61CB5A98160C0D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6597A49EC3C5095127AA4C12 /* ChatRoomFlowUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -341,6 +397,11 @@
 			isa = PBXTargetDependency;
 			target = 54D0FFBF4AEBD7CCA89AF5F3 /* PharosMobile */;
 			targetProxy = A5F4E1C117C5AAD1AF6CF030 /* PBXContainerItemProxy */;
+		};
+		4FF7D26D373FEE572AB37B95 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 54D0FFBF4AEBD7CCA89AF5F3 /* PharosMobile */;
+			targetProxy = B7C748043BEEC4035D0D4222 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -508,6 +569,40 @@
 			};
 			name = Debug;
 		};
+		4F111E23EACB6CE469B44B28 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = me.pai.pharos.mobile.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = PharosMobile;
+			};
+			name = Release;
+		};
+		5AB67F89BAC1FCBA2A99DAE2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = me.pai.pharos.mobile.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = PharosMobile;
+			};
+			name = Debug;
+		};
 		5EBF73F9741EB12075380C75 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -526,6 +621,7 @@
 				PROVISIONING_PROFILE_SPECIFIER = "match AppStore me.pai.pharos.mobile";
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/../Sources/CSQLite";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
@@ -546,6 +642,7 @@
 				PRODUCT_NAME = PharosMobile;
 				SDKROOT = iphoneos;
 				SUPPORTS_MACCATALYST = NO;
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/../Sources/CSQLite";
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
@@ -567,6 +664,15 @@
 			buildConfigurations = (
 				4E8097BA82D0D573F545B3EA /* Debug */,
 				00DFCDCE44726ECE03EC4D29 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		6DAA2C8BB657BBD0860BE14C /* Build configuration list for PBXNativeTarget "PharosMobileUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5AB67F89BAC1FCBA2A99DAE2 /* Debug */,
+				4F111E23EACB6CE469B44B28 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

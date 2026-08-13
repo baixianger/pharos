@@ -16,16 +16,13 @@ struct ConversationView: View {
     @State private var showCameraPicker = false
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var isUploading = false
+    @State private var isSending = false
+    /// Identifies the current submission so an older async result cannot
+    /// restore text into a newer composer state.
+    @State private var sendGeneration = 0
     @State private var previewURL: URL?
-    /// Armed only after the opening scroll-to-bottom has settled, so the
-    /// top sentinel can't page (and re-anchor upward) while the room opens.
-    @State private var allowsHistoryPaging = false
-    /// Bumped after a successful send to force a scroll to the newest message,
-    /// independent of whether the reloaded tail's last id changed.
     @State private var scrollBottomTick = 0
-    @State private var didInitialScroll = false
-    @State private var isNearLatest = true
-    @State private var scrollPosition = ScrollPosition(idType: String.self)
+    @State private var composerHeight: CGFloat = 0
     @FocusState private var focused: Bool
 
     private let tailID = "conversation-tail"
@@ -39,13 +36,9 @@ struct ConversationView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .toolbar { channelToolbar }
-        .safeAreaInset(edge: .bottom, spacing: 0) { composer }
         .onAppear { draft = MobileRoomDraftCache.draft(for: store.selectedRoom) }
         .onChange(of: store.selectedRoom) { _, room in
             draft = MobileRoomDraftCache.draft(for: room)
-            allowsHistoryPaging = false
-            didInitialScroll = false
-            isNearLatest = true
         }
         .onChange(of: draft) { _, nextDraft in
             MobileRoomDraftCache.save(nextDraft, for: store.selectedRoom)
@@ -77,163 +70,30 @@ struct ConversationView: View {
     // text. ScrollViewReader keeps the newest message visible without changing
     // the coordinate system used by rows and their system previews.
     private var transcript: some View {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    if store.hasMoreHistory {
-                        historyLoader
-                    }
-                    ForEach(transcriptCells) { cell in
-                        transcriptCellView(cell)
-                    }
-                    if !store.hasMoreHistory { channelWelcome }
-                    Color.clear
-                        .frame(height: 1)
-                        .id(tailID)
-                }
-                .scrollTargetLayout()
-                .padding(.vertical, 8)
-            }
-            // Bottom is an opening position only. The semantic scroll position
-            // below owns container-size changes (keyboard/composer) so a
-            // keyboard transition cannot repeatedly force the whole transcript
-            // to an over-scrolled bottom anchor.
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(.top, for: .alignment)
-            .scrollPosition($scrollPosition, anchor: .bottom)
-            .scrollIndicators(.hidden)
-            .background(Color(uiColor: .systemBackground))
-            .scrollDismissesKeyboard(.interactively)
-            // One tap recognizer on the scroll container dismisses the
-            // composer without installing a recognizer on every message row.
-            .onTapGesture { focused = false }
-            .onScrollGeometryChange(for: CGFloat.self) { geometry in
-                max(0, geometry.contentSize.height
-                    - geometry.containerSize.height
-                    - geometry.contentOffset.y)
-            } action: { _, distanceFromLatest in
-                isNearLatest = distanceFromLatest < 80
-            }
-            // Arm history paging only after the first page has loaded and the
-            // view has settled at the bottom, so the top sentinel can't page
-            // during the opening layout.
-            .task(id: store.selectedRoom) {
-                allowsHistoryPaging = false
-                for _ in 0..<80 {
-                    if !store.messages.isEmpty { break }
-                    try? await Task.sleep(for: .milliseconds(50))
-                }
-                try? await Task.sleep(for: .milliseconds(300))
-                if !store.messages.isEmpty {
-                    scrollPosition.scrollTo(id: tailID, anchor: .bottom)
-                    didInitialScroll = true
-                }
-                allowsHistoryPaging = true
-            }
-            // The first history response may arrive after the opening task's
-            // initial layout pass. Anchor once the actual tail is available.
-            .onChange(of: store.messages.last?.id) { _, lastID in
-                guard lastID != nil else { return }
-                if !didInitialScroll {
-                    Task { @MainActor in
-                        await Task.yield()
-                        scrollPosition.scrollTo(id: tailID, anchor: .bottom)
-                        didInitialScroll = true
-                        allowsHistoryPaging = true
-                    }
-                } else if isNearLatest {
-                    // Follow incoming messages while the user is at the tail.
-                    // A manual upward scroll changes isNearLatest to false.
-                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                        scrollPosition.scrollTo(id: tailID, anchor: .bottom)
-                    }
-                }
-            }
-            // On send, return to the newest message even if the user had
-            // scrolled up.
-            .onChange(of: scrollBottomTick) {
-                guard !store.messages.isEmpty else { return }
-                isNearLatest = true
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                    scrollPosition.scrollTo(id: tailID, anchor: .bottom)
-                }
-            }
-    }
-
-    private enum TranscriptCell: Identifiable {
-        case divider(id: String, date: Date)
-        case message(id: String, message: MeshMessage, showsHeader: Bool)
-        var id: String {
-            switch self {
-            case .divider(let id, _): return id
-            case .message(let id, _, _): return id
-            }
-        }
-    }
-
-    /// Chronological (oldest→newest) cells; the transcript renders them reversed
-    /// under the upside-down flip. A day divider sits just before the first
-    /// message of its day, which after reversal appears directly above it.
-    private var transcriptCells: [TranscriptCell] {
-        var cells: [TranscriptCell] = []
-        for (index, message) in store.messages.enumerated() {
-            if startsNewDay(at: index) {
-                cells.append(.divider(id: "day-\(message.id)", date: message.date))
-            }
-            cells.append(.message(id: message.id, message: message,
-                                  showsHeader: startsMessageGroup(at: index)))
-        }
-        return cells
-    }
-
-    @ViewBuilder
-    private func transcriptCellView(_ cell: TranscriptCell) -> some View {
-        switch cell {
-        case .divider(_, let date):
-            dayDivider(for: date)
-        case .message(let id, let message, let showsHeader):
-            MessageRow(
-                message: message,
-                member: store.members[message.from],
-                showsHeader: showsHeader,
-                onReply: {
-                    replyingTo = message
-                    focused = true
-                },
-                onOpenAttachment: { attachment in
-                    Task { previewURL = await store.downloadAttachment(attachment) }
-                }
-            )
-            .id(id)
-            // Keep the context-menu modifier outside the per-cell 180°
-            // transform below. Otherwise iOS captures the transformed row as
-            // its long-press preview, which appears upside down or collapses
-            // to a vertical line under the preview's narrow proposal.
-            .contextMenu {
-                Button("Reply", systemImage: "arrowshape.turn.up.left") {
-                    replyingTo = message
-                    focused = true
-                }
-                Button("Copy message", systemImage: "doc.on.doc") {
-                    UIPasteboard.general.string = message.text
-                }
-            }
-        }
-    }
-
-    /// Top-of-transcript sentinel: becoming visible (user scrolled up) pulls one
-    /// older page. The .scrollPosition(id:) binding preserves the reading
-    /// position automatically when rows prepend above.
-    private var historyLoader: some View {
-        ProgressView()
-            .controlSize(.small)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .onAppear { requestOlderPage() }
+        UIKitChatMessageList(
+            room: store.selectedRoom ?? "chat",
+            messages: store.messages,
+            members: store.members,
+            hasMoreHistory: store.hasMoreHistory,
+            isLoadingOlder: store.isLoadingOlder,
+            isLoadingHistory: store.isLoadingHistory,
+            scrollToLatestToken: scrollBottomTick,
+            composer: AnyView(composer),
+            onReply: { message in
+                replyingTo = message
+                focused = true
+            },
+            onOpenAttachment: { attachment in
+                Task { previewURL = await store.downloadAttachment(attachment) }
+            },
+            onLoadOlder: { requestOlderPage() },
+            onDismissKeyboard: { focused = false }
+        )
+        .id(store.selectedRoom ?? "conversation-empty")
     }
 
     private func requestOlderPage() {
-        guard allowsHistoryPaging, !store.isLoadingOlder else { return }
-        isNearLatest = false
+        guard !store.isLoadingOlder else { return }
         Task { await store.loadOlderMessages() }
     }
 
@@ -254,6 +114,7 @@ struct ConversationView: View {
                     .foregroundStyle(.secondary)
             }
             .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("chat-room-title")
         }
 
         ToolbarItem(placement: .topBarTrailing) {
@@ -340,6 +201,14 @@ struct ConversationView: View {
         .padding(.top, 7)
         .padding(.bottom, 6)
         .background(.bar.opacity(0.82))
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: ComposerHeightKey.self, value: proxy.size.height)
+            }
+        }
+        .onPreferenceChange(ComposerHeightKey.self) { height in
+            if abs(composerHeight - height) > 0.5 { composerHeight = height }
+        }
     }
 
     private var composerField: some View {
@@ -365,6 +234,7 @@ struct ConversationView: View {
                 .lineLimit(1...6)
                 .padding(.vertical, 5)
                 .focused($focused)
+                .accessibilityIdentifier("chat-composer")
                 .submitLabel(.send)
                 .onSubmit(sendDraft)
                 .onChange(of: focused) { _, isFocused in
@@ -413,17 +283,43 @@ struct ConversationView: View {
     private var trimmedDraft: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private func sendDraft() {
-        guard !trimmedDraft.isEmpty || !pendingAttachments.isEmpty else { return }
+        guard !isSending, (!trimmedDraft.isEmpty || !pendingAttachments.isEmpty) else { return }
         let text = draft
         let reply = replyingTo
         let attachments = pendingAttachments
-        Task {
-            if await store.send(text, replyTo: reply, attachments: attachments) {
-                draft = ""
-                replyingTo = nil
-                pendingAttachments = []
+        let room = store.selectedRoom
+        sendGeneration += 1
+        let generation = sendGeneration
+        // Clear the composer at submission time, not after the potentially
+        // slow broker/history round trip. This prevents an accepted message
+        // from appearing to remain in the input field and also prevents a
+        // second tap from submitting the same draft.
+        draft = ""
+        MobileRoomDraftCache.save("", for: room)
+        replyingTo = nil
+        pendingAttachments = []
+        isSending = true
+        Task { @MainActor in
+            let sent = await store.send(text, replyTo: reply, attachments: attachments)
+            guard generation == sendGeneration else { return }
+            if sent {
+                // The composer is hosted inside UIKit. Re-assert the cleared
+                // binding after the broker commit as well, so a hosted
+                // TextField that was mid-edit cannot paint the old value back.
+                if draft == text || draft.isEmpty {
+                    draft = ""
+                    MobileRoomDraftCache.save("", for: room)
+                }
                 scrollBottomTick += 1      // pin to the message just sent
+            } else if draft.isEmpty {
+                // Preserve a failed send for retry, but never restore it over
+                // text the user may have started typing meanwhile.
+                draft = text
+                MobileRoomDraftCache.save(text, for: room)
+                replyingTo = reply
+                pendingAttachments = attachments
             }
+            isSending = false
         }
     }
 
@@ -519,31 +415,6 @@ struct ConversationView: View {
         }
     }
 
-    private func startsMessageGroup(at index: Int) -> Bool {
-        guard index > 0 else { return true }
-        let current = store.messages[index]
-        let previous = store.messages[index - 1]
-        return current.from != previous.from || current.date.timeIntervalSince(previous.date) > 5 * 60
-    }
-
-    private func startsNewDay(at index: Int) -> Bool {
-        guard index > 0 else { return true }
-        return !Calendar.current.isDate(store.messages[index].date, inSameDayAs: store.messages[index - 1].date)
-    }
-
-    private func dayDivider(for date: Date) -> some View {
-        HStack(spacing: 10) {
-            Divider()
-            Text(date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .fixedSize()
-            Divider()
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-    }
-
     private func noticeBar(_ text: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: text.contains("⚡") ? "bolt.fill" : "info.circle.fill").foregroundStyle(.orange)
@@ -560,6 +431,14 @@ struct ConversationView: View {
             Button("Retry") { Task { await store.refresh() } }.font(.caption.weight(.semibold))
         }
         .padding(10).background(.red.opacity(0.08))
+    }
+}
+
+private struct ComposerHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

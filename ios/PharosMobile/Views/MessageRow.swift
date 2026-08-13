@@ -15,19 +15,13 @@ struct MessageRow: View {
                 Spacer(minLength: 40)
                 humanMessageBody
             } else {
-                Group {
+                VStack(alignment: .leading, spacing: showsHeader ? 6 : 2) {
                     if showsHeader {
-                        ChatAvatar(name: displayName, member: member, isHuman: false)
-                    } else {
-                        // Preserve the avatar column for consecutive messages;
-                        // the body must never shift left when the avatar is hidden.
-                        Color.clear.frame(width: 38, height: 38)
+                        identityBlock
                     }
-                }
-                .frame(width: 38, alignment: .top)
-
-                VStack(alignment: .leading, spacing: showsHeader ? 5 : 2) {
-                    if showsHeader { identityLine }
+                    // Agent content deliberately starts at the row's leading
+                    // edge. The avatar belongs to identity, not to the text
+                    // column, so long Markdown lines get the full width.
                     messageBody
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -62,33 +56,35 @@ struct MessageRow: View {
             .frame(maxWidth: 320, alignment: .trailing)
     }
 
-    private var identityLine: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
-            Text(displayName)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
+    private var identityBlock: some View {
+        HStack(alignment: .top, spacing: 10) {
+            ChatAvatar(name: displayName, member: member, isHuman: false)
+                .frame(width: 38, height: 38)
 
-            if let kindLabel {
-                Text("· \(kindLabel)")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(isHuman ? Color.secondary : Color.accentColor)
-                    .lineLimit(1)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Text(displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    Text(message.date, style: .time)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+
+                HStack(spacing: 7) {
+                    Text(kindLabel ?? "AGENT")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.tint)
+                        .lineLimit(1)
+                    if !message.to.isEmpty {
+                        Text(message.to.map { "@\($0)" }.joined(separator: " "))
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.tint)
+                            .lineLimit(1)
+                    }
+                }
             }
-
-            if !message.to.isEmpty {
-                Text("· \(message.to.map { "@\($0)" }.joined(separator: " "))")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.tint)
-                    .lineLimit(1)
-            }
-
-            Text("·")
-                .font(.caption2)
-                .foregroundStyle(.quaternary)
-            Text(message.date, style: .time)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
         }
     }
 

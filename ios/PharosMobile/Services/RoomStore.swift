@@ -28,6 +28,7 @@ final class RoomStore {
     /// True while older pages likely remain above the loaded window.
     private(set) var hasMoreHistory = false
     private(set) var isLoadingOlder = false
+    private(set) var isLoadingHistory = false
     private var capabilities: Set<String>?
     /// Messages fetched per page. The window starts as the latest page and
     /// grows upward only when the user pulls for older history.
@@ -128,6 +129,8 @@ final class RoomStore {
     /// If the window doesn't reach the new page (a gap after backgrounding),
     /// the window resets to the latest page — the user can pull up to re-page.
     private func loadLatestPage(for room: String) async throws {
+        isLoadingHistory = true
+        defer { isLoadingHistory = false }
         let paged = await supportsHistoryPaging()
         let limit = paged ? Self.historyPageSize : Self.legacyHistoryLimit
         let tail = try await request(MeshRequest(cmd: "history", room: room, limit: limit)).messages ?? []
@@ -187,25 +190,57 @@ final class RoomStore {
             }
         }
         let targets = MentionParser.targets(in: trimmed)
+        let submittedAt = Date()
         do {
             var outgoing = MeshRequest(cmd: "say", room: room, nick: "human", text: trimmed,
                                        to: targets.isEmpty ? nil : targets)
             outgoing.replyToID = replyTo?.id
             outgoing.attachments = attachments.isEmpty ? nil : attachments
             _ = try await request(outgoing)
-            // `say` is the commit point. A follow-up history refresh may fail
-            // during a transient reconnect; that must not make the UI keep a
-            // message that was already delivered in the composer.
-            do {
-                try await loadLatestPage(for: room)
-                error = nil
-            } catch {
-                self.error = "Message sent, but history refresh failed: \(error.localizedDescription)"
+            // `say` is the commit point. Return immediately so the composer
+            // clears as soon as the broker accepts the message; a slow history
+            // refresh must never leave the already-sent draft on screen.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    try await loadLatestPage(for: room)
+                    error = nil
+                } catch {
+                    self.error = "Message sent, but history refresh failed: \(error.localizedDescription)"
+                }
             }
             return true
         } catch {
+            // The Broker commits before replying. A dropped response can
+            // therefore look like a failed send even though the message is
+            // already durable. Re-read the tail before asking the composer to
+            // restore the draft, otherwise a successfully sent message stays
+            // visibly in the input field.
+            if let recovered = await recoverCommittedMessage(room: room,
+                                                              text: trimmed,
+                                                              attachments: attachments,
+                                                              submittedAt: submittedAt), recovered {
+                self.error = nil
+                return true
+            }
             self.error = error.localizedDescription
             return false
+        }
+    }
+
+    private func recoverCommittedMessage(room: String, text: String,
+                                         attachments: [MeshAttachment],
+                                         submittedAt: Date) async -> Bool? {
+        do {
+            try await loadLatestPage(for: room)
+            let lowerBound = submittedAt.addingTimeInterval(-8).timeIntervalSince1970
+            return messages.contains {
+                $0.room == room && $0.from == "human" && $0.text == text
+                    && $0.ts >= lowerBound
+                    && (attachments.isEmpty || $0.attachments?.map(\.id) == attachments.map(\.id))
+            }
+        } catch {
+            return nil
         }
     }
 

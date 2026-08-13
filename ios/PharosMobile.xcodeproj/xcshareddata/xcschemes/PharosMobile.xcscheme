@@ -35,6 +35,20 @@
                ReferencedContainer = "container:PharosMobile.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "3EFCFE7F6984251C8D44B152"
+               BuildableName = "PharosMobileUITests.xctest"
+               BlueprintName = "PharosMobileUITests"
+               ReferencedContainer = "container:PharosMobile.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -61,6 +75,17 @@
                BlueprintIdentifier = "40CC24EB7309C3762082C06D"
                BuildableName = "PharosMobileTests.xctest"
                BlueprintName = "PharosMobileTests"
+               ReferencedContainer = "container:PharosMobile.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "3EFCFE7F6984251C8D44B152"
+               BuildableName = "PharosMobileUITests.xctest"
+               BlueprintName = "PharosMobileUITests"
                ReferencedContainer = "container:PharosMobile.xcodeproj">
             </BuildableReference>
          </TestableReference>
