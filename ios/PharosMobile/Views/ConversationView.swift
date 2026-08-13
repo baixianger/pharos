@@ -27,7 +27,6 @@ struct ConversationView: View {
     @State private var didInitialScroll = false
     @State private var isNearLatest = true
     @State private var composerHeight: CGFloat = 0
-    @State private var keyboardExtraHeight: CGFloat = 0
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -40,20 +39,6 @@ struct ConversationView: View {
         .toolbar(.hidden, for: .tabBar)
         .toolbar { channelToolbar }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-        // Some iOS container configurations do not propagate the keyboard's
-        // safe-area change into a nested NavigationSplitView detail. Apply
-        // only the portion not already represented by the window safe area.
-        .safeAreaPadding(.bottom, keyboardExtraHeight)
-        .onReceive(NotificationCenter.default.publisher(
-            for: UIResponder.keyboardWillChangeFrameNotification
-        )) { notification in
-            keyboardExtraHeight = Self.keyboardExtraHeight(from: notification)
-        }
-        .onReceive(NotificationCenter.default.publisher(
-            for: UIResponder.keyboardWillHideNotification
-        )) { _ in
-            keyboardExtraHeight = 0
-        }
         .onAppear { draft = MobileRoomDraftCache.draft(for: store.selectedRoom) }
         .onChange(of: store.selectedRoom) { _, room in
             draft = MobileRoomDraftCache.draft(for: room)
@@ -170,32 +155,7 @@ struct ConversationView: View {
                     proxy.scrollTo(last, anchor: .bottom)
                 }
             }
-            .onChange(of: keyboardExtraHeight) { _, _ in
-                guard didInitialScroll, isNearLatest,
-                      let last = store.messages.last?.id else { return }
-                Task { @MainActor in
-                    // Wait for the keyboard animation/layout transaction so
-                    // the newest row is positioned below the full obstruction:
-                    // keyboard plus composer accessories.
-                    try? await Task.sleep(for: .milliseconds(80))
-                    proxy.scrollTo(last, anchor: .bottom)
-                }
-            }
         }
-    }
-
-    private static func keyboardExtraHeight(from notification: Notification) -> CGFloat {
-        guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey]
-                as? CGRect else { return 0 }
-        guard let window = UIApplication.shared.connectedScenes
-            .compactMap({ ($0 as? UIWindowScene)?.windows.first(where: \.isKeyWindow) })
-            .first else { return 0 }
-        // The notification frame is in screen coordinates. Converting it is
-        // required for iPad Split View, Slide Over, and Stage Manager.
-        let frameInWindow = window.screen.coordinateSpace.convert(frame, to: window)
-        let overlap = max(0, window.bounds.maxY - frameInWindow.minY)
-        let windowSafeBottom = window.safeAreaInsets.bottom
-        return max(0, overlap - windowSafeBottom)
     }
 
     private enum TranscriptCell: Identifiable {

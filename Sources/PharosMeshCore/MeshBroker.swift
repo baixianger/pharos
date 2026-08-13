@@ -830,6 +830,35 @@ public final class MeshBroker: @unchecked Sendable {
             recoverUnreadPokes(nodeID: id, host: host, tailscaleIP: req.tailscaleIP)
             return .okay()
 
+        case "node-liveness":
+            // Host nodes may correct a terminal hook state only after they
+            // prove the exact registered tmux seat still owns the agent
+            // process. This intentionally clears readiness to unknown; it
+            // must never invent busy/idle from process liveness.
+            guard authorizeControl(req, trustedLocal: trustedLocal) else {
+                return .fail("valid control credential required")
+            }
+            guard let nodeID = req.nodeID, !nodeID.isEmpty,
+                  let memberID = req.memberID, !memberID.isEmpty else {
+                return .fail("node id and member id required")
+            }
+            lock.lock()
+            guard var entry = presence[memberID], entry.nodeID == nodeID,
+                  entry.tmuxPane != nil, entry.tmuxSocket != nil,
+                  Self.markMatchesSnapshot(entry, request: req),
+                  entry.state == MeshSessionState.gone.rawValue else {
+                lock.unlock()
+                return .okay()
+            }
+            entry.state = nil
+            entry.stateTs = nil
+            entry.stateReason = nil
+            presence[memberID] = entry
+            writePresenceLocked()
+            lock.unlock()
+            publish(kind: .roster)
+            return .okay()
+
         case "node-command-enqueue":
             guard authorizeControl(req, trustedLocal: trustedLocal) else {
                 return .fail("valid control credential required")
@@ -1286,6 +1315,7 @@ public final class MeshBroker: @unchecked Sendable {
 
         case "delete":
             guard let r = req.room else { return .fail("room required") }
+            let attachmentIDs = attachmentIDs(in: r)
             lock.lock()
             var affected = Set<String>()
             if let room = rooms[r] { affected.formUnion(room.members.values); affected.formUnion(room.mailboxes.keys) }
@@ -1296,6 +1326,10 @@ public final class MeshBroker: @unchecked Sendable {
             lock.unlock()
             transcriptLock.lock()
             try? FileManager.default.removeItem(at: MeshPaths.transcript(r))
+            let remainingAttachmentIDs = attachmentIDsInOtherRooms(excluding: r)
+            for attachmentID in attachmentIDs.subtracting(remainingAttachmentIDs) {
+                try? FileManager.default.removeItem(at: MeshPaths.attachmentDirectory(attachmentID))
+            }
             transcriptLock.unlock()
             return .okay()
 
@@ -2127,6 +2161,27 @@ public final class MeshBroker: @unchecked Sendable {
         guard let data = try? String(contentsOf: MeshPaths.transcript(room), encoding: .utf8) else { return [] }
         let dec = JSONDecoder()
         return data.split(separator: "\n").compactMap { try? dec.decode(MeshMsg.self, from: Data($0.utf8)) }
+    }
+
+    /// Attachment bytes live outside the room transcript. Collect their IDs
+    /// before a room delete so those bytes do not become unowned broker data.
+    private func attachmentIDs(in room: String) -> Set<String> {
+        Set(transcript(room).flatMap { $0.attachments ?? [] }.map(\.id))
+    }
+
+    private func attachmentIDsInOtherRooms(excluding room: String) -> Set<String> {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: MeshPaths.transcriptDir,
+                                                                         includingPropertiesForKeys: nil)
+        else { return [] }
+        let decoder = JSONDecoder()
+        return Set(files
+            .filter { $0.pathExtension == "jsonl" && $0.lastPathComponent != MeshPaths.transcript(room).lastPathComponent }
+            .flatMap { url -> [MeshMsg] in
+                guard let data = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+                return data.split(separator: "\n").compactMap { try? decoder.decode(MeshMsg.self, from: Data($0.utf8)) }
+            }
+            .flatMap { $0.attachments ?? [] }
+            .map(\.id))
     }
 
     /// The last `limit` messages of a room, from its transcript (the durable log

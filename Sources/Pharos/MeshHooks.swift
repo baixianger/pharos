@@ -224,7 +224,7 @@ enum MeshHooks {
         if codex {
             switch event {
             case "SessionStart": .idle
-            case "SessionEnd": .gone
+            case "SessionEnd": sessionEndState(reason: reason)
             case "SubagentStart", "SubagentStop", "UserPromptSubmit",
                  "PreToolUse", "PostToolUse", "PreCompact", "PostCompact":
                 toolName == "AskUserQuestion" && event == "PreToolUse" ? .blocked : .busy
@@ -247,10 +247,7 @@ enum MeshHooks {
             // working agent off the roster after a plain `/clear`. Only a real
             // teardown is `gone`. Unknown reasons stay `gone` (conservative):
             // the Node's pane probe re-confirms a truly dead seat within ~40s.
-            switch reason {
-            case "clear", "resume": .stopped
-            default:                .gone
-            }
+            sessionEndState(reason: reason)
         case "Notification":
             switch notificationType {
             case "permission_prompt", "elicitation_dialog":
@@ -264,6 +261,16 @@ enum MeshHooks {
             }
         default: nil
         }
+        }
+    }
+
+    /// `/clear` and `/resume` replace the session on the same physical seat;
+    /// they are not agent teardowns. The successor SessionStart rebinds the
+    /// room membership, so both Claude and Codex must use this same gate.
+    private static func sessionEndState(reason: String?) -> MeshSessionState {
+        switch reason {
+        case "clear", "resume": .stopped
+        default: .gone
         }
     }
 

@@ -1336,6 +1336,10 @@ final class MeshStateMappingTests: XCTestCase {
         XCTAssertEqual(MeshHooks.stateFor(event: "SubagentStart", notificationType: nil, codex: true), .busy)
         XCTAssertEqual(MeshHooks.stateFor(event: "SubagentStop", notificationType: nil, codex: true), .busy)
         XCTAssertEqual(MeshHooks.stateFor(event: "SessionEnd", notificationType: nil, codex: true), .gone)
+        XCTAssertEqual(MeshHooks.stateFor(event: "SessionEnd", notificationType: nil,
+                                          reason: "clear", codex: true), .stopped)
+        XCTAssertEqual(MeshHooks.stateFor(event: "SessionEnd", notificationType: nil,
+                                          reason: "resume", codex: true), .stopped)
         XCTAssertNil(MeshHooks.stateFor(event: "Notification", notificationType: "idle_prompt", codex: true))
         XCTAssertNil(MeshHooks.stateFor(event: "StopFailure", notificationType: nil, codex: true))
     }
@@ -1674,6 +1678,39 @@ final class MeshStateCorrectionTests: XCTestCase {
         XCTAssertTrue(MeshBroker.markMatchesSnapshot(entry(state: "busy", ts: 11),
                                                       request: MeshRequest(cmd: "mark", state: "stopped")),
                       "ordinary hook marks remain unconditional")
+    }
+
+    func testHostLivenessClearsGoneOnlyForTmuxBackedMember() {
+        let broker = MeshBroker()
+        let memberID = "tmux-session"
+        _ = broker.process(MeshRequest(cmd: "join", room: "r", nick: "codex",
+                                       project: "/p", session: memberID, host: "mac",
+                                       tmuxPane: "%1", tmuxSocket: "/tmp/tmux.sock", kind: "codex",
+                                       nodeID: "node-1"))
+        _ = broker.process(MeshRequest(cmd: "mark", session: memberID,
+                                       state: MeshSessionState.gone.rawValue))
+
+        var correction = MeshRequest(cmd: "node-liveness", memberID: memberID,
+                                     expectedState: MeshSessionState.gone.rawValue,
+                                     nodeID: "node-1")
+        correction.tmuxPane = "%1"
+        correction.tmuxSocket = "/tmp/tmux.sock"
+        XCTAssertTrue(broker.process(correction).ok)
+        XCTAssertNil(broker.process(MeshRequest(cmd: "who")).members?.first?.state)
+    }
+
+    func testHostLivenessDoesNotChangeManualShellMember() {
+        let broker = MeshBroker()
+        let memberID = "shell-session"
+        _ = broker.process(MeshRequest(cmd: "join", room: "r", nick: "shell",
+                                       project: "/p", session: memberID, host: "mac", kind: "codex"))
+        _ = broker.process(MeshRequest(cmd: "mark", session: memberID,
+                                       state: MeshSessionState.gone.rawValue))
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "node-liveness", memberID: memberID,
+                                                 expectedState: MeshSessionState.gone.rawValue,
+                                                 nodeID: "node-1")).ok)
+        XCTAssertEqual(broker.process(MeshRequest(cmd: "who")).members?.first?.state,
+                       MeshSessionState.gone.rawValue)
     }
 }
 
@@ -2368,6 +2405,47 @@ final class MeshRoomScopedIdentityTests: XCTestCase {
         forged.byteSize = 4
         XCTAssertFalse(broker.process(MeshRequest(cmd: "say", room: "dev", nick: "human",
                                                   text: "bad", attachments: [forged])).ok)
+    }
+
+    func testDeleteRoomRemovesItsTranscriptAndAttachments() throws {
+        let broker = MeshBroker()
+        let attachment = MeshAttachment(id: UUID().uuidString, name: "design.pdf",
+                                        mimeType: "application/pdf", byteSize: 3,
+                                        sha256: String(repeating: "a", count: 64))
+        let attachmentDirectory = MeshPaths.attachmentDirectory(attachment.id)
+        try FileManager.default.createDirectory(at: attachmentDirectory, withIntermediateDirectories: true)
+        try Data("pdf".utf8).write(to: MeshPaths.attachmentData(attachment.id))
+        try JSONEncoder().encode(attachment).write(to: MeshPaths.attachmentMetadata(attachment.id))
+
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "to-delete", nick: "human",
+                                                 text: "remove this", attachments: [attachment])).ok)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: MeshPaths.transcript("to-delete").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: attachmentDirectory.path))
+
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "delete", room: "to-delete")).ok)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: MeshPaths.transcript("to-delete").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: attachmentDirectory.path))
+    }
+
+    func testDeleteRoomKeepsAttachmentStillReferencedByAnotherRoom() throws {
+        let broker = MeshBroker()
+        let attachment = MeshAttachment(id: UUID().uuidString, name: "shared.pdf",
+                                        mimeType: "application/pdf", byteSize: 3,
+                                        sha256: String(repeating: "b", count: 64))
+        let attachmentDirectory = MeshPaths.attachmentDirectory(attachment.id)
+        try FileManager.default.createDirectory(at: attachmentDirectory, withIntermediateDirectories: true)
+        try Data("pdf".utf8).write(to: MeshPaths.attachmentData(attachment.id))
+        try JSONEncoder().encode(attachment).write(to: MeshPaths.attachmentMetadata(attachment.id))
+
+        for room in ["first", "second"] {
+            XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: room, nick: "human",
+                                                     text: "shared", attachments: [attachment])).ok)
+        }
+
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "delete", room: "first")).ok)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: MeshPaths.attachmentData(attachment.id).path))
+        XCTAssertEqual(broker.process(MeshRequest(cmd: "history", room: "second"))
+            .messages?.last?.attachments, [attachment])
     }
 
     func testRejoinReplacesAliasOnlyInsideThatRoom() {

@@ -433,11 +433,10 @@ enum MeshNode {
         guard response.ok else { return }
         var seen = Set<String>()
         for member in response.members ?? [] where owns(member) && seen.insert(member.id).inserted {
-            guard member.state != MeshSessionState.gone.rawValue,
-                  let pane = member.tmuxPane, validPane(pane),
+            guard let pane = member.tmuxPane, validPane(pane),
+                  let socket = member.tmuxSocket, validSocket(socket),
                   let tmux = tmuxExecutable else { continue }
-            if let socket = member.tmuxSocket, !validSocket(socket) { continue }
-            let prefix = member.tmuxSocket.map { ["-S", $0] } ?? []
+            let prefix = ["-S", socket]
             let root = run(tmux, prefix + ["display-message", "-p", "-t", pane, "#{pane_pid}"])
             guard root.ok, let rootPID = Int(root.output.trimmingCharacters(in: .whitespacesAndNewlines)) else {
                 recordMissing(member, counts: &missingProbeCounts)
@@ -449,6 +448,16 @@ enum MeshNode {
                                                           kind: member.kind) else {
                 recordMissing(member, counts: &missingProbeCounts)
                 continue
+            }
+            if member.state == MeshSessionState.gone.rawValue {
+                var correction = MeshRequest(cmd: "node-liveness", memberID: member.id,
+                                             expectedState: member.state,
+                                             expectedStateTs: member.stateTs,
+                                             nodeID: nodeID)
+                correction.tmuxPane = pane
+                correction.tmuxSocket = socket
+                let response = MeshClient.send(correction)
+                if response.ok { log("cleared stale gone state for @\(member.nick): tmux agent alive") }
             }
             missingProbeCounts.removeValue(forKey: member.id)
         }
