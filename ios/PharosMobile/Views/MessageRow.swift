@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 /// A Slack/Discord-style message group. Consecutive messages from the same
 /// sender can omit the avatar and identity line without losing authorship.
@@ -9,11 +8,6 @@ struct MessageRow: View {
     var showsHeader = true
     var onReply: (() -> Void)?
     var onOpenAttachment: ((MeshAttachment) -> Void)?
-    var onTap: (() -> Void)?
-
-    @State private var swipeOffset: CGFloat = 0
-    @State private var didTrigger = false
-    private let replyThreshold: CGFloat = 60
 
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
@@ -21,11 +15,16 @@ struct MessageRow: View {
                 Spacer(minLength: 40)
                 humanMessageBody
             } else {
-                if showsHeader {
-                    ChatAvatar(name: displayName, member: member, isHuman: false)
-                } else {
-                    Color.clear.frame(width: 38, height: 1)
+                Group {
+                    if showsHeader {
+                        ChatAvatar(name: displayName, member: member, isHuman: false)
+                    } else {
+                        // Preserve the avatar column for consecutive messages;
+                        // the body must never shift left when the avatar is hidden.
+                        Color.clear.frame(width: 38, height: 38)
+                    }
                 }
+                .frame(width: 38, alignment: .top)
 
                 VStack(alignment: .leading, spacing: showsHeader ? 5 : 2) {
                     if showsHeader { identityLine }
@@ -38,22 +37,17 @@ struct MessageRow: View {
         .padding(.top, showsHeader ? 8 : 1)
         .padding(.bottom, 2)
         .contentShape(.rect)
-        .offset(x: swipeOffset)
-        .simultaneousGesture(TapGesture().onEnded { onTap?() })
-        // Swipe-to-reply: a reply glyph trails the row as you drag right and
-        // fires once past the threshold — avoids the long-press full-screen
-        // preview for the common case.
-        .overlay(alignment: .leading) {
-            if onReply != nil, swipeOffset > 1 {
-                Image(systemName: "arrowshape.turn.up.left.fill")
-                    .font(.callout)
-                    .foregroundStyle(.tint)
-                    .opacity(Double(min(swipeOffset / replyThreshold, 1)))
-                    .scaleEffect(swipeOffset >= replyThreshold ? 1.15 : 0.9)
-                    .offset(x: max(4, swipeOffset - 34))
+        // Let the system coordinate this horizontal action with the parent
+        // ScrollView's vertical pan. A row-level DragGesture competes with
+        // scrolling and was the source of intermittent touch hesitation.
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            if let onReply {
+                Button("Reply", systemImage: "arrowshape.turn.up.left") {
+                    onReply()
+                }
+                .tint(.accentColor)
             }
         }
-        .gesture(replyDragGesture)
     }
 
     private var humanMessageBody: some View {
@@ -68,50 +62,33 @@ struct MessageRow: View {
             .frame(maxWidth: 320, alignment: .trailing)
     }
 
-    private var replyDragGesture: some Gesture {
-        DragGesture(minimumDistance: 18)
-            .onChanged { value in
-                guard onReply != nil else { return }
-                // Horizontal-rightward only, so vertical scrolling is unaffected.
-                guard value.translation.width > abs(value.translation.height) else { return }
-                let dx = min(max(0, value.translation.width), 90)
-                swipeOffset = dx
-                if dx >= replyThreshold, !didTrigger {
-                    didTrigger = true
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                }
-            }
-            .onEnded { _ in
-                if didTrigger { onReply?() }
-                didTrigger = false
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.7)) { swipeOffset = 0 }
-            }
-    }
-
     private var identityLine: some View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
             Text(displayName)
                 .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
 
             if let kindLabel {
-                Text(kindLabel)
-                    .font(.caption2.weight(.bold))
+                Text("· \(kindLabel)")
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(isHuman ? Color.secondary : Color.accentColor)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background((isHuman ? Color.secondary : Color.accentColor).opacity(0.1), in: Capsule())
+                    .lineLimit(1)
             }
 
-            Text(message.date, style: .time)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-
             if !message.to.isEmpty {
-                Text(message.to.map { "@\($0)" }.joined(separator: " "))
-                    .font(.caption2.weight(.medium))
+                Text("· \(message.to.map { "@\($0)" }.joined(separator: " "))")
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(.tint)
                     .lineLimit(1)
             }
+
+            Text("·")
+                .font(.caption2)
+                .foregroundStyle(.quaternary)
+            Text(message.date, style: .time)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
         }
     }
 
@@ -265,11 +242,29 @@ private struct PharosAgentGradient: View {
                 Circle().fill(blobColors.0).frame(width: size * 1.05).blur(radius: size * 0.22).offset(blobOffsets.0)
                 Circle().fill(blobColors.1).frame(width: size * 0.92).blur(radius: size * 0.18).offset(blobOffsets.1)
                 Circle().fill(blobColors.2).frame(width: size * 0.78).blur(radius: size * 0.16).offset(blobOffsets.2)
-                RoundedRectangle(cornerRadius: size * 0.25)
-                    .stroke(.white.opacity(0.48), lineWidth: max(0.8, size * 0.035))
                 LinearGradient(colors: [.white.opacity(0.28), .clear, .clear], startPoint: .topLeading, endPoint: .bottomTrailing)
             }
-            .clipShape(RoundedRectangle(cornerRadius: size * 0.25))
+            // The gradient is composed inside a circular boundary. It is not
+            // a rounded-square export clipped into a circle; the rim and light
+            // falloff are part of the avatar design itself.
+            .clipShape(Circle())
+            .overlay {
+                Circle()
+                    .stroke(
+                        LinearGradient(
+                            colors: [.white.opacity(0.82), edgeColor.opacity(0.58), .white.opacity(0.3)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: max(1, size * 0.035)
+                    )
+            }
+            .overlay {
+                Circle()
+                    .stroke(.white.opacity(0.22), lineWidth: max(0.7, size * 0.014))
+                    .blur(radius: size * 0.025)
+            }
+            .shadow(color: edgeColor.opacity(0.34), radius: size * 0.13)
         }
     }
 
@@ -287,6 +282,13 @@ private struct PharosAgentGradient: View {
             (.purple, .pink, .blue), (.blue, .cyan, .purple), (.pink, .purple, .orange)
         ]
         return colors[variant]
+    }
+
+    private var edgeColor: Color {
+        [
+            .cyan, .yellow, .green, .cyan, .pink, .blue,
+            .orange, .green, .pink, .purple, .blue, .pink
+        ][variant]
     }
 
     private var blobOffsets: (CGSize, CGSize, CGSize) {

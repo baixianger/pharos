@@ -2,7 +2,6 @@ import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
 import QuickLook
-import UIKit
 
 struct ConversationView: View {
     @Environment(RoomStore.self) private var store
@@ -26,7 +25,7 @@ struct ConversationView: View {
     @State private var scrollBottomTick = 0
     @State private var didInitialScroll = false
     @State private var isNearLatest = true
-    @State private var composerHeight: CGFloat = 0
+    @State private var scrollPosition = ScrollPosition(idType: String.self)
     @FocusState private var focused: Bool
 
     private let tailID = "conversation-tail"
@@ -78,7 +77,6 @@ struct ConversationView: View {
     // text. ScrollViewReader keeps the newest message visible without changing
     // the coordinate system used by rows and their system previews.
     private var transcript: some View {
-        ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if store.hasMoreHistory {
@@ -95,10 +93,19 @@ struct ConversationView: View {
                 .scrollTargetLayout()
                 .padding(.vertical, 8)
             }
-            .defaultScrollAnchor(.bottom)
+            // Bottom is an opening position only. The semantic scroll position
+            // below owns container-size changes (keyboard/composer) so a
+            // keyboard transition cannot repeatedly force the whole transcript
+            // to an over-scrolled bottom anchor.
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(.top, for: .alignment)
+            .scrollPosition($scrollPosition, anchor: .bottom)
             .scrollIndicators(.hidden)
             .background(Color(uiColor: .systemBackground))
             .scrollDismissesKeyboard(.interactively)
+            // One tap recognizer on the scroll container dismisses the
+            // composer without installing a recognizer on every message row.
+            .onTapGesture { focused = false }
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
                 max(0, geometry.contentSize.height
                     - geometry.containerSize.height
@@ -117,7 +124,7 @@ struct ConversationView: View {
                 }
                 try? await Task.sleep(for: .milliseconds(300))
                 if !store.messages.isEmpty {
-                    proxy.scrollTo(tailID, anchor: .bottom)
+                    scrollPosition.scrollTo(id: tailID, anchor: .bottom)
                     didInitialScroll = true
                 }
                 allowsHistoryPaging = true
@@ -129,7 +136,7 @@ struct ConversationView: View {
                 if !didInitialScroll {
                     Task { @MainActor in
                         await Task.yield()
-                        proxy.scrollTo(tailID, anchor: .bottom)
+                        scrollPosition.scrollTo(id: tailID, anchor: .bottom)
                         didInitialScroll = true
                         allowsHistoryPaging = true
                     }
@@ -137,7 +144,7 @@ struct ConversationView: View {
                     // Follow incoming messages while the user is at the tail.
                     // A manual upward scroll changes isNearLatest to false.
                     withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                        proxy.scrollTo(tailID, anchor: .bottom)
+                        scrollPosition.scrollTo(id: tailID, anchor: .bottom)
                     }
                 }
             }
@@ -147,34 +154,9 @@ struct ConversationView: View {
                 guard !store.messages.isEmpty else { return }
                 isNearLatest = true
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                    proxy.scrollTo(tailID, anchor: .bottom)
+                    scrollPosition.scrollTo(id: tailID, anchor: .bottom)
                 }
             }
-            // Opening the keyboard changes the scroll container's visible
-            // height after focus changes. If the user was already at the tail,
-            // re-anchor after that layout transition so the newest message is
-            // carried above the keyboard and composer together.
-            .onChange(of: focused) { _, isFocused in
-                guard isFocused, didInitialScroll, isNearLatest,
-                      !store.messages.isEmpty else { return }
-                Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(250))
-                    guard focused, isNearLatest else { return }
-                    proxy.scrollTo(tailID, anchor: .bottom)
-                }
-            }
-            // Composer content changes the bottom safe-area inset. Re-anchor
-            // at the tail so mentions, replies, and attachment trays cannot
-            // cover the newest row.
-            .onChange(of: composerHeight) { _, _ in
-                guard didInitialScroll, isNearLatest,
-                      !store.messages.isEmpty else { return }
-                Task { @MainActor in
-                    await Task.yield()
-                    proxy.scrollTo(tailID, anchor: .bottom)
-                }
-            }
-        }
     }
 
     private enum TranscriptCell: Identifiable {
@@ -219,8 +201,7 @@ struct ConversationView: View {
                 },
                 onOpenAttachment: { attachment in
                     Task { previewURL = await store.downloadAttachment(attachment) }
-                },
-                onTap: { focused = false }
+                }
             )
             .id(id)
             // Keep the context-menu modifier outside the per-cell 180°
@@ -359,15 +340,6 @@ struct ConversationView: View {
         .padding(.top, 7)
         .padding(.bottom, 6)
         .background(.bar.opacity(0.82))
-        .background {
-            GeometryReader { proxy in
-                Color.clear.preference(key: ComposerHeightKey.self,
-                                       value: proxy.size.height)
-            }
-        }
-        .onPreferenceChange(ComposerHeightKey.self) { height in
-            if abs(composerHeight - height) > 0.5 { composerHeight = height }
-        }
     }
 
     private var composerField: some View {
@@ -620,14 +592,6 @@ private struct RoomMentionStrip: View {
         }
         .scrollIndicators(.hidden)
         .frame(height: 34)   // a horizontal ScrollView otherwise grabs vertical space
-    }
-}
-
-private struct ComposerHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 

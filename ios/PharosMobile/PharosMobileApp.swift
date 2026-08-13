@@ -78,55 +78,119 @@ private struct AppContainer: View {
 }
 
 private struct PharosLaunchGlow: View {
-    @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var glowPulse = false
 
     var body: some View {
         ZStack {
-            Color(red: 0.025, green: 0.035, blue: 0.13)
+            LinearGradient(
+                colors: [
+                    Color(red: 0.005, green: 0.035, blue: 0.025),
+                    Color(red: 0.008, green: 0.09, blue: 0.045),
+                    Color(red: 0.005, green: 0.025, blue: 0.02)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
             GeometryReader { proxy in
-                let size = max(proxy.size.width, proxy.size.height)
+                let shortSide = min(proxy.size.width, proxy.size.height)
+                let blockWidth = min(proxy.size.width * 0.72, shortSide * 0.74)
+                let blockHeight = max(42, shortSide * 0.13)
+
                 ZStack {
-                    RoundedRectangle(cornerRadius: size * 0.18)
-                        .fill(.blue.opacity(0.34))
-                        .frame(width: size * 0.82, height: size * 0.58)
-                        .blur(radius: size * 0.13)
-                        .offset(x: -size * 0.20, y: -size * 0.18)
-                    RoundedRectangle(cornerRadius: size * 0.18)
-                        .fill(.purple.opacity(0.28))
-                        .frame(width: size * 0.72, height: size * 0.64)
-                        .blur(radius: size * 0.12)
-                        .offset(x: size * 0.24, y: -size * 0.20)
-                    RoundedRectangle(cornerRadius: size * 0.18)
-                        .fill(.orange.opacity(0.20))
-                        .frame(width: size * 0.75, height: size * 0.52)
-                        .blur(radius: size * 0.14)
-                        .offset(x: size * 0.10, y: size * 0.34)
-                    RoundedRectangle(cornerRadius: size * 0.20)
-                        .fill(.cyan.opacity(0.12))
-                        .frame(width: size * 0.58, height: size * 0.34)
-                        .blur(radius: size * 0.10)
-                        .offset(x: -size * 0.02, y: size * 0.04)
-                    VStack(spacing: 10) {
-                        Text("PHAROS")
-                            .font(.system(size: min(38, proxy.size.width * 0.105), weight: .semibold, design: .rounded))
-                            .tracking(7)
-                            .foregroundStyle(.white)
-                        Text("MESH ALL YOUR AGENTS")
-                            .font(.system(size: min(12, proxy.size.width * 0.032), weight: .medium, design: .rounded))
-                            .tracking(2.2)
-                            .foregroundStyle(.white.opacity(0.68))
-                    }
-                    .scaleEffect(pulse ? 1.025 : 0.985)
-                    .opacity(pulse ? 1 : 0.86)
+                    // Surrounding field: the launch composition needs a full
+                    // gradient atmosphere, not only a floating center bar.
+                    RadialGradient(
+                        colors: [
+                            Color(red: 0.14, green: 0.72, blue: 0.18).opacity(0.42),
+                            Color(red: 0.03, green: 0.18, blue: 0.09).opacity(0.16),
+                            .clear
+                        ],
+                        center: .center,
+                        startRadius: shortSide * 0.04,
+                        endRadius: shortSide * 0.62
+                    )
+                    .frame(width: proxy.size.width * 1.45, height: proxy.size.height * 0.92)
+                    .blur(radius: shortSide * 0.10)
+
+                    EllipticalGradient(
+                        colors: [
+                            Color(red: 0.02, green: 0.66, blue: 0.48).opacity(0.28),
+                            .clear
+                        ],
+                        center: .trailing,
+                        startRadiusFraction: 0.05,
+                        endRadiusFraction: 0.72
+                    )
+                    .frame(width: proxy.size.width * 0.76, height: proxy.size.height * 0.68)
+                    .offset(x: proxy.size.width * 0.34, y: proxy.size.height * 0.02)
+                    .blur(radius: shortSide * 0.08)
+
+                    EllipticalGradient(
+                        colors: [
+                            Color(red: 0.08, green: 0.62, blue: 0.16).opacity(0.24),
+                            .clear
+                        ],
+                        center: .leading,
+                        startRadiusFraction: 0.04,
+                        endRadiusFraction: 0.70
+                    )
+                    .frame(width: proxy.size.width * 0.72, height: proxy.size.height * 0.70)
+                    .offset(x: -proxy.size.width * 0.34, y: -proxy.size.height * 0.04)
+                    .blur(radius: shortSide * 0.09)
+
+                    // A broad, screen-adaptive bloom gives the launch scene
+                    // the Modular Gradient feel without reproducing the App
+                    // Icon's rounded-square silhouette.
+                    RoundedRectangle(cornerRadius: blockHeight * 0.48)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.05, green: 0.58, blue: 0.22).opacity(0.42),
+                                    Color(red: 0.62, green: 1.0, blue: 0.08).opacity(0.86),
+                                    Color(red: 0.08, green: 0.78, blue: 0.48).opacity(0.56)
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: blockWidth, height: blockHeight)
+                        .blur(radius: blockHeight * 0.72)
+                        .opacity(glowPulse ? 0.95 : 0.72)
+
+                    RoundedRectangle(cornerRadius: blockHeight * 0.42)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.08, green: 0.68, blue: 0.22),
+                                    Color(red: 0.72, green: 1.0, blue: 0.18),
+                                    Color(red: 0.12, green: 0.82, blue: 0.62)
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: blockWidth * 0.80, height: blockHeight * 0.46)
+                        .blur(radius: blockHeight * 0.20)
+                        .opacity(0.94)
+
+                    RoundedRectangle(cornerRadius: blockHeight * 0.30)
+                        .fill(.white.opacity(0.18))
+                        .frame(width: blockWidth * 0.58, height: blockHeight * 0.12)
+                        .blur(radius: blockHeight * 0.08)
+                        .opacity(glowPulse ? 0.95 : 0.72)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .ignoresSafeArea()
         .onAppear {
-            withAnimation(.easeInOut(duration: 1.05).repeatForever(autoreverses: true)) { pulse = true }
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                glowPulse = true
+            }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Pharos. Mesh all your agents.")
+        .accessibilityLabel("Pharos loading")
     }
 }
