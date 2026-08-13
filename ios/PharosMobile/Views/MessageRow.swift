@@ -197,8 +197,7 @@ struct ChatAvatar: View {
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
-            Circle()
-                .fill(avatarColor.gradient)
+            PharosAgentGradient(name: name)
                 .frame(width: size, height: size)
                 .overlay {
                     if isHuman {
@@ -230,13 +229,6 @@ struct ChatAvatar: View {
         return value.isEmpty ? "A" : value.uppercased()
     }
 
-    private var avatarColor: Color {
-        if isHuman { return .accentColor }
-        let palette: [Color] = [.indigo, .purple, .blue, .teal, .orange, .pink]
-        let checksum = name.unicodeScalars.reduce(0) { $0 + Int($1.value) }
-        return palette[checksum % palette.count]
-    }
-
     private var presenceColor: Color {
         switch member?.state.flatMap(MeshSessionState.init(rawValue:)) {
         case .busy: .orange
@@ -255,5 +247,61 @@ struct ChatAvatar: View {
         case .gone: "Offline"
         case nil: "Unknown status"
         }
+    }
+}
+
+private struct PharosAgentGradient: View {
+    let name: String
+
+    private var variant: Int {
+        abs(name.unicodeScalars.reduce(0) { $0 + Int($1.value) }) % 12
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let size = max(proxy.size.width, proxy.size.height)
+            ZStack {
+                LinearGradient(colors: baseColors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                Circle().fill(blobColors.0).frame(width: size * 1.05).blur(radius: size * 0.22).offset(blobOffsets.0)
+                Circle().fill(blobColors.1).frame(width: size * 0.92).blur(radius: size * 0.18).offset(blobOffsets.1)
+                Circle().fill(blobColors.2).frame(width: size * 0.78).blur(radius: size * 0.16).offset(blobOffsets.2)
+                RoundedRectangle(cornerRadius: size * 0.25)
+                    .stroke(.white.opacity(0.48), lineWidth: max(0.8, size * 0.035))
+                LinearGradient(colors: [.white.opacity(0.28), .clear, .clear], startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: size * 0.25))
+        }
+    }
+
+    private var baseColors: [Color] {
+        [[.black, .cyan], [.indigo, .black], [.green, .black], [.blue, .purple],
+         [.pink, .indigo], [.purple, .black], [.orange, .pink], [.green, .black],
+         [.pink, .blue], [.indigo, .black], [.blue, .indigo], [.pink, .black]][variant]
+    }
+
+    private var blobColors: (Color, Color, Color) {
+        let colors: [(Color, Color, Color)] = [
+            (.cyan, .blue, .purple), (.yellow, .purple, .blue), (.green, .mint, .blue),
+            (.cyan, .pink, .blue), (.pink, .purple, .blue), (.purple, .pink, .blue),
+            (.orange, .pink, .purple), (.green, .mint, .yellow), (.pink, .blue, .white),
+            (.purple, .pink, .blue), (.blue, .cyan, .purple), (.pink, .purple, .orange)
+        ]
+        return colors[variant]
+    }
+
+    private var blobOffsets: (CGSize, CGSize, CGSize) {
+        let offsets: [(CGSize, CGSize, CGSize)] = [
+            (offset(-12, -10), offset(14, 8), offset(-8, 14)), (offset(-10, -8), offset(14, 10), offset(10, -2)),
+            (offset(-10, 0), offset(14, -8), offset(0, 13)), (offset(-12, -8), offset(12, 8), offset(4, -14)),
+            (offset(-10, -12), offset(10, 12), offset(0, 0)), (offset(0, -10), offset(10, 12), offset(-12, 0)),
+            (offset(-8, -10), offset(12, 8), offset(0, 14)), (offset(-12, 4), offset(12, -8), offset(0, 12)),
+            (offset(-10, -8), offset(12, 10), offset(-8, 0)), (offset(-12, 0), offset(12, 0), offset(0, 12)),
+            (offset(-10, -10), offset(10, 10), offset(0, -12)), (offset(-8, -12), offset(12, 8), offset(-10, 10))
+        ]
+        return offsets[variant]
+    }
+
+    private func offset(_ x: CGFloat, _ y: CGFloat) -> CGSize {
+        CGSize(width: x, height: y)
     }
 }

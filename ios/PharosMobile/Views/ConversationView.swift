@@ -29,6 +29,8 @@ struct ConversationView: View {
     @State private var composerHeight: CGFloat = 0
     @FocusState private var focused: Bool
 
+    private let tailID = "conversation-tail"
+
     var body: some View {
         VStack(spacing: 0) {
             transcript
@@ -86,10 +88,14 @@ struct ConversationView: View {
                         transcriptCellView(cell)
                     }
                     if !store.hasMoreHistory { channelWelcome }
+                    Color.clear
+                        .frame(height: 1)
+                        .id(tailID)
                 }
                 .scrollTargetLayout()
                 .padding(.vertical, 8)
             }
+            .defaultScrollAnchor(.bottom)
             .scrollIndicators(.hidden)
             .background(Color(uiColor: .systemBackground))
             .scrollDismissesKeyboard(.interactively)
@@ -110,8 +116,8 @@ struct ConversationView: View {
                     try? await Task.sleep(for: .milliseconds(50))
                 }
                 try? await Task.sleep(for: .milliseconds(300))
-                if let last = store.messages.last?.id {
-                    proxy.scrollTo(last, anchor: .bottom)
+                if !store.messages.isEmpty {
+                    proxy.scrollTo(tailID, anchor: .bottom)
                     didInitialScroll = true
                 }
                 allowsHistoryPaging = true
@@ -119,11 +125,11 @@ struct ConversationView: View {
             // The first history response may arrive after the opening task's
             // initial layout pass. Anchor once the actual tail is available.
             .onChange(of: store.messages.last?.id) { _, lastID in
-                guard let lastID else { return }
+                guard lastID != nil else { return }
                 if !didInitialScroll {
                     Task { @MainActor in
                         await Task.yield()
-                        proxy.scrollTo(lastID, anchor: .bottom)
+                        proxy.scrollTo(tailID, anchor: .bottom)
                         didInitialScroll = true
                         allowsHistoryPaging = true
                     }
@@ -131,17 +137,30 @@ struct ConversationView: View {
                     // Follow incoming messages while the user is at the tail.
                     // A manual upward scroll changes isNearLatest to false.
                     withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                        proxy.scrollTo(lastID, anchor: .bottom)
+                        proxy.scrollTo(tailID, anchor: .bottom)
                     }
                 }
             }
             // On send, return to the newest message even if the user had
             // scrolled up.
             .onChange(of: scrollBottomTick) {
-                guard let last = store.messages.last?.id else { return }
+                guard !store.messages.isEmpty else { return }
                 isNearLatest = true
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                    proxy.scrollTo(last, anchor: .bottom)
+                    proxy.scrollTo(tailID, anchor: .bottom)
+                }
+            }
+            // Opening the keyboard changes the scroll container's visible
+            // height after focus changes. If the user was already at the tail,
+            // re-anchor after that layout transition so the newest message is
+            // carried above the keyboard and composer together.
+            .onChange(of: focused) { _, isFocused in
+                guard isFocused, didInitialScroll, isNearLatest,
+                      !store.messages.isEmpty else { return }
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(250))
+                    guard focused, isNearLatest else { return }
+                    proxy.scrollTo(tailID, anchor: .bottom)
                 }
             }
             // Composer content changes the bottom safe-area inset. Re-anchor
@@ -149,10 +168,10 @@ struct ConversationView: View {
             // cover the newest row.
             .onChange(of: composerHeight) { _, _ in
                 guard didInitialScroll, isNearLatest,
-                      let last = store.messages.last?.id else { return }
+                      !store.messages.isEmpty else { return }
                 Task { @MainActor in
                     await Task.yield()
-                    proxy.scrollTo(last, anchor: .bottom)
+                    proxy.scrollTo(tailID, anchor: .bottom)
                 }
             }
         }
