@@ -268,7 +268,7 @@ enum CLI {
             for ri in rooms { print("\(ri.name)  [\(ri.members.joined(separator: ", "))]") }
             return 0
         case "join":
-            guard a.count >= 2 else { print("usage: pharos mesh join <room> <nick> [--session <id>] [--kind claude|codex]"); return 2 }
+            guard a.count >= 2 else { print("usage: pharos mesh join <room> <nick> [--session <id>] [--kind claude|codex|dsh]"); return 2 }
             // cwd is recorded as the nick's project so hooks can resolve cwd → nick;
             // --session (the id the SessionStart hook injected) makes it exact.
             let env = ProcessInfo.processInfo.environment
@@ -448,7 +448,7 @@ enum CLI {
             // Spawn an agent into a room + confirm it joined (same path the GUI
             // "add member" uses), locally or on the paired Mac over SSH.
             guard a.count >= 2 else {
-                print("usage: pharos mesh spawn <room> <nick> [claude|codex] [--host <ssh>] [--cwd <dir> | --project <name>]")
+                print("usage: pharos mesh spawn <room> <nick> [claude|codex|dsh] [--host <ssh>] [--cwd <dir> | --project <name>]")
                 return 2
             }
             var kind = AgentKind.claude
@@ -469,7 +469,7 @@ enum CLI {
                     projectName = a[i + 1]; i += 2
                 default:
                     if let parsed = AgentKind(rawValue: a[i]) { kind = parsed; i += 1 }
-                    else { print("error: expected claude, codex, --host, --cwd, or --project; got '\(a[i])'"); return 2 }
+                    else { print("error: expected claude, codex, dsh, --host, --cwd, or --project; got '\(a[i])'"); return 2 }
                 }
             }
             if cwd != nil, projectName != nil {
@@ -562,7 +562,7 @@ enum CLI {
       recv   [<nick>] [--member <id>]     drain unread for this session across ALL its rooms
       who                                 roster: every joined agent + live state/host/tmux pane
       pair [--endpoint HOST:PORT]         show an iPhone pairing link (and QR when qrencode is installed)
-      spawn  <room> <nick> [claude|codex] [--host <ssh>]  spawn local/remote + confirm join (GUI "add member")
+      spawn  <room> <nick> [claude|codex|dsh] [--host <ssh>]  spawn local/remote + confirm join (GUI "add member")
       poke   [<room>] <nick>              manually run the safe auto-poke path
       unread [<nick>] [--json]            peek the local unread signal (no daemon, never consumes)
       unread --hook-stop                  Claude Code Stop-hook mode (fail-open, reads hook JSON on stdin)

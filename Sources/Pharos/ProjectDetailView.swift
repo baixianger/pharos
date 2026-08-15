@@ -203,6 +203,9 @@ struct ProjectDetailView: View {
                 Button { launchAgentWithPreflight(.codex, project: project) } label: {
                     Label("Codex", systemImage: AgentKind.codex.symbol)
                 }
+                Button { launchAgentWithPreflight(.dsh, project: project) } label: {
+                    Label("DeepSeek", systemImage: AgentKind.dsh.symbol)
+                }
             }
             .buttonStyle(.glass)
             .disabled(!project.hasLocal)
@@ -357,6 +360,7 @@ struct ProjectDetailView: View {
                     Menu {
                         Button { launchInWorktree(.claude, wt) } label: { Label("Claude Code", systemImage: AgentKind.claude.symbol) }
                         Button { launchInWorktree(.codex, wt) } label: { Label("Codex", systemImage: AgentKind.codex.symbol) }
+                        Button { launchInWorktree(.dsh, wt) } label: { Label("DeepSeek", systemImage: AgentKind.dsh.symbol) }
                         Button { LaunchService.openTerminal(at: wt.path, terminal: store.terminal) } label: { Label("Terminal", systemImage: "terminal") }
                         Button { LaunchService.revealInFinder(wt.path) } label: { Label("Finder", systemImage: "folder") }
                         if !wt.isMain {
@@ -676,6 +680,9 @@ struct ProjectDetailView: View {
                     Button { store.startAgentOnIssue(project, number: issue.number, kind: .codex) } label: {
                         Label("Start Codex", systemImage: AgentKind.codex.symbol)
                     }
+                    Button { store.startAgentOnIssue(project, number: issue.number, kind: .dsh) } label: {
+                        Label("Start DeepSeek", systemImage: AgentKind.dsh.symbol)
+                    }
                     Divider()
                 }
                 if !issue.attachments.isEmpty {
@@ -986,7 +993,7 @@ struct ProjectDetailView: View {
         let safe = String(wt.name.lowercased().map { (c: Character) -> Character in
             (c.isLetter || c.isNumber) ? c : "-"
         })
-        let extra = kind == .claude ? store.claudeArgs : store.codexArgs
+        let extra = store.agentArgs(for: kind)
         Task {
             let resolution = await LaunchService.agentResolution(kind)
             LaunchService.launchAgent(kind, atPath: wt.path, yolo: p.yolo, tmux: p.tmux,
@@ -1080,12 +1087,12 @@ struct ProjectDetailView: View {
     private func launchAgentWithPreflight(_ kind: AgentKind, project: Project) {
         Task {
             guard let resolution = await LaunchService.agentResolution(kind) else {
-                let name = kind == .claude ? "Claude CLI" : "Codex"
-                let appHint = kind == .codex ? " or install Codex.app" : ""
+                let name = kind == .claude ? "Claude CLI" : (kind == .codex ? "Codex" : "DeepSeek CLI")
+                let appHint = kind == .codex ? " or install Codex.app" : (kind == .dsh ? " (npm i -g @deepseek-ai/dsh)" : "")
                 store.reportError("\(name) not found — install the CLI\(appHint), or make it available in your login shell PATH.")
                 return
             }
-            let extra = kind == .claude ? store.claudeArgs : store.codexArgs
+            let extra = store.agentArgs(for: kind)
             LaunchService.launchAgent(kind, project: project, terminal: store.terminal,
                                       desktop: agentDesktop, extraArgs: extra,
                                       resolution: resolution)

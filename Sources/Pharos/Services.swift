@@ -231,6 +231,14 @@ enum LaunchService {
                 "\(home)/.local/share/mise/shims/codex",
                 "\(home)/.volta/bin/codex",
             ]
+        case .dsh:
+            return [
+                "\(home)/.npm-global/bin/dsh",
+                "\(home)/.bun/bin/dsh",
+                "/opt/homebrew/bin/dsh",
+                "/usr/local/bin/dsh",
+                "\(home)/.local/bin/dsh",
+            ]
         }
     }
 
@@ -405,6 +413,11 @@ enum LaunchService {
             let tool = agentCommand(session.kind, yolo: false, resolution: resolution)
             base = "\(tool) resume \(session.id)"
                 + (project.yolo ? " --dangerously-bypass-approvals-and-sandbox" : "")
+                + (extra.isEmpty ? "" : " \(extra)")
+        case .dsh:
+            // Headless DSH has no resume; the Web GUI lists persisted sessions
+            // for in-browser resume.
+            base = agentCommand(session.kind, yolo: false, resolution: resolution)
                 + (extra.isEmpty ? "" : " \(extra)")
         }
         return base

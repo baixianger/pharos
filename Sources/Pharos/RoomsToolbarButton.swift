@@ -310,6 +310,7 @@ struct AddMemberSheet: View {
             Picker("Agent", selection: $kind) {
                 Text("Claude").tag(AgentKind.claude)
                 Text("Codex").tag(AgentKind.codex)
+                Text("DeepSeek").tag(AgentKind.dsh)
             }
             .pickerStyle(.segmented)
             .disabled(spawning)
@@ -360,7 +361,7 @@ struct AddMemberSheet: View {
                 }
             } else {
                 Text("Asks the selected Host Node to create a tmux session for "
-                     + "\(kind == .claude ? "Claude" : "Codex"), then confirms that it joins the room.")
+                     + "\(kind == .claude ? "Claude" : (kind == .codex ? "Codex" : "DeepSeek")), then confirms that it joins the room.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
