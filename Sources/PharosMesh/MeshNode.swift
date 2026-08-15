@@ -77,9 +77,17 @@ enum MeshNode {
         let response = MeshClient.events(after: state.cursor, timeoutMs: 5_000)
         guard response.ok, let next = response.cursor else {
             let detail = response.error ?? (response.ok ? "missing event cursor" : "request failed")
-            FileHandle.standardError.write(Data("pharos node: broker unavailable (\(detail)); retrying\n".utf8))
+            if isCredentialRejection(detail) {
+                // A rotated Broker control token is not a transient outage:
+                // fast retries cannot repair it, and the message must name the
+                // remedy instead of masquerading as network unavailability.
+                let hint = MeshClient.remoteEndpoint.map { " for \($0)" } ?? ""
+                FileHandle.standardError.write(Data("pharos node: broker rejected control credential\(hint); re-pair this node (pharos runtime set node --endpoint HOST:PORT) - retrying slowly\n".utf8))
+            } else {
+                FileHandle.standardError.write(Data("pharos node: broker unavailable (\(detail)); retrying\n".utf8))
+            }
             waitForRetry(seconds: state.backoff, shutdown: shutdown)
-            state.backoff = min(state.backoff * 2, 15)
+            state.backoff = min(state.backoff * 2, isCredentialRejection(detail) ? 60 : 15)
             return
         }
         state.backoff = 1
@@ -109,6 +117,13 @@ enum MeshNode {
             guard !shutdown.isRequested() else { return }
             sleep(1)
         }
+    }
+
+    /// The Broker's control token was rotated (or this node's copy is stale).
+    /// The node cannot re-pair on its own — pairing is a GUI/runtime action —
+    /// so this only gates messaging and backoff, never a silent retry storm.
+    private static func isCredentialRejection(_ detail: String) -> Bool {
+        detail.contains("control credential")
     }
 
     private static func drainNodeCommands(missingProbeCounts: inout [String: Int]) {
@@ -530,6 +545,12 @@ enum MeshNode {
     }
 
     static func owns(_ member: MeshMemberInfo) -> Bool {
+        // The persisted node identity is the authoritative owner signal. A
+        // hostname (or Tailscale IP) can change across renames/reboots, which
+        // would otherwise orphan members this node still legitimately owns.
+        if let memberNodeID = member.nodeID, !memberNodeID.isEmpty {
+            return memberNodeID == nodeID
+        }
         if let remoteIP = member.tailscaleIP, !remoteIP.isEmpty,
            let localIP = tailscaleIP, !localIP.isEmpty {
             return remoteIP == localIP
