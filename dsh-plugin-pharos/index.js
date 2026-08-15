@@ -6,7 +6,8 @@ const execFileAsync = promisify(execFile)
 // Cordis plugin contract: named exports name / inject / apply, no default export
 // (a default export silently drops inject).
 export const name = 'dsh-plugin-pharos'
-export const inject = ['tools']
+// 'tools' registers the Pharos tools; 'agents' owns agent/pre-step processing.
+export const inject = ['tools', 'agents']
 
 function pharosBin() {
   return process.env.PHAROS_BIN || 'pharos'
@@ -49,7 +50,30 @@ function pharosTool(def) {
 function s(description) { return { type: 'string', description } }
 function i(description) { return { type: 'integer', description } }
 
-export function apply(ctx) {
+// 'pharos mesh unread <nick> --json' prints {"nick":"...","count":0} when empty,
+// or the raw unread signal (with a count field) when pending. Either way it is
+// a peek — it never consumes.
+function parseUnreadCount(text) {
+  try {
+    const count = JSON.parse(text).count
+    return typeof count === 'number' ? count : 0
+  } catch { return 0 }
+}
+
+// Immutable-looking fresh user message, mirroring the shape dsh-tmux-context
+// injects. The session store snapshots + freezes it on append.
+function buildUserMessage(text) {
+  return {
+    id: crypto.randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: { kind: 'plugin', plugin: name, form: 'snapshot', sections: [{ name, text }] },
+  }
+}
+
+export function apply(ctx, config) {
+  const cfg = config || {}
+
   const tools = [
     pharosTool({
       name: 'pharos_list',
@@ -132,4 +156,21 @@ export function apply(ctx) {
   ]
 
   for (const tool of tools) ctx.tools.register(tool)
+
+  // Inbound: surface pending @mentions at the start of the next turn — the
+  // in-process equivalent of the Claude/Codex Stop hook. Peek (never consume)
+  // so an aborted turn cannot drop a mailbox, then prepend an instruction.
+  ctx.on('agent/pre-step', async function ({ step, signal }, next) {
+    const decision = await next()
+    if (decision.kind === 'reject' || (signal && signal.aborted) || step !== 1) return decision
+    const nick = cfg.nick || process.env.PHAROS_MESH_NICK
+    if (!nick) return decision
+    let text
+    try { text = await runPharos(['mesh', 'unread', nick, '--json'], signal) }
+    catch { return decision }
+    const count = parseUnreadCount(text)
+    if (count <= 0) return decision
+    const prompt = 'You have ' + count + ' unread Pharos mesh message(s). Run pharos_mesh_recv with nick ' + JSON.stringify(nick) + ' to read them, then reply in the room with pharos_mesh_send.'
+    return { kind: 'enter', messages: [buildUserMessage(prompt), ...decision.messages] }
+  }, { prepend: true })
 }
