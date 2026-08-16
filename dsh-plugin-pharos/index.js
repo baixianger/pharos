@@ -7,8 +7,9 @@ const execFileAsync = promisify(execFile)
 // Cordis plugin contract: named exports name / inject / apply, no default export
 // (a default export silently drops inject).
 export const name = 'dsh-plugin-pharos'
-// 'tools' registers the Pharos tools; 'agents' owns agent/pre-step processing.
-export const inject = ['tools', 'agents']
+// 'tools' registers native tools; 'agents' owns session delivery; 'timer'
+// provides lifecycle-bound polling through ctx.interval().
+export const inject = ['tools', 'agents', 'timer']
 
 function pharosBin() {
   return process.env.PHAROS_BIN || 'pharos'

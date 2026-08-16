@@ -61,5 +61,5 @@ messages remain transcript-only; only explicit `@mentions` wake DSH agents.
 ## Plugin contract
 
 Cordis plugin shape: named exports name / inject / apply, no default export.
-It injects tools + agents and registers raw ToolDefinitions into the host tool
-registry, then prepends one agent/pre-step listener.
+It injects tools + agents + timer, registers raw ToolDefinitions into the host
+tool registry, and prepends one agent/pre-step listener.
