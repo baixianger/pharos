@@ -310,7 +310,6 @@ struct AddMemberSheet: View {
             Picker("Agent", selection: $kind) {
                 Text("Claude").tag(AgentKind.claude)
                 Text("Codex").tag(AgentKind.codex)
-                Text("DeepSeek").tag(AgentKind.dsh)
             }
             .pickerStyle(.segmented)
             .disabled(spawning)

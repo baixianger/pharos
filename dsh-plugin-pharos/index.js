@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -59,10 +60,11 @@ function sessionBinding(agent, cfg) {
   const memberID = sessionID(agent)
   if (!memberID) throw new Error('Pharos Mesh requires the owning DSH session identity')
   const prefix = cfg.nickPrefix || cfg.nick || process.env.PHAROS_MESH_NICK || 'dsh'
-  const suffix = memberID.replace(/[^a-zA-Z0-9-]/g, '').slice(-8).toLowerCase() || 'session'
+  const safePrefix = String(prefix).replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 40) || 'dsh'
+  const suffix = createHash('sha256').update(memberID).digest('hex').slice(0, 12)
   return {
     memberID,
-    nick: `${prefix}-${suffix}`,
+    nick: `${safePrefix}-${suffix}`,
     room: cfg.room || process.env.PHAROS_MESH_ROOM || 'pharos',
   }
 }
@@ -72,36 +74,42 @@ function bindingFor(agent, cfg) {
   return binding.memberID + '|' + binding.room
 }
 
-async function ensureJoined(agent, cfg, signal, bindings) {
+async function ensureJoined(agent, cfg, signal, bindings, runner = runPharos) {
   const binding = sessionBinding(agent, cfg)
   const key = bindingFor(agent, cfg)
-  if (bindings.has(key)) return bindings.get(key)
-  const pending = reconcileBinding(binding, signal).then(() => binding).catch(error => {
+  const cached = bindings.get(key)
+  if (cached && Date.now() - cached.verifiedAt < 30000) return cached.pending
+  const entry = { verifiedAt: Date.now(), pending: undefined }
+  entry.pending = reconcileBinding(binding, signal, runner).then(() => binding).catch(error => {
     bindings.delete(key)
     throw error
   })
-  bindings.set(key, pending)
-  return pending
+  bindings.set(key, entry)
+  return entry.pending
 }
 
-async function reconcileBinding(binding, signal) {
+async function reconcileBinding(binding, signal, runner = runPharos) {
   let members = []
   try {
-    const roster = JSON.parse(await runPharos(['mesh', 'who', '--json'], signal))
+    const roster = JSON.parse(await runner(['mesh', 'who', '--json'], signal))
     members = Array.isArray(roster) ? roster : []
   } catch {
     // Older Pharos binaries have no JSON roster; join remains idempotent.
   }
   const sameSession = members.filter(member => String(member.id || '') === binding.memberID)
   for (const member of sameSession) {
-    if (member.room === binding.room && member.nick === binding.nick) continue
-    if (member.room && member.nick) {
-      await runPharos(['mesh', 'leave', String(member.room), String(member.nick)], signal)
+    const rooms = Array.isArray(member.rooms) ? member.rooms.map(String) : []
+    for (const room of rooms) {
+      if (room === binding.room && member.nick === binding.nick) continue
+      if (member.nick) {
+        await runner(['mesh', 'leave', room, String(member.nick), '--member', binding.memberID], signal)
+      }
     }
   }
-  const current = sameSession.some(member => member.room === binding.room && member.nick === binding.nick)
+  const current = sameSession.some(member =>
+    member.nick === binding.nick && Array.isArray(member.rooms) && member.rooms.includes(binding.room))
   if (!current) {
-    await runPharos([
+    await runner([
       'mesh', 'join', binding.room, binding.nick,
       '--session', binding.memberID, '--kind', 'dsh',
     ], signal)
@@ -125,16 +133,30 @@ function parseUnreadCount(text) {
 // injects. The session store snapshots + freezes it on append.
 function buildUserMessage(text) {
   return {
-    id: crypto.randomUUID(),
+    id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text }],
     source: { kind: 'plugin', plugin: name, form: 'snapshot', sections: [{ name, text }] },
   }
 }
 
+function limitOrDefault(value, fallback = 100) {
+  if (value == null) return fallback
+  const number = Number(value)
+  if (!Number.isFinite(number)) throw new Error('limit must be a finite number')
+  return Math.max(1, Math.min(100, Math.trunc(number)))
+}
+
+function unreadPrompt(count, binding) {
+  return 'You have ' + count + ' unread Pharos mesh message(s). Run pharos_mesh_recv to read them, then reply in room '
+    + JSON.stringify(binding.room) + ' with pharos_mesh_send.'
+}
+
 export function apply(ctx, config) {
   const cfg = config || {}
   const bindings = new Map()
+  const notified = new Set()
+  let pollInFlight = false
 
   const tools = [
     pharosTool({
@@ -199,9 +221,12 @@ export function apply(ctx, config) {
       argv: function (p) { return ['mesh', 'recv', p.nick] },
       async execute(p, exec) {
         const binding = await ensureJoined(exec && exec.agent, cfg, exec && exec.signal, bindings)
-        const limit = p.limit == null ? 100 : Math.max(1, Math.min(100, Math.trunc(Number(p.limit))))
+        if (p.nick && p.nick !== binding.nick) {
+          throw new Error('pharos_mesh_recv cannot cross the current session alias boundary')
+        }
+        const limit = limitOrDefault(p.limit)
         const text = await runPharos([
-          'mesh', 'recv', p.nick || binding.nick, '--member', binding.memberID, '--limit', String(limit),
+          'mesh', 'recv', binding.nick, '--member', binding.memberID, '--limit', String(limit),
         ], exec && exec.signal)
         return { member: binding.memberID, nick: binding.nick, messages: text }
       },
@@ -219,7 +244,13 @@ export function apply(ctx, config) {
         const binding = await ensureJoined(exec && exec.agent, cfg, exec && exec.signal, bindings)
         let members = []
         try { members = JSON.parse(await runPharos(['mesh', 'who', '--json'], exec && exec.signal)) } catch {}
-        return { member: Array.isArray(members) ? members.find(member => String(member.id || '') === binding.memberID) || null : null }
+        return {
+          member: Array.isArray(members) ? members.find(member =>
+            String(member.id || '') === binding.memberID
+              && member.nick === binding.nick
+              && Array.isArray(member.rooms)
+              && member.rooms.includes(binding.room)) || null : null,
+        }
       },
     }),
 
@@ -285,18 +316,66 @@ export function apply(ctx, config) {
     try { binding = await ensureJoined(agent, cfg, signal, bindings) }
     catch { return decision }
     let text
-    try { text = await runPharos(['mesh', 'unread', binding.nick, '--json'], signal) }
+    try { text = await runPharos(['mesh', 'unread', '--member', binding.memberID, '--json'], signal) }
     catch { return decision }
     const count = parseUnreadCount(text)
-    if (count <= 0) return decision
-    const prompt = 'You have ' + count + ' unread Pharos mesh message(s). Run pharos_mesh_recv to read them, then reply in room ' + JSON.stringify(binding.room) + ' with pharos_mesh_send.'
-    return { kind: 'enter', messages: [buildUserMessage(prompt), ...decision.messages] }
+    if (count <= 0) {
+      notified.delete(binding.memberID)
+      return decision
+    }
+    if (notified.has(binding.memberID)) return decision
+    notified.add(binding.memberID)
+    return { kind: 'enter', messages: [buildUserMessage(unreadPrompt(count, binding)), ...decision.messages] }
   }, { prepend: true })
+
+  const pollIntervalMs = cfg.pollIntervalMs == null ? 3000 : Number(cfg.pollIntervalMs)
+  if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 0
+      || (pollIntervalMs > 0 && pollIntervalMs < 500)) {
+    throw new TypeError('pollIntervalMs must be 0 or a safe integer of at least 500')
+  }
+  if (pollIntervalMs > 0) {
+    ctx.interval(async () => {
+      if (pollInFlight) return
+      pollInFlight = true
+      try {
+        for (const agent of ctx.agents.list()) {
+          let binding
+          try { binding = await ensureJoined(agent, cfg, undefined, bindings) } catch { continue }
+          let count
+          try {
+            count = parseUnreadCount(await runPharos([
+              'mesh', 'unread', '--member', binding.memberID, '--json',
+            ]))
+          } catch { continue }
+          if (count <= 0) {
+            notified.delete(binding.memberID)
+            continue
+          }
+          if (notified.has(binding.memberID)) continue
+          notified.add(binding.memberID)
+          try { agent.followup(buildUserMessage(unreadPrompt(count, binding))) }
+          catch { notified.delete(binding.memberID) }
+        }
+      } finally {
+        pollInFlight = false
+      }
+    }, pollIntervalMs)
+  }
 
   ctx.on('agent/disposed', ({ agent }) => {
     let binding
     try { binding = sessionBinding(agent, cfg) } catch { return }
     bindings.delete(bindingFor(agent, cfg))
-    void runPharos(['mesh', 'leave', binding.room, binding.nick]).catch(() => {})
+    notified.delete(binding.memberID)
+    void runPharos([
+      'mesh', 'leave', binding.room, binding.nick, '--member', binding.memberID,
+    ]).catch(() => {})
   })
+}
+
+export const __testing = {
+  limitOrDefault,
+  parseUnreadCount,
+  reconcileBinding,
+  sessionBinding,
 }

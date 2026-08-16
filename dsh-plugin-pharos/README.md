@@ -15,9 +15,10 @@ pharos CLI, so there is no version drift against the harness's own tool registry
     #    ~/.dsh/profiles/web/cordis.patch.yml
     - id: pharos-tools
       name: dsh-plugin-pharos
-      # optional: this agent's mesh nick, so pending @mentions auto-surface
+      # optional: prefix for per-session mesh nicks
       config:
-        nick: my-agent
+        nickPrefix: my-agent
+        # pollIntervalMs: 3000  # 0 disables idle-session wakeups
 
 (Pharos itself will automate both steps later — the equivalent of
 pharos mesh install-hooks --dsh.)
@@ -27,7 +28,7 @@ pharos mesh install-hooks --dsh.)
 | Env | Default | Meaning |
 |---|---|---|
 | PHAROS_BIN | pharos (PATH) | Absolute path to the Pharos CLI. Set it to Pharos.app/Contents/MacOS/Pharos if pharos is not on PATH. |
-| PHAROS_MESH_NICK | (unset) | Fallback mesh nick when config.nick is not set. Enables auto @mention delivery. |
+| PHAROS_MESH_NICK | (unset) | Fallback nick prefix when config.nickPrefix/config.nick is not set. |
 | PHAROS_MESH_TCP | (unset) | Not needed — the pharos CLI resolves its own broker endpoint. |
 
 ## Tools
@@ -47,14 +48,15 @@ pharos mesh install-hooks --dsh.)
 Each DSH session is bound separately using its own `agent.session.id`. The
 plugin derives a unique room nick from that ID, joins the configured room, and
 passes the same ID explicitly to `send` and `recv`; the Web process is only the
-host and never becomes the shared identity. On the first step of each turn it
-peeks the session's mailbox (pharos mesh unread, never consumes). When unread
-mail exists it prepends an instruction to read and reply. When the session is
-disposed it leaves its room alias.
+host and never becomes the shared identity. The plugin polls the broker without
+consuming messages and uses DSH's native `agent.followup()` primitive to wake an
+idle session when directed mail arrives. The first-step listener remains as a
+fallback and never injects a duplicate notification. When the session is
+disposed it leaves its room alias using an identity guard, so a stale process
+cannot remove a replacement session.
 
-This is the in-process equivalent of the Claude/Codex Stop hook. It surfaces
-pending @mentions at the next turn start; waking a fully idle agent still needs
-the host to push a prompt (the HTTP API session.prompt bridge).
+This is the in-process equivalent of the Claude/Codex Stop hook. Plain room
+messages remain transcript-only; only explicit `@mentions` wake DSH agents.
 
 ## Plugin contract
 

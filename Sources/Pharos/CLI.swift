@@ -316,8 +316,11 @@ enum CLI {
             printMessages(r.messages ?? [], empty: "(no history)")
             return 0
         case "leave":
-            guard a.count >= 2 else { print("usage: pharos mesh leave <room> <nick>"); return 2 }
-            return report(MeshClient.send(MeshRequest(cmd: "leave", room: a[0], nick: a[1])))
+            guard a.count >= 2 else { print("usage: pharos mesh leave <room> <nick> [--member <id>]"); return 2 }
+            let memberID = a.firstIndex(of: "--member")
+                .flatMap { $0 + 1 < a.count ? a[$0 + 1] : nil }
+            return report(MeshClient.send(MeshRequest(cmd: "leave", room: a[0], nick: a[1],
+                                                      memberID: memberID)))
         case "rename-member":
             guard a.count >= 3 else { print("usage: pharos mesh rename-member <room> <nick> <new-nick>"); return 2 }
             return report(MeshClient.send(MeshRequest(cmd: "rename-member", room: a[0], nick: a[1], text: a[2])))
@@ -458,7 +461,7 @@ enum CLI {
             // Spawn an agent into a room + confirm it joined (same path the GUI
             // "add member" uses), locally or on the paired Mac over SSH.
             guard a.count >= 2 else {
-                print("usage: pharos mesh spawn <room> <nick> [claude|codex|dsh] [--host <ssh>] [--cwd <dir> | --project <name>]")
+                print("usage: pharos mesh spawn <room> <nick> [claude|codex] [--host <ssh>] [--cwd <dir> | --project <name>]")
                 return 2
             }
             var kind = AgentKind.claude
@@ -478,8 +481,8 @@ enum CLI {
                     guard i + 1 < a.count else { print("error: --project needs a project name"); return 2 }
                     projectName = a[i + 1]; i += 2
                 default:
-                    if let parsed = AgentKind(rawValue: a[i]) { kind = parsed; i += 1 }
-                    else { print("error: expected claude, codex, dsh, --host, --cwd, or --project; got '\(a[i])'"); return 2 }
+                    if let parsed = AgentKind(rawValue: a[i]), parsed != .dsh { kind = parsed; i += 1 }
+                    else { print("error: expected claude, codex, --host, --cwd, or --project; got '\(a[i])'"); return 2 }
                 }
             }
             if cwd != nil, projectName != nil {
@@ -572,16 +575,16 @@ enum CLI {
       recv   [<nick>] [--member <id>] [--limit N]  drain unread for this session across ALL its rooms
       who [--json]                       roster: every joined agent + live state/host/tmux pane
       pair [--endpoint HOST:PORT]         show an iPhone pairing link (and QR when qrencode is installed)
-      spawn  <room> <nick> [claude|codex|dsh] [--host <ssh>]  spawn local/remote + confirm join (GUI "add member")
+      spawn  <room> <nick> [claude|codex] [--host <ssh>]  spawn local/remote + confirm join (GUI "add member")
       poke   [<room>] <nick>              manually run the safe auto-poke path
-      unread [<nick>] [--json]            peek the local unread signal (no daemon, never consumes)
+      unread [<nick>] [--member <id>] [--json]  peek unread without consuming (explicit member queries broker)
       unread --hook-stop                  Claude Code Stop-hook mode (fail-open, reads hook JSON on stdin)
       unread --hook-post-tool             Claude Code PostToolUse-hook mode (poke mode: mid-turn delivery)
       mark --hook                         Claude Code state-hook mode (UserPromptSubmit/Notification/SessionEnd)
       session-start [--silent]            record hook session identity for the current tmux pane
       install-hooks [--project <dir> | --user]   wire all mesh hooks into .claude/settings.json
       install-hooks --codex                      wire mesh hooks into ~/.codex/hooks.json (Codex agents)
-      leave  <room> <nick>                leave a room
+      leave  <room> <nick> [--member <id>]  leave a room, optionally guarding the session identity
       rename-member <room> <nick> <new>   rename a member without changing its session identity
       rename <room> <new-name>            rename a room
       delete <room>                       delete a room (drops its transcript)
