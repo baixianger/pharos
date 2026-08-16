@@ -45,3 +45,13 @@ test('limit rejects non-finite input and clamps valid values', () => {
   assert.equal(__testing.limitOrDefault(200), 100)
   assert.throws(() => __testing.limitOrDefault('invalid'), /finite/)
 })
+
+test('mesh send omits an absent optional mention', () => {
+  const binding = { memberID: 'session-1', room: 'pharos' }
+  assert.deepEqual(__testing.meshSendResult(binding), {
+    delivered: true,
+    from: 'session-1',
+    room: 'pharos',
+  })
+  assert.equal(__testing.meshSendResult(binding, '@worker').mention, 'worker')
+})

@@ -153,6 +153,12 @@ function unreadPrompt(count, binding) {
     + JSON.stringify(binding.room) + ' with pharos_mesh_send.'
 }
 
+function meshSendResult(binding, mention) {
+  const result = { delivered: true, from: binding.memberID, room: binding.room }
+  if (mention) result.mention = String(mention).replace(/^@/, '')
+  return result
+}
+
 export function apply(ctx, config) {
   const cfg = config || {}
   const bindings = new Map()
@@ -178,7 +184,7 @@ export function apply(ctx, config) {
       outputSchema: {
         type: 'object',
         properties: {
-          delivered: { type: 'boolean', description: 'Broker accepted the message into the mailbox.' },
+          delivered: { type: 'boolean', description: 'Broker accepted the room post; this is not a read receipt.' },
           from: s('Exact current DSH session identity.'),
           room: s('Room receiving the message.'),
           mention: s('Optional mentioned agent nick, without the @.'),
@@ -199,7 +205,7 @@ export function apply(ctx, config) {
         if (p.mention) args.push(p.mention.charAt(0) === '@' ? p.mention : '@' + p.mention)
         args.push('--room', binding.room, '--member', binding.memberID)
         await runPharos(args, exec && exec.signal)
-        return { delivered: true, from: binding.memberID, room: binding.room, mention: p.mention ? String(p.mention).replace(/^@/, '') : null }
+        return meshSendResult(binding, p.mention)
       },
     }),
 
@@ -376,6 +382,7 @@ export function apply(ctx, config) {
 
 export const __testing = {
   limitOrDefault,
+  meshSendResult,
   parseUnreadCount,
   reconcileBinding,
   sessionBinding,
