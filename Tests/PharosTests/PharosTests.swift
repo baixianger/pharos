@@ -2718,21 +2718,22 @@ final class LegacyPeerMigrationTests: XCTestCase {
 final class MeshDeliveryTests: XCTestCase {
     func testBroadcastStaysInTranscriptAndOnlyMentionEntersAgentMailbox() {
         let broker = MeshBroker()
-        XCTAssertTrue(broker.process(MeshRequest(cmd: "create", room: "r")).ok)
-        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: "r", nick: "bob",
+        let room = "delivery-\(UUID().uuidString.lowercased())"
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "create", room: room)).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: room, nick: "bob",
                                                  session: "bob-session")).ok)
 
-        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "r", nick: "human",
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: room, nick: "human",
                                                  text: "standup", to: nil)).ok)
         let afterBroadcast = broker.process(MeshRequest(cmd: "peek", memberID: "bob-session"))
         XCTAssertEqual(afterBroadcast.messages, [])
 
-        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: "r", nick: "human",
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: room, nick: "human",
                                                  text: "please review", to: ["bob"])).ok)
         let directed = broker.process(MeshRequest(cmd: "peek", memberID: "bob-session"))
         XCTAssertEqual(directed.messages?.map(\.text), ["please review"])
 
-        let history = broker.process(MeshRequest(cmd: "history", room: "r", limit: 10))
+        let history = broker.process(MeshRequest(cmd: "history", room: room, limit: 10))
         XCTAssertEqual(history.messages?.map(\.text), ["standup", "please review"])
     }
 }
