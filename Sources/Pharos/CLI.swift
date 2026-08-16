@@ -398,11 +398,13 @@ enum CLI {
             let nick = a.first.flatMap { $0.hasPrefix("--") ? nil : $0 }
             let memberID = a.firstIndex(of: "--member").flatMap { i in i + 1 < a.count ? a[i + 1] : nil }
                 ?? MeshHooks.currentSessionID()
+            let limit = a.firstIndex(of: "--limit").flatMap { i in i + 1 < a.count ? Int(a[i + 1]) : nil }
             guard nick != nil || memberID != nil else {
-                print("usage: pharos mesh recv [<nick>] [--member <session-id>]")
+                print("usage: pharos mesh recv [<nick>] [--member <session-id>] [--limit N]")
                 return 2
             }
             let r = MeshClient.send(MeshRequest(cmd: "recv", nick: nick, memberID: memberID,
+                                                limit: limit,
                                                 project: FileManager.default.currentDirectoryPath))
             guard r.ok else { return report(r) }
             printMessages(r.messages ?? [], empty: "(no unread)")
@@ -411,6 +413,14 @@ enum CLI {
             let r = MeshClient.send(MeshRequest(cmd: "who"))
             guard r.ok else { return report(r) }
             let members = r.members ?? []
+            if a.contains("--json") {
+                if let data = try? JSONEncoder().encode(members) {
+                    print(String(decoding: data, as: UTF8.self))
+                    return 0
+                }
+                print("error: could not encode mesh roster")
+                return 1
+            }
             if members.isEmpty { print("(nobody has joined yet)") }
             for m in members {
                 let live = m.nick == "human" || m.nodeOnline == true
@@ -559,8 +569,8 @@ enum CLI {
       say    <room> <nick> <text> [@n …] [--reply ID] [--attach FILE]
                                           explicit legacy form; sender still comes from session identity
       attachment put|get …                upload or download a Mesh attachment
-      recv   [<nick>] [--member <id>]     drain unread for this session across ALL its rooms
-      who                                 roster: every joined agent + live state/host/tmux pane
+      recv   [<nick>] [--member <id>] [--limit N]  drain unread for this session across ALL its rooms
+      who [--json]                       roster: every joined agent + live state/host/tmux pane
       pair [--endpoint HOST:PORT]         show an iPhone pairing link (and QR when qrencode is installed)
       spawn  <room> <nick> [claude|codex|dsh] [--host <ssh>]  spawn local/remote + confirm join (GUI "add member")
       poke   [<room>] <nick>              manually run the safe auto-poke path

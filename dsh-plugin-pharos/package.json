@@ -6,7 +6,8 @@
   "private": true,
   "main": "index.js",
   "exports": "./index.js",
-  "files": ["index.js", "README.md"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "files": ["index.js", "README.md", "cordis.patch.yml"],
   "license": "MIT",
   "engines": { "node": ">=20" }
 }

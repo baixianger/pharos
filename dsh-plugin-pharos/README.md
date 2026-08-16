@@ -44,9 +44,13 @@ pharos mesh install-hooks --dsh.)
 
 ## Automatic @mention delivery
 
-With a nick configured, the plugin subscribes to the agent/pre-step event and,
-on the first step of each turn, peeks the mesh mailbox (pharos mesh unread, never
-consumes). When unread mail exists it prepends an instruction to read and reply.
+Each DSH session is bound separately using its own `agent.session.id`. The
+plugin derives a unique room nick from that ID, joins the configured room, and
+passes the same ID explicitly to `send` and `recv`; the Web process is only the
+host and never becomes the shared identity. On the first step of each turn it
+peeks the session's mailbox (pharos mesh unread, never consumes). When unread
+mail exists it prepends an instruction to read and reply. When the session is
+disposed it leaves its room alias.
 
 This is the in-process equivalent of the Claude/Codex Stop hook. It surfaces
 pending @mentions at the next turn start; waking a fully idle agent still needs
