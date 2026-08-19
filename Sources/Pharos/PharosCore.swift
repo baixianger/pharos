@@ -224,13 +224,14 @@ enum PharosCore {
 
     static func listSessions(project name: String, agent agentRaw: String) throws -> CoreOutcome {
         guard let kind = AgentKind(rawValue: agentRaw) else {
-            throw CoreError(message: "Argument 'agent' must be \"claude\" or \"codex\".")
+            throw CoreError(message: "Argument 'agent' must be \"claude\", \"codex\", or \"dsh\".")
         }
         let (project, path) = try resolveLocalProject(name)
         let sessions = runBlocking { () async -> [AgentSession] in
             switch kind {
             case .claude: return await SessionsService.claudeSessions(for: path)
             case .codex:  return await SessionsService.codexSessions(for: path)
+            case .dsh:    return []   // session discovery lands with the DSH bridge
             }
         }
         let rows: [[String: Any]] = sessions.map { ["id": $0.id, "title": $0.title] }
@@ -779,7 +780,7 @@ enum PharosCore {
                            source: AuditLog.Source) async throws -> String {
         guard let number else { throw CoreError(message: "Missing required argument: number") }
         guard let agentRaw, let kind = AgentKind(rawValue: agentRaw) else {
-            throw CoreError(message: "Argument 'agent' must be \"claude\" or \"codex\".")
+            throw CoreError(message: "Argument 'agent' must be \"claude\", \"codex\", or \"dsh\".")
         }
         var store = loadStore()
         let idx = try projectIndexOrThrow(name, in: store)
@@ -973,7 +974,7 @@ enum PharosCore {
                             source: AuditLog.Source) async throws -> String {
         guard let name, !name.isEmpty else { throw CoreError(message: "Missing required argument: project") }
         guard let agentRaw, let kind = AgentKind(rawValue: agentRaw) else {
-            throw CoreError(message: "Argument 'agent' must be \"claude\" or \"codex\".")
+            throw CoreError(message: "Argument 'agent' must be \"claude\", \"codex\", or \"dsh\".")
         }
         guard let project = findProject(name) else { throw CoreError(message: "Project not found: \(name)") }
         // Remote launch: the execution Host resolves its own local path; tmux is
@@ -1007,7 +1008,7 @@ enum PharosCore {
     static func resumeSession(project name: String?, agent agentRaw: String?,
                               sessionID: String?) async throws -> String {
         guard let agentRaw, let kind = AgentKind(rawValue: agentRaw) else {
-            throw CoreError(message: "Argument 'agent' must be \"claude\" or \"codex\".")
+            throw CoreError(message: "Argument 'agent' must be \"claude\", \"codex\", or \"dsh\".")
         }
         guard let sessionID, !sessionID.isEmpty else {
             throw CoreError(message: "Missing required argument: session_id")

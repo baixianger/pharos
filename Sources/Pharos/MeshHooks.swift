@@ -96,11 +96,40 @@ enum MeshHooks {
     static func unread(_ args: [String]) -> Int32 {
         let hookStop = args.contains("--hook-stop")
         let json = args.contains("--json")
-        let explicitNick = args.first { !$0.hasPrefix("-") }
+        let memberIndex = args.firstIndex(of: "--member")
+        let explicitMember = memberIndex.flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
+        if memberIndex != nil, explicitMember == nil {
+            print("error: --member needs a session id")
+            return 2
+        }
+        let optionValues = Set(memberIndex.map { [$0 + 1] } ?? [])
+        let explicitNick = args.indices.first { !optionValues.contains($0) && !args[$0].hasPrefix("-") }
+            .map { args[$0] }
 
         if hookStop { return stopHook(explicitNick: explicitNick, codex: args.contains("--codex")) }
         if args.contains("--hook-post-tool") {
             return postToolHook(explicitNick: explicitNick, codex: args.contains("--codex"))
+        }
+
+        if let explicitMember, !explicitMember.isEmpty {
+            let response = MeshClient.send(MeshRequest(cmd: "peek", memberID: explicitMember))
+            guard response.ok else {
+                print("error: \(response.error ?? "mesh unread failed")")
+                return 1
+            }
+            let messages = response.messages ?? []
+            if json {
+                let payload: [String: Any] = ["member": explicitMember, "count": messages.count]
+                if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) {
+                    print(String(decoding: data, as: UTF8.self))
+                }
+            } else if messages.isEmpty {
+                print("(no unread for member \(explicitMember))")
+            } else {
+                print("\(messages.count) unread for member \(explicitMember):")
+                for message in messages { print(messageSummary(message)) }
+            }
+            return 0
         }
 
         guard let member = resolveMember(cwd: FileManager.default.currentDirectoryPath,

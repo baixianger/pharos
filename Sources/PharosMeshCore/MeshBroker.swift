@@ -1329,13 +1329,21 @@ public final class MeshBroker: @unchecked Sendable {
                 lock.unlock(); return .fail("member not found")
             }
             var out: [MeshMsg] = []
+            var pendingByRoom: [(String, [MeshMsg])] = []
             for name in rooms.keys {
                 if let box = rooms[name]!.mailboxes[memberID], !box.isEmpty {
                     out.append(contentsOf: box)
-                    rooms[name]!.mailboxes[memberID] = []
+                    pendingByRoom.append((name, box))
                 }
             }
             out.sort { $0.ts < $1.ts }
+            if let limit = req.limit, limit > 0 {
+                out = Array(out.prefix(min(limit, 100)))
+            }
+            let drainedIDs = Set(out.map(\.stableID))
+            for (name, box) in pendingByRoom {
+                rooms[name]!.mailboxes[memberID] = box.filter { !drainedIDs.contains($0.stableID) }
+            }
             syncUnreadLocked(memberID)
             lock.unlock()
             return MeshResponse(ok: true, messages: out, note: out.isEmpty ? "idle" : nil)

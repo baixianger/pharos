@@ -1,0 +1,14 @@
+{
+  "name": "dsh-plugin-pharos",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin: native Pharos tools (mesh, issues, updates) for a DSH agent.",
+  "type": "module",
+  "private": true,
+  "main": "index.js",
+  "exports": "./index.js",
+  "scripts": { "test": "node --test" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "files": ["index.js", "README.md", "cordis.patch.yml"],
+  "license": "MIT",
+  "engines": { "node": ">=20" }
+}

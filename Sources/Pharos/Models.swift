@@ -368,14 +368,27 @@ struct GitHubRepo: Identifiable, Codable, Hashable {
     var id: String { url }
 }
 
-/// The two coding agents Pharos can launch.
+/// The coding agents Pharos can launch.
 enum AgentKind: String, CaseIterable, Identifiable {
     case claude
     case codex
+    case dsh
 
     var id: String { rawValue }
-    var label: String { self == .claude ? "Claude Code" : "Codex" }
-    var symbol: String { self == .claude ? "sparkles" : "chevron.left.forwardslash.chevron.right" }
+    var label: String {
+        switch self {
+        case .claude: return "Claude Code"
+        case .codex:  return "Codex"
+        case .dsh:    return "DeepSeek"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .claude: return "sparkles"
+        case .codex:  return "chevron.left.forwardslash.chevron.right"
+        case .dsh:    return "point.3.connected.trianglepath.dotted"
+        }
+    }
 
     func command(yolo: Bool, extraArgs: String = "", executable: String? = nil,
                  environment: [String: String] = [:]) -> String {
@@ -398,6 +411,10 @@ enum AgentKind: String, CaseIterable, Identifiable {
             base = yolo ? "\(tool) --dangerously-skip-permissions" : tool
         case .codex:
             base = yolo ? "\(tool) --dangerously-bypass-approvals-and-sandbox" : tool
+        case .dsh:
+            // DSH has no terminal TUI; its interactive surface is the Web GUI.
+            // yolo/sandbox is configured inside the web app, not via a flag.
+            base = "\(tool) web"
         }
         let trimmed = extraArgs.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? base : "\(base) \(trimmed)"

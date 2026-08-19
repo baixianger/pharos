@@ -81,6 +81,10 @@ enum MeshSpawn {
         case .codex:
             return kind.command(yolo: true, executable: executable, environment: environment)
                 + " --dangerously-bypass-hook-trust"
+        // DSH has no terminal TUI to spawn in tmux; mesh spawn for it arrives
+        // with the API-driven bridge. Boot its web UI so launch stays honest.
+        case .dsh:
+            return kind.command(yolo: true, executable: executable, environment: environment)
         }
     }
 
@@ -169,7 +173,8 @@ enum MeshSpawn {
         // Spawn is expected to work from one click even if Settings was never
         // opened. The installers are idempotent; Codex's trust prompt is
         // bypassed by launchCommand below.
-        let hookStatus = MeshHooks.installHooks(kind == .codex ? ["--codex"] : ["--user"])
+        // DSH uses the plugin (not shell hooks), so there is nothing to install.
+        let hookStatus: Int32 = kind == .dsh ? 0 : MeshHooks.installHooks(kind == .codex ? ["--codex"] : ["--user"])
         guard hookStatus == 0 else {
             onProgress(Progress(phase: .failed, detail: "couldn't install \(kind.rawValue) mesh hooks"))
             return

@@ -2716,17 +2716,25 @@ final class LegacyPeerMigrationTests: XCTestCase {
 }
 
 final class MeshDeliveryTests: XCTestCase {
-    /// Only a non-empty `to` is an agent delivery. Empty `to` remains visible
-    /// in transcript history but must not be copied into agent mailboxes.
-    func testToDiscriminatesDirectedFromTranscriptOnly() {
-        let directed = MeshMsg(from: "alice", room: "r", text: "hi", ts: 1, to: ["bob"])
-        let transcriptOnly = MeshMsg(from: "alice", room: "r", text: "standup!", ts: 1, to: [])
-        // "delivered to bob" ⇔ bob ∈ to; empty `to` is not an agent delivery.
-        XCTAssertTrue(directed.to.contains("bob"))
-        XCTAssertFalse(transcriptOnly.to.contains("bob"))
-        let mailbox = [directed]
-        XCTAssertEqual(mailbox.filter { $0.to.contains("bob") }.map(\.text), ["hi"])
-        XCTAssertEqual(mailbox.count, 1)
+    func testBroadcastStaysInTranscriptAndOnlyMentionEntersAgentMailbox() {
+        let broker = MeshBroker()
+        let room = "delivery-\(UUID().uuidString.lowercased())"
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "create", room: room)).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: room, nick: "bob",
+                                                 session: "bob-session")).ok)
+
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: room, nick: "human",
+                                                 text: "standup", to: nil)).ok)
+        let afterBroadcast = broker.process(MeshRequest(cmd: "peek", memberID: "bob-session"))
+        XCTAssertEqual(afterBroadcast.messages, [])
+
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: room, nick: "human",
+                                                 text: "please review", to: ["bob"])).ok)
+        let directed = broker.process(MeshRequest(cmd: "peek", memberID: "bob-session"))
+        XCTAssertEqual(directed.messages?.map(\.text), ["please review"])
+
+        let history = broker.process(MeshRequest(cmd: "history", room: room, limit: 10))
+        XCTAssertEqual(history.messages?.map(\.text), ["standup", "please review"])
     }
 }
 
