@@ -15,6 +15,11 @@ enum ContentRouteState {
     }
 }
 
+enum WorkspaceSurface: Equatable {
+    case dashboard
+    case sessions
+}
+
 /// Routes menu-bar requests (surface nav + specific project/room deep-links)
 /// into the main window's split-view selection. Bundled as one modifier so
 /// ContentView's body stays within the type-checker's budget.
@@ -23,6 +28,7 @@ private struct MenuBarRouting: ViewModifier {
     @Binding var selectedProject: Project.ID?
     @Binding var openRoom: String?
     @Binding var dashboardFocus: DashboardFocus?
+    @Binding var surface: WorkspaceSurface
 
     func body(content: Content) -> some View {
         content
@@ -30,12 +36,19 @@ private struct MenuBarRouting: ViewModifier {
                 guard let target else { return }
                 store.menuNavRequest = nil
                 switch target {
-                case .projects, .issues, .agents:
+                case .projects, .issues:
                     openRoom = nil
                     selectedProject = nil          // → Dashboard (cross-project home)
+                    surface = .dashboard
                     dashboardFocus = target.dashboardFocus
+                case .agents:
+                    openRoom = nil
+                    selectedProject = nil
+                    surface = .sessions
+                    dashboardFocus = nil
                 case .chatRooms:
                     selectedProject = nil
+                    surface = .dashboard
                     if openRoom == nil { openRoom = "" }   // open the rooms surface
                 }
             }
@@ -43,12 +56,14 @@ private struct MenuBarRouting: ViewModifier {
                 guard let id else { return }
                 store.requestedProjectOpen = nil
                 openRoom = nil
+                surface = .dashboard
                 selectedProject = id
             }
             .onChange(of: store.requestedRoomOpen) { _, room in
                 guard let room else { return }
                 store.requestedRoomOpen = nil
                 selectedProject = nil
+                surface = .dashboard
                 openRoom = room
             }
     }
@@ -67,6 +82,7 @@ struct ContentView: View {
     /// Menu-bar nav target for the Dashboard to scroll to, applied once then
     /// cleared so a manual scroll isn't yanked back on the next redraw.
     @State private var dashboardFocus: DashboardFocus?
+    @State private var surface: WorkspaceSurface = .dashboard
     @State private var showAdd = false
     @State private var showImport = false
     @State private var showPalette = false
@@ -79,6 +95,7 @@ struct ContentView: View {
     private var tabTitle: String {
         if let r = openRoom { return PharosTabTitle.room(r) }
         if let id = selectedProject, let p = store.project(id) { return PharosTabTitle.project(p.name) }
+        if surface == .sessions { return PharosTabTitle.sessions }
         return PharosTabTitle.dashboard
     }
 
@@ -88,6 +105,7 @@ struct ContentView: View {
     private var contentTitle: String {
         if openRoom != nil { return PharosViewTitle.rooms }
         if let id = selectedProject, store.project(id) != nil { return PharosViewTitle.project }
+        if surface == .sessions { return PharosViewTitle.sessions }
         return PharosViewTitle.dashboard
     }
 
@@ -107,6 +125,8 @@ struct ContentView: View {
             ))
         } else if let id = selectedProject, store.project(id) != nil {
             ProjectDetailView(projectID: id)
+        } else if surface == .sessions {
+            AgentSessionsView(openRoom: $openRoom, selectedProject: $selectedProject)
         } else {
             DashboardView(selectedProject: $selectedProject, openRoom: $openRoom,
                           focus: $dashboardFocus)
@@ -116,14 +136,19 @@ struct ContentView: View {
     var body: some View {
         @Bindable var store = store
         NavigationSplitView {
-            ProjectsSidebar(selectedProject: $selectedProject, openRoom: $openRoom, searchText: searchText)
+            ProjectsSidebar(selectedProject: $selectedProject, openRoom: $openRoom,
+                            surface: $surface, searchText: searchText)
                 .navigationSplitViewColumnWidth(min: 248, ideal: 300, max: 400)
         } detail: {
             detailView
         }
         // Project ⇄ room are mutually exclusive within a tab.
-        .onChange(of: selectedProject) { _, id in if id != nil { openRoom = nil } }
-        .onChange(of: openRoom) { _, r in if r != nil { selectedProject = nil } }
+        .onChange(of: selectedProject) { _, id in
+            if id != nil { openRoom = nil; surface = .dashboard }
+        }
+        .onChange(of: openRoom) { _, r in
+            if r != nil { selectedProject = nil; surface = .dashboard }
+        }
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search")
         .task { await SnapshotMode.run(store: store, select: { selectedProject = $0 },
                                        openRoom: { openRoom = $0 },
@@ -207,7 +232,7 @@ struct ContentView: View {
             if requested { showPalette = true; store.paletteRequested = false }
         }
         .modifier(MenuBarRouting(selectedProject: $selectedProject, openRoom: $openRoom,
-                                 dashboardFocus: $dashboardFocus))
+                                 dashboardFocus: $dashboardFocus, surface: $surface))
         .onChange(of: store.trashRequested) { _, requested in
             if requested { showTrash = true; store.trashRequested = false }
         }

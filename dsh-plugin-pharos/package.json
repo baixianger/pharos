@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-pharos",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DeepSeek Harness plugin: native Pharos tools (mesh, issues, updates) for a DSH agent.",
   "type": "module",
   "private": true,

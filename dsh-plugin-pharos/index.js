@@ -1,8 +1,71 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
+import net from 'node:net'
+import os from 'node:os'
+import path from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
+const runtimeDriverID = `dsh-web:${process.pid}:${randomUUID()}`
+
+function runtimeSocket(config) {
+  return config.runtimeSocket || process.env.PHAROS_AGENT_RUNTIME_SOCKET
+    || path.join(os.homedir(), 'Library', 'Application Support', 'Pharos', 'Runtime', 'agent-runtime.sock')
+}
+
+function runtimeRPC(config, method, params) {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(runtimeSocket(config))
+    const id = randomUUID()
+    let pending = ''
+    const timeout = setTimeout(() => {
+      socket.destroy()
+      reject(new Error('Pharos Agent Runtime RPC timed out'))
+    }, 1000)
+    socket.setEncoding('utf8')
+    socket.on('connect', () => {
+      socket.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n')
+    })
+    socket.on('data', chunk => {
+      pending += chunk
+      const newline = pending.indexOf('\n')
+      if (newline < 0) return
+      clearTimeout(timeout)
+      socket.end()
+      try {
+        const response = JSON.parse(pending.slice(0, newline))
+        if (response.error) reject(new Error(response.error.message || 'Agent Runtime RPC failed'))
+        else resolve(response.result)
+      } catch (error) { reject(error) }
+    })
+    socket.on('error', error => { clearTimeout(timeout); reject(error) })
+  })
+}
+
+async function registerRuntime(agent, binding, config) {
+  await runtimeRPC(config, 'driver.register', {
+    driverID: runtimeDriverID,
+    kind: 'dsh',
+    version: 'dsh-plugin-pharos/0.2.0',
+    processID: process.pid,
+    capabilities: ['native-followup-v1', 'lifecycle-events-v1', 'cordis-tools-v1'],
+  })
+  const conversation = await runtimeRPC(config, 'conversation.register', {
+    driverID: runtimeDriverID,
+    vendorSessionID: binding.memberID,
+    memberID: binding.memberID,
+    kind: 'dsh',
+    ownership: 'managed',
+  })
+  await runtimeRPC(config, 'surface.attach', {
+    surfaceID: `dsh-web:${binding.memberID}`,
+    conversationID: conversation.id,
+    driverID: runtimeDriverID,
+    kind: 'web',
+    client: 'deepseek-harness',
+  })
+  return conversation
+}
 
 // Cordis plugin contract: named exports name / inject / apply, no default export
 // (a default export silently drops inject).
@@ -81,7 +144,12 @@ async function ensureJoined(agent, cfg, signal, bindings, runner = runPharos) {
   const cached = bindings.get(key)
   if (cached && Date.now() - cached.verifiedAt < 30000) return cached.pending
   const entry = { verifiedAt: Date.now(), pending: undefined }
-  entry.pending = reconcileBinding(binding, signal, runner).then(() => binding).catch(error => {
+  entry.pending = reconcileBinding(binding, signal, runner).then(async () => {
+    // Registration is additive. A missing or older Host Runtime leaves the
+    // existing Mesh polling/followup path untouched as an External fallback.
+    try { await registerRuntime(agent, binding, cfg) } catch {}
+    return binding
+  }).catch(error => {
     bindings.delete(key)
     throw error
   })

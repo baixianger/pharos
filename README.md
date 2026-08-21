@@ -213,6 +213,19 @@ The macOS executable provides two adapters over shared core behavior: CLI
 argument/output handling and SwiftUI presentation. SwiftUI code does not manage
 LaunchAgents or construct helper process commands.
 
+### Target agent runtime architecture
+
+Pharos is moving from terminal-owned agent processes to persistent conversations
+driven by a Host Runtime RPC. Codex App Server, Claude native messaging/Channels,
+and the DSH Cordis plugin remain vendor-specific drivers behind one Pharos
+conversation, runtime-lease, surface-attachment, and delivery model. Native TUIs,
+Desktop/mobile clients where supported, and Pharos itself become attachable
+presentation surfaces rather than conversation owners.
+
+tmux poke remains legacy shipped behavior during the migration; it is not part
+of the target transport. See [RFC-003: Agent Runtime RPC and Persistent
+Conversations](docs/RFC-003-AGENT-RUNTIME-RPC.md).
+
 ---
 
 ## Privacy

@@ -1,0 +1,55 @@
+@startsalt
+skinparam monochrome true
+skinparam shadowing false
+title Pharos macOS - Sessions
+{
+  {+
+    PHAROS
+    --
+    [ ] Command Center
+    [X] Sessions        4
+    [ ] Projects        8
+    [ ] Inbox           3
+    --
+    "HOSTS"
+    "mac-mini       online"
+    "macbook        online"
+    --
+    [ + New Session ]
+    [   Settings    ]
+  } | {+
+    == Sessions                                      [ + New Session ]
+    "[/ Active | Waiting | History ]       [ Search sessions... ]"
+    --
+    "WORKING"
+    "* Codex   Pharos Runtime RPC      mac-mini      03:14"
+    "  Claude  NearTo foundation       macbook       11:08"
+    --
+    "WAITING"
+    "! Claude  iOS navigation          Approval      18:42"
+    "  DSH     Broker plugin           Idle          42:07"
+    --
+    "FALLBACK"
+    "  Codex   Legacy terminal         tmux only     08:19"
+  } | {+
+    == Pharos Runtime RPC
+    "Codex - Working - mac-mini"
+    "Project: Pharos"
+    --
+    "USER"
+    "Implement the Broker to Host Runtime gateway."
+    --
+    "AGENT"
+    "Added authenticated routing and a bounded event cursor..."
+    --
+    "TOOL"
+    "swift test                         completed"
+    --
+    "AGENT"
+    "Next I am mapping Codex thread events into Pharos."
+    --
+    "[ Interrupt ]       [ Detach ]       [ ... ]"
+    "[ Message this session...                         ] [Send]"
+  }
+}
+@endsalt

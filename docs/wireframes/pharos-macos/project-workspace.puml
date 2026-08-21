@@ -1,0 +1,76 @@
+@startsalt
+skinparam monochrome true
+skinparam shadowing false
+title Pharos macOS - Project Work Items
+{
+  {+
+    PHAROS
+    --
+    [ ] Command Center
+    [ ] Sessions        4
+    [X] Projects        8
+    [ ] Inbox           3
+    --
+    "PROJECTS"
+    "Pharos"
+    "NearTo"
+    "Beiou"
+    --
+    [ + Add Project ]
+    [   Settings    ]
+  } | {+
+    == Pharos
+    "[/ Work | Overview | Activity ]"
+    "[ Search work...       ]  [Filter]  [ + New ]"
+    --
+    "READY"
+    "  #42  Normalize Codex events              High"
+    "  #38  DSH runtime registration"
+    --
+    "IN PROGRESS"
+    "* #41  Agent Runtime RPC          Codex working"
+    "  #36  Session management UI      Claude waiting"
+    --
+    "BLOCKED"
+    "! #33  Desktop daemon adapter     Vendor boundary"
+    --
+    "DONE"
+    "  #29  Broker command durability"
+  } | {+
+    == Agent Runtime RPC
+    "In Progress                       [ Open Session ]"
+    --
+    "Create a Host-owned runtime layer that lets mobile and"
+    "desktop surfaces attach without exposing vendor sockets."
+    --
+    "ACTIVITY"
+    "12:04  Codex session started"
+    "12:11  Broker gateway implemented"
+    "12:16  Build and tests passed"
+    --
+    "Add an update...                              [Post]"
+  } | {+
+    **INSPECTOR**
+    --
+    "Status"
+    "(X) In Progress"
+    --
+    "Priority"
+    "High"
+    --
+    "Session"
+    "Codex / mac-mini"
+    --
+    "Labels"
+    "runtime  rpc  ios"
+    --
+    "Milestone"
+    "Agent Platform v1"
+    --
+    "Relations"
+    "Blocked by #33"
+    --
+    [ More actions ]
+  }
+}
+@endsalt

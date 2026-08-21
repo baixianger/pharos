@@ -41,6 +41,28 @@ your projects" — the GUI version of a tmux + yolo + open-in-desktop workflow.
 
 P2 will parse these into a per-project tabbed session list with one-click resume.
 
+## Agent runtime RPC (proposed target, implementation pending)
+
+The durable product object is now an agent conversation, not a terminal process.
+Each loaded conversation has a generation-scoped runtime lease; TUI, Desktop,
+web, mobile, and Pharos views are transient surface attachments. A local Host
+Runtime exposes typed JSON-RPC over a user-private Unix socket and translates
+portable Pharos operations through vendor drivers.
+
+- Codex: a Pharos-managed App Server daemon, persistent `thread.id`, official
+  remote TUI, Pharos clients, Remote Control, and capability-gated Desktop
+  shared-daemon attachment.
+- Claude Code: idempotent hook registration, native peer messaging when its
+  external contract is proven, and Channels as the structured fallback.
+- DSH: one Cordis host with separately registered `agent.session.id` members and
+  native `agent.followup()` delivery.
+- ACP: an optional driver, not the Broker routing or mailbox protocol.
+
+The Broker decides who receives a durable message. Host RPC loads and activates
+the local runtime. The vendor driver performs the native turn or follow-up call.
+tmux is excluded from the target delivery path. Full decision, protocol shape,
+data model, capability rules, and migration plan: [RFC-003](docs/RFC-003-AGENT-RUNTIME-RPC.md).
+
 ## ⚠️ Technical risk #1 — placing windows on a specific Desktop (Space)
 
 macOS has **no public API** to move a window to a Space or create a Space. A new
@@ -66,6 +88,12 @@ and let the user move it (the current manual `desk1.sh`/`desk2.sh` behavior).
 - **P3** — ⌘K command palette · menu-bar item · per-project playbooks · notifications.
 
 ## Mesh delivery (decided 2026-07-04)
+
+> Legacy implementation note: this section documents the currently shipped
+> hook/tmux delivery path. RFC-003 supersedes it as the target architecture.
+> Migration keeps this behavior only until supported agent drivers provide
+> structured registration and activation; new integrations must not depend on
+> pane state or keystroke injection.
 
 The agent chat room guarantees @-mention delivery to a **live, joined** session:
 

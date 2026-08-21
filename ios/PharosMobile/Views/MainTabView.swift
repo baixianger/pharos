@@ -95,7 +95,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .projects: "Projects"
         case .issues: "Issues"
-        case .agents: "Agents"
+        case .agents: "Sessions"
         case .chat: "Chat"
         case .settings: "Settings"
         }
@@ -105,7 +105,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .projects: "folder"
         case .issues: "checklist"
-        case .agents: "chevron.left.forwardslash.chevron.right"
+        case .agents: "point.3.connected.trianglepath.dotted"
         case .chat: "bubble.left.and.bubble.right"
         case .settings: "gearshape"
         }

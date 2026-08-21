@@ -3,6 +3,11 @@
 A DeepSeek Harness (dsh) plugin that gives a dsh agent native tools to drive
 Pharos — the mesh, issues, and project log — plus automatic @mention delivery.
 
+When the local Pharos Host Runtime is available, every DSH session also
+registers its driver, durable conversation, capabilities, and Web surface over
+the RFC-003 Unix-socket JSON-RPC protocol. Registration is additive: older or
+unavailable runtimes retain the existing conservative Mesh polling fallback.
+
 Zero runtime dependencies: it registers raw Cordis tools that shell out to the
 pharos CLI, so there is no version drift against the harness's own tool registry.
 

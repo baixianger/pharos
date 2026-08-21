@@ -1,6 +1,7 @@
 import Foundation
 import Dispatch
 import PharosMeshCore
+import PharosRuntime
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -25,10 +26,20 @@ enum MeshNode {
             log("startup refused: \(error.localizedDescription)")
             return 1
         }
+        let agentRuntime = AgentRuntimeServer()
+        do {
+            try agentRuntime.start()
+            log("agent runtime listening at \(AgentRuntimePaths.socket.path)")
+        } catch {
+            // The Mesh Node remains useful as a conservative transport even if
+            // its local Agent Runtime socket cannot start.
+            log("agent runtime unavailable: \(error.localizedDescription)")
+        }
         let shutdown = MeshNodeShutdownLatch()
         let signalSources = installSignalHandlers(shutdown: shutdown)
         defer {
             signalSources.forEach { $0.cancel() }
+            agentRuntime.stop()
             runtimeLock.release()
             log("stopped")
         }
@@ -141,7 +152,23 @@ enum MeshNode {
                 executeSpawnCommand(command)
             case .stopSession:
                 executeStopCommand(command)
+            case .agentRPC:
+                executeAgentRPCCommand(command)
             }
+        }
+    }
+
+    private static func executeAgentRPCCommand(_ command: MeshNodeCommand) {
+        guard let payload = command.payload, !payload.isEmpty else {
+            update(command, state: .failed, result: "missing agent RPC payload")
+            return
+        }
+        update(command, state: .running, result: "forwarding to local Agent Runtime")
+        do {
+            let result = try AgentRuntimeClient.send(payload)
+            update(command, state: .succeeded, result: result)
+        } catch {
+            update(command, state: .failed, result: error.localizedDescription)
         }
     }
 

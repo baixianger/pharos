@@ -51,7 +51,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "PharosMesh",
-            dependencies: ["PharosMeshCore"],
+            dependencies: ["PharosMeshCore", "PharosRuntime"],
             path: "Sources/PharosMesh"
         ),
         .testTarget(

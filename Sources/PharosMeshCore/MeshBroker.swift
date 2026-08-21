@@ -99,7 +99,7 @@ public struct MeshEvent: Codable, Sendable, Equatable, Identifiable {
 }
 
 public enum MeshNodeCommandAction: String, Codable, Sendable, CaseIterable {
-    case spawnAgent, stopSession, poke, reconcile
+    case spawnAgent, stopSession, poke, reconcile, agentRPC
 }
 
 public enum MeshNodeCommandState: String, Codable, Sendable {
@@ -809,6 +809,7 @@ public final class MeshBroker: @unchecked Sendable {
             return MeshResponse(ok: true, capabilities: [
                 "mesh-v2", "message-id", "reply-v1", "attachment-v1", "headless-v1",
                 "registry-cas-v1", "pairing-v2", "events-v1", "node-v2",
+                "agent-runtime-gateway-v1",
                 "session-sender-v1", "history-page-v1"
             ])
 

@@ -6,6 +6,7 @@ struct ProjectsSidebar: View {
     @Environment(ProjectStore.self) private var store
     @Binding var selectedProject: Project.ID?
     @Binding var openRoom: String?
+    @Binding var surface: WorkspaceSurface
     let searchText: String
     @State private var newGroupShown = false
     @State private var newGroupName = ""
@@ -17,6 +18,7 @@ struct ProjectsSidebar: View {
             // Pinned — Dashboard, Chat Rooms + the group switcher stay put; only
             // the project list below them scrolls.
             dashboardHeader
+            sessionsHeader
             roomsHeader
             groupHeader
                 .padding(.horizontal, 16)
@@ -56,14 +58,20 @@ struct ProjectsSidebar: View {
     /// badge + title + subtitle. Draw their own highlight (not List rows).
     private var dashboardHeader: some View {
         pinnedRow("Dashboard", "Stats · activity · all projects", "rectangle.3.group",
-                  selected: selectedProject == nil && openRoom == nil,
-                  topPad: 10) { openRoom = nil; selectedProject = nil }
+                  selected: selectedProject == nil && openRoom == nil && surface == .dashboard,
+                  topPad: 10) { openRoom = nil; selectedProject = nil; surface = .dashboard }
+    }
+
+    private var sessionsHeader: some View {
+        pinnedRow("Agent Sessions", "all runtimes · every host", "point.3.connected.trianglepath.dotted",
+                  selected: selectedProject == nil && openRoom == nil && surface == .sessions,
+                  topPad: 0) { openRoom = nil; selectedProject = nil; surface = .sessions }
     }
 
     private var roomsHeader: some View {
         pinnedRow("Chat Rooms", "watch agents talk", "message.fill",
                   selected: openRoom != nil,
-                  topPad: 0) { openRoom = "" }   // enter rooms; onChange clears selectedProject
+                  topPad: 0) { surface = .dashboard; openRoom = "" }
     }
 
     private func pinnedRow(_ title: String, _ subtitle: String, _ symbol: String,
