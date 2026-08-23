@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepSeek Harness × Pharos — 集成方案</title>
+<style>
+  :root {
+    --ivory:  #FAF9F5; --paper: #FFFFFF; --slate: #141413;
+    --clay:   #D97757; --clay-d: #B85C3E; --oat: #E3DACC; --olive: #788C5D;
+    --g100: #F0EEE6; --g200: #E6E3DA; --g300: #D1CFC5; --g500: #87867F; --g700: #3D3D3A;
+    --bg: var(--ivory); --fg: var(--slate); --muted: var(--g500);
+    --border: var(--g300); --card: var(--paper); --code-bg: var(--g100);
+    --accent: var(--clay); --accent-soft: var(--oat); --ok: var(--olive);
+    --warn: var(--clay); --bad: var(--clay-d);
+    --serif: ui-serif, Georgia, "Times New Roman", Times, serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--ivory); color: var(--slate); font-family: var(--sans); font-size: 15px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: clamp(40px,6vw,80px) clamp(20px,5vw,80px) clamp(60px,8vw,140px); }
+  p, .subtitle, .tldr p, li { max-width: 68ch; }
+  .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--g500); margin: 0 0 18px; display: flex; align-items: center; gap: 12px; }
+  .eyebrow::before { content: ""; width: 24px; height: 1.5px; background: var(--clay); }
+  h1 { font-family: var(--serif); font-weight: 500; font-size: clamp(34px,4.6vw,52px); line-height: 1.06; letter-spacing: -.018em; margin: 0 0 8px; max-width: 22ch; }
+  h1 em { font-style: italic; color: var(--clay); }
+  .subtitle { font-family: var(--serif); font-style: italic; font-size: 17px; color: var(--g700); margin: 14px 0 0; max-width: 60ch; }
+  hr.rule { border: 0; border-top: 1.5px solid var(--g300); margin: 40px 0 0; }
+  hr { border: 0; border-top: 1.5px solid var(--g300); margin: 36px 0; }
+  .tldr { background: var(--paper); border: 1.5px solid var(--g300); border-radius: 12px; padding: 22px 26px; margin: 32px 0 48px; }
+  .tldr .label { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--clay); margin-bottom: 8px; }
+  .tldr p { margin: 0; font-size: 16px; color: var(--g700); line-height: 1.5; }
+  section { margin: 56px 0 0; scroll-margin-top: 28px; }
+  .sec-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 8px; }
+  .sec-head .idx { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--clay); width: 28px; flex-shrink: 0; }
+  h2 { font-family: var(--serif); font-weight: 500; font-size: 26px; margin: 0; letter-spacing: -.012em; color: var(--slate); }
+  h3 { font-family: var(--sans); font-weight: 600; font-size: 13px; margin: 22px 0 8px; color: var(--slate); text-transform: uppercase; letter-spacing: .06em; }
+  p, li { color: var(--g700); }
+  p { margin: 10px 0; }
+  .muted { color: var(--g500); }
+  code, pre { font-family: var(--mono); font-size: 13px; }
+  code { background: var(--g100); padding: 1px 6px; border-radius: 4px; color: var(--slate); }
+  pre { background: var(--g100); padding: 14px 16px; border-radius: 10px; overflow-x: auto; border: 1.5px solid var(--g200); line-height: 1.5; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1.5px solid var(--g200); vertical-align: top; font-size: 14px; }
+  th { font-family: var(--mono); font-weight: 500; color: var(--g500); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; border-bottom-color: var(--g300); }
+  a { color: var(--clay); text-decoration-color: var(--oat); text-underline-offset: 3px; }
+  a:hover { text-decoration-color: var(--clay); }
+  details { border: 1.5px solid var(--g300); border-radius: 10px; padding: 12px 16px; margin: 10px 0; background: var(--paper); }
+  details[open] { padding-bottom: 14px; }
+  summary { cursor: pointer; font-weight: 500; color: var(--slate); }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 16px; }
+  @media (max-width: 820px) { .grid-3, .grid-4 { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 560px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; } }
+  .card { background: var(--paper); border: 1.5px solid var(--g300); border-radius: 14px; padding: 20px; }
+  .card .title { font-family: var(--serif); font-weight: 500; font-size: 19px; color: var(--slate); letter-spacing: -.008em; margin: 0 0 6px; }
+  .tag { display: inline-block; font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; background: var(--g100); color: var(--g700); border: 1.5px solid var(--g200); vertical-align: middle; margin: 0 6px 6px 0; }
+  .tag-ok { background: color-mix(in srgb, var(--olive) 18%, var(--paper)); color: var(--olive); border-color: color-mix(in srgb, var(--olive) 38%, var(--paper)); }
+  .tag-warn { background: color-mix(in srgb, var(--clay) 16%, var(--paper)); color: var(--clay-d); border-color: color-mix(in srgb, var(--clay) 38%, var(--paper)); }
+  .tag-bad { background: color-mix(in srgb, var(--clay-d) 18%, var(--paper)); color: var(--clay-d); border-color: var(--clay-d); }
+  blockquote { border-left: 2px solid var(--clay); margin: 16px 0; padding: 4px 16px; color: var(--g700); font-family: var(--serif); font-style: italic; }
+  footer { margin-top: 96px; padding-top: 28px; border-top: 1.5px solid var(--g300); color: var(--g500); font-size: 12.5px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+  footer .k { font-family: var(--serif); font-style: italic; color: var(--g700); font-size: 14px; }
+  .phase { border-top: 2px solid var(--clay); padding-top: 12px; }
+  .phase .n { font-family: var(--mono); font-size: 11px; color: var(--clay); letter-spacing: .1em; text-transform: uppercase; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">Integration Plan · 2026-08-16</p>
+  <h1>DeepSeek Harness 接入 <em>Pharos</em></h1>
+  <p class="subtitle">如何把 dsh（DeepSeek Harness）作为第三种 coding agent 接进 Pharos——已核实两端接口，给出三个方案与分阶段路线。</p>
+
+  <hr class="rule">
+
+  <section class="tldr">
+    <div class="label">TL;DR</div>
+    <p>dsh 走 <strong>API 双向桥</strong>：Pharos 持有 <code>dsh web</code>，入站用 <code>session.prompt</code>/<code>session.append</code> 推消息（含 @），出站读 <code>session.events</code>/<code>history</code> 把回复镜像回房间——零 hook、零 send-keys；<code>pharos</code> skill 只留给 agent 主动动作。</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="idx">01</span><h2>dsh 接口面（已核实）</h2></div>
+    <p>对照 Pharos 现有的 <code>claude</code>/<code>codex</code> 接入点，dsh 每一环都有明确落点。</p>
+    <table>
+      <thead><tr><th>dsh 概念</th><th>事实</th><th>Pharos 对应</th></tr></thead>
+      <tbody>
+        <tr><td>CLI</td><td><code>dsh</code>（npm 包 <code>@deepseek-ai/dsh</code> 0.1.0-rc.6）</td><td><code>claude</code> / <code>codex</code></td></tr>
+        <tr><td>一次性运行</td><td><code>dsh --profile headless "&lt;task&gt;"</code>，打印最终答复后 exit 0</td><td><code>codex exec</code> / <code>claude -p</code></td></tr>
+        <tr><td>交互 UI</td><td><code>dsh web [--port N]</code>（浏览器，默认 127.0.0.1:3080）；无终端 TUI</td><td>Ghostty 终端</td></tr>
+        <tr><td>会话存储</td><td><code>~/.dsh/sessions/--&lt;路径,/→-&gt;--/&lt;id&gt;/session.jsonl.zstd</code></td><td><code>~/.codex/sessions</code></td></tr>
+        <tr><td>密钥</td><td><code>~/.dsh/.credentials.yaml</code>（<code>DEEPSEEK_API_KEY</code>，0600）</td><td>Claude/Codex 自带登录</td></tr>
+        <tr><td>模型设置</td><td><code>~/.dsh/settings.yaml</code> → <code>agent-default-model.model</code></td><td>—</td></tr>
+        <tr><td>权限/沙箱</td><td>环境变量 <code>DSH_TOOLS_MODE</code>（workspace-write / danger-full-access）</td><td>yolo 开关</td></tr>
+        <tr><td>扩展</td><td><code>~/.dsh/skills/&lt;name&gt;/SKILL.md</code> + Cordis 插件</td><td>hooks</td></tr>
+        <tr><td>生命周期钩子</td><td>无 CC/Codex 式用户 shell hooks（仅内部 <code>hook/*</code> 事件）</td><td><code>~/.codex/hooks.json</code> / <code>~/.claude/settings.json</code></td></tr>
+        <tr><td>HTTP API</td><td><code>dsh web</code> 挂 <code>/api</code>：<code>session.*</code> <code>command.*</code> <code>skill.*</code> <code>settings.*</code> <code>credentials.*</code> <code>llm.*</code> <code>host.*</code></td><td>（无对应）</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="idx">02</span><h2>三个方案</h2></div>
+    <div class="grid-3">
+      <div class="card">
+        <div class="title">A. 第三种 AgentKind</div>
+        <p class="muted">加 <code>.dsh</code>，复用现有启动 / 跨主机 / CLI 管线。</p>
+        <p><span class="tag tag-ok">推荐起点</span><span class="tag tag-ok">低风险</span><span class="tag">~2 天</span></p>
+        <details><summary>Trade-offs</summary>
+          <ul>
+            <li>+ 一致 UX，复用 launch / cross-host / issue-start 全链路</li>
+            <li>+ dsh 侧零改动，凭 <code>~/.dsh</code> 自配置（密钥/模型）</li>
+            <li>− headless 无 resume；交互面是浏览器不是终端</li>
+            <li>− 会话日志是 zstd，发现/恢复要额外解码</li>
+          </ul>
+        </details>
+      </div>
+      <div class="card">
+        <div class="title">B. dsh 原生 skill</div>
+        <p class="muted">投一个 <code>pharos</code> skill，让 dsh agent 以工具调用 <code>pharos</code> CLI。</p>
+        <p><span class="tag tag-ok">低风险</span><span class="tag">~1 天</span></p>
+        <details><summary>Trade-offs</summary>
+          <ul>
+            <li>+ 绕开「无 shell hooks」，和 Claude/Codex 同走「CLI 驱动 Pharos」路径</li>
+            <li>+ 一条 SKILL.md 即可，<code>pharos mesh recv/send</code> + issue 命令</li>
+            <li>− 手动 recv（无 Stop 钩子自动投递）</li>
+            <li>− 每台机器需装一次</li>
+          </ul>
+        </details>
+      </div>
+      <div class="card">
+        <div class="title">C. HTTP API 驱动</div>
+        <p class="muted">Pharos 常驻 <code>dsh web --port N</code>，走 <code>/api</code> 会话/注入。</p>
+        <p><span class="tag tag-warn">中风险</span><span class="tag">spike</span></p>
+        <details><summary>Trade-offs</summary>
+          <ul>
+            <li>+ 干净会话列表/恢复（<code>session.list/create/prompt</code>）</li>
+            <li>+ 程序化 @mention 注入，等价于 hooks</li>
+            <li>− 需常驻 web profile + 端口/状态管理</li>
+            <li>− rc 预发布，API 会变</li>
+          </ul>
+        </details>
+      </div>
+    </div>
+    <p>顺序推进：<strong>A → B → C</strong>。A 是地基（先把 dsh 当普通 agent 用起来），B 最快补齐 mesh，C 是达到 Claude/Codex 同等的深度。</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="idx">03</span><h2>路线图</h2></div>
+    <div class="grid-4">
+      <div class="card phase"><span class="n">P0 · 1–2 天</span>
+        <p class="muted">加 <code>.dsh</code> 枚举 + <code>dsh --profile headless</code> 启动 + 校验放宽 + UI 按钮 + <code>dshArgs</code> 偏好 + yolo→<code>DSH_TOOLS_MODE</code>。</p>
+      </div>
+      <div class="card phase"><span class="n">P1 · 1–2 天</span>
+        <p class="muted">会话发现：读 <code>~/.dsh/sessions/…</code> 头帧 + <code>sessions &lt;项目&gt; dsh</code> + resume。</p>
+      </div>
+      <div class="card phase"><span class="n">P2 · 1 天</span>
+        <p class="muted">投 <code>pharos</code> skill；<code>mesh install-hooks --dsh</code> 改为装 skill 而非 hooks。</p>
+      </div>
+      <div class="card phase"><span class="n">P3 · spike</span>
+        <p class="muted">管理 <code>dsh web</code> + HTTP API 会话列表 / 恢复 / @mention 注入。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="idx">04</span><h2>精确到文件</h2></div>
+    <table>
+      <thead><tr><th>文件</th><th>改动</th></tr></thead>
+      <tbody>
+        <tr><td><code>Sources/Pharos/Models.swift</code></td><td><code>AgentKind</code> 加 <code>case dsh</code>；<code>label</code>/<code>symbol</code>/<code>command</code></td></tr>
+        <tr><td><code>Sources/Pharos/Services.swift</code></td><td><code>agentExecutableCandidates</code> 加 dsh 路径；<code>resumeAgentCommand</code></td></tr>
+        <tr><td><code>Sources/Pharos/PharosCore.swift</code></td><td>放宽 4 处「agent 必须 claude|codex」校验（227 / 782 / 976 / 1010 行）</td></tr>
+        <tr><td><code>Sources/Pharos/ProjectStore.swift</code></td><td>加 <code>dshArgs</code> 偏好（对齐 <code>codexArgs</code>）</td></tr>
+        <tr><td><code>Sources/Pharos/SessionsService.swift</code></td><td>P1：读 <code>~/.dsh/sessions/…</code> 头帧，补 <code>dshSessions</code></td></tr>
+        <tr><td><code>ProjectDetailView</code> / <code>CommandPalette</code> / <code>RoomsToolbarButton</code> / <code>MeshRoomView</code></td><td>第三个启动按钮 + 头像池</td></tr>
+        <tr><td><code>Sources/Pharos/MeshHooks.swift</code></td><td>P2：<code>--dsh</code> 安装 skill（而非写 hooks 文件）</td></tr>
+      </tbody>
+    </table>
+
+    <pre>// Models.swift — 最小接入
+enum AgentKind: String, CaseIterable, Identifiable {
+    case claude, codex, dsh
+    var label: String { self == .claude ? "Claude Code" : self == .codex ? "Codex" : "DeepSeek" }
+    var symbol: String { self == .dsh ? "wave.3.right.circle" : /* … */ }
+    func command(yolo: Bool, extraArgs: String = "", executable: String? = nil,
+                 environment: [String: String] = [:]) -> String {
+        // …
+        case .dsh: base = tool + " web"                    // 交互面是 Web GUI
+    }
+}</pre>
+
+    <pre>// Services.swift — 可执行路径 + headless 一次性（issue-start / playbook）
+case .dsh:
+    return ["\(home)/.npm-global/bin/dsh", "/opt/homebrew/bin/dsh",
+            "/usr/local/bin/dsh", "\(home)/.local/bin/dsh"]
+// 一次性运行：yolo 不拼 flag，改为 environment["DSH_TOOLS_MODE"] = "danger-full-access"
+case .dsh: base = tool + " --profile headless \(shellQuote(task))"</pre>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="idx">05</span><h2>风险</h2></div>
+    <table>
+      <thead><tr><th>风险</th><th>可能性</th><th>影响</th><th>缓解</th></tr></thead>
+      <tbody>
+        <tr><td>dsh 是 rc 预发布，API/格式漂移</td><td>高</td><td>中</td><td>锁版本；隔离在薄适配层（<code>DshClient</code> / <code>DshSession</code>）</td></tr>
+        <tr><td>无终端 TUI（交互=浏览器）</td><td>确定</td><td>中</td><td>headless 作一次性；交互与唤醒改走 HTTP API（§07）</td></tr>
+        <tr><td>zstd 日志不可直接行读</td><td>确定</td><td>低</td><td>头帧经 node/dsh 读；P3 改走 API</td></tr>
+        <tr><td>无 shell hooks → @mention 无自动投递</td><td>确定</td><td>中</td><td>HTTP API 注入 + skill（§07）</td></tr>
+        <tr><td><code>tmux send-keys</code> 键入复活不可用</td><td>确定</td><td>高</td><td>改走 <code>session.prompt</code>；或 DSH 侧补 TUI profile</td></tr>
+        <tr><td>cwd 归一化有损</td><td>低</td><td>低</td><td>以 <code>session.query</code>/API 为准（P3）</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="idx">06</span><h2>待确认</h2></div>
+    <ul>
+      <li>「launch」语义：交互用 <code>dsh web</code>（浏览器）还是 headless 一次性？还是两者都做（交互=web，issue-start=headless）？</li>
+      <li><code>dsh</code> 安装位置：npm global <code>dsh</code> 还是 <code>npx @deepseek-ai/dsh</code>？（决定可执行路径候选与解析顺序）</li>
+      <li>yolo 对应的 <code>DSH_TOOLS_MODE</code> 精确取值，确认与 Pharos 现有 yolo 开关对齐。</li>
+      <li>定位：dsh 只是第三个 agent，还是想作为 mesh Node 的执行后端（替换/并存 Codex）？</li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="idx">07</span><h2>唤醒 / 复活机制</h2></div>
+    <p>Pharos 唤醒 idle agent 靠三件事：hooks 投递、tmux <code>send-keys</code> 键入、sweep 轮询再 poke。dsh 现状对照如下。</p>
+    <table>
+      <thead><tr><th>Pharos 机制</th><th>前提</th><th>dsh 现状</th></tr></thead>
+      <tbody>
+        <tr><td>Stop / PostToolUse hook 投递</td><td>agent 原生 shell hooks</td><td>无 shell 层 hooks；但有进程内 Cordis 事件，插件可 <code>ctx.on</code> 订阅（§08）</td></tr>
+        <tr><td><code>tmux send-keys</code> 键入复活</td><td>终端交互 TUI 会读键盘</td><td>无 TUI：<code>web</code>（浏览器）+ <code>headless</code>（一次性，argv 读任务、不读 stdin）</td></tr>
+        <tr><td>sweep 轮询 roster 再 poke</td><td>上两者可用</td><td>换成 HTTP API <code>session.prompt</code> 注入</td></tr>
+      </tbody>
+    </table>
+    <p>出站（回消息）三种方式，自动程度递增：</p>
+    <table>
+      <thead><tr><th>出站</th><th>机制</th><th>适用</th></tr></thead>
+      <tbody>
+        <tr><td>③ 读 transcript 镜像（推荐）</td><td>Pharos 经 API 读 <code>session.events</code>/<code>session.history</code>（或订阅其 named-stream），把 assistant 消息自动投回房间</td><td>基础「人→agent→回房间」，agent 无需知道 Pharos</td></tr>
+        <tr><td>② 不装 skill、靠推断</td><td>agent 用 bash 跑 <code>pharos help</code> 自己摸索 CLI</td><td>偶发；不可靠（flag 易错）</td></tr>
+        <tr><td>① <code>pharos</code> skill</td><td>agent 显式调 <code>pharos mesh send</code> / <code>update add</code></td><td>agent 主动动作：@别人、写日志、开 issue</td></tr>
+      </tbody>
+    </table>
+    <p>结论：<strong>send-keys 键入这条对 dsh 不成立，而且也不需要</strong>——入站 <code>session.prompt</code>（发+触发回合）/ <code>session.append</code>（追加消息，语义需 spike 确认），出站读 transcript 镜像，零 hook、零 TUI。skill 只留给 agent 主动的 Pharos 语义动作；要保留 send-keys 才需给 dsh 写终端 TUI profile（DSH 侧工作）。</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><span class="idx">08</span><h2>官方插件规范（Cordis）</h2></div>
+    <p>dsh 有正式插件规范：底层是 DeepSeek 的 <code>cordis</code> TS 插件框架，叠加 dsh 自己的扩展点。插件是命名导出 <code>name</code>/<code>inject</code>/<code>apply</code> 的 ESM 模块。</p>
+    <table>
+      <thead><tr><th>扩展点</th><th>API</th><th>给 Pharos 的用途</th></tr></thead>
+      <tbody>
+        <tr><td>工具</td><td><code>ctx.tools.register(defineTool({ name, description, parameters, output, execute }))</code></td><td>一组 <code>pharos_*</code> 原生工具</td></tr>
+        <tr><td>事件 / hook</td><td><code>ctx.on('agent/pre-step' | 'session/event' | 'tools/result', …)</code></td><td>@mention 自动投递（进程内等价 Stop hook）</td></tr>
+        <tr><td>提示词</td><td><code>system-prompt/assemble</code> / <code>ctx.systemPrompt.tools()</code></td><td>注入用法说明</td></tr>
+        <tr><td>MCP</td><td>一插件接一 server → <code>ctx.tools.register()</code></td><td>若 Pharos 未来暴露 MCP server</td></tr>
+        <tr><td>装载</td><td>profile bundles + <code>- id / name / inject / config</code> 行 + <code>dsh plugin add &lt;pkg&gt;</code></td><td>装进 web / headless profile</td></tr>
+      </tbody>
+    </table>
+    <p>推荐 <code>@baixianger/dsh-plugin-pharos</code>：注册 <code>pharos_mesh_send</code> / <code>pharos_mesh_recv</code> / <code>pharos_issue_add</code> / <code>pharos_update_add</code> / <code>pharos_list</code>，execute 里 shell 到 <code>pharos</code> CLI（内嵌绝对路径，与 hooks 一致）。比 skill 强：确定性 schema、自动进工具目录、不靠模型推断；可再叠加一个事件监听做自动 @mention 投递（需 spike 选事件 + <code>agent.inject()</code>）。</p>
+  </section>
+
+  <footer>
+    <span class="k">html-deliverable</span>
+    <span>dsh → Pharos · 生成于 2026-08-16</span>
+  </footer>
+
+</div>
+</body>
+</html>
