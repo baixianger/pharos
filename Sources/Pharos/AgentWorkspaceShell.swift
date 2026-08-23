@@ -8,7 +8,7 @@ struct AgentWorkspaceShell<Sidebar: View, Workspace: View>: View {
     private let workspace: Workspace
 
     /// Top inset so the sidebar clears the hidden title bar.
-    private static let titleBarInset: CGFloat = 42
+    private static var titleBarInset: CGFloat { 42 }
 
     init(
         isSidebarVisible: Binding<Bool>,
