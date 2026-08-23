@@ -111,7 +111,7 @@ struct AgentSidebarView: View {
         .font(.system(size: 12))
         .padding(.horizontal, 11)
         .frame(height: 36)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .padding(.horizontal, 12)
         .padding(.bottom, 6)
     }
@@ -126,6 +126,11 @@ struct AgentSidebarView: View {
                 ForEach(store.projects) { project in
                     Button(project.name) { selectedProject = project.id; openRoom = nil; surface = .dashboard }
                 }
+            }
+
+            navigationRow("Sessions", count: liveMembers.count, symbol: "rectangle.stack",
+                          selected: surface == .sessions && selectedProject == nil && openRoom == nil) {
+                openRoom = nil; selectedProject = nil; surface = .sessions
             }
 
             navigationRow("Rooms", count: rooms.count, symbol: "bubble.left.and.bubble.right",
@@ -161,7 +166,7 @@ struct AgentSidebarView: View {
             }
             .padding(.horizontal, 9)
             .frame(height: 34)
-            .background(selected ? Color.primary.opacity(0.075) : .clear,
+            .background(selected ? PharosTheme.selection : .clear,
                         in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .contentShape(Rectangle())
         }
@@ -250,10 +255,10 @@ struct AgentSidebarView: View {
 
     private func statusMark(_ member: MeshMemberInfo) -> some View {
         let color: Color = switch member.state {
-        case "blocked": .orange
-        case "busy": .blue
+        case "blocked": PharosTheme.warning
+        case "busy": PharosTheme.accent
         case "gone": .secondary
-        default: .green
+        default: PharosTheme.success
         }
         return Circle().fill(color).frame(width: 7, height: 7)
             .help(member.state ?? "online")
@@ -269,14 +274,14 @@ struct AgentSidebarView: View {
 
     private var hostFooter: some View {
         HStack(spacing: 7) {
-            Circle().fill(.green).frame(width: 6, height: 6)
+            Circle().fill(PharosTheme.success).frame(width: 6, height: 6)
             Text(hostNames.isEmpty ? "Local runtime" : hostNames.joined(separator: " + "))
                 .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
             Spacer()
         }
         .padding(.horizontal, 18)
         .frame(height: 34)
-        .background(.thinMaterial)
+        .glassEffect(.regular, in: Rectangle())
     }
 
     private var filteredMembers: [MeshMemberInfo] {

@@ -57,6 +57,7 @@ struct PharosApp: App {
                 }
             }
                 .environment(store)
+                .tint(PharosTheme.accent)
                 .preferredColorScheme(store.appearance.colorScheme)
                 .task {
                     guard !store.didBootstrapMesh else { return }

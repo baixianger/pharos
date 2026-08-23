@@ -83,13 +83,12 @@ struct ContentView: View {
     /// Menu-bar nav target for the Dashboard to scroll to, applied once then
     /// cleared so a manual scroll isn't yanked back on the next redraw.
     @State private var dashboardFocus: DashboardFocus?
-    @State private var surface: WorkspaceSurface = .dashboard
+    @State private var surface: WorkspaceSurface = .sessions
     @State private var showAdd = false
     @State private var showImport = false
     @State private var showPalette = false
     @State private var showTrash = false
     @State private var showOnboarding = false
-    @State private var searchText = ""
 
     /// Native window-tab label. The visible content title is owned independently
     /// by each detail view (`Pharos`, `Chat Rooms`, or `Project`).

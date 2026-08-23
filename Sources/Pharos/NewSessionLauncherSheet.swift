@@ -8,8 +8,9 @@ struct NewSessionLauncherSheet: View {
     @Binding var selectedProject: Project.ID?
     @Binding var surface: WorkspaceSurface
     @State private var mode: Mode = .new
-    @State private var agent: AgentKind = .codex
+    @AppStorage("pharos.newSession.lastAgent") private var agent: AgentKind = .codex
     @State private var projectID: Project.ID?
+    @State private var launchOptionID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -29,18 +30,63 @@ struct NewSessionLauncherSheet: View {
             .pickerStyle(.segmented)
 
             if mode == .new {
-                Text("Agent").font(.headline)
+                Text("Agent platform").font(.headline)
                 HStack(spacing: 10) {
                     ForEach(AgentKind.allCases) { kind in
+                        let selected = agent == kind
                         Button { agent = kind } label: {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Image(systemName: symbol(kind)).font(.title3)
-                                Text(kind.label).font(.system(size: 12, weight: .semibold))
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Image(systemName: symbol(kind))
+                                        .font(.system(size: 20, weight: .medium))
+                                        .foregroundStyle(selected ? PharosTheme.accent : .secondary)
+                                    Spacer()
+                                    if selected {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .font(.system(size: 16))
+                                            .foregroundStyle(PharosTheme.accent)
+                                    }
+                                }
+                                Text(kind.label).font(.system(size: 14, weight: .semibold))
+                                Text(subtitle(kind)).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
                             }
-                            .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
+                            .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
                             .padding(12)
-                            .background(agent == kind ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.045),
+                            .background(selected ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04),
                                         in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                            .overlay {
+                                if selected {
+                                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                        .stroke(PharosTheme.accent.opacity(0.6), lineWidth: 1.5)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            if mode == .new && !agent.launchOptions.isEmpty {
+                Text("Mode").font(.headline)
+                HStack(spacing: 8) {
+                    ForEach(agent.launchOptions) { option in
+                        let selected = launchOptionID == option.id
+                        Button { launchOptionID = option.id } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(option.label).font(.system(size: 12, weight: .semibold))
+                                Text(option.detail).font(.system(size: 9.5)).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(selected ? PharosTheme.selection : Color.primary.opacity(0.04),
+                                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .overlay {
+                                if selected {
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .stroke(PharosTheme.accent.opacity(0.5), lineWidth: 1)
+                                }
+                            }
                         }
                         .buttonStyle(.plain)
                     }
@@ -81,7 +127,13 @@ struct NewSessionLauncherSheet: View {
         }
         .padding(24)
         .frame(width: 540, height: 520)
-        .onAppear { projectID = selectedProject ?? store.projects.first?.id }
+        .onAppear {
+            projectID = selectedProject ?? store.projects.first?.id
+            launchOptionID = agent.launchOptions.first?.id
+        }
+        .onChange(of: agent) { _, newAgent in
+            launchOptionID = newAgent.launchOptions.first?.id
+        }
     }
 
     private func commit() {
@@ -95,15 +147,26 @@ struct NewSessionLauncherSheet: View {
         selectedProject = project.id
         surface = .sessions
         isPresented = false
+        let modeExtra = agent.launchOptions.first { $0.id == launchOptionID }?.extraArgs ?? ""
+        let combinedExtra = [store.agentArgs(for: agent), modeExtra]
+            .filter { !$0.isEmpty }.joined(separator: " ")
         Task {
             await LaunchService.launchAgent(agent, project: project, terminal: store.terminal,
-                                            extraArgs: store.agentArgs(for: agent))
+                                            extraArgs: combinedExtra)
             store.refreshRunningAgents()
         }
     }
 
     private func symbol(_ kind: AgentKind) -> String {
         switch kind { case .claude: "sparkles"; case .codex: "terminal"; case .dsh: "point.3.connected.trianglepath.dotted" }
+    }
+
+    private func subtitle(_ kind: AgentKind) -> String {
+        switch kind {
+        case .claude: "Anthropic"
+        case .codex:  "OpenAI"
+        case .dsh:    "DeepSeek"
+        }
     }
 
     private func projectColor(_ project: Project) -> Color {

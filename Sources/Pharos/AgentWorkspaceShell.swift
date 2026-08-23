@@ -7,6 +7,9 @@ struct AgentWorkspaceShell<Sidebar: View, Workspace: View>: View {
     private let sidebar: (@escaping () -> Void) -> Sidebar
     private let workspace: Workspace
 
+    /// Top inset so the sidebar clears the hidden title bar.
+    private static let titleBarInset: CGFloat = 42
+
     init(
         isSidebarVisible: Binding<Bool>,
         @ViewBuilder sidebar: @escaping (@escaping () -> Void) -> Sidebar,
@@ -22,7 +25,7 @@ struct AgentWorkspaceShell<Sidebar: View, Workspace: View>: View {
             if isSidebarVisible {
                 sidebar(closeSidebar)
                     .frame(minWidth: 236, idealWidth: 286, maxWidth: 380)
-                    .padding(.top, 42)
+                    .padding(.top, Self.titleBarInset)
                     .background(.ultraThinMaterial)
                     .transition(.move(edge: .leading).combined(with: .opacity))
             }
@@ -30,6 +33,11 @@ struct AgentWorkspaceShell<Sidebar: View, Workspace: View>: View {
             workspace
                 .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
                 .background(.background)
+                .clipShape(RoundedRectangle(cornerRadius: isSidebarVisible ? 24 : 0, style: .continuous))
+                .shadow(color: .black.opacity(isSidebarVisible ? 0.10 : 0), radius: 18, y: 8)
+                .padding(.top, isSidebarVisible ? 12 : 0)
+                .padding(.trailing, isSidebarVisible ? 12 : 0)
+                .padding(.bottom, isSidebarVisible ? 12 : 0)
                 .overlay(alignment: .topLeading) {
                     if !isSidebarVisible {
                         Button(action: openSidebar) {
@@ -45,7 +53,7 @@ struct AgentWorkspaceShell<Sidebar: View, Workspace: View>: View {
                     }
                 }
         }
-        .background(.background)
+        .background(PharosTheme.surface)
         .ignoresSafeArea(.container, edges: .top)
         .toolbarVisibility(.hidden, for: .windowToolbar)
         .overlay {

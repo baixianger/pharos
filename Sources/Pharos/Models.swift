@@ -369,6 +369,16 @@ struct GitHubRepo: Identifiable, Codable, Hashable {
 }
 
 /// The coding agents Pharos can launch.
+/// A vendor-neutral launch mode an agent platform declares. The UI renders
+/// these generically and appends the chosen option's extraArgs to the launch
+/// command. Vendors own this list; the UI never interprets a mode's meaning.
+struct AgentLaunchOption: Identifiable, Hashable {
+    let id: String
+    let label: String
+    let detail: String
+    let extraArgs: String
+}
+
 enum AgentKind: String, CaseIterable, Identifiable {
     case claude
     case codex
@@ -387,6 +397,18 @@ enum AgentKind: String, CaseIterable, Identifiable {
         case .claude: return "sparkles"
         case .codex:  return "chevron.left.forwardslash.chevron.right"
         case .dsh:    return "point.3.connected.trianglepath.dotted"
+        }
+    }
+
+    /// Launch modes this platform exposes. Empty = a single default launch.
+    /// DSH's modes are dynamic agent presets discovered from disk, not a
+    /// hardcoded list — the UI renders whatever discovery returns.
+    var launchOptions: [AgentLaunchOption] {
+        switch self {
+        case .claude, .codex:
+            return []
+        case .dsh:
+            return DSHLaunchDiscovery.presets()
         }
     }
 
