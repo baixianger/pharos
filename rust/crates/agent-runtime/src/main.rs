@@ -1010,7 +1010,12 @@ impl Registry {
             .ok_or_else(|| RuntimeError::not_found(format!("Unknown launch request: {id}")))?;
         record.state = state;
         record.detail = optional(params, "detail");
-        record.session_id = optional(params, "sessionID");
+        // Preserve a previously reserved session id: an "accepted" claim may
+        // reserve it, and a later "completed"/"failed" ack that omits it must
+        // not erase the reservation.
+        if let Some(session_id) = optional(params, "sessionID") {
+            record.session_id = Some(session_id);
+        }
         record.updated_at = now_rfc3339();
         record.touched_at = epoch_seconds();
         let output = record.clone();
@@ -1577,6 +1582,32 @@ mod tests {
         assert_eq!(loaded.snapshot.launch_requests.len(), 1);
         assert_eq!(loaded.snapshot.launch_requests[0].state, "completed");
         assert_eq!(loaded.snapshot.launch_requests[0].session_id.as_deref(), Some("session-abc"));
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn launch_claim_reserves_session_id_and_ack_preserves_it() {
+        let directory = PathBuf::from(format!("/tmp/pharos-runtime-test-{}", new_id()));
+        let mut registry = Registry::load(directory.clone()).unwrap();
+        let submitted = registry.invoke("launch.submit", &json!({
+            "kind":"dsh","presetID":"code","idempotencyKey":"launch:2"
+        })).unwrap();
+        let launch_id = submitted["id"].as_str().unwrap().to_owned();
+
+        // Claim and reserve the session id up front (the duplicate-session
+        // guard: a re-claim reuses this id instead of minting a second one).
+        registry.invoke("launch.ack", &json!({
+            "launchID": launch_id, "state":"accepted", "sessionID":"reserved-1"
+        })).unwrap();
+
+        // A later ack that omits the session id must NOT erase the reservation.
+        registry.invoke("launch.ack", &json!({
+            "launchID": launch_id, "state":"completed"
+        })).unwrap();
+
+        let loaded = Registry::load(directory.clone()).unwrap();
+        assert_eq!(loaded.snapshot.launch_requests[0].state, "completed");
+        assert_eq!(loaded.snapshot.launch_requests[0].session_id.as_deref(), Some("reserved-1"));
         fs::remove_dir_all(directory).ok();
     }
 }

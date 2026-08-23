@@ -148,6 +148,11 @@ export function apply(ctx) {
   // request creates a fresh DSH session whose creation header records the preset
   // (meta.agentPreset) and whose scoped world mounts it via recompose during
   // unpublished setup — the same path the web app's agentPreset.select uses.
+  //
+  // The session id is reserved on claim and carried by the request record, so a
+  // crash between claim and completion re-claims the SAME id instead of minting
+  // a second session. agents.create is keyed by that caller-supplied sessionId,
+  // so a re-claimed id that already exists is marked completed, not recreated.
   async function handleLaunchRequests() {
     const presets = ctx.get?.('agentPresets')
     if (!presets?.recompose || typeof ctx.agents?.create !== 'function') return
@@ -157,9 +162,16 @@ export function apply(ctx) {
       const launchID = request.id
       const presetID = request.presetID || ''
       const projectPath = request.projectPath || undefined
+      const sessionID = request.sessionID || randomUUID()
+      const live = (ctx.agents.list?.() ?? []).some(agent =>
+        String(agent?.session?.id || agent?.id || '') === sessionID)
       try {
-        await runtime.launchAck({ launchID, state: 'accepted' })
-        const sessionID = randomUUID()
+        await runtime.launchAck({ launchID, state: 'accepted', sessionID })
+        if (live) {
+          // Created before a crash; the re-claimed request needs no second session.
+          await runtime.launchAck({ launchID, state: 'completed', sessionID })
+          continue
+        }
         await ctx.agents.create({
           sessionId: sessionID,
           meta: { cwd: projectPath, ...(presetID ? { agentPreset: presetID } : {}) },
@@ -169,7 +181,15 @@ export function apply(ctx) {
         })
         await runtime.launchAck({ launchID, state: 'completed', sessionID })
       } catch (error) {
-        await runtime.launchAck({ launchID, state: 'failed', detail: error.message })
+        // A create collision means a prior attempt already made this session
+        // (crash between create and ack) — mark it completed, not failed.
+        const reclaimed = sessionID && /already (exists|registered)|duplicate/i.test(String(error?.message))
+        await runtime.launchAck({
+          launchID,
+          state: reclaimed ? 'completed' : 'failed',
+          detail: reclaimed ? 'reclaimed existing session' : error?.message,
+          sessionID,
+        })
       }
     }
   }
