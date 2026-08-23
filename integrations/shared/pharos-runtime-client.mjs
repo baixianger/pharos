@@ -84,4 +84,24 @@ export class PharosRuntimeClient {
   acknowledge(deliveryID, state, detail) {
     return this.call('delivery.ack', { deliveryID, state, detail })
   }
+
+  launchOptions({ driverID, kind, options }) {
+    return this.call('launch.options', { driverID, kind, options })
+  }
+
+  launchOptionsList(kind) {
+    return this.call('launch.options.list', kind === undefined ? {} : { kind })
+  }
+
+  launchSubmit({ kind, presetID, projectPath, title, idempotencyKey }) {
+    return this.call('launch.submit', { kind, presetID, projectPath, title, idempotencyKey })
+  }
+
+  launchPoll(kind) {
+    return this.call('launch.poll', { kind })
+  }
+
+  launchAck({ launchID, state, detail, sessionID }) {
+    return this.call('launch.ack', { launchID, state, detail, sessionID })
+  }
 }

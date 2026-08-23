@@ -151,6 +151,12 @@ struct NewSessionLauncherSheet: View {
         let combinedExtra = [store.agentArgs(for: agent), modeExtra]
             .filter { !$0.isEmpty }.joined(separator: " ")
         Task {
+            // Driver-consumed launch modes (e.g. DSH presets) are queued through
+            // the runtime RPC so the selected mode actually takes effect; the
+            // terminal launch below still opens the surface that hosts the driver.
+            if agent.launchesViaRuntime {
+                LaunchService.submitRuntimeLaunch(kind: agent, modeID: launchOptionID, project: project)
+            }
             await LaunchService.launchAgent(agent, project: project, terminal: store.terminal,
                                             extraArgs: combinedExtra)
             store.refreshRunningAgents()

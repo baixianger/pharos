@@ -52,6 +52,8 @@ public enum AgentRuntimeClient {
         "codex.thread.fork",
         "codex.turn.start",
         "codex.turn.interrupt",
+        "launch.submit",
+        "launch.options.list",
     ]
 
     public static func send(_ rawRequest: String) throws -> String {

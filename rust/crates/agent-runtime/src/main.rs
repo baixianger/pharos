@@ -482,6 +482,18 @@ fn object_params(value: Value) -> Map<String, Value> {
     value.as_object().cloned().unwrap_or_default()
 }
 
+fn parse_launch_option(value: &Value) -> Option<LaunchOptionEntry> {
+    let id = value.get("id").and_then(Value::as_str).filter(|value| !value.is_empty())?;
+    let label = value.get("label").and_then(Value::as_str)
+        .filter(|value| !value.is_empty()).unwrap_or(id);
+    Some(LaunchOptionEntry {
+        id: id.to_owned(),
+        label: label.to_owned(),
+        detail: value.get("detail").and_then(Value::as_str).unwrap_or("").to_owned(),
+        extra_args: value.get("extraArgs").and_then(Value::as_str).unwrap_or("").to_owned(),
+    })
+}
+
 fn valid_adapter(params: &Value) -> bool {
     params.get("adapterID").and_then(Value::as_str)
         .is_none_or(|value| value == "pharos.codex")
@@ -586,6 +598,54 @@ struct DeliveryRecord {
     next_attempt_at: f64,
 }
 
+/// One agent-preset / launch-mode option a driver advertises for the
+/// generic New Session surface. Fields mirror the Swift AgentLaunchOption so
+/// the frontend never interprets what a mode means.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LaunchOptionEntry {
+    id: String,
+    label: String,
+    #[serde(default)]
+    detail: String,
+    #[serde(default)]
+    extra_args: String,
+}
+
+/// A driver's complete launch-options roster (e.g. DSH agent presets).
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LaunchOptionsRecord {
+    #[serde(rename = "driverID")]
+    driver_id: String,
+    kind: String,
+    options: Vec<LaunchOptionEntry>,
+}
+
+/// One launch request queued for a driver kind (e.g. "create a DSH session
+/// with preset X"). Consumers claim via ack(accepted) then finish with
+/// completed/failed. touched_at backs the re-claim window for a consumer that
+/// crashed after claiming but before finishing.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LaunchRequestRecord {
+    id: String,
+    kind: String,
+    #[serde(rename = "presetID")]
+    preset_id: Option<String>,
+    project_path: Option<String>,
+    title: Option<String>,
+    idempotency_key: String,
+    state: String,
+    detail: Option<String>,
+    #[serde(rename = "sessionID")]
+    session_id: Option<String>,
+    created_at: String,
+    updated_at: String,
+    #[serde(default)]
+    touched_at: f64,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Snapshot {
@@ -594,6 +654,10 @@ struct Snapshot {
     conversations: Vec<ConversationRecord>,
     surfaces: Vec<SurfaceRecord>,
     deliveries: Vec<DeliveryRecord>,
+    #[serde(default)]
+    launch_options: Vec<LaunchOptionsRecord>,
+    #[serde(default)]
+    launch_requests: Vec<LaunchRequestRecord>,
 }
 
 impl Default for Snapshot {
@@ -602,6 +666,7 @@ impl Default for Snapshot {
             protocol_version: PROTOCOL_VERSION,
             drivers: Vec::new(), conversations: Vec::new(),
             surfaces: Vec::new(), deliveries: Vec::new(),
+            launch_options: Vec::new(), launch_requests: Vec::new(),
         }
     }
 }
@@ -642,7 +707,8 @@ impl Registry {
                 "capabilities": [
                     "driver-registration-v1", "conversation-registry-v1",
                     "surface-attachment-v1", "delivery-queue-v1", "member-routed-delivery-v1",
-                    "agent-adapter-v1", "session-actions-v1", "session-state-v1"
+                    "agent-adapter-v1", "session-actions-v1", "session-state-v1",
+                    "launch-options-v1", "launch-requests-v1"
                 ]
             })),
             "runtime.snapshot" => serde_json::to_value(&self.snapshot)
@@ -661,6 +727,11 @@ impl Registry {
             "delivery.submit-member" => self.delivery_submit_member(params),
             "delivery.poll" => self.delivery_poll(params),
             "delivery.ack" => self.delivery_ack(params),
+            "launch.options" => self.launch_options_upsert(params),
+            "launch.options.list" => self.launch_options_list(params),
+            "launch.submit" => self.launch_submit(params),
+            "launch.poll" => self.launch_poll(params),
+            "launch.ack" => self.launch_ack(params),
             _ => Err(RuntimeError::method(method)),
         }
     }
@@ -860,6 +931,91 @@ impl Registry {
         let output = record.clone();
         self.persist()?;
         self.publish("delivery.acked", json!({"deliveryID": id, "state": output.state}));
+        value(output)
+    }
+
+    fn launch_options_upsert(&mut self, params: &Value) -> RuntimeResult {
+        let driver_id = required(params, "driverID")?;
+        if !self.snapshot.drivers.iter().any(|value| value.id == driver_id) {
+            return Err(RuntimeError::not_found(format!(
+                "Register driver before its launch options: {driver_id}"
+            )));
+        }
+        let kind = required(params, "kind")?;
+        let options = params.get("options").and_then(Value::as_array)
+            .map(|values| values.iter().filter_map(parse_launch_option).collect())
+            .unwrap_or_default();
+        let record = LaunchOptionsRecord { driver_id: driver_id.clone(), kind, options };
+        let output = record.clone();
+        if let Some(index) = self.snapshot.launch_options.iter()
+            .position(|value| value.driver_id == driver_id) {
+            self.snapshot.launch_options[index] = record;
+        } else {
+            self.snapshot.launch_options.push(record);
+        }
+        self.persist()?;
+        self.publish("launch.options.updated", json!({"driverID": driver_id}));
+        value(output)
+    }
+
+    fn launch_options_list(&self, params: &Value) -> RuntimeResult {
+        let kind = optional(params, "kind");
+        let records = self.snapshot.launch_options.iter()
+            .filter(|value| kind.as_deref().is_none_or(|k| value.kind == k))
+            .cloned().collect::<Vec<_>>();
+        value(records)
+    }
+
+    fn launch_submit(&mut self, params: &Value) -> RuntimeResult {
+        let kind = required(params, "kind")?;
+        let key = required(params, "idempotencyKey")?;
+        if let Some(existing) = self.snapshot.launch_requests.iter()
+            .find(|value| value.idempotency_key == key) {
+            return value(existing);
+        }
+        let timestamp = now_rfc3339();
+        let record = LaunchRequestRecord {
+            id: new_id(), kind, preset_id: optional(params, "presetID"),
+            project_path: optional(params, "projectPath"), title: optional(params, "title"),
+            idempotency_key: key, state: "queued".into(), detail: None,
+            session_id: None, created_at: timestamp.clone(), updated_at: timestamp,
+            touched_at: epoch_seconds(),
+        };
+        let id = record.id.clone();
+        self.snapshot.launch_requests.push(record.clone());
+        self.persist()?;
+        self.publish("launch.submitted", json!({"launchID": id}));
+        value(record)
+    }
+
+    fn launch_poll(&self, params: &Value) -> RuntimeResult {
+        let kind = required(params, "kind")?;
+        let reclaim_cutoff = epoch_seconds() - 120.0;
+        let requests = self.snapshot.launch_requests.iter().filter(|value| {
+            value.kind == kind && (
+                value.state == "queued"
+                || (value.state == "accepted" && value.touched_at < reclaim_cutoff)
+            )
+        }).cloned().collect::<Vec<_>>();
+        value(requests)
+    }
+
+    fn launch_ack(&mut self, params: &Value) -> RuntimeResult {
+        let id = required(params, "launchID")?;
+        let state = required(params, "state")?;
+        if !matches!(state.as_str(), "accepted" | "completed" | "failed") {
+            return Err(RuntimeError::invalid("state"));
+        }
+        let record = self.snapshot.launch_requests.iter_mut().find(|value| value.id == id)
+            .ok_or_else(|| RuntimeError::not_found(format!("Unknown launch request: {id}")))?;
+        record.state = state;
+        record.detail = optional(params, "detail");
+        record.session_id = optional(params, "sessionID");
+        record.updated_at = now_rfc3339();
+        record.touched_at = epoch_seconds();
+        let output = record.clone();
+        self.persist()?;
+        self.publish("launch.acked", json!({"launchID": id, "state": output.state}));
         value(output)
     }
 
@@ -1361,6 +1517,66 @@ mod tests {
             method: "runtime.hello".into(), params: json!({}),
         });
         assert_eq!(response.jsonrpc.as_deref(), Some("2.0"));
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn launch_options_upsert_replaces_and_lists() {
+        let directory = PathBuf::from(format!("/tmp/pharos-runtime-test-{}", new_id()));
+        let mut registry = Registry::load(directory.clone()).unwrap();
+        // A driver must register before advertising launch options.
+        assert!(registry.invoke("launch.options", &json!({
+            "driverID":"d1","kind":"dsh","options":[{"id":"code","label":"Code"}]
+        })).is_err());
+        registry.invoke("driver.register", &json!({"driverID":"d1","kind":"dsh"})).unwrap();
+        registry.invoke("launch.options", &json!({
+            "driverID":"d1","kind":"dsh","options":[
+                {"id":"standard","label":"Standard","detail":"default","extraArgs":""},
+                {"id":"code","label":"Code Mode"}
+            ]
+        })).unwrap();
+        // Re-upsert replaces the roster for that driver (no duplicates).
+        registry.invoke("launch.options", &json!({
+            "driverID":"d1","kind":"dsh","options":[{"id":"minimal"}]
+        })).unwrap();
+        let listed = registry.invoke("launch.options.list", &json!({"kind":"dsh"})).unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["options"].as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["options"][0]["id"], "minimal");
+        assert_eq!(listed[0]["options"][0]["label"], "minimal"); // label falls back to id
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn launch_request_is_idempotent_and_ackable() {
+        let directory = PathBuf::from(format!("/tmp/pharos-runtime-test-{}", new_id()));
+        let mut registry = Registry::load(directory.clone()).unwrap();
+        let params = json!({
+            "kind":"dsh","presetID":"code","projectPath":"/tmp/repo",
+            "title":"new session","idempotencyKey":"launch:1"
+        });
+        let first = registry.invoke("launch.submit", &params).unwrap();
+        let second = registry.invoke("launch.submit", &params).unwrap();
+        assert_eq!(first["id"], second["id"]);
+
+        let queued = registry.invoke("launch.poll", &json!({"kind":"dsh"})).unwrap();
+        assert_eq!(queued.as_array().unwrap().len(), 1);
+        assert_eq!(queued[0]["presetID"], "code");
+        let launch_id = queued[0]["id"].as_str().unwrap().to_owned();
+
+        // Claim, then finish with the created session id.
+        registry.invoke("launch.ack", &json!({"launchID": launch_id, "state":"accepted"})).unwrap();
+        assert_eq!(registry.invoke("launch.poll", &json!({"kind":"dsh"})).unwrap()
+            .as_array().unwrap().len(), 0);
+        registry.invoke("launch.ack", &json!({
+            "launchID": launch_id, "state":"completed", "sessionID":"session-abc"
+        })).unwrap();
+
+        // Reload from disk: the finished request is persisted.
+        let loaded = Registry::load(directory.clone()).unwrap();
+        assert_eq!(loaded.snapshot.launch_requests.len(), 1);
+        assert_eq!(loaded.snapshot.launch_requests[0].state, "completed");
+        assert_eq!(loaded.snapshot.launch_requests[0].session_id.as_deref(), Some("session-abc"));
         fs::remove_dir_all(directory).ok();
     }
 }

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { PharosRuntimeClient } from './runtime-client.mjs'
 
@@ -59,7 +60,7 @@ export function apply(ctx) {
       driverID,
       kind: 'dsh',
       version: process.env.DSH_VERSION || 'plugin',
-      capabilities: ['message.send', 'session.observe'],
+      capabilities: ['message.send', 'session.observe', 'session.create'],
     })
   }
 
@@ -120,11 +121,68 @@ export function apply(ctx) {
     for (const agent of ctx.agents.list()) await registerAgent(agent)
   }
 
+  // Advertise the DSH agent-preset roster to the Host Runtime so a launcher can
+  // discover launch modes through the runtime rather than hardcoding them. The
+  // roster re-reads disk on every call (DSH discovery semantics), so throttle
+  // to 30s: authoring a preset while running still surfaces within a moment.
+  let optionsLastPushed = 0
+  async function pushLaunchOptions() {
+    const presets = ctx.get?.('agentPresets')
+    if (!presets?.list) return
+    try {
+      const roster = await presets.list()
+      const options = (Array.isArray(roster) ? roster : []).map(preset => ({
+        id: preset.id,
+        label: preset.name ?? preset.id,
+        detail: preset.description ?? '',
+        extraArgs: '',
+      }))
+      await runtime.launchOptions({ driverID, kind: 'dsh', options })
+      optionsLastPushed = Date.now()
+    } catch (error) {
+      process.stderr.write(`dsh-plugin-pharos-runtime: launch options: ${error.message}\n`)
+    }
+  }
+
+  // Consume queued launch requests (Pharos New Session -> runtime RPC). Each
+  // request creates a fresh DSH session whose creation header records the preset
+  // (meta.agentPreset) and whose scoped world mounts it via recompose during
+  // unpublished setup — the same path the web app's agentPreset.select uses.
+  async function handleLaunchRequests() {
+    const presets = ctx.get?.('agentPresets')
+    if (!presets?.recompose || typeof ctx.agents?.create !== 'function') return
+    let requests
+    try { requests = await runtime.launchPoll('dsh') } catch { return }
+    for (const request of requests ?? []) {
+      const launchID = request.id
+      const presetID = request.presetID || ''
+      const projectPath = request.projectPath || undefined
+      try {
+        await runtime.launchAck({ launchID, state: 'accepted' })
+        const sessionID = randomUUID()
+        await ctx.agents.create({
+          sessionId: sessionID,
+          meta: { cwd: projectPath, ...(presetID ? { agentPreset: presetID } : {}) },
+          setup: async (agentCtx) => {
+            if (presetID) await presets.recompose(agentCtx, presetID)
+          },
+        })
+        await runtime.launchAck({ launchID, state: 'completed', sessionID })
+      } catch (error) {
+        await runtime.launchAck({ launchID, state: 'failed', detail: error.message })
+      }
+    }
+  }
+
   async function poll() {
     if (polling) return
     polling = true
     try {
       await reconcile()
+      if (optionsLastPushed === 0 || Date.now() - optionsLastPushed > 30_000) {
+        await pushLaunchOptions()
+      }
+      await handleLaunchRequests()
       for (const agent of ctx.agents.list()) {
         const sessionID = String(agent?.session?.id || agent?.id || '')
         const conversationID = conversations.get(sessionID)

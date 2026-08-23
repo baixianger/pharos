@@ -412,6 +412,17 @@ enum AgentKind: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Platforms whose session creation is routed through the runtime
+    /// launch-request RPC (a driver consumes the queued request). Others launch
+    /// purely as a CLI command in the terminal. The New Session UI reads this
+    /// generically and never decides what it means.
+    var launchesViaRuntime: Bool {
+        switch self {
+        case .dsh: return true
+        case .claude, .codex: return false
+        }
+    }
+
     func command(yolo: Bool, extraArgs: String = "", executable: String? = nil,
                  environment: [String: String] = [:]) -> String {
         func quote(_ value: String) -> String {
