@@ -1,5 +1,6 @@
 import SwiftUI
 import PharosMeshCore
+import PharosRuntime
 
 /// A single control surface for conversations and their current runtime seats.
 /// Until RFC-003 lands, live registrations and archives are intentionally kept
@@ -24,6 +25,7 @@ struct AgentSessionsView: View {
     }
 
     @State private var archives: [ArchiveRow] = []
+    @State private var runtimeSnapshot = AgentRuntimeSnapshot()
     @State private var scope: Scope = .all
     @State private var agentFilter: AgentKind?
     @State private var query = ""
@@ -42,8 +44,20 @@ struct AgentSessionsView: View {
             })
     }
 
+    private var runtimeConversations: [AgentConversationRecord] {
+        runtimeSnapshot.conversations
+            .filter { agentFilter == nil || $0.kind == agentFilter?.rawValue }
+            .filter {
+                query.isEmpty || [$0.title, Optional($0.kind), $0.projectPath, Optional($0.vendorSessionID)]
+                    .compactMap { $0 }.joined(separator: " ")
+                    .localizedCaseInsensitiveContains(query)
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
     private var registeredTransportIDs: Set<String> {
         Set(store.meshRoster.compactMap(\.session))
+            .union(runtimeSnapshot.conversations.map(\.vendorSessionID))
     }
 
     private var externalSessions: [String] {
@@ -70,6 +84,11 @@ struct AgentSessionsView: View {
                 controls
 
                 if scope == .all || scope == .live {
+                    sectionHeader("Agent runtime sessions", count: runtimeConversations.count,
+                                  caption: "Codex, Claude and DSH conversations registered with pharos-meshd")
+                    if runtimeConversations.isEmpty { emptyRow("No Runtime conversations", symbol: "rectangle.stack.badge.person.crop") }
+                    else { ForEach(runtimeConversations) { runtimeConversationRow($0) } }
+
                     sectionHeader("Registered runtimes", count: registered.count,
                                   caption: "Broker identities with an active or recently attached surface")
                     if registered.isEmpty { emptyRow("No registered agent runtimes", symbol: "antenna.radiowaves.left.and.right.slash") }
@@ -119,7 +138,7 @@ struct AgentSessionsView: View {
                     .font(.callout).foregroundStyle(.secondary)
             }
             Spacer()
-            metric("LIVE", registered.filter { isLive($0) }.count, .green)
+            metric("LIVE", runtimeConversations.filter { isRuntimeLive($0) }.count, .green)
             metric("ARCHIVED", archives.count, .blue)
             metric("FALLBACK", externalSessions.count, .orange)
             newSessionMenu
@@ -197,6 +216,33 @@ struct AgentSessionsView: View {
                 .font(.caption).foregroundStyle(.tertiary).frame(width: 74, alignment: .trailing)
         }
         .sessionCard()
+    }
+
+    private func runtimeConversationRow(_ conversation: AgentConversationRecord) -> some View {
+        let kind = AgentKind(rawValue: conversation.kind)
+        let state = conversation.state
+        return HStack(spacing: 14) {
+            agentMark(kind: kind, online: isRuntimeLive(conversation))
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(conversation.title ?? conversation.vendorSessionID).font(.headline).lineLimit(1)
+                    ownershipBadge(conversation.ownership.rawValue.uppercased(), color: .blue)
+                    if let state {
+                        ownershipBadge(state.activity.rawValue.uppercased(), color: runtimeStateColor(state))
+                        if state.attention != .none {
+                            ownershipBadge(state.attention.rawValue, color: .orange)
+                        }
+                    }
+                }
+                Text([conversation.kind, conversation.projectPath, conversation.driverID]
+                    .compactMap { $0 }.joined(separator: "  ·  "))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            Text(conversation.updatedAt, style: .relative)
+                .font(.caption).foregroundStyle(.tertiary).frame(width: 74, alignment: .trailing)
+        }
+        .sessionCard(tint: kindColor(kind))
     }
 
     private func externalRow(_ session: String) -> some View {
@@ -294,6 +340,25 @@ struct AgentSessionsView: View {
         return Date().timeIntervalSince1970 - member.lastSeen < 45
     }
 
+    private func isRuntimeLive(_ conversation: AgentConversationRecord) -> Bool {
+        guard conversation.state?.presence != .offline else { return false }
+        guard let driver = runtimeSnapshot.drivers.first(where: { $0.id == conversation.driverID }) else {
+            return false
+        }
+        return Date().timeIntervalSince(driver.lastSeenAt) < 45
+    }
+
+    private func runtimeStateColor(_ state: AgentSessionState) -> Color {
+        if state.attention == .failed { return .red }
+        if state.attention != .none { return .orange }
+        switch state.activity {
+        case .running: return .green
+        case .stopping: return .orange
+        case .idle: return .blue
+        case .unknown: return .secondary
+        }
+    }
+
     private func searchable(_ member: MeshMemberInfo) -> String {
         [member.nick, member.kind, member.project, member.host, member.session]
             .compactMap { $0 }.joined(separator: " ")
@@ -348,6 +413,7 @@ struct AgentSessionsView: View {
 
     private func reload() async {
         loading = true
+        if let snapshot = loadRuntimeSnapshot() { runtimeSnapshot = snapshot }
         var result: [ArchiveRow] = []
         for project in store.projects {
             guard let path = project.localPath, !path.isEmpty else { continue }
@@ -358,6 +424,35 @@ struct AgentSessionsView: View {
         }
         archives = result.sorted { $0.session.modified > $1.session.modified }
         loading = false
+    }
+
+    private func loadRuntimeSnapshot() -> AgentRuntimeSnapshot? {
+        let request: [String: Any] = [
+            "jsonrpc": "2.0", "id": 1, "method": "runtime.snapshot", "params": [:],
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: request),
+              let raw = String(data: data, encoding: .utf8),
+              let response = try? AgentRuntimeClient.send(raw),
+              let responseData = response.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+              let result = object["result"],
+              let resultData = try? JSONSerialization.data(withJSONObject: result) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = fractional.date(from: value) { return date }
+            let plain = ISO8601DateFormatter()
+            plain.formatOptions = [.withInternetDateTime]
+            guard let date = plain.date(from: value) else {
+                throw DecodingError.dataCorruptedError(in: container,
+                                                       debugDescription: "Invalid ISO-8601 date")
+            }
+            return date
+        }
+        return try? decoder.decode(AgentRuntimeSnapshot.self, from: resultData)
     }
 }
 

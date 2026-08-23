@@ -1,0 +1,3 @@
+- insert:
+    - id: pharos-runtime
+      name: dsh-plugin-pharos-runtime

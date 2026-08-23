@@ -74,6 +74,7 @@ struct ContentView: View {
     @State private var snapSettingsTab: Int?   // snapshot mode: Settings shown as a sheet
     @AppStorage("pharos.onboarded")    private var onboarded  = false
     @AppStorage("pharos.launchCount")  private var launchCount = 0
+    @AppStorage("pharos.sidebar.visible") private var sidebarVisible = true
     @State private var selectedProject: Project.ID?
     /// Per-tab chat-room route: nil = not in the rooms view (show project /
     /// dashboard); non-nil = this tab is a chat room showing that room (""
@@ -135,11 +136,10 @@ struct ContentView: View {
 
     var body: some View {
         @Bindable var store = store
-        NavigationSplitView {
-            ProjectsSidebar(selectedProject: $selectedProject, openRoom: $openRoom,
-                            surface: $surface, searchText: searchText)
-                .navigationSplitViewColumnWidth(min: 248, ideal: 300, max: 400)
-        } detail: {
+        AgentWorkspaceShell(isSidebarVisible: $sidebarVisible) { toggleSidebar in
+            AgentSidebarView(selectedProject: $selectedProject, openRoom: $openRoom,
+                             surface: $surface, toggleSidebar: toggleSidebar)
+        } workspace: {
             detailView
         }
         // Project ⇄ room are mutually exclusive within a tab.
@@ -149,7 +149,6 @@ struct ContentView: View {
         .onChange(of: openRoom) { _, r in
             if r != nil { selectedProject = nil; surface = .dashboard }
         }
-        .searchable(text: $searchText, placement: .toolbar, prompt: "Search")
         .task { await SnapshotMode.run(store: store, select: { selectedProject = $0 },
                                        openRoom: { openRoom = $0 },
                                        showSettings: { snapSettingsTab = $0 }) }

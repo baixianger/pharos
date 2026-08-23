@@ -1,5 +1,6 @@
 import Foundation
 import PharosMeshCore
+import PharosRuntime
 
 exit(MeshHeadlessCLI.run(Array(CommandLine.arguments.dropFirst())))
 
@@ -19,7 +20,7 @@ private enum MeshHeadlessCLI {
         switch command {
         case "serve", "daemon":
             configureServer(Array(args.dropFirst()))
-            MeshBroker.runDaemon()
+            MeshBroker.runDaemon(runtimeDeliverySink: MeshRuntimeDeliveryBridge.submit)
 
         case "node":
             return runNode(Array(args.dropFirst()))

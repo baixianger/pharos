@@ -1,17 +1,29 @@
 # RFC-003: Agent Runtime RPC and Persistent Conversations
 
+> Architecture decision (2026-08-22): public contracts are split by capability,
+> while vendor code is vertically packaged as one Adapter per Agent family. A
+> Codex Adapter may contain App Server, CLI, and surface Drivers; those are not
+> separate top-level adapters. The first supported Codex Driver is the shared
+> App Server daemon. Pharos manages sessions and routing but prefers the official
+> remote TUI as the initial Codex work surface. Claude uses official TUI/Web/
+> Mobile Remote Control surfaces; Pharos does not implement Anthropic's private
+> Remote Control client. DSH remains the first full embedded client integration.
+
 > Implementation update (2026-08-20): `agent-runtime-gateway-v1` now reuses the
 > authenticated, durable Broker Node-command route. A Host forwards only
 > `runtime.hello`, `runtime.snapshot`, and `delivery.submit` to its private Unix
 > socket. iOS has a matching client and never receives a vendor endpoint. Event
 > cursors and native Codex/DSH turn adapters remain the next implementation step.
 
-> Codex driver update (2026-08-20): the Host Runtime now has a lazy, Pharos-owned
-> stdio adapter for the installed Codex App Server (`0.147.0` on the development
-> host). It initializes as a distinct client and maps list/read/start/resume/fork
-> plus turn start/interrupt behind Pharos method names. Codex notifications and
-> server requests enter a bounded, persisted Host event journal with reconnect
-> cursors. Approval responses and normalized transcript projection remain open.
+> Codex driver update (2026-08-22): the Host Runtime now starts the durable Codex
+> App Server daemon and connects as a distinct WebSocket client through the
+> official control-socket proxy (`0.147.0` on the development host). The proxy is
+> a raw byte bridge: Pharos performs the HTTP Upgrade and masked WebSocket frame
+> encoding itself; sending JSONL to the proxy is invalid. The Adapter maps
+> list/read/start/resume/fork plus turn start/interrupt behind Pharos methods.
+> The official remote TUI can attach to the same daemon. Codex notifications and
+> server requests enter the bounded Host event journal; approval resolution and
+> normalized transcript projection remain open.
 
 Implementation impact is tracked in [Agent Runtime Impact Audit](AGENT-RUNTIME-IMPACT-AUDIT.md).
 
@@ -204,7 +216,7 @@ The vendor capabilities investigated for this decision are:
 
 ## Decision
 
-Pharos will become a general agent integration platform with four separate
+Pharos will become a general agent integration platform with five separate
 layers:
 
 ```text
@@ -215,11 +227,34 @@ Pharos Host Runtime
     process supervision, runtime leases, driver registry, RPC
         |
 AgentRuntimeDriver
-    Codex, Claude, DSH, ACP, conservative external fallback
+    App Server, native channel, SDK, ACP, conservative external fallback
         |
 Presentation surfaces
     Pharos UI, native TUI, vendor web/desktop/mobile clients
 ```
+
+The Core defines capability contracts; each Agent Adapter owns every vendor-
+specific implementation behind those contracts:
+
+```text
+CodexAdapter
+    AppServerDriver (preferred)
+    CLIDriver (future fallback)
+    native TUI surface descriptor
+
+ClaudeAdapter
+    lifecycle/hooks/channel integration
+    official TUI/Web/Mobile surface descriptors
+
+DSHAdapter
+    Host/SDK driver
+    embedded and Web surface descriptors
+```
+
+Core code never switches on an agent brand to perform an action. It routes by
+`adapterID`, asks for per-session capability availability, and receives one of
+`available`, `unavailable`, `unsupported`, or `fallback`. A fallback always
+requires explicit user confirmation and never silently changes action semantics.
 
 Pharos owns the control plane. Vendor applications may continue to own their
 presentation surfaces. tmux is not part of the target delivery architecture.

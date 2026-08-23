@@ -26,20 +26,15 @@ enum MeshNode {
             log("startup refused: \(error.localizedDescription)")
             return 1
         }
-        let agentRuntime = AgentRuntimeServer()
-        do {
-            try agentRuntime.start()
-            log("agent runtime listening at \(AgentRuntimePaths.socket.path)")
-        } catch {
-            // The Mesh Node remains useful as a conservative transport even if
-            // its local Agent Runtime socket cannot start.
-            log("agent runtime unavailable: \(error.localizedDescription)")
+        if FileManager.default.fileExists(atPath: AgentRuntimePaths.socket.path) {
+            log("agent runtime available at \(AgentRuntimePaths.socket.path)")
+        } else {
+            log("agent runtime unavailable; pharos-meshd service is not ready")
         }
         let shutdown = MeshNodeShutdownLatch()
         let signalSources = installSignalHandlers(shutdown: shutdown)
         defer {
             signalSources.forEach { $0.cancel() }
-            agentRuntime.stop()
             runtimeLock.release()
             log("stopped")
         }

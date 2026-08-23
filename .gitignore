@@ -9,6 +9,7 @@ Icon?
 .build/
 .swiftpm/
 Package.resolved
+rust/target/
 
 # Build artifacts
 *.app/

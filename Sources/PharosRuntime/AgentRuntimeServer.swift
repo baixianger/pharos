@@ -19,14 +19,16 @@ public final class AgentRuntimeServer: @unchecked Sendable {
         }
     }
 
-    private let registry = AgentRuntimeRegistry()
+    private let registry: AgentRuntimeRegistry
     private let lifecycleLock = NSLock()
     private var listener: Int32 = -1
     private var running = false
     private let queue = DispatchQueue(label: "me.pai.pharos.agent-runtime", qos: .utility,
                                       attributes: .concurrent)
 
-    public init() {}
+    public init(adapters: [any AgentAdapter] = []) {
+        registry = AgentRuntimeRegistry(adapters: adapters)
+    }
 
     public func start() throws {
         lifecycleLock.lock()
@@ -79,7 +81,8 @@ public final class AgentRuntimeServer: @unchecked Sendable {
         listener = -1
         running = false
         lifecycleLock.unlock()
-        if descriptor >= 0 { systemClose(descriptor) }
+        guard descriptor >= 0 else { return }
+        systemClose(descriptor)
         try? FileManager.default.removeItem(at: AgentRuntimePaths.socket)
     }
 

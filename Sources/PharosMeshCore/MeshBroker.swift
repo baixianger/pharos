@@ -634,6 +634,14 @@ func meshReadExactly(_ fd: Int32, count: Int) -> Data? {
 /// mirrors each nick's unread to a signal file for the hooks, and appends every
 /// message to a per-room transcript file for the GUI to read. Only @mentioned
 /// messages enter an agent mailbox; the Stop hook surfaces them at the next turn.
+public enum MeshRuntimeDeliveryRoute: Sendable, Equatable {
+    case accepted
+    case forward(String)
+    case fallback
+}
+
+public typealias MeshRuntimeDeliverySink = (MeshMsg, MeshMemberInfo) -> MeshRuntimeDeliveryRoute
+
 public final class MeshBroker: @unchecked Sendable {
     private let lock = NSLock()
     /// Narrow I/O lock for transcript reads, appends, deletes, and renames.
@@ -652,8 +660,11 @@ public final class MeshBroker: @unchecked Sendable {
     private var nodeCommands: [MeshNodeCommand] = []
     private var cachedBrokerID: String?
     private var cachedControlToken: String?
+    private let runtimeDeliverySink: MeshRuntimeDeliverySink?
 
-    public init(loadPersistentState: Bool = false) {
+    public init(loadPersistentState: Bool = false,
+                runtimeDeliverySink: MeshRuntimeDeliverySink? = nil) {
+        self.runtimeDeliverySink = runtimeDeliverySink
         if loadPersistentState {
             loadNodeCommandsLocked()
             loadMailboxesLocked()
@@ -661,8 +672,8 @@ public final class MeshBroker: @unchecked Sendable {
         }
     }
 
-    public static func runDaemon() -> Never {
-        let broker = MeshBroker(loadPersistentState: true) // keep strong lifetime for weak listener closures
+    public static func runDaemon(runtimeDeliverySink: MeshRuntimeDeliverySink? = nil) -> Never {
+        let broker = MeshBroker(loadPersistentState: true, runtimeDeliverySink: runtimeDeliverySink)
         broker.serve()
         exit(0)   // unreachable
     }
@@ -972,7 +983,7 @@ public final class MeshBroker: @unchecked Sendable {
             if let retryAt = req.retryAt {
                 nodeCommands[index].nextAttemptAt = max(nodeCommands[index].updatedAt, retryAt)
             }
-            if !nodeCommands[index].state.isTerminal,
+            if !nodeCommands[index].state.isTerminal, nodeCommands[index].state != .running,
                nodeCommands[index].attempts >= nodeCommands[index].maxAttempts {
                 nodeCommands[index].state = .failed
                 nodeCommands[index].result = req.payload ?? "retry attempts exhausted"
@@ -1190,7 +1201,7 @@ public final class MeshBroker: @unchecked Sendable {
                                    attachments: attachments.isEmpty ? nil : attachments)
             publish(kind: .message, room: r, message: delivery.message)
             if req.to?.isEmpty == false {
-                for target in delivery.targets {
+                for target in delivery.fallbackTargets {
                     _ = enqueuePokeCommand(for: target,
                                            idempotencyKey: "message:\(delivery.message.id ?? "unknown")",
                                            requireUnread: true)
@@ -1445,7 +1456,7 @@ public final class MeshBroker: @unchecked Sendable {
     ///    enqueue it for any agent or trigger a Stop hook.
     private func deliver(room r: String, from n: String, text t: String, to: [String]?,
                          replyTo: MeshReply?, attachments: [MeshAttachment]?)
-        -> (message: MeshMsg, targets: [MeshMemberInfo]) {
+        -> (message: MeshMsg, targets: [MeshMemberInfo], fallbackTargets: [MeshMemberInfo]) {
         let msg = MeshMsg(id: UUID().uuidString, from: n, room: r, text: t,
                           ts: Date().timeIntervalSince1970, to: to ?? [],
                           replyTo: replyTo, attachments: attachments)
@@ -1453,17 +1464,32 @@ public final class MeshBroker: @unchecked Sendable {
         if rooms[r] == nil { rooms[r] = Room() }
         // Only explicit @ targets create mailbox entries. Plain room chatter
         // remains in the transcript but is invisible to agent delivery hooks.
+        var seenTargetIDs = Set<String>()
         let targetIDs = (to ?? []).compactMap { rooms[r]!.members[$0] }
-        for memberID in targetIDs { rooms[r]!.mailboxes[memberID, default: []].append(msg) }
-        for memberID in targetIDs { syncUnreadLocked(memberID) }
+            .filter { seenTargetIDs.insert($0).inserted }
         if let senderID = rooms[r]!.members[n] { touchPresenceLocked(senderID) }
         let targets = targetIDs.compactMap { memberID -> MeshMemberInfo? in
             guard let alias = rooms[r]!.members.first(where: { $0.value == memberID })?.key else { return nil }
             return memberInfoLocked(room: r, nick: alias)
         }
         lock.unlock()
+        let runtimeTargetIDs = Set(targets.compactMap { target -> String? in
+            switch runtimeDeliverySink?(msg, target) ?? .fallback {
+            case .accepted:
+                return target.id
+            case .forward(let request):
+                return routeRuntimeDelivery(request, message: msg, target: target) ? target.id : nil
+            case .fallback:
+                return nil
+            }
+        })
+        let fallbackIDs = targetIDs.filter { !runtimeTargetIDs.contains($0) }
+        lock.lock()
+        for memberID in fallbackIDs { rooms[r]!.mailboxes[memberID, default: []].append(msg) }
+        for memberID in fallbackIDs { syncUnreadLocked(memberID) }
+        lock.unlock()
         appendTranscript(msg)
-        return (msg, targets)
+        return (msg, targets, targets.filter { !runtimeTargetIDs.contains($0.id) })
     }
 
     // MARK: event stream
@@ -1544,6 +1570,19 @@ public final class MeshBroker: @unchecked Sendable {
     @discardableResult
     private func enqueuePokeCommand(for member: MeshMemberInfo, idempotencyKey: String,
                                     requireUnread: Bool, preferredNodeID: String? = nil) -> MeshNodeCommand? {
+        guard let nodeID = targetNodeID(for: member, preferredNodeID: preferredNodeID),
+              let data = try? JSONEncoder().encode(MeshNodePokePayload(memberID: member.id,
+                                                                       requireUnread: requireUnread)),
+              let payload = String(data: data, encoding: .utf8) else { return nil }
+        return process(MeshRequest(cmd: "node-command-enqueue", payload: payload,
+                                   nodeID: nodeID, action: MeshNodeCommandAction.poke.rawValue,
+                                   idempotencyKey: idempotencyKey + ":" + member.id,
+                                   deadline: Date().timeIntervalSince1970 + 86_400,
+                                   maxAttempts: 240), trustedLocal: true).command
+    }
+
+    private func targetNodeID(for member: MeshMemberInfo,
+                              preferredNodeID: String? = nil) -> String? {
         lock.lock()
         pruneNodesLocked()
         let nodeID: String?
@@ -1559,15 +1598,53 @@ public final class MeshBroker: @unchecked Sendable {
             })?.id
         }
         lock.unlock()
-        guard let nodeID,
-              let data = try? JSONEncoder().encode(MeshNodePokePayload(memberID: member.id,
-                                                                       requireUnread: requireUnread)),
-              let payload = String(data: data, encoding: .utf8) else { return nil }
-        return process(MeshRequest(cmd: "node-command-enqueue", payload: payload,
-                                   nodeID: nodeID, action: MeshNodeCommandAction.poke.rawValue,
-                                   idempotencyKey: idempotencyKey + ":" + member.id,
-                                   deadline: Date().timeIntervalSince1970 + 86_400,
-                                   maxAttempts: 240), trustedLocal: true).command
+        return nodeID
+    }
+
+    private func routeRuntimeDelivery(_ request: String, message: MeshMsg,
+                                      target: MeshMemberInfo) -> Bool {
+        guard let nodeID = targetNodeID(for: target) else { return false }
+        let now = Date().timeIntervalSince1970
+        guard let command = process(MeshRequest(
+            cmd: "node-command-enqueue", payload: request, nodeID: nodeID,
+            action: MeshNodeCommandAction.agentRPC.rawValue,
+            idempotencyKey: "runtime-delivery:\(message.stableID):\(target.id)",
+            deadline: now + 10, maxAttempts: 1
+        ), trustedLocal: true).command else { return false }
+
+        let unclaimedDeadline = now + 2
+        let terminalDeadline = now + 8
+        while Date().timeIntervalSince1970 < terminalDeadline {
+            lock.lock()
+            expireNodeCommandsLocked()
+            guard let index = nodeCommands.firstIndex(where: { $0.id == command.id }) else {
+                lock.unlock(); return false
+            }
+            let current = nodeCommands[index]
+            if current.state.isTerminal {
+                lock.unlock()
+                return current.state == .succeeded && runtimeDeliveryWasAccepted(current.result)
+            }
+            if current.state == .queued && Date().timeIntervalSince1970 >= unclaimedDeadline {
+                nodeCommands[index].state = .canceled
+                nodeCommands[index].updatedAt = Date().timeIntervalSince1970
+                nodeCommands[index].result = "runtime delivery node did not claim command"
+                writeNodeCommandsLocked()
+                lock.unlock()
+                publish(kind: .nodeCommand)
+                return false
+            }
+            lock.unlock()
+            usleep(25_000)
+        }
+        return false
+    }
+
+    private func runtimeDeliveryWasAccepted(_ result: String?) -> Bool {
+        guard let data = result?.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let response = object["result"] as? [String: Any] else { return false }
+        return response["submitted"] as? Bool == true
     }
 
     /// A node may have been offline when messages were written. Its first

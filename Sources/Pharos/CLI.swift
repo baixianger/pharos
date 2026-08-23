@@ -1,5 +1,6 @@
 import Foundation
 import PharosRuntime
+import PharosRuntime
 
 /// The `pharos` command-line front door — Pharos's interface for agents and
 /// scripts. A thin shim: it parses argv, calls `PharosCore`, and prints the
@@ -256,7 +257,7 @@ enum CLI {
 
         switch sub {
         case "daemon":
-            MeshBroker.runDaemon()                          // never returns
+            MeshBroker.runDaemon(runtimeDeliverySink: MeshRuntimeDeliveryBridge.submit)
         case "create":
             guard let room = a.first else { print("usage: pharos mesh create <room>"); return 2 }
             return report(MeshClient.send(MeshRequest(cmd: "create", room: room)))

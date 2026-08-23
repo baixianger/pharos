@@ -17,8 +17,10 @@ final class AgentRuntimeRegistry: @unchecked Sendable {
 
     private let lock = NSLock()
     private var snapshot: AgentRuntimeSnapshot
+    private let adapterRegistry: AgentAdapterRegistry
 
-    init() {
+    init(adapters: [any AgentAdapter]) {
+        adapterRegistry = AgentAdapterRegistry(adapters: adapters)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         if let data = try? Data(contentsOf: AgentRuntimePaths.registry),
@@ -42,6 +44,7 @@ final class AgentRuntimeRegistry: @unchecked Sendable {
                 "capabilities": [
                     "driver-registration-v1", "conversation-registry-v1",
                     "surface-attachment-v1", "delivery-queue-v1",
+                    "agent-adapter-v1", "session-actions-v1", "session-state-v1",
                 ],
             ]
 
@@ -55,29 +58,32 @@ final class AgentRuntimeRegistry: @unchecked Sendable {
             let cursor = (params["cursor"] as? NSNumber)?.uint64Value ?? 0
             return AgentRuntimeEventJournal.shared.resumeObject(after: cursor)
 
-        case "codex.status":
-            return CodexAppServerDriver.shared.status()
+        case "adapter.list":
+            return try object(adapterRegistry.manifests())
 
-        case "codex.thread.list":
-            return try CodexAppServerDriver.shared.request(method: "thread/list", params: params)
+        case "session.discover":
+            let adapter = try adapterRegistry.adapter(id: try required("adapterID", params))
+            return try adapter.discover(params: params["options"] as? [String: Any] ?? [:])
 
-        case "codex.thread.read":
-            return try CodexAppServerDriver.shared.request(method: "thread/read", params: params)
+        case "session.capabilities":
+            let adapter = try adapterRegistry.adapter(id: try required("adapterID", params))
+            return try object(adapter.availability(for: params["providerSessionID"] as? String))
 
-        case "codex.thread.start":
-            return try CodexAppServerDriver.shared.request(method: "thread/start", params: params)
+        case "session.perform":
+            let adapter = try adapterRegistry.adapter(id: try required("adapterID", params))
+            guard let rawAction = params["action"] as? String,
+                  let action = AgentSessionAction(rawValue: rawAction) else {
+                throw RegistryError.invalidParams("action")
+            }
+            return try adapter.perform(
+                action: action,
+                providerSessionID: params["providerSessionID"] as? String,
+                params: params["options"] as? [String: Any] ?? [:]
+            )
 
-        case "codex.thread.resume":
-            return try CodexAppServerDriver.shared.request(method: "thread/resume", params: params)
-
-        case "codex.thread.fork":
-            return try CodexAppServerDriver.shared.request(method: "thread/fork", params: params)
-
-        case "codex.turn.start":
-            return try CodexAppServerDriver.shared.request(method: "turn/start", params: params)
-
-        case "codex.turn.interrupt":
-            return try CodexAppServerDriver.shared.request(method: "turn/interrupt", params: params)
+        case let method where method.hasPrefix("codex."):
+            return try adapterRegistry.adapter(id: "pharos.codex")
+                .invokeVendor(method: method, params: params)
 
         case "driver.register":
             let driverID = try required("driverID", params)
@@ -127,11 +133,47 @@ final class AgentRuntimeRegistry: @unchecked Sendable {
                 memberID: params["memberID"] as? String ?? existing?.memberID,
                 ownership: ownership,
                 createdAt: existing?.createdAt ?? now,
-                updatedAt: now
+                updatedAt: now,
+                state: existing?.state
             )
             upsert(record, in: &snapshot.conversations)
             try persist()
             return try object(record)
+
+        case "conversation.state":
+            let conversationID = try required("conversationID", params)
+            guard let index = snapshot.conversations.firstIndex(where: { $0.id == conversationID }) else {
+                throw RegistryError.notFound("Unknown conversation: \(conversationID)")
+            }
+            guard let presence = (params["presence"] as? String).flatMap(AgentSessionPresence.init),
+                  let activity = (params["activity"] as? String).flatMap(AgentSessionActivity.init),
+                  let attention = (params["attention"] as? String).flatMap(AgentSessionAttention.init),
+                  let persistence = (params["persistence"] as? String).flatMap(AgentSessionPersistence.init),
+                  let source = (params["source"] as? String).flatMap(AgentSessionStateSource.init) else {
+                throw RegistryError.invalidParams("session state")
+            }
+            let sequence = (params["sequence"] as? NSNumber)?.uint64Value ?? 0
+            let incoming = AgentSessionState(
+                presence: presence, activity: activity, attention: attention,
+                persistence: persistence, source: source,
+                sourceEpoch: params["sourceEpoch"] as? String, sequence: sequence,
+                reason: params["reason"] as? String,
+                vendorRawState: params["vendorRawState"] as? String
+            )
+            if let current = snapshot.conversations[index].state,
+               source.precedence < current.source.precedence
+                || (source == current.source && incoming.sourceEpoch == current.sourceEpoch
+                    && sequence <= current.sequence) {
+                return ["applied": false, "reason": "stale-or-lower-authority"]
+            }
+            snapshot.conversations[index].state = incoming
+            snapshot.conversations[index].updatedAt = incoming.observedAt
+            try persist()
+            AgentRuntimeEventJournal.shared.publish(kind: "conversation.state.changed", payload: [
+                "conversationID": conversationID, "source": source.rawValue,
+                "sequence": sequence,
+            ])
+            return ["applied": true, "conversationID": conversationID]
 
         case "surface.attach":
             let conversationID = try required("conversationID", params)

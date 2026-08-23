@@ -1,0 +1,7 @@
+{
+  "name": "@pharos/runtime-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./pharos-runtime-client.mjs"
+}

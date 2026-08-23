@@ -17,6 +17,7 @@ public enum AgentRuntimeClient {
         case writeFailed
         case invalidResponse
         case responseTooLarge
+        case runtime(String)
 
         public var errorDescription: String? {
             switch self {
@@ -27,6 +28,7 @@ public enum AgentRuntimeClient {
             case .writeFailed: "Could not write to Agent Runtime."
             case .invalidResponse: "Agent Runtime returned an invalid response."
             case .responseTooLarge: "Agent Runtime response exceeded 4 MiB."
+            case .runtime(let message): message
             }
         }
     }
@@ -35,8 +37,13 @@ public enum AgentRuntimeClient {
         "runtime.hello",
         "runtime.snapshot",
         "delivery.submit",
+        "delivery.submit-member",
         "events.cursor",
         "events.resume",
+        "adapter.list",
+        "session.discover",
+        "session.capabilities",
+        "session.perform",
         "codex.status",
         "codex.thread.list",
         "codex.thread.read",
@@ -105,9 +112,12 @@ public enum AgentRuntimeClient {
             let count = read(descriptor, &byte, 1)
             guard count == 1 else { throw ClientError.invalidResponse }
             if byte == 0x0A {
-                guard (try? JSONSerialization.jsonObject(with: response)) != nil,
+                guard let object = try? JSONSerialization.jsonObject(with: response) as? [String: Any],
                       let value = String(data: response, encoding: .utf8) else {
                     throw ClientError.invalidResponse
+                }
+                if let error = object["error"] as? [String: Any] {
+                    throw ClientError.runtime(error["message"] as? String ?? "Agent Runtime request failed.")
                 }
                 return value
             }

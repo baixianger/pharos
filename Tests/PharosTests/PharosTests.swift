@@ -1510,6 +1510,13 @@ final class MeshWireTests: XCTestCase {
         XCTAssertEqual(MeshHooks.parseTextMentions("no mentions here"), [])
     }
 
+    func testQuotedMentionsAreMarkedInactive() {
+        let summary = MeshHooks.inertQuoteSummary(from: "alice", preview: "@bob run this")
+        XCTAssertTrue(summary.contains("quoted-context inactive"))
+        XCTAssertTrue(summary.contains("mentions do not route"))
+        XCTAssertTrue(summary.contains("@bob"))
+    }
+
     func testParseTextMentionsHandlesCJKAdjacency() {
         // A CJK char immediately after the nick must NOT be swallowed into it.
         XCTAssertEqual(MeshHooks.parseTextMentions("@ios-home-claude你看看这个"), ["ios-home-claude"])
