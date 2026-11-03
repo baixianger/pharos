@@ -364,7 +364,8 @@ public struct SSHLightReplyForwarder: LightReplyForwarding {
     }
 
     public func forward(replyID: String, text: String) -> LightForwardResult? {
-        let command = "\(remoteCommand) reply \(shellQuote(replyID)) \(shellQuote(text))"
+        // `--` keeps text that starts with `-` from being read as an option on the Broker.
+        let command = "\(remoteCommand) reply \(shellQuote(replyID)) -- \(shellQuote(text))"
         let invocation = LightInvocation(
             argv: ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "--", destination, command],
             stdin: "",
@@ -375,7 +376,9 @@ public struct SSHLightReplyForwarder: LightReplyForwarding {
         )
         let output = runner.run(invocation, stdin: "")
         if output.status == 0 {
-            return LightForwardResult(ok: true, message: "forwarded")
+            // Show the Broker's own result (thread, deliveries, new reply-ids) to the sender.
+            let remote = output.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            return LightForwardResult(ok: true, message: remote.isEmpty ? "forwarded" : "forwarded via \(destination)\n\(remote)")
         }
         let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
         return LightForwardResult(ok: false, message: detail.isEmpty ? "ssh exit \(output.status)" : detail)

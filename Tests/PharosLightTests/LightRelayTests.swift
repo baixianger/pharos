@@ -497,16 +497,17 @@ final class LightDriverTests: XCTestCase {
     }
 
     func testSSHForwarderUsesTheExistingRouteWithoutATunnel() {
-        let runner = ScriptedRunner([LightProcessOutput(status: 0, stdout: "", stderr: "")])
+        let runner = ScriptedRunner([LightProcessOutput(status: 0, stdout: "thread t_x hop 2/8\ndelivered\tcodex\tr_next\n", stderr: "")])
         let forwarder = SSHLightReplyForwarder(destination: "broker-ssh", runner: runner)
         let result = forwarder.forward(replyID: "r_token1xxx", text: "hello 'there'")
         XCTAssertEqual(result?.ok, true)
+        XCTAssertEqual(result?.message, "forwarded via broker-ssh\nthread t_x hop 2/8\ndelivered\tcodex\tr_next")
         let argv = try! XCTUnwrap(runner.invocations.first?.argv)
         XCTAssertEqual(argv.prefix(6).map { $0 }, ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "--"])
         XCTAssertEqual(argv.dropFirst(6).first, "broker-ssh")
         XCTAssertFalse(argv.contains("-L"))
         XCTAssertFalse(argv.contains("-R"))
-        XCTAssertTrue(argv.joined(separator: " ").contains("pharos reply 'r_token1xxx'"))
+        XCTAssertTrue(argv.joined(separator: " ").contains("pharos reply 'r_token1xxx' -- "))
         XCTAssertTrue(argv.joined(separator: " ").contains(SSHLightReplyForwarder.shellQuote("hello 'there'")))
     }
 
