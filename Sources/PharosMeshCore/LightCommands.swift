@@ -18,6 +18,10 @@ public enum LightCommands {
                                routeByID: (String) -> LightRoute = LightRoute.named) -> LightCLIResult {
         let argv = LightArgv.parse(arguments)
         do {
+            if ["thread", "wait", "read"].contains(command),
+               let forwarded = relay.forwardCommand(command: command, arguments: arguments) {
+                return forwarded
+            }
             switch command {
             case "member":
                 return try member(argv, relay: relay, routesForApp: routesForApp, routeByID: routeByID)
@@ -93,7 +97,10 @@ public enum LightCommands {
                 return usage("pharos thread show <id>")
             }
             let view = try relay.show(thread: id)
-            if argv.flag("json") { return json(view) }
+            if argv.flag("json") {
+                let messages = try relay.read(thread: id)
+                return json(LightThreadShow(thread: view.thread, participants: view.participants, kind: view.kind, messages: messages))
+            }
             let flag = view.thread.stopped ? "stopped" : "open"
             let people = view.participants.joined(separator: ",")
             let head = [
@@ -145,12 +152,16 @@ public enum LightCommands {
         guard let id = argv.positional.first else { return usage("pharos wait r_xxx [--timeout 30s]") }
         let timeout = try argv.duration("timeout") ?? 0
         let result = try relay.wait(replyID: id, timeout: timeout)
-        if argv.flag("json") { return json(result, ok: result.status == .replied || result.status == .pending) }
+        if argv.flag("json") {
+            let encoded = json(result, ok: result.status == .replied)
+            if result.status == .pending { return LightCLIResult(exitCode: 2, text: encoded.text) }
+            return encoded
+        }
         switch result.status {
         case .replied:
             return ok(result.text ?? "")
         case .pending:
-            return ok("pending \(id)")
+            return LightCLIResult(exitCode: 2, text: "pending \(id)")
         case .expired:
             return LightCLIResult(exitCode: 1, text: "error: expired reply-id \(id)")
         case .unknown:
@@ -229,9 +240,17 @@ public enum LightCommands {
     }
 }
 
+private struct LightThreadShow: Codable {
+    var thread: LightThread
+    var participants: [String]
+    var kind: LightThreadKind
+    var messages: [LightLogEntry]
+}
+
 private struct LightArgv {
     var positional: [String] = []
-    /// Tokens after `--`. They are always message text, even when they name a member.
+    /// Tokens after `--`. They are always message text, even when they name a member
+    /// or look like a flag (`--json`). A trailing known flag stays part of the text.
     var forcedText: [String] = []
     var options: [String: String] = [:]
     var repeated: [String: [String]] = [:]

@@ -230,7 +230,7 @@ Agents that are not wired into the Host Runtime can still be addressed through
 the lightweight tier: a Broker member directory, point-to-point delivery, and
 email-style threads (a new send mints one; a reply inherits it from the reply-id).
 `pharos session new` creates a session on a Pharos node via the achat executable
-and registers it. A missing workspace is added first unless `--no-add-project`.
+and registers it (`dsh`, `ag`, `codex`, or `cursor`). A missing workspace is added first unless `--no-add-project`.
 `--host local` runs on this machine. A node with no recent heartbeat is used
 when `ssh pharos --version` succeeds, and queued only when that probe fails.
 `pharos project add` registers a workspace on that same node

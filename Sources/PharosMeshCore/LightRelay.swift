@@ -369,16 +369,25 @@ public struct IdleLightDriver: LightSessionDriver {
 public struct LightForwardResult: Equatable, Sendable {
     public var ok: Bool
     public var message: String
+    public var exitCode: Int32?
 
-    public init(ok: Bool, message: String) {
+    public init(ok: Bool, message: String, exitCode: Int32? = nil) {
         self.ok = ok
         self.message = message
+        self.exitCode = exitCode
     }
 }
 
 /// Non-broker hosts inject a forwarder. Returning nil means this process owns the ledger.
 public protocol LightReplyForwarding: Sendable {
     func forward(replyID: String, text: String) -> LightForwardResult?
+    /// Forward `pharos <arguments>` and return the Broker's stdout and exit code.
+    /// The default does nothing, so a reply-only forwarder stays local for read and wait.
+    func forwardCommand(_ arguments: [String]) -> LightForwardResult?
+}
+
+extension LightReplyForwarding {
+    public func forwardCommand(_ arguments: [String]) -> LightForwardResult? { nil }
 }
 
 public enum LightRelayError: Error, Equatable, LocalizedError {
@@ -642,6 +651,13 @@ public final class LightRelay: @unchecked Sendable {
 
     public func rejections() -> [LightRejection] {
         sync { rejectionLog }
+    }
+
+    /// When a forwarder owns the ledger, run `pharos <command> <arguments>` there.
+    public func forwardCommand(command: String, arguments: [String]) -> LightCLIResult? {
+        guard let result = forwarder?.forwardCommand([command] + arguments) else { return nil }
+        let code = result.exitCode ?? (result.ok ? 0 : 1)
+        return LightCLIResult(exitCode: code, text: result.message)
     }
 
     // MARK: Send / reply
@@ -1046,7 +1062,9 @@ public final class LightRelay: @unchecked Sendable {
                             expiresAt: issued.addingTimeInterval(replyTTL), once: once, consumed: false,
                             terminal: terminal, issuedAt: issued)
         ledger[replyID] = ticket
-        let header = headerLocked(from: from, thread: thread.id, replyID: replyID, hop: hop, limit: thread.hopLimit)
+        // A hop-limit notice is terminal. It must not invite another `pharos reply`.
+        let header = headerLocked(from: from, thread: thread.id, replyID: replyID, hop: hop, limit: thread.hopLimit,
+                                 inviteReply: !terminal)
         let body = text + "\n\n" + header
         let queued = outbox.contains(where: { $0.to == member.name }) || inflight.contains(member.name)
         if queued {
@@ -1280,13 +1298,15 @@ public final class LightRelay: @unchecked Sendable {
                             expiredInbox: expiredInbox)
     }
 
-    private func headerLocked(from: String, thread: String, replyID: String, hop: Int, limit: Int) -> String {
+    private func headerLocked(from: String, thread: String, replyID: String, hop: Int, limit: Int, inviteReply: Bool) -> String {
         var lines = [
             "[pharos from=\(from) thread=\(thread) reply-id=\(replyID) hop=\(hop)/\(limit)]",
-            "Reply with `pharos reply \(replyID) \"...\"` (you may @mention another member). Pharos reads this session if you cannot run that command.",
         ]
-        if let webhook {
-            lines.append("Or POST {\"replyId\":\"\(replyID)\",\"text\":\"...\"} to \(webhook).")
+        if inviteReply {
+            lines.append("Reply with `pharos reply \(replyID) \"...\"` (you may @mention another member). Pharos reads this session if you cannot run that command.")
+            if let webhook {
+                lines.append("Or POST {\"replyId\":\"\(replyID)\",\"text\":\"...\"} to \(webhook).")
+            }
         }
         return lines.joined(separator: "\n")
     }

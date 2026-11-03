@@ -680,6 +680,101 @@ final class LightSessionTests: XCTestCase {
         XCTAssertNil(ExternalLightDriver().readReply(member: member, since: issued))
     }
 
+    func testCodexAndAntigravityDefaultAFirstMessage() throws {
+        let runner = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+            output(0, #"{"ok":true,"created":true,"route":"app-server","session":{"sessionId":"sess-ready"}}"#),
+        ])
+        let service = makeService(relay: try makeRelay(), runner: runner, prober: ScriptProber([]))
+        let result = service.execute(arguments: ["new", "--here", "--app", "codex", "--workspace", "pharos"])
+        XCTAssertEqual(result.exitCode, 0, result.text)
+        XCTAssertEqual(json(result.text)?["sessionId"] as? String, "sess-ready")
+        XCTAssertEqual(runner.invocations.last?.argv.last, LightSessionService.defaultFirstMessage)
+        XCTAssertFalse(result.text.contains("achat failed"))
+
+        let blank = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+            output(0, #"{"ok":true,"created":true,"route":"desktop","state":{"conversation":null}}"#),
+        ])
+        let ag = makeService(relay: try makeRelay(), runner: blank, prober: ScriptProber([]))
+        let missing = ag.execute(arguments: ["new", "--here", "--app", "ag", "--workspace", "pharos"])
+        XCTAssertEqual(missing.exitCode, 1, missing.text)
+        XCTAssertTrue(missing.text.contains("Enter"), missing.text)
+        XCTAssertTrue(missing.text.contains("state.conversation"), missing.text)
+        XCTAssertEqual(blank.invocations.last?.argv.last, LightSessionService.defaultFirstMessage)
+
+        let opened = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+            output(0, #"{"ok":true,"created":true,"route":"desktop","state":{"conversation":"c-9"}}"#),
+        ])
+        let created = makeService(relay: try makeRelay(), runner: opened, prober: ScriptProber([]))
+        let session = created.execute(arguments: ["new", "--here", "--app", "ag", "--workspace", "pharos", "--title", "hello ag"])
+        XCTAssertEqual(json(session.text)?["sessionId"] as? String, "c-9")
+        XCTAssertEqual(opened.invocations.last?.argv.last, "hello ag")
+    }
+
+    func testLaunchDryRunReportsPortProbeAndWouldLaunch() throws {
+        let runner = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+            output(0, #"{"ok":true,"dryRun":true,"route":"desktop"}"#),
+        ])
+        let prober = ScriptProber([.absent])
+        let service = makeService(relay: try makeRelay(), runner: runner, prober: prober)
+        let result = service.execute(arguments: [
+            "new", "--here", "--app", "dsh", "--workspace", "pharos", "--launch", "--dry-run",
+        ])
+        XCTAssertEqual(result.exitCode, 0, result.text)
+        let object = try XCTUnwrap(json(result.text))
+        XCTAssertEqual(object["port"] as? Int, 4401)
+        XCTAssertEqual(object["probe"] as? String, "absent")
+        XCTAssertEqual(object["wouldLaunch"] as? Bool, true)
+        XCTAssertEqual(prober.calls.map(\.1), [4401])
+        XCTAssertFalse(runner.invocations.contains { $0.argv.contains { $0.contains("--remote-debugging-port=") } })
+
+        let reuse = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+            output(0, #"{"ok":true,"dryRun":true,"route":"desktop"}"#),
+        ])
+        let ready = makeService(relay: try makeRelay(), runner: reuse, prober: ScriptProber([.ready]))
+        let held = ready.execute(arguments: ["new", "--here", "--app", "ag", "--workspace", "pharos", "--launch", "--dry-run"])
+        XCTAssertEqual(json(held.text)?["probe"] as? String, "ready")
+        XCTAssertEqual(json(held.text)?["wouldLaunch"] as? Bool, false)
+        XCTAssertEqual(json(held.text)?["port"] as? Int, 4402)
+    }
+
+    func testDshListAddableMatchesARunningDesktop() throws {
+        let readyRunner = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+        ])
+        let ready = makeService(relay: try makeRelay(), runner: readyRunner, prober: ScriptProber([.ready]))
+        let listed = ready.executeProject(arguments: ["list", "--here", "--app", "dsh"])
+        XCTAssertEqual(json(listed.text)?["status"] as? String, "listed")
+        XCTAssertEqual(json(listed.text)?["addable"] as? String, "ui")
+
+        let away = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[]}"#),
+        ])
+        let absent = makeService(relay: try makeRelay(), runner: away, prober: ScriptProber([.absent]))
+        let empty = absent.executeProject(arguments: ["list", "--here", "--app", "dsh"])
+        XCTAssertEqual(json(empty.text)?["addable"] as? String, "api")
+    }
+
+    func testCursorIsDelegatedToAchat() throws {
+        let runner = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+            output(0, #"{"ok":true,"created":true,"route":"cursor-agent","session":{"sessionId":"agent-1"}}"#),
+        ])
+        let service = makeService(relay: try makeRelay(), runner: runner, prober: ScriptProber([]))
+        let result = service.execute(arguments: ["new", "--here", "--app", "cursor", "--workspace", "pharos", "--title", "hi"])
+        XCTAssertEqual(result.exitCode, 0, result.text)
+        XCTAssertEqual(json(result.text)?["sessionId"] as? String, "agent-1")
+        XCTAssertEqual(runner.invocations.last?.argv.prefix(3).map { $0 }, ["/tmp/achat", "cursor", "new"])
+        XCTAssertEqual(LightRouteCatalog.defaults(for: "cursor").map(\.id), ["cursor-agent", "desktop"])
+        XCTAssertTrue(ExternalLightDriver.delegatesToAchat(app: "cursor", routeID: "cursor-agent"))
+        XCTAssertTrue(ExternalLightDriver.delegatesToAchat(app: "dsh", routeID: "web"))
+        XCTAssertFalse(ExternalLightDriver.delegatesToAchat(app: "codex", routeID: "app-server"))
+    }
+
     private func makeRelay(now: (@Sendable () -> Date)? = nil) throws -> LightRelay {
         if let now {
             return try LightRelay(store: freshStore(), now: now, driver: IdleLightDriver())

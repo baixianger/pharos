@@ -100,6 +100,7 @@ public enum LightRouteCatalog {
         case "dsh": return dsh
         case "claude": return claude
         case "ag": return ag
+        case "cursor": return cursor
         default:
             return [LightRoute(id: "native", access: .write, fallback: false, summary: "app-declared native route")]
         }
@@ -109,18 +110,18 @@ public enum LightRouteCatalog {
         LightRoute(id: "app-server", access: .write, fallback: false,
                    summary: "headless codex exec resume. Yields if a writer lock is held. Does not answer approval prompts."),
         LightRoute(id: "ipc", access: .write, fallback: false,
-                   summary: "desktop IPC length-prefixed JSON. Live executor not certified."),
+                   summary: "desktop IPC, delegated to achat."),
         LightRoute(id: "desktop", access: .write, fallback: false,
-                   summary: "desktop CDP on 127.0.0.1. Live executor not certified."),
+                   summary: "desktop CDP on 127.0.0.1, delegated to achat."),
         LightRoute(id: "tmux", access: .write, fallback: true,
                    summary: "last resort: tmux send-keys and capture-pane."),
     ]
 
     public static let dsh: [LightRoute] = [
         LightRoute(id: "web", access: .write, fallback: false,
-                   summary: "dsh web API. Start on demand with --host 127.0.0.1 --port 0 --no-open, stop after the turn to release the writer lock. Live executor not certified."),
+                   summary: "dsh web API, delegated to achat. Start on demand with --host 127.0.0.1 --port 0 --no-open, stop after the turn to release the writer lock."),
         LightRoute(id: "desktop", access: .write, fallback: false,
-                   summary: "desktop CDP on 127.0.0.1. Live executor not certified."),
+                   summary: "desktop CDP on 127.0.0.1, delegated to achat."),
         LightRoute(id: "files", access: .read, fallback: false,
                    summary: "read-only session files."),
         LightRoute(id: "tmux", access: .write, fallback: true,
@@ -136,7 +137,15 @@ public enum LightRouteCatalog {
 
     public static let ag: [LightRoute] = [
         LightRoute(id: "desktop", access: .write, fallback: false,
-                   summary: "desktop CDP on 127.0.0.1. Live executor not certified."),
+                   summary: "desktop CDP on 127.0.0.1, delegated to achat."),
+    ]
+
+    /// Design routes for Cursor. Pharos does not spawn `cursor-agent`; achat owns both.
+    public static let cursor: [LightRoute] = [
+        LightRoute(id: "cursor-agent", access: .write, fallback: false,
+                   summary: "headless cursor-agent --resume <id> -p, delegated to achat. Workspace is the folder."),
+        LightRoute(id: "desktop", access: .write, fallback: false,
+                   summary: "desktop CDP on 127.0.0.1, delegated to achat."),
     ]
 }
 
@@ -239,13 +248,34 @@ public struct ExternalLightDriver: LightSessionDriver {
     /// Local Codex session store. When set, a headless resume runs in the session's
     /// recorded cwd, and `readReply` returns the turn's final message from the rollout.
     public var codexSessions: CodexRolloutReader?
+    /// `achat` executable. Desktop, IPC, and web routes delegate send/read here.
+    public var achat: String
+    let replyFloor: AchatReplyFloor
 
     public init(allowLive: Bool = false, runner: (any LightProcessRunning)? = nil, binaries: LightBinaries = .names,
-                codexSessions: CodexRolloutReader? = nil) {
+                codexSessions: CodexRolloutReader? = nil, achat: String = "achat") {
         self.allowLive = allowLive
         self.runner = runner
         self.binaries = binaries
         self.codexSessions = codexSessions
+        self.achat = achat
+        self.replyFloor = AchatReplyFloor()
+    }
+
+    /// Desktop, IPC, and web (and Cursor's headless CLI) are achat's routes.
+    /// Pharos does not speak CDP, IPC, or the DSH web lifecycle.
+    public static func delegatesToAchat(app: String, routeID: String) -> Bool {
+        if ["tmux", "files", "app-server", "headless"].contains(routeID) { return false }
+        if ["desktop", "ipc", "web"].contains(routeID) { return true }
+        return app == "cursor" && routeID == "cursor-agent"
+    }
+
+    public static func achatSendArgv(bin: String, app: String, session: String, text: String) -> [String] {
+        [bin, app, "send", "--host", "local", "--json", "--session", session, "--no-webhook", text]
+    }
+
+    public static func achatReadArgv(bin: String, app: String, session: String) -> [String] {
+        [bin, app, "read", "--host", "local", "--json", "--session", session, "--open"]
     }
 
     public func deliver(member: LightMember, body: String) -> LightDriveResult {
@@ -261,7 +291,19 @@ public struct ExternalLightDriver: LightSessionDriver {
                                     liveVerified: false, detail: "unverified live; \(planned.summary)")
         }
         var notes: [String] = []
+        var delegated = false
         for route in writable {
+            if Self.delegatesToAchat(app: member.app, routeID: route.id) {
+                if delegated { continue }
+                delegated = true
+                let sent = achatSend(member: member, body: body)
+                if sent.ok {
+                    return LightDriveResult(state: .delivered, route: route.id, fallback: false,
+                                            liveVerified: false, detail: sent.detail)
+                }
+                notes.append("\(route.id) \(sent.detail)")
+                continue
+            }
             var planned = LightRoutePlanner.invocation(member: member, route: route, body: body, binaries: binaries)
             if member.app == "codex", route.id == "app-server", planned.cwd == nil {
                 // `codex exec resume` takes the turn's cwd from the process; keep the session's own folder.
@@ -285,12 +327,114 @@ public struct ExternalLightDriver: LightSessionDriver {
     }
 
     public func readReply(member: LightMember, since: Date) -> String? {
+        if let route = LightRoutePlanner.select(member: member, operation: .send),
+           Self.delegatesToAchat(app: member.app, routeID: route.id) {
+            return harvest(member)
+        }
         // Stale pane text must not become a reply. Only a reader that can date a
         // completed turn answers: the Codex rollout's first `task_complete` after `since`.
         if member.app == "codex", let codexSessions {
             return codexSessions.firstCompletedReply(sessionID: member.sessionID, since: since)
         }
+        _ = since
         return nil
+    }
+
+    private func achatSend(member: LightMember, body: String) -> (ok: Bool, detail: String) {
+        guard let runner else { return (false, "no runner") }
+        let key = Self.floorKey(member)
+        if replyFloor.get(key) == nil {
+            let prior = runner.run(Self.readInvocation(bin: achat, member: member), stdin: "")
+            if prior.status == 0, let count = Self.interpretAchatTurn(prior.stdout).replies {
+                replyFloor.set(key, count)
+            }
+        }
+        let invocation = LightInvocation(
+            argv: Self.achatSendArgv(bin: achat, app: member.app, session: member.sessionID, text: body),
+            stdin: "", executable: true, fallback: false,
+            summary: "achat \(member.app) send", loopback: true
+        )
+        let output = runner.run(invocation, stdin: "")
+        let parsed = Self.interpretAchatTurn(output.stdout)
+        if output.status != 0 || !parsed.ok {
+            let detail = parsed.message ?? output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (false, detail.isEmpty ? "achat exit \(output.status)" : detail)
+        }
+        if let before = parsed.repliesBefore { replyFloor.set(key, before) }
+        return (true, "achat \(member.app) send")
+    }
+
+    /// `achat read` has no timestamps. A reply is new when its count is above the
+    /// count captured before send (`repliesBefore`). `achat wait` blocks; `pharos wait` polls this instead.
+    private func harvest(_ member: LightMember) -> String? {
+        guard let runner else { return nil }
+        let output = runner.run(Self.readInvocation(bin: achat, member: member), stdin: "")
+        guard output.status == 0 else { return nil }
+        let parsed = Self.interpretAchatTurn(output.stdout)
+        guard parsed.ok, let count = parsed.replies else { return nil }
+        let key = Self.floorKey(member)
+        if let floor = replyFloor.get(key), count > floor {
+            let text = parsed.reply?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if text.isEmpty { return nil }
+            replyFloor.set(key, count)
+            return text
+        }
+        if replyFloor.get(key) == nil { replyFloor.set(key, count) }
+        return nil
+    }
+
+    private static func readInvocation(bin: String, member: LightMember) -> LightInvocation {
+        LightInvocation(
+            argv: achatReadArgv(bin: bin, app: member.app, session: member.sessionID),
+            stdin: "", executable: true, fallback: false,
+            summary: "achat \(member.app) read", loopback: true
+        )
+    }
+
+    private static func floorKey(_ member: LightMember) -> String { "\(member.app):\(member.sessionID)" }
+
+    static func interpretAchatTurn(_ stdout: String) -> (ok: Bool, replies: Int?, repliesBefore: Int?, reply: String?, message: String?) {
+        guard let object = LightSessionService.extractJSON(stdout) else {
+            return (false, nil, nil, nil, nil)
+        }
+        var message: String?
+        if let error = object["error"] as? [String: Any] {
+            message = error["message"] as? String
+        }
+        if message == nil, let text = object["message"] as? String, !text.isEmpty { message = text }
+        let ok = object["error"] == nil && (object["ok"] as? Bool) != false
+        let reply = (object["reply"] as? String) ?? ((object["wait"] as? [String: Any])?["reply"] as? String)
+        return (ok, intValue(object["replies"]), intValue(object["repliesBefore"]), reply, message)
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let number = value as? Int { return number }
+        if let number = value as? Double, let whole = Int(exactly: number) { return whole }
+        if let number = value as? NSNumber {
+            let whole = number.intValue
+            if number.doubleValue == Double(whole) { return whole }
+        }
+        return nil
+    }
+}
+
+/// Reply counts observed through achat. `read` has no timestamps, so a higher
+/// count than the pre-send floor is the new reply. Shared by reference so a
+/// later `readReply` sees what `deliver` recorded.
+final class AchatReplyFloor: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+
+    func get(_ key: String) -> Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        return counts[key]
+    }
+
+    func set(_ key: String, _ value: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        counts[key] = value
     }
 }
 
@@ -366,22 +510,38 @@ public struct SSHLightReplyForwarder: LightReplyForwarding {
     public func forward(replyID: String, text: String) -> LightForwardResult? {
         // `--` keeps text that starts with `-` from being read as an option on the Broker.
         let command = "\(remoteCommand) reply \(shellQuote(replyID)) -- \(shellQuote(text))"
+        let output = ssh(command, summary: "forward pharos reply over the existing SSH route")
+        if output.status == 0 {
+            // Show the Broker's own result (thread, deliveries, new reply-ids) to the sender.
+            let remote = output.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            return LightForwardResult(ok: true, message: remote.isEmpty ? "forwarded" : "forwarded via \(destination)\n\(remote)", exitCode: 0)
+        }
+        let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        return LightForwardResult(ok: false, message: detail.isEmpty ? "ssh exit \(output.status)" : detail, exitCode: output.status)
+    }
+
+    public func forwardCommand(_ arguments: [String]) -> LightForwardResult? {
+        let command = ([remoteCommand] + arguments.map(Self.shellQuote)).joined(separator: " ")
+        let output = ssh(command, summary: "forward pharos \(arguments.first ?? "command") over the existing SSH route")
+        let remote = output.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if output.status == 0 {
+            return LightForwardResult(ok: true, message: remote, exitCode: 0)
+        }
+        let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = remote.isEmpty ? (detail.isEmpty ? "ssh exit \(output.status)" : detail) : remote
+        return LightForwardResult(ok: false, message: text, exitCode: output.status)
+    }
+
+    private func ssh(_ command: String, summary: String) -> LightProcessOutput {
         let invocation = LightInvocation(
             argv: ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "--", destination, command],
             stdin: "",
             executable: true,
             fallback: false,
-            summary: "forward pharos reply over the existing SSH route",
+            summary: summary,
             loopback: false
         )
-        let output = runner.run(invocation, stdin: "")
-        if output.status == 0 {
-            // Show the Broker's own result (thread, deliveries, new reply-ids) to the sender.
-            let remote = output.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-            return LightForwardResult(ok: true, message: remote.isEmpty ? "forwarded" : "forwarded via \(destination)\n\(remote)")
-        }
-        let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-        return LightForwardResult(ok: false, message: detail.isEmpty ? "ssh exit \(output.status)" : detail)
+        return runner.run(invocation, stdin: "")
     }
 
     public static func shellQuote(_ value: String) -> String {

@@ -63,7 +63,7 @@ public struct LightProjectPlan: Equatable, Sendable {
 public enum LightProjectAdd {
     public static func addable(app: String) -> LightProjectAddable {
         switch app {
-        case "codex", "dsh": return .api
+        case "codex", "dsh", "cursor": return .api
         case "ag": return .ui
         default: return .restart
         }
@@ -71,7 +71,7 @@ public enum LightProjectAdd {
 
     public static func plan(app: String, probe: LightAppProbe) -> LightProjectPlan {
         switch app {
-        case "codex":
+        case "codex", "cursor":
             return LightProjectPlan(addable: .api, callAchat: true, message: nil)
         case "dsh":
             switch probe {
@@ -106,11 +106,13 @@ public struct LightDebugPorts: Equatable, Sendable {
     public var dsh: Int?
     public var ag: Int?
     public var codex: Int?
+    public var cursor: Int?
 
-    public init(dsh: Int? = nil, ag: Int? = nil, codex: Int? = nil) {
+    public init(dsh: Int? = nil, ag: Int? = nil, codex: Int? = nil, cursor: Int? = nil) {
         self.dsh = dsh
         self.ag = ag
         self.codex = codex
+        self.cursor = cursor
     }
 
     public func port(for app: String) -> Int? {
@@ -118,6 +120,7 @@ public struct LightDebugPorts: Equatable, Sendable {
         case "dsh": return dsh
         case "ag": return ag
         case "codex": return codex
+        case "cursor": return cursor
         default: return nil
         }
     }
@@ -138,7 +141,8 @@ public struct LightDebugPorts: Equatable, Sendable {
         }
         return LightDebugPorts(dsh: pick("PHAROS_DSH_CDP_PORT", "dsh", dshLaunchDefault),
                                ag: pick("PHAROS_AG_CDP_PORT", "ag", nil),
-                               codex: pick("PHAROS_CODEX_CDP_PORT", "codex", codexLaunchDefault))
+                               codex: pick("PHAROS_CODEX_CDP_PORT", "codex", codexLaunchDefault),
+                               cursor: pick("PHAROS_CURSOR_CDP_PORT", "cursor", nil))
     }
 
     static func ports(inConfig text: String) -> [String: Int]? {
@@ -146,7 +150,7 @@ public struct LightDebugPorts: Equatable, Sendable {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let root = (object["defaults"] as? [String: Any]) ?? object
         var found: [String: Int] = [:]
-        for app in ["dsh", "ag", "codex"] {
+        for app in ["dsh", "ag", "codex", "cursor"] {
             guard let entry = root[app] as? [String: Any], let port = portValue(entry["cdpPort"]) else { continue }
             found[app] = port
         }
@@ -207,6 +211,7 @@ public struct LightAppBins: Equatable, Sendable {
     public var dsh: String?
     public var ag: String?
     public var codex: String?
+    public var cursor: String?
     /// The `pharos` a forwarded command runs on the target node. A non-interactive
     /// SSH shell on macOS only has /usr/bin:/bin:/usr/sbin:/sbin on PATH, so a user
     /// install needs `PHAROS_LIGHT_REMOTE_PHAROS=~/.local/bin/pharos` (a leading `~/`
@@ -214,11 +219,12 @@ public struct LightAppBins: Equatable, Sendable {
     public var remotePharos: String
 
     public init(achat: String = "achat", dsh: String? = nil, ag: String? = nil, codex: String? = nil,
-                remotePharos: String = "pharos") {
+                cursor: String? = nil, remotePharos: String = "pharos") {
         self.achat = achat
         self.dsh = dsh
         self.ag = ag
         self.codex = codex
+        self.cursor = cursor
         self.remotePharos = remotePharos
     }
 
@@ -240,6 +246,7 @@ public struct LightAppBins: Equatable, Sendable {
         case "dsh": return dsh
         case "ag": return ag
         case "codex": return codex
+        case "cursor": return cursor
         default: return nil
         }
     }
@@ -252,7 +259,7 @@ public struct LightAppBins: Equatable, Sendable {
         }
         let achat = pick("PHAROS_ACHAT_BIN") ?? "achat"
         return LightAppBins(achat: achat, dsh: pick("PHAROS_DSH_APP"), ag: pick("PHAROS_AG_APP"),
-                            codex: pick("PHAROS_CODEX_APP"),
+                            codex: pick("PHAROS_CODEX_APP"), cursor: pick("PHAROS_CURSOR_APP"),
                             remotePharos: pick("PHAROS_LIGHT_REMOTE_PHAROS") ?? "pharos")
     }
 }
@@ -282,6 +289,17 @@ public struct LightSessionService {
         self.launchPolls = launchPolls
     }
 
+    public static let apps = ["dsh", "ag", "codex", "cursor"]
+    /// Codex and Antigravity need a first message. Antigravity has no conversation id until one is sent.
+    public static let defaultFirstMessage = "Pharos session ready. Reply READY."
+
+    public static func openingMessage(app: String, title: String?) -> String? {
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmed.isEmpty { return trimmed }
+        if app == "codex" || app == "ag" { return defaultFirstMessage }
+        return nil
+    }
+
     public func execute(arguments: [String]) -> LightCLIResult {
         let argv = SessionArgv.parse(arguments)
         switch argv.positional.first {
@@ -303,8 +321,8 @@ public struct LightSessionService {
         guard let op = argv.positional.first, op == "list" || op == "add" else {
             return Self.usage("pharos project list|add --host H --app dsh|ag|codex [--path DIR] [--name N] [--dry-run] [--no-queue]")
         }
-        guard let app = argv.option("app"), ["dsh", "ag", "codex"].contains(app) else {
-            return Self.usage("pharos project \(op) --host H --app dsh|ag|codex")
+        guard let app = argv.option("app"), Self.apps.contains(app) else {
+            return Self.usage("pharos project \(op) --host H --app dsh|ag|codex|cursor")
         }
         let path = argv.option("path") ?? ""
         if op == "add", path.isEmpty || path.contains("\n") || path.contains("\0") {
@@ -405,8 +423,8 @@ public struct LightSessionService {
     }
 
     private func perform(_ verb: Verb, _ argv: SessionArgv) -> LightCLIResult {
-        guard let app = argv.option("app"), ["dsh", "ag", "codex"].contains(app) else {
-            return Self.usage("pharos session \(verb == .new ? "new" : "workspaces") --host H --app dsh|ag|codex")
+        guard let app = argv.option("app"), Self.apps.contains(app) else {
+            return Self.usage("pharos session \(verb == .new ? "new" : "workspaces") --host H --app dsh|ag|codex|cursor")
         }
         if argv.option("add-project") != nil || argv.flag("add-project") {
             return Self.usage("session new adds a missing project unless --no-add-project; --path DIR or a --workspace path names the directory")
@@ -419,7 +437,8 @@ public struct LightSessionService {
         let explicitName = argv.option("name")
         let hostForName = argv.option("host") ?? "local"
         let name = explicitName ?? Self.defaultMemberName(app: app, host: hostForName, workspace: target.name.isEmpty ? "workspace" : target.name)
-        let spec = SessionSpec(app: app, host: hostForName, workspace: target.name, title: argv.option("title"),
+        let title = verb == .new ? Self.openingMessage(app: app, title: argv.option("title")) : argv.option("title")
+        let spec = SessionSpec(app: app, host: hostForName, workspace: target.name, title: title,
                                name: name, launch: argv.flag("launch"), dryRun: argv.flag("dry-run"),
                                projectPath: target.path, noAddProject: argv.flag("no-add-project"))
         if argv.flag("here") {
@@ -512,12 +531,15 @@ public struct LightSessionService {
         }
         if spec.dryRun || here.dryRun {
             if json {
-                return Self.jsonText([
+                var body: [String: Any] = [
                     "ok": true, "status": "dry-run", "route": here.route ?? "", "node": spec.host,
                     "projects": here.projects,
-                ], ok: true)
+                ]
+                Self.mergeLaunch(&body, here)
+                return Self.jsonText(body, ok: true)
             }
             var lines = ["dry-run", "route \(here.route ?? "-")"]
+            lines.append(contentsOf: Self.launchLines(here))
             if !here.projects.isEmpty { lines.append(here.projects.joined(separator: "\n")) }
             return LightCLIResult(exitCode: 0, text: lines.joined(separator: "\n"))
         }
@@ -525,6 +547,7 @@ public struct LightSessionService {
     }
 
     private func performHere(_ spec: SessionSpec, verb: Verb, json: Bool) -> LightCLIResult {
+        let preview = launchPreview(spec)
         let launching = spec.launch && !spec.dryRun
         if launching, ports.port(for: spec.app) == nil {
             return hereFailure("debug port is not configured", spec: spec, json: json)
@@ -533,7 +556,7 @@ public struct LightSessionService {
             return stopped
         }
         guard launching, let port = ports.port(for: spec.app) else {
-            return runSessionAchat(spec, verb: verb, json: json, launched: false)
+            return runSessionAchat(spec, verb: verb, json: json, launched: false, preview: preview)
         }
         let first = prober.probe(app: spec.app, port: port)
         let decision = LightLaunchDecision.decide(probe: first, launchRequested: spec.launch && !spec.dryRun)
@@ -569,10 +592,23 @@ public struct LightSessionService {
             }
             launched = true
         }
-        return runSessionAchat(spec, verb: verb, json: json, launched: launched)
+        return runSessionAchat(spec, verb: verb, json: json, launched: launched, preview: nil)
     }
 
-    private func runSessionAchat(_ spec: SessionSpec, verb: Verb, json: Bool, launched: Bool) -> LightCLIResult {
+    /// `--launch --dry-run` reports the port and probe and does not start the app.
+    private func launchPreview(_ spec: SessionSpec) -> LaunchPreview? {
+        guard spec.launch, spec.dryRun else { return nil }
+        guard let port = ports.port(for: spec.app) else {
+            return LaunchPreview(port: nil, probe: nil, wouldLaunch: false)
+        }
+        let probe = prober.probe(app: spec.app, port: port)
+        let decision = LightLaunchDecision.decide(probe: probe, launchRequested: true)
+        let would: Bool
+        if case .launch = decision { would = true } else { would = false }
+        return LaunchPreview(port: port, probe: Self.probeLabel(probe), wouldLaunch: would)
+    }
+
+    private func runSessionAchat(_ spec: SessionSpec, verb: Verb, json: Bool, launched: Bool, preview: LaunchPreview?) -> LightCLIResult {
         let command = verb == .new ? "new" : "list"
         let achat = runner.run(LightInvocation(
             argv: Self.achatArgv(bin: apps.achat, app: spec.app, command: command, workspace: spec.workspace.isEmpty ? nil : spec.workspace,
@@ -590,11 +626,15 @@ public struct LightSessionService {
             return hereFailure(parsed.message ?? "achat failed", spec: spec, json: json)
         }
         if verb == .new, !spec.dryRun, !parsed.dryRun, parsed.sessionID == nil {
-            return hereFailure("achat did not return a session id", spec: spec, json: json)
+            let message = spec.app == "ag"
+                ? "achat ag new did not return a session id. achat must send the first message with Enter (the send button stays disabled after the text is inserted) and return sessionId or state.conversation"
+                : "achat did not return a session id"
+            return hereFailure(message, spec: spec, json: json)
         }
         let status = spec.dryRun || parsed.dryRun ? "dry-run" : (verb == .new ? "created" : "listed")
         let body = HereBody(ok: true, status: status, message: parsed.message, sessionId: parsed.sessionID,
-                            route: parsed.route, projects: parsed.projects, dryRun: spec.dryRun || parsed.dryRun, launched: launched)
+                            route: parsed.route, projects: parsed.projects, dryRun: spec.dryRun || parsed.dryRun, launched: launched,
+                            port: preview?.port, probe: preview?.probe, wouldLaunch: preview?.wouldLaunch)
         let text = Self.jsonText(body.object, ok: true)
         return json ? text : text
     }
@@ -691,13 +731,14 @@ public struct LightSessionService {
     }
 
     private func listHere(_ spec: ProjectSpec) -> ProjectOutcome {
+        let addable = planAdd(app: spec.app).addable.rawValue
         switch workspaceRows(app: spec.app, dryRun: spec.dryRun) {
         case .failure(let failure):
             return ProjectOutcome(ok: false, status: "error", message: failure.message, app: spec.app, path: spec.path,
-                                 name: spec.name, addable: LightProjectAdd.addable(app: spec.app).rawValue, dryRun: spec.dryRun, rows: [])
+                                 name: spec.name, addable: addable, dryRun: spec.dryRun, rows: [])
         case .success(let rows):
             return ProjectOutcome(ok: true, status: spec.dryRun ? "dry-run" : "listed", message: nil, app: spec.app,
-                                 path: spec.path, name: spec.name, addable: LightProjectAdd.addable(app: spec.app).rawValue,
+                                 path: spec.path, name: spec.name, addable: addable,
                                  dryRun: spec.dryRun, rows: rows)
         }
     }
@@ -1095,7 +1136,9 @@ public struct LightSessionService {
                         sessionId: object["sessionId"] as? String ?? parsed.sessionID, route: object["route"] as? String ?? parsed.route,
                         projects: object["projects"] as? [String] ?? parsed.projects,
                         dryRun: (object["dryRun"] as? Bool) == true || parsed.dryRun,
-                        launched: (object["launched"] as? Bool) == true)
+                        launched: (object["launched"] as? Bool) == true,
+                        port: portNumber(object["port"]), probe: object["probe"] as? String,
+                        wouldLaunch: object["wouldLaunch"] as? Bool)
     }
 
     private static func findSessionID(_ object: [String: Any], depth: Int = 0) -> String? {
@@ -1115,6 +1158,42 @@ public struct LightSessionService {
     private static func acceptableSession(_ value: String) -> Bool {
         guard value.range(of: #"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"#, options: .regularExpression) != nil else { return false }
         return !value.contains("/") && !value.contains("~") && !value.contains("@")
+    }
+
+    static func mergeLaunch(_ body: inout [String: Any], _ here: HereBody) {
+        if let port = here.port { body["port"] = port }
+        else if here.wouldLaunch != nil { body["port"] = NSNull() }
+        if let probe = here.probe { body["probe"] = probe }
+        if let would = here.wouldLaunch { body["wouldLaunch"] = would }
+    }
+
+    static func launchLines(_ here: HereBody) -> [String] {
+        guard here.wouldLaunch != nil || here.probe != nil else { return [] }
+        var lines: [String] = []
+        if let port = here.port { lines.append("port \(port)") }
+        else { lines.append("port unconfigured") }
+        if let probe = here.probe { lines.append("probe \(probe)") }
+        if let would = here.wouldLaunch { lines.append("would-launch \(would ? "yes" : "no")") }
+        return lines
+    }
+
+    static func probeLabel(_ probe: LightAppProbe) -> String {
+        switch probe {
+        case .ready: return "ready"
+        case .runningWithoutDebug: return "runningWithoutDebug"
+        case .portHeldByOther: return "portHeldByOther"
+        case .absent: return "absent"
+        }
+    }
+
+    private static func portNumber(_ value: Any?) -> Int? {
+        if value is NSNull { return nil }
+        if let number = value as? Int, (1...65535).contains(number) { return number }
+        if let number = value as? NSNumber {
+            let whole = number.intValue
+            if (1...65535).contains(whole) { return whole }
+        }
+        return nil
     }
 
     private static func usage(_ text: String) -> LightCLIResult {
@@ -1203,6 +1282,12 @@ struct ProjectSpec: Equatable {
     }
 }
 
+struct LaunchPreview {
+    var port: Int?
+    var probe: String?
+    var wouldLaunch: Bool
+}
+
 struct HereBody {
     var ok: Bool
     var status: String
@@ -1212,6 +1297,9 @@ struct HereBody {
     var projects: [String]
     var dryRun: Bool
     var launched: Bool
+    var port: Int? = nil
+    var probe: String? = nil
+    var wouldLaunch: Bool? = nil
 
     var object: [String: Any] {
         var body: [String: Any] = [
@@ -1220,6 +1308,7 @@ struct HereBody {
         if let message { body["message"] = message }
         if let sessionId { body["sessionId"] = sessionId }
         if let route { body["route"] = route }
+        LightSessionService.mergeLaunch(&body, self)
         return body
     }
 }

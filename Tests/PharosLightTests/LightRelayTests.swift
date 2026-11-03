@@ -149,6 +149,7 @@ final class LightRelayTests: XCTestCase {
         XCTAssertTrue(stopped.stopped)
         XCTAssertEqual(stopped.notice?.contains("Hop limit 3 reached"), true)
         XCTAssertEqual(stopped.deliveries.map(\.to), ["owner"])
+        XCTAssertFalse(stopped.deliveries.first?.header.contains("pharos reply") == true)
         let stillOpen = try XCTUnwrap(back.deliveries.first { $0.to == "claude-mini" }?.replyID)
         XCTAssertThrowsError(try relay.reply(stillOpen, text: "later")) { error in
             XCTAssertEqual(error as? LightRelayError, .threadStopped(sent.threadID))
@@ -227,6 +228,22 @@ final class LightRelayTests: XCTestCase {
         let again = try relay.wait(replyID: replyID, timeout: 0)
         XCTAssertEqual(again.status, .replied)
         XCTAssertEqual(driver.calls.count, callsAfter)
+    }
+
+    func testWaitReadAndThreadForwardInsteadOfUsingTheLocalLedger() throws {
+        let forwarder = CommandForwarder()
+        let relay = try makeRelay(forwarder: forwarder)
+        let routes: (String) -> [LightRoute] = { _ in [] }
+        let waited = LightCommands.execute(command: "wait", arguments: ["r_abc", "--timeout", "1"], relay: relay, routesForApp: routes)
+        XCTAssertEqual(waited.exitCode, 0, waited.text)
+        XCTAssertEqual(waited.text, "remote thread")
+        XCTAssertEqual(forwarder.commands.first, ["wait", "r_abc", "--timeout", "1"])
+        let shown = LightCommands.execute(command: "thread", arguments: ["show", "t_remote", "--json"], relay: relay, routesForApp: routes)
+        XCTAssertEqual(shown.text, "remote thread")
+        XCTAssertEqual(forwarder.commands.last, ["thread", "show", "t_remote", "--json"])
+        _ = LightCommands.execute(command: "read", arguments: ["--thread", "t_remote"], relay: relay, routesForApp: routes)
+        XCTAssertEqual(forwarder.commands.last, ["read", "--thread", "t_remote"])
+        XCTAssertTrue(relay.listThreads().isEmpty)
     }
 
     func testForwarderDoesNotTouchTheLocalLedger() throws {
@@ -360,9 +377,17 @@ final class LightRelayTests: XCTestCase {
         let shown = run("thread", ["show", threadID])
         XCTAssertTrue(shown.text.contains("kind direct"))
         XCTAssertTrue(shown.text.contains("hello there"))
+        let shownJSON = run("thread", ["show", threadID, "--json"])
+        XCTAssertEqual(shownJSON.exitCode, 0, shownJSON.text)
+        let shownObject = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(shownJSON.text.utf8)) as? [String: Any])
+        let messages = try XCTUnwrap(shownObject["messages"] as? [[String: Any]])
+        XCTAssertTrue(messages.contains { ($0["text"] as? String) == "hello there" })
         let read = run("read", ["--thread", threadID])
         XCTAssertTrue(read.text.contains("hello there"))
         let replyID = sent.text.split(separator: "\n").dropFirst().first.map { String($0.split(separator: "\t")[2]) } ?? ""
+        let pending = run("wait", [replyID, "--timeout", "0"])
+        XCTAssertEqual(pending.exitCode, 2, pending.text)
+        XCTAssertTrue(pending.text.contains("pending"))
         XCTAssertEqual(run("read", [replyID]).exitCode, 0)
         let answered = run("reply", [replyID, "--", "--dashed", "answer"])
         XCTAssertEqual(answered.exitCode, 0, answered.text)
@@ -431,6 +456,7 @@ final class LightDriverTests: XCTestCase {
         XCTAssertEqual(LightRouteCatalog.defaults(for: "dsh").map(\.id), ["web", "desktop", "files", "tmux"])
         XCTAssertEqual(LightRouteCatalog.defaults(for: "claude").map(\.id), ["headless", "tmux"])
         XCTAssertEqual(LightRouteCatalog.defaults(for: "ag").map(\.id), ["desktop"])
+        XCTAssertEqual(LightRouteCatalog.defaults(for: "cursor").map(\.id), ["cursor-agent", "desktop"])
         XCTAssertTrue(LightRouteCatalog.codex.last?.fallback == true)
         XCTAssertEqual(LightRouteCatalog.dsh.first { $0.id == "files" }?.access, .read)
         let codex = member("codex-mini-pharos", app: "codex", session: "sess-codex", routes: [])
@@ -484,16 +510,58 @@ final class LightDriverTests: XCTestCase {
     func testLiveFailureFallsThroughWithoutMarkingTheTurnVerified() {
         let runner = ScriptedRunner([
             LightProcessOutput(status: 1, stdout: "", stderr: "writer lock"),
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"replies":0}"#, stderr: ""),
+            LightProcessOutput(status: 1, stdout: #"{"ok":false,"error":{"message":"no ipc"}}"#, stderr: ""),
+            LightProcessOutput(status: 1, stdout: "", stderr: "no tmux"),
         ])
-        let driver = ExternalLightDriver(allowLive: true, runner: runner)
+        let driver = ExternalLightDriver(allowLive: true, runner: runner, achat: "/tmp/achat")
         let codex = member("codex-mini-pharos", app: "codex", session: "sess-codex", routes: [])
         let result = driver.deliver(member: codex, body: "hello")
-        XCTAssertEqual(result.state, .deferred)
-        XCTAssertEqual(result.route, "ipc")
+        XCTAssertEqual(result.state, .failed)
         XCTAssertFalse(result.liveVerified)
-        XCTAssertEqual(runner.invocations.map { $0.argv.first }, ["codex"])
-        XCTAssertTrue(result.detail.contains("not certified") || result.detail.contains("unverified"))
+        XCTAssertEqual(runner.invocations.first?.argv.first, "codex")
+        XCTAssertTrue(runner.invocations.contains { $0.argv.prefix(3) == ["/tmp/achat", "codex", "send"] && $0.argv.contains("--no-webhook") })
+        XCTAssertEqual(runner.invocations.last?.argv.first, "tmux")
         XCTAssertNil(driver.readReply(member: codex, since: Date()))
+    }
+
+    func testAchatHarvestsADesktopReplyByCount() {
+        let runner = ScriptedRunner([
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"replies":2,"reply":"old"}"#, stderr: ""),
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"sent":true,"repliesBefore":2,"route":"desktop"}"#, stderr: ""),
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"replies":3,"reply":"READY"}"#, stderr: ""),
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"replies":3,"reply":"READY"}"#, stderr: ""),
+        ])
+        let driver = ExternalLightDriver(allowLive: true, runner: runner, achat: "/tmp/achat")
+        let ag = member("ag-mini", app: "ag", session: "c-1", routes: [])
+        let sent = driver.deliver(member: ag, body: "header\n\nhello")
+        XCTAssertEqual(sent.state, .delivered)
+        XCTAssertEqual(sent.route, "desktop")
+        XCTAssertFalse(sent.liveVerified)
+        let send = runner.invocations[1].argv
+        XCTAssertEqual(Array(send.prefix(3)), ["/tmp/achat", "ag", "send"])
+        XCTAssertTrue(send.contains("--session"))
+        XCTAssertTrue(send.contains("c-1"))
+        XCTAssertTrue(send.contains("--no-webhook"))
+        XCTAssertEqual(send.last, "header\n\nhello")
+        XCTAssertEqual(driver.readReply(member: ag, since: Date()), "READY")
+        XCTAssertNil(driver.readReply(member: ag, since: Date()))
+    }
+
+    func testForwardedReadKeepsTheBrokerExitCode() {
+        let runner = ScriptedRunner([LightProcessOutput(status: 2, stdout: "pending r_x\n", stderr: "")])
+        let forwarder = SSHLightReplyForwarder(destination: "broker-ssh", runner: runner)
+        let result = forwarder.forwardCommand(["wait", "r_x", "--timeout", "0"])
+        XCTAssertEqual(result?.exitCode, 2)
+        XCTAssertEqual(result?.ok, false)
+        XCTAssertEqual(result?.message, "pending r_x")
+        let argv = runner.invocations[0].argv
+        XCTAssertEqual(Array(argv.prefix(6)), ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "--"])
+        XCTAssertFalse(argv.contains("-L"))
+        let command = argv.last ?? ""
+        XCTAssertTrue(command.contains("'wait'"))
+        XCTAssertTrue(command.contains("'r_x'"))
+        XCTAssertTrue(command.contains("'--timeout'"))
     }
 
     func testSSHForwarderUsesTheExistingRouteWithoutATunnel() {
@@ -554,6 +622,15 @@ private final class FakeDriver: LightSessionDriver, @unchecked Sendable {
     func readReply(member: LightMember, since: Date) -> String? {
         _ = since
         return reads[member.name]
+    }
+}
+
+private final class CommandForwarder: LightReplyForwarding, @unchecked Sendable {
+    var commands: [[String]] = []
+    func forward(replyID: String, text: String) -> LightForwardResult? { nil }
+    func forwardCommand(_ arguments: [String]) -> LightForwardResult? {
+        commands.append(arguments)
+        return LightForwardResult(ok: true, message: "remote thread", exitCode: 0)
     }
 }
 

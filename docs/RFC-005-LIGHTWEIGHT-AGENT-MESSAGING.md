@@ -124,7 +124,8 @@ Invariants a caller has to know:
 - `send(from:to:text:)` requires at least one recipient other than the sender. An unknown id in `to` is an error and does not mint a thread. Duplicate ids collapse. The call mints a thread whose originator is the sender, appends one message, and delivers one copy per recipient. Each copy has its own reply-id, hop 1, and the same thread id. `@` tokens in a new send are body text, not extra recipients. `@all` is not special.
 - `reply` looks up the reply-id and uses that message's thread. It always delivers back to the previous sender, then adds one more 1:1 copy for each `@` of a registered member (not the replier, de-duplicated). An `@` of someone who is not registered is unresolved, not fatal. An `@` inside an email is not a mention.
 - Participants are the originator plus every message sender and delivery target in the log, first time seen, registered members only. `listThreads` and `show` compute them. The snapshot does not store them. Kind is `direct` at two or fewer and `group` at three or more.
-- The delivered body is the text plus a header that names the sender, the thread, this copy's reply-id, and the hop. It does not list other recipients:
+- Tokens after `--` are the message. A trailing `--json` stays text. It is not an option.
+- The delivered body is the text plus a header that names the sender, the thread, this copy's reply-id, and the hop. It does not list other recipients. A hop-limit stop notice omits the `pharos reply` line:
 
 ```text
 [pharos from=<member> thread=<id> reply-id=r_<8+ chars> hop=<n>/<max>]
@@ -136,12 +137,12 @@ Reply with `pharos reply r_xxx "..."` (you may @mention another member). Pharos 
 - Reply-ids are random (`r_` plus at least eight lowercase letters or digits). Malformed, unknown, expired, and already-consumed ids are rejected and appended to the rejection log. `--once` consumes the id on the first accepted reply. Without `--once` the id stays usable until its TTL, and each accepted reply advances the hop so reuse cannot reset the limit.
 - Default reply TTL is 24h (`--ttl` accepts seconds or a `30s` / `12m` / `24h` / `1d` suffix). Default queue TTL is 72h. `sweep` drops expired ledger rows and expired outbox rows and appends a notice for the originator. The thread log and the rejection log are append-only; they are not pruned.
 - While a target is busy, or already has queued work, further deliveries for that member wait. `pump` (also called from `sweep` and after `send` or `reply`) flushes in order and stops at the first member that is still busy. The queue is per member, so two new sends (two threads) to one busy member still leave in order.
-- Each reply that would pass the thread hop limit (default 8, set with `--hop-limit` on `send`) stops the thread, logs the reply, and wakes the originator with a terminal notice. A reply to that notice is stored and does not fan out. A later reply on the stopped thread fails. A new `send` is a new thread and is not blocked by the stop.
-- `wait` returns when a reply to that id is in the log, or when the driver returns text it can prove is new. It does not scrape a terminal pane: old pane text is not a reply.
-- `read --thread` returns that thread's log. `read r_xxx` resolves the reply-id to the same log and does not record a rejection when the id is bad. The log is for the owner and for an agent that needs context. It is not a roster pushed to recipients.
+- Each reply that would pass the thread hop limit (default 8, set with `--hop-limit` on `send`) stops the thread, logs the reply, and wakes the originator with a terminal notice. That notice does not tell the originator to run `pharos reply`. A reply to that notice is stored and does not fan out. A later reply on the stopped thread fails. A new `send` is a new thread and is not blocked by the stop.
+- `wait` returns when a reply to that id is in the log, or when the driver returns text it can prove is new. It does not scrape a terminal pane: old pane text is not a reply. A wait that is still pending when the timeout ends exits 2.
+- `read --thread` returns that thread's log. `read r_xxx` resolves the reply-id to the same log and does not record a rejection when the id is bad. The log is for the owner and for an agent that needs context. It is not a roster pushed to recipients. `thread show --json` includes that same log as `messages`.
 - Inbound text is stored and forwarded as data. This module does not shell it out and does not answer approval prompts.
 
-`LightCommands.execute` is the CLI seam: same results the macOS `pharos` binary prints. Exit 0 is success, 1 is a rejected operation, 2 is usage.
+`LightCommands.execute` is the CLI seam: same results the macOS `pharos` binary prints. Exit 0 is success, 1 is a rejected operation, 2 is usage or a `wait` that is still pending.
 
 ## Routing
 
@@ -151,18 +152,26 @@ Headless routes come first. That is a deliberate change from achat's Codex order
 
 | App | Send order | Notes |
 | --- | --- | --- |
-| codex | `app-server`, `ipc`, `desktop`, `tmux` | `app-server` is `codex exec resume` on stdin. It does not answer approvals. IPC and CDP are planned only. |
+| codex | `app-server`, `ipc`, `desktop`, `tmux` | `app-server` is `codex exec resume` on stdin. It does not answer approvals. `ipc` and `desktop` are one `achat codex send`. |
 | claude | `headless`, `tmux` | `claude -p --resume`, prompt on stdin. No permission-bypass flags. |
-| dsh | `web`, `desktop`, `files`, `tmux` | `web` is the on-demand loopback server (`--host 127.0.0.1 --port 0 --no-open`), stopped after the turn so the writer lock is released. `files` is read-only and is never a send. The web lifecycle is planned, not executed. |
-| ag | `desktop` | CDP on loopback. Planned only. |
+| dsh | `web`, `desktop`, `files`, `tmux` | `web` and `desktop` are `achat dsh send`. achat owns the on-demand loopback server (`--host 127.0.0.1 --port 0 --no-open`) and stops it after the turn. `files` is read-only and is never a send. |
+| ag | `desktop` | `achat ag send`. CDP stays in achat. |
+| cursor | `cursor-agent`, `desktop` | Design. Headless is `cursor-agent --resume <id> -p`. Desktop is CDP. The workspace is the folder. Pharos accepts app id `cursor` and delegates both routes to achat. It does not spawn `cursor-agent`. |
 
 `tmux` is always last, `fallback == true`, summary prefixed `last resort`. Its send plan is `tmux send-keys -l` plus Enter. Its read plan is `capture-pane`. Neither is ingested automatically.
 
-`PHAROS_CODEX_BIN`, `PHAROS_CLAUDE_BIN`, `PHAROS_DSH_BIN`, and `PHAROS_TMUX_BIN` override the bare command names. Those values stay in the environment, not in the repo. `PHAROS_LIGHT_LIVE=1` may spawn the executable headless and tmux plans. Even then the result is `liveVerified == false`. IPC, CDP, and the DSH web start/stop sequence return `deferred` with an unverified detail. They are not executed, because a wrong IPC frame or a leaked writer lock is worse than a deferred delivery.
+`PHAROS_CODEX_BIN`, `PHAROS_CLAUDE_BIN`, `PHAROS_DSH_BIN`, and `PHAROS_TMUX_BIN` override the bare command names. Those values stay in the environment, not in the repo. `PHAROS_LIGHT_LIVE=1` may spawn the headless and tmux plans. Even then `liveVerified` stays false. With that switch, a desktop, ipc, or web route (and Cursor's `cursor-agent` route) is one achat call, not a Pharos CDP or IPC client:
+
+```text
+achat <app> send --host local --json --session <id> --no-webhook "<header+body>"
+achat <app> read --host local --json --session <id> --open
+```
+
+`achat read` has no timestamps. Pharos records `repliesBefore` (a read before send, or the count achat returns on send) and treats a later read with a higher `replies` count as the new reply. `achat <app> wait` exists and blocks; `pharos wait` polls `read` instead. Without `PHAROS_LIGHT_LIVE=1` those routes stay deferred.
 
 ## Relay
 
-Non-broker hosts set `PHAROS_LIGHT_SSH_HOST` to an existing SSH alias. `pharos reply` then runs `ssh -o BatchMode=yes -- <alias> pharos reply '<id>' '<text>'`. There is no `-L` or `-R`. The alias is configuration, not a committed address. If the forwarder returns a result, the local process does not write the ledger.
+Non-broker hosts set `PHAROS_LIGHT_SSH_HOST` to an existing SSH alias. `pharos reply` then runs `ssh -o BatchMode=yes -- <alias> pharos reply '<id>' -- '<text>'`. `wait`, `read`, and `thread list|show` use the same SSH route and keep the Broker's exit code (`wait` still pending is 2). There is no `-L` or `-R`. The alias is configuration, not a committed address. If the forwarder returns a result, the local process does not write the ledger.
 
 The directory lives under the application-support `Pharos/light-relay` directory, or `PHAROS_LIGHT_RELAY` when that is set. Files are owner-readable only. Nothing in the committed tree names a person, a machine, a home directory, or a private address.
 
@@ -174,17 +183,17 @@ achat is the reference for route policy: per-app order, DSH's on-demand loopback
 - achat's write paths were not verified live. Wrapping the CLI would not certify ordinary sends.
 - The behavior this RFC has to get right (directory, reply-ids, mentions, hops, queue) is in-process and is tested through `LightRelay`.
 
-Session creation is the exception. `pharos session new` and `session workspaces` delegate to the achat executable (`PHAROS_ACHAT_BIN`, default name `achat`) and pass `--json`. The binary path is personal config and is not committed. achat's own source is not vendored. `ExternalLightDriver` can later grow a certified executor for ordinary sends; that option stays closed until a Mac trial says the executor is real.
+Session creation delegates to the achat executable (`PHAROS_ACHAT_BIN`, default name `achat`) and passes `--json`. Desktop, ipc, and web delivery do too, so Pharos does not reimplement those routes. The binary path is personal config and is not committed. achat's own source is not vendored.
 
-What was ported for ordinary sends is the policy table and the headless argv shapes. What was not ported is the TypeScript CDP/IPC/web clients.
+What stays in Swift for ordinary sends is the policy table and the headless argv shapes (`codex exec resume`, `claude -p --resume`). What was not ported is the TypeScript CDP/IPC/web clients.
 
 ## Session creation
 
-`pharos session new --host H --app dsh|ag|codex --workspace PROJECT|DIR` creates a session on that Pharos node and, on success, registers a member so `pharos send` can address it. The default member name is `<app>-<host>-<workspace>` (slug), overridable with `--name`. The same name with a different session is an error and does not replace the existing member. `--path DIR` is the directory when `--workspace` is only a project name. A `--workspace` that contains `/` or starts with `~` is the directory, and the project name is its last component.
+`pharos session new --host H --app dsh|ag|codex|cursor --workspace PROJECT|DIR` creates a session on that Pharos node and, on success, registers a member so `pharos send` can address it. The default member name is `<app>-<host>-<workspace>` (slug), overridable with `--name`. The same name with a different session is an error and does not replace the existing member. `--path DIR` is the directory when `--workspace` is only a project name. A `--workspace` that contains `/` or starts with `~` is the directory, and the project name is its last component.
 
 `pharos session workspaces --host H --app A` lists the projects achat can see on that node.
 
-`--host local`, `localhost`, this machine's hostname and its short name, and `PHAROS_SELF_HOST` / `PHAROS_NODE_NAME` run in-process and register the member. `--here` is what a forward runs on the target: it returns JSON and does not register. A remote host is `ssh -o BatchMode=yes` of `pharos session … --here`, with no tunnel. The caller never falls back to its own machine. `--title` is the optional first message achat's `new` already accepts. `--dry-run` asks achat for the plan, does not launch, and does not register a member.
+`--host local`, `localhost`, this machine's hostname and its short name, and `PHAROS_SELF_HOST` / `PHAROS_NODE_NAME` run in-process and register the member. `--here` is what a forward runs on the target: it returns JSON and does not register. A remote host is `ssh -o BatchMode=yes` of `pharos session … --here`, with no tunnel. The caller never falls back to its own machine. `--title` is the first message achat's `new` accepts. Codex and Antigravity with no `--title` send `Pharos session ready. Reply READY.` instead of surfacing a raw achat error. Antigravity's `new` opens a blank conversation and has no id until that first message is sent. Pharos passes the text. achat must insert it and press Enter (the send button stays disabled after insertion) and return `sessionId` or `state.conversation`. Until achat does that, Pharos stops with that contract in the error and does not register a member. `--dry-run` asks achat for the plan, does not launch, and does not register a member. `--launch --dry-run` also reports the resolved port, the probe (`ready`, `runningWithoutDebug`, `portHeldByOther`, `absent`), and `would-launch` yes or no. It does not start the app.
 
 Route choice stays in achat (`achat <app> probe` and achat's own config). Codex reaches the app through app-server/IPC and does not need a debug port. DSH can use its on-demand web server. Pharos does not require `PHAROS_<APP>_CDP_PORT` and does not probe a debug endpoint unless `--launch` is set.
 
@@ -203,7 +212,7 @@ The port is the first value that is set: `PHAROS_DSH_CDP_PORT`, `PHAROS_AG_CDP_P
 
 ## Project registration
 
-`pharos project list|add --host H --app dsh|ag|codex --path DIR` registers a workspace in that app. It uses the same target-node path as session creation: the caller forwards `pharos project … --here`, or leaves one inbox job when the node is offline. The caller does not run achat, and it does not fall back to its own machine. `--no-queue` returns `node offline` immediately. `--dry-run` does not register a project. Add is idempotent: the target lists projects and returns `already` when the path is already there.
+`pharos project list|add --host H --app dsh|ag|codex|cursor --path DIR` registers a workspace in that app. `project list` reports the same `addable` as `project add`: DSH is `ui` when its desktop debug endpoint is up, and `api` when the desktop is absent. It uses the same target-node path as session creation: the caller forwards `pharos project … --here`, or leaves one inbox job when the node is offline. The caller does not run achat, and it does not fall back to its own machine. `--no-queue` returns `node offline` immediately. `--dry-run` does not register a project. Add is idempotent: the target lists projects and returns `already` when the path is already there.
 
 The deep module stays `LightRelay` for the inbox. Project add is a small seam on `LightSessionService`: one capability (`addable`) and one achat contract. achat owns the per-app adapter. Pharos does not open the app's files.
 
@@ -226,7 +235,18 @@ Verified on a Mac, and left to achat rather than reimplemented here:
 | dsh 0.2.1 | `~/.dsh/storages/workspace.json`. There is no CLI command. `workspace/create {request:{path}}` on a `dsh web` server is idempotent. The desktop app is the single writer and rewrites the whole file, so a web-side add made while the desktop is running is lost | Desktop debug endpoint ready: `addable: ui` (Add workspace through that UI). Desktop not running: `addable: api`. Desktop running without a debug port: `addable: restart`, status `needs_user_action`, and nothing is written. A port owned by another process is left alone |
 | antigravity | One JSON file per project under `~/.gemini/config/projects/<uuid>.json`, written by the app's language server with a private token. Files dropped while the app is running are not loaded, and that directory is off limits | `addable: ui` only, and only when the debug endpoint belongs to Antigravity (Create New Project, then the folder picker). Otherwise `needs_user_action`. Pharos does not write that directory |
 
-The probe table applies when a debug port is configured. Codex is always `addable: api` and is not probed. DSH and Antigravity with no configured port are handed to achat (`api` and `ui`) instead of failing with `debug port is not configured`.
+The probe table applies when a debug port is configured. Codex is always `addable: api` and is not probed. DSH and Antigravity with no configured port are handed to achat (`api` and `ui`) instead of failing with `debug port is not configured`. Cursor is `addable: api` and is not probed. Its project is the workspace folder. achat will own `cursor-agent --resume <id> -p` and the desktop CDP route. Pharos only accepts the app id and delegates.
+
+## Cursor
+
+Cursor is installed on the Mac mini. This tier does not implement it yet beyond the app id.
+
+| Route | What it is |
+| --- | --- |
+| `cursor-agent` | Headless resume: `cursor-agent --resume <id> -p`. The workspace is the folder the agent was opened in. |
+| `desktop` | CDP on `127.0.0.1`, same loopback rule as the other desktop apps. |
+
+Pharos send, read, and wait for those routes are `achat cursor send|read|wait`. Session create and project add are `achat cursor new` and `achat cursor workspace list|add`. The local install and the achat driver are still to be written on the achat side.
 
 ## Node inbox
 
@@ -257,7 +277,7 @@ A send to a member whose node has gone offline since its last heartbeat waits in
 
 Tests cross `LightRelay`, `LightCommands`, and `LightRoutePlanner`. They do not read private ledger fields.
 
-Covered: directory resolution and conflicts, a new send minting a thread, multi-recipient send as N 1:1 copies that share a thread id and hide each other from the header, reply-id inheritance of that thread, `@` on a reply adding copies without replacing the previous sender, `@all` left unresolved, derived participants and direct/group kind, participants absent from the snapshot, reply-id issue / lookup / expiry / `--once` / forged ids, hop along a reply chain and the originator notice, queue order across two sends to one member, queue expiry, wait-once ingestion, SSH-shaped forwarding, loopback webhook intake, reload of the append-only log, headless argv with no approval bypass, unverified external delivery, session-new argument mapping and achat JSON, member registration and name collision, dry-run, the launch decision table, a missing debug port only when `--launch` is set, launch defaults (dsh 9301, Codex 9302) with env and achat-config overrides, session create without a debug port, `--host local` and a configured self alias running in-process, an SSH `pharos --version` probe that runs a reachable node directly and queues only when the probe fails, node-offline queue and `--no-queue`, no local fallback when a forward fails, inbox pull/ack/expiry, duplicate request ids, project add by path (including the already-registered no-op), the `api` / `ui` / `restart` decision, `needs_user_action` without writing app files, session new auto-adding a missing project, `--no-add-project` refusing to create, and `needs_user_action` stopping session new.
+Covered: directory resolution and conflicts, a new send minting a thread, multi-recipient send as N 1:1 copies that share a thread id and hide each other from the header, reply-id inheritance of that thread, `@` on a reply adding copies without replacing the previous sender, `@all` left unresolved, derived participants and direct/group kind, participants absent from the snapshot, reply-id issue / lookup / expiry / `--once` / forged ids, hop along a reply chain and the originator notice, queue order across two sends to one member, queue expiry, wait-once ingestion, SSH-shaped forwarding, loopback webhook intake, reload of the append-only log, headless argv with no approval bypass, unverified external delivery, session-new argument mapping and achat JSON, member registration and name collision, dry-run, the launch decision table, a missing debug port only when `--launch` is set, launch defaults (dsh 9301, Codex 9302) with env and achat-config overrides, session create without a debug port, `--host local` and a configured self alias running in-process, an SSH `pharos --version` probe that runs a reachable node directly and queues only when the probe fails, node-offline queue and `--no-queue`, no local fallback when a forward fails, inbox pull/ack/expiry, duplicate request ids, project add by path (including the already-registered no-op), the `api` / `ui` / `restart` decision, `needs_user_action` without writing app files, session new auto-adding a missing project, `--no-add-project` refusing to create, `needs_user_action` stopping session new, achat send/read for desktop routes with reply-count harvest, a default first message for Codex and Antigravity, `--launch --dry-run` reporting port/probe/would-launch, a hop-limit notice without a reply invitation, `thread show --json` messages, `wait` exit 2 on timeout, SSH forward of wait/read/thread, DSH list `addable` matching add, and app id `cursor` delegated to achat.
 
 Not certified, and not run by CI:
 

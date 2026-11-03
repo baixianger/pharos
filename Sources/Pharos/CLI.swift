@@ -168,10 +168,11 @@ enum CLI {
 
     private static func makeLightRelay() throws -> LightRelay {
         let environment = ProcessInfo.processInfo.environment
+        let bins = LightAppBins.fromEnvironment(environment)
         let forwarder: (any LightReplyForwarding)?
         if let host = environment["PHAROS_LIGHT_SSH_HOST"], !host.isEmpty {
             forwarder = SSHLightReplyForwarder(destination: host,
-                                               remoteCommand: LightAppBins.fromEnvironment(environment).remotePharosShell,
+                                               remoteCommand: bins.remotePharosShell,
                                                runner: FoundationLightProcessRunner())
         } else {
             forwarder = nil
@@ -181,7 +182,8 @@ enum CLI {
             allowLive: live,
             runner: live ? FoundationLightProcessRunner() : nil,
             binaries: .fromEnvironment(environment),
-            codexSessions: CodexRolloutReader()
+            codexSessions: CodexRolloutReader(),
+            achat: bins.achat
         )
         return try LightRelay(
             store: LightRelay.defaultStoreURL(),
@@ -983,7 +985,7 @@ enum CLI {
           runtime reconcile            Re-apply the saved runtime configuration
 
         LIGHTWEIGHT MESSAGING (point-to-point; a thread is email-style, not a room)
-          member register --name N --host H --app codex|claude|dsh|ag --project P --session S [--route R]...
+          member register --name N --host H --app codex|claude|dsh|ag|cursor --project P --session S [--route R]...
           member list [--json]
           send --from NAME [--to NAME]... [--hop-limit N] [--ttl 24h] [--once] <member...> -- <text>
           reply r_xxx <text> [--ttl 24h] [--once]
@@ -991,30 +993,35 @@ enum CLI {
           read --thread ID [--json] | read r_xxx [--json]
           thread list [--json]
           thread show <id> [--json]
-          session new --host H --app dsh|ag|codex --workspace PROJECT|DIR [--path DIR] [--title T] [--name N] [--launch] [--dry-run] [--no-add-project] [--no-queue] [--json]
-          session workspaces --host H --app dsh|ag|codex [--launch] [--no-queue] [--json]
+          session new --host H --app dsh|ag|codex|cursor --workspace PROJECT|DIR [--path DIR] [--title T] [--name N] [--launch] [--dry-run] [--no-add-project] [--no-queue] [--json]
+          session workspaces --host H --app dsh|ag|codex|cursor [--launch] [--no-queue] [--json]
           session pull --node H [--json]
           session ack <request-id> [--result JSON]
-          project list --host H --app dsh|ag|codex [--dry-run] [--no-queue] [--json]
-          project add --host H --app dsh|ag|codex --path DIR [--name N] [--dry-run] [--no-queue] [--json]
+          project list --host H --app dsh|ag|codex|cursor [--dry-run] [--no-queue] [--json]
+          project add --host H --app dsh|ag|codex|cursor --path DIR [--name N] [--dry-run] [--no-queue] [--json]
           A new send mints a thread. A reply inherits that thread from the reply-id
           and may @mention more members (each mention is another 1:1 copy).
           `thread new` and `thread add` are not commands. Participants are derived.
           Leading words that name registered members are recipients until `--`.
+          Tokens after `--` are the message, including a token that looks like a flag
+          (`--json`). They are not read as options.
           `session new` and `project list|add` run on the target Pharos node. `--host local`
           (or this machine's hostname / PHAROS_SELF_HOST) runs here. A node with no
           recent heartbeat is still used when `ssh pharos --version` succeeds; only a
           failed probe is queued (72h) unless `--no-queue`. There is no heartbeat daemon.
           `session new` adds a missing project unless `--no-add-project`.
+          Codex and Antigravity get a first message when `--title` is omitted.
           `--launch` is the only way a node starts an app, and the only command that
           needs a debug port (env override, else achat config, else dsh 9301 / codex 9302).
+          `--launch --dry-run` reports the port, the probe, and whether it would launch.
           Debug ports and the achat binary come from the environment, not the repo.
-          Set PHAROS_LIGHT_SSH_HOST to an existing SSH alias to forward `reply`
-          from a non-Broker host. Forwarded commands run `pharos` on the target;
+          Set PHAROS_LIGHT_SSH_HOST to an existing SSH alias to forward `reply`,
+          `wait`, `read`, and `thread list|show` from a non-Broker host.
+          Forwarded commands run `pharos` on the target;
           set PHAROS_LIGHT_REMOTE_PHAROS (e.g. ~/.local/bin/pharos) when it is not
           on the target's non-interactive SSH PATH. Set PHAROS_LIGHT_WEBHOOK only to a loopback URL.
-          PHAROS_LIGHT_LIVE=1 enables headless codex/claude/tmux execution; desktop
-          IPC, CDP, and the DSH web lifecycle stay planned until certified on a Mac.
+          PHAROS_LIGHT_LIVE=1 runs headless codex/claude and tmux, and delegates
+          desktop, ipc, and web sends to achat. Pharos does not speak CDP or IPC.
 
         OTHER
           help, version
