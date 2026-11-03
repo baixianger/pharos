@@ -87,7 +87,7 @@ public enum LightCommands {
                 let people = view.participants.joined(separator: ",")
                 return "\(view.thread.id)\t\(flag)\t\(view.thread.hopLimit)\t\(view.kind.rawValue)\t\(people)"
             }
-            return ok((["THREAD\tSTATE\tHOP\tKIND\tPARTICIPANTS"] + lines).joined(separator: "\n"))
+            return ok((["THREAD\tSTATE\tHOP-LIMIT\tKIND\tPARTICIPANTS"] + lines).joined(separator: "\n"))
         case "show":
             guard let id = argv.positional.dropFirst().first else {
                 return usage("pharos thread show <id>")
