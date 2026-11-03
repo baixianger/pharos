@@ -1666,6 +1666,25 @@ final class MeshNickResolutionTests: XCTestCase {
 }
 
 final class MeshStateCorrectionTests: XCTestCase {
+    private var hermeticDir: URL!
+
+    override func setUp() {
+        super.setUp()
+        // MeshBroker() persists under PHAROS_MESH_DIR (default ~/Library/Application Support/Pharos).
+        hermeticDir = FileManager.default.temporaryDirectory.appendingPathComponent("mesh-hermetic-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: hermeticDir.appendingPathComponent("mesh-state/unread"),
+                                                 withIntermediateDirectories: true)
+        setenv("PHAROS_MESH_DIR", hermeticDir.path, 1)
+        setenv("PHAROS_MESH_DATA_DIR", hermeticDir.appendingPathComponent("broker-data").path, 1)
+    }
+
+    override func tearDown() {
+        unsetenv("PHAROS_MESH_DIR")
+        unsetenv("PHAROS_MESH_DATA_DIR")
+        try? FileManager.default.removeItem(at: hermeticDir)
+        super.tearDown()
+    }
+
     private func entry(state: String, ts: Double) -> MeshPresenceEntry {
         MeshPresenceEntry(project: "/p", session: "s", host: "h", tmuxPane: "%1",
                           state: state, stateTs: ts, kind: "codex", aliases: ["r": "codex"], rooms: ["r"],
