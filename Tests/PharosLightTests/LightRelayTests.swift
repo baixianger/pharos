@@ -364,6 +364,9 @@ final class LightRelayTests: XCTestCase {
         XCTAssertTrue(read.text.contains("hello there"))
         let replyID = sent.text.split(separator: "\n").dropFirst().first.map { String($0.split(separator: "\t")[2]) } ?? ""
         XCTAssertEqual(run("read", [replyID]).exitCode, 0)
+        let answered = run("reply", [replyID, "--", "--dashed", "answer"])
+        XCTAssertEqual(answered.exitCode, 0, answered.text)
+        XCTAssertTrue(run("thread", ["show", threadID]).text.contains("--dashed answer"))
         let group = run("send", ["--from", "owner", "--to", "codex-mini-pharos", "--to", "claude-mini", "--hop-limit", "4", "--", "both"])
         XCTAssertEqual(group.exitCode, 0)
         XCTAssertTrue(group.text.contains("hop 1/4"))

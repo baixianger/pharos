@@ -134,7 +134,8 @@ public enum LightCommands {
 
     private static func reply(_ argv: LightArgv, relay: LightRelay) throws -> LightCLIResult {
         guard let id = argv.positional.first else { return usage("pharos reply r_xxx <text>") }
-        let text = argv.positional.dropFirst().joined(separator: " ")
+        // `--` protects text that starts with `-`, same as `send`.
+        let text = (Array(argv.positional.dropFirst()) + argv.forcedText).joined(separator: " ")
         guard !text.isEmpty else { return usage("pharos reply r_xxx <text>") }
         let result = try relay.reply(id, text: text, ttl: try argv.duration("ttl"), once: argv.flag("once"))
         return render(result, json: argv.flag("json"))
