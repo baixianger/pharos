@@ -130,6 +130,8 @@ enum CLI {
                 return await runMesh(rest)
             case "member", "thread", "send", "reply", "wait", "read":
                 return finishLight(lightExecute(command: command, arguments: rest))
+            case "session":
+                return finishLight(sessionExecute(arguments: rest))
             case "runtime":
                 return runRuntime(rest)
             case "skill", "skills":
@@ -182,6 +184,21 @@ enum CLI {
             forwarder: forwarder,
             webhook: environment["PHAROS_LIGHT_WEBHOOK"]
         )
+    }
+
+    private static func sessionExecute(arguments: [String]) -> LightCLIResult {
+        do {
+            let environment = ProcessInfo.processInfo.environment
+            return LightSessionService(
+                relay: try makeLightRelay(),
+                runner: FoundationLightProcessRunner(),
+                prober: LoopbackDebugProber(),
+                ports: .fromEnvironment(environment),
+                apps: .fromEnvironment(environment)
+            ).execute(arguments: arguments)
+        } catch {
+            return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")
+        }
     }
 
     private static func finishLight(_ result: LightCLIResult) -> Int32 {
@@ -952,10 +969,17 @@ enum CLI {
           read --thread ID [--json] | read r_xxx [--json]
           thread list [--json]
           thread show <id> [--json]
+          session new --host H --app dsh|ag|codex --workspace PROJECT [--title T] [--name N] [--launch] [--dry-run] [--no-queue] [--json]
+          session workspaces --host H --app dsh|ag|codex [--launch] [--no-queue] [--json]
+          session pull --node H [--json]
+          session ack <request-id> [--result JSON]
           A new send mints a thread. A reply inherits that thread from the reply-id
           and may @mention more members (each mention is another 1:1 copy).
           `thread new` and `thread add` are not commands. Participants are derived.
           Leading words that name registered members are recipients until `--`.
+          `session new` runs on the target Pharos node. An offline node is queued
+          (72h) unless `--no-queue`. `--launch` is the only way a node starts an app.
+          Debug ports and the achat binary come from the environment, not the repo.
           Set PHAROS_LIGHT_SSH_HOST to an existing SSH alias to forward `reply`
           from a non-Broker host. Set PHAROS_LIGHT_WEBHOOK only to a loopback URL.
           PHAROS_LIGHT_LIVE=1 enables headless codex/claude/tmux execution; desktop

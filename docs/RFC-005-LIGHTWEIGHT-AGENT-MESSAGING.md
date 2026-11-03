@@ -168,14 +168,46 @@ The directory lives under the application-support `Pharos/light-relay` directory
 
 ## Why Swift, not a call to achat
 
-achat is the reference for route policy: per-app order, DSH's on-demand loopback server, Codex's writer lock, and the refusal to auto-answer approvals. It is not the implementation.
+achat is the reference for route policy: per-app order, DSH's on-demand loopback server, Codex's writer lock, and the refusal to auto-answer approvals. Messaging rules stay in Swift.
 
-- Pharos is a SwiftPM app. Shelling out to Node would add a second runtime and a second place for the hop, TTL, and mention rules. The deletion test would fail: those rules would reappear in every caller as a process invocation.
-- achat's write paths were not verified live. Wrapping the CLI would not certify them.
+- Pharos is a SwiftPM app. Shelling out to Node for hops, TTL, or mentions would add a second place for those rules. The deletion test would fail: they would reappear in every caller as a process invocation.
+- achat's write paths were not verified live. Wrapping the CLI would not certify ordinary sends.
 - The behavior this RFC has to get right (directory, reply-ids, mentions, hops, queue) is in-process and is tested through `LightRelay`.
-- `ExternalLightDriver` can later grow a certified executor, or a thin achat adapter, without an edit to the relay. That option stays closed until a Mac trial says the executor is real.
 
-What was ported is the policy table and the headless argv shapes. What was not ported is the TypeScript CDP/IPC/web clients.
+Session creation is the exception. `pharos session new` and `session workspaces` delegate to the achat executable (`PHAROS_ACHAT_BIN`, default name `achat`) and pass `--json`. The binary path is personal config and is not committed. achat's own source is not vendored. `ExternalLightDriver` can later grow a certified executor for ordinary sends; that option stays closed until a Mac trial says the executor is real.
+
+What was ported for ordinary sends is the policy table and the headless argv shapes. What was not ported is the TypeScript CDP/IPC/web clients.
+
+## Session creation
+
+`pharos session new --host H --app dsh|ag|codex --workspace PROJECT` creates a session on that Pharos node and, on success, registers a member so `pharos send` can address it. The default member name is `<app>-<host>-<workspace>` (slug), overridable with `--name`. The same name with a different session is an error and does not replace the existing member.
+
+`pharos session workspaces --host H --app A` lists the projects achat can see on that node.
+
+The caller does not create the session itself. It forwards `pharos session … --here` over the existing SSH route (`ssh -o BatchMode=yes`, no tunnel). `--here` is the form the target node runs: it probes the app, optionally launches it, then runs `achat <app> new|list --host local --json`. `--title` is the optional first message achat's `new` already accepts. `--dry-run` asks achat for the plan, does not launch, and does not register a member.
+
+`--launch` is opt-in, on `new` and on `workspaces`. The target node applies one check, then stops:
+
+| Probe | Result |
+| --- | --- |
+| Debug endpoint answers and belongs to this app | Reuse it |
+| App process is up, endpoint is not | Do not kill it. Ask the owner to quit and relaunch. A relaunch of the same app reuses the running instance and would ignore the debug flag |
+| Port answers as something else | Touch nothing |
+| Nothing is there | Without `--launch`, `app not running`. With `--launch`, start the configured executable with `--remote-debugging-address=127.0.0.1` and wait until the endpoint belongs to the app |
+
+Ports and app executables come from `PHAROS_DSH_CDP_PORT`, `PHAROS_AG_CDP_PORT`, `PHAROS_CODEX_CDP_PORT`, `PHAROS_DSH_APP`, `PHAROS_AG_APP`, and `PHAROS_CODEX_APP`. There is no compiled-in port. A missing port is `debug port is not configured`.
+
+## Node inbox
+
+Each machine is a Pharos node. The only down state is that the node's heartbeat is missing or older than the Broker's 70s window. The status is `node offline`, with `last-seen` when a heartbeat was recorded. The caller does not describe a machine as unreachable, and it does not create the session or deliver the message on its own machine.
+
+The Broker keeps one inbox per node in the same store as the single-writer outbox (`state.json`, queue TTL 72h). `enqueue` appends a job. The node `pull`s on heartbeat and may see the same id again until `ack` removes it. A repeated id, or a second ack, is ignored. `sweep` drops expired jobs. That is the whole queue. There are no exchanges, routing keys, topics, priorities, consumer groups, or an external message broker.
+
+`session new` and `session workspaces` enqueue when the node is offline, and report `queued` plus the request id. `--no-queue` returns `node offline` immediately. A forward that does not come back with a result is the same offline path, not a local achat call. When the node completes a `session-new` job, the Broker registers the member from that result.
+
+A send to a member whose node has gone offline since its last heartbeat waits in that node's inbox. The driver on the caller is not invoked. A member whose node has never heartbeated is unchanged, so a local directory still delivers.
+
+`pharos session pull --node H` records the heartbeat and prints waiting jobs. `pharos session ack <id> [--result JSON]` removes the job and, for a created session, registers the member.
 
 ## Coexistence with RFC-003
 
@@ -188,17 +220,18 @@ What was ported is the policy table and the headless argv shapes. What was not p
 | Fallback the user sees | Not tmux | tmux only as a labelled last route |
 | Approval | Scoped `approval/resolve` on a lease | Not performed |
 
-`pharos mesh …` is unchanged. `pharos member`, `send`, `reply`, `wait`, `read`, and `thread list|show` are this tier. `thread new` and `thread add` are usage errors.
+`pharos mesh …` is unchanged. `pharos member`, `send`, `reply`, `wait`, `read`, `thread list|show`, and `session` are this tier. `thread new` and `thread add` are usage errors.
 
 ## Testing
 
 Tests cross `LightRelay`, `LightCommands`, and `LightRoutePlanner`. They do not read private ledger fields.
 
-Covered: directory resolution and conflicts, a new send minting a thread, multi-recipient send as N 1:1 copies that share a thread id and hide each other from the header, reply-id inheritance of that thread, `@` on a reply adding copies without replacing the previous sender, `@all` left unresolved, derived participants and direct/group kind, participants absent from the snapshot, reply-id issue / lookup / expiry / `--once` / forged ids, hop along a reply chain and the originator notice, queue order across two sends to one member, queue expiry, wait-once ingestion, SSH-shaped forwarding, loopback webhook intake, reload of the append-only log, headless argv with no approval bypass, and unverified external delivery.
+Covered: directory resolution and conflicts, a new send minting a thread, multi-recipient send as N 1:1 copies that share a thread id and hide each other from the header, reply-id inheritance of that thread, `@` on a reply adding copies without replacing the previous sender, `@all` left unresolved, derived participants and direct/group kind, participants absent from the snapshot, reply-id issue / lookup / expiry / `--once` / forged ids, hop along a reply chain and the originator notice, queue order across two sends to one member, queue expiry, wait-once ingestion, SSH-shaped forwarding, loopback webhook intake, reload of the append-only log, headless argv with no approval bypass, unverified external delivery, session-new argument mapping and achat JSON, member registration and name collision, dry-run, the launch decision table, a missing debug port, node-offline queue and `--no-queue`, no local fallback when a forward fails, inbox pull/ack/expiry, and duplicate request ids.
 
 Not certified, and not run by CI:
 
 - A real Codex, Claude, DSH, or Antigravity turn on a Mac.
+- A real `achat` create against a live desktop app, and a real `--launch` of that app.
 - Desktop IPC frames, CDP, and the DSH "start web, call, stop" cycle.
 - `PHAROS_LIGHT_LIVE=1` against a bundled `codex` binary.
 - SSH forwarding to a live Broker.
@@ -214,3 +247,5 @@ Not certified, and not run by CI:
 - Webhooks that are not loopback are refused.
 - Debug binds in the planned DSH and CDP routes are `127.0.0.1` only.
 - No new listening port is opened by this change.
+- `--launch` binds the debug port to `127.0.0.1` only. An endpoint that belongs to another process is left alone.
+- The achat binary path and the debug ports stay in the environment. They are not written into the tree.

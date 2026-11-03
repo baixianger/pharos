@@ -275,7 +275,7 @@ final class LightRelayTests: XCTestCase {
         XCTAssertNil(threads[0]["members"])
         XCTAssertNil(threads[0]["openedBy"])
         XCTAssertEqual(threads[0]["originator"] as? String, "owner")
-        XCTAssertEqual(object["version"] as? Int, 2)
+        XCTAssertEqual(object["version"] as? Int, 3)
     }
 
     func testExternalDriverDefersTheHeadlessRouteWithoutClaimingALiveTurn() throws {
@@ -289,6 +289,48 @@ final class LightRelayTests: XCTestCase {
         XCTAssertEqual(sent.deliveries.first?.fallback, false)
         XCTAssertEqual(sent.deliveries.first?.liveVerified, false)
         XCTAssertNil(driver.readReply(member: member("codex-mini-pharos", app: "codex", session: "sess-codex"), since: Date()))
+    }
+
+    func testSendQueuesWhenTheMemberNodeIsOffline() throws {
+        let clock = ManualClock()
+        let driver = FakeDriver(delivered("app-server"))
+        let relay = try makeRelay(driver: driver, now: clock.now)
+        _ = try relay.heartbeat(node: "broker")
+        clock.advance(80)
+        let sent = try sendToCodex(relay, text: "later")
+        XCTAssertEqual(sent.deliveries.map(\.state), [.queued])
+        XCTAssertTrue(sent.deliveries[0].detail.contains("node offline"))
+        XCTAssertFalse(sent.deliveries[0].detail.lowercased().contains("unreachable"))
+        XCTAssertTrue(driver.calls.isEmpty)
+        let jobs = try relay.pull(node: "broker")
+        XCTAssertEqual(jobs.map(\.id), [sent.deliveries[0].replyID])
+        XCTAssertEqual(jobs.first?.kind, "deliver")
+    }
+
+    func testNodeInboxAcksExpiryAndIgnoresDuplicates() throws {
+        let clock = ManualClock()
+        let relay = try makeRelay(now: clock.now)
+        let first = try relay.enqueueNodeJob(id: "n_sameid01", node: "mini", kind: "deliver", payload: "one")
+        XCTAssertFalse(first.duplicate)
+        let second = try relay.enqueueNodeJob(id: "n_sameid01", node: "mini", kind: "deliver", payload: "two")
+        XCTAssertTrue(second.duplicate)
+        XCTAssertEqual(second.job.payload, "one")
+        XCTAssertEqual(try relay.pull(node: "mini").map(\.deliveries), [1])
+        XCTAssertEqual(try relay.pull(node: "mini").map(\.deliveries), [2])
+        XCTAssertTrue(relay.ack(job: "n_sameid01"))
+        XCTAssertFalse(relay.ack(job: "n_sameid01"))
+        XCTAssertTrue(try relay.pull(node: "mini").isEmpty)
+        let replay = try relay.enqueueNodeJob(id: "n_sameid01", node: "mini", kind: "deliver", payload: "three")
+        XCTAssertTrue(replay.duplicate)
+        XCTAssertTrue(try relay.pull(node: "mini").isEmpty)
+
+        let queued = try relay.enqueueNodeJob(id: "n_expire001", node: "mini", kind: "session-new", payload: "{}")
+        XCTAssertFalse(queued.duplicate)
+        clock.advance(73 * 60 * 60)
+        let report = relay.sweep()
+        XCTAssertEqual(report.expiredInbox, 1)
+        XCTAssertNil(relay.nodeJob("n_expire001"))
+        XCTAssertTrue(try relay.pull(node: "mini").isEmpty)
     }
 
     func testCommandsRoundTrip() throws {

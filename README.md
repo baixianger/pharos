@@ -229,6 +229,8 @@ Conversations](docs/RFC-003-AGENT-RUNTIME-RPC.md).
 Agents that are not wired into the Host Runtime can still be addressed through
 the lightweight tier: a Broker member directory, point-to-point delivery, and
 email-style threads (a new send mints one; a reply inherits it from the reply-id).
+`pharos session new` creates a session on a Pharos node via the achat executable
+and registers it. An offline node queues the request instead of failing the machine.
 See [RFC-005: Lightweight Agent Messaging](docs/RFC-005-LIGHTWEIGHT-AGENT-MESSAGING.md).
 
 ---

@@ -249,12 +249,63 @@ public struct LightSweepReport: Codable, Equatable, Sendable {
     public var expiredQueued: Int
     public var flushed: Int
     public var notices: Int
+    public var expiredInbox: Int
 
-    public init(expiredReplies: Int, expiredQueued: Int, flushed: Int, notices: Int) {
+    public init(expiredReplies: Int, expiredQueued: Int, flushed: Int, notices: Int, expiredInbox: Int = 0) {
         self.expiredReplies = expiredReplies
         self.expiredQueued = expiredQueued
         self.flushed = flushed
         self.notices = notices
+        self.expiredInbox = expiredInbox
+    }
+}
+
+/// One durable job waiting on a Pharos node. The Broker keeps a single inbox
+/// per node inside the same store as the session outbox. At-least-once: a job
+/// stays until `ack`. A repeated id is ignored.
+public struct LightNodeJob: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var node: String
+    public var kind: String
+    public var payload: String
+    public var enqueuedAt: Date
+    public var expiresAt: Date
+    /// How many times a pull has handed this job out. Ack has not happened yet.
+    public var deliveries: Int
+
+    public init(id: String, node: String, kind: String, payload: String, enqueuedAt: Date,
+                expiresAt: Date, deliveries: Int) {
+        self.id = id
+        self.node = node
+        self.kind = kind
+        self.payload = payload
+        self.enqueuedAt = enqueuedAt
+        self.expiresAt = expiresAt
+        self.deliveries = deliveries
+    }
+}
+
+public struct LightEnqueueResult: Equatable, Sendable {
+    public var job: LightNodeJob
+    public var duplicate: Bool
+
+    public init(job: LightNodeJob, duplicate: Bool) {
+        self.job = job
+        self.duplicate = duplicate
+    }
+}
+
+/// Presence for one Pharos node. Online means a heartbeat newer than
+/// `LightRelay.nodeHeartbeatWindow` (the same 70s window as the Broker node list).
+public struct LightNodeStatus: Equatable, Sendable {
+    public var host: String
+    public var online: Bool
+    public var lastSeen: Date?
+
+    public init(host: String, online: Bool, lastSeen: Date?) {
+        self.host = host
+        self.online = online
+        self.lastSeen = lastSeen
     }
 }
 
@@ -350,6 +401,7 @@ public enum LightRelayError: Error, Equatable, LocalizedError {
     case webhookNotLoopback
     case forwardFailed(String)
     case corruptStore(String)
+    case invalidJob(String)
 
     public var errorDescription: String? {
         switch self {
@@ -372,6 +424,7 @@ public enum LightRelayError: Error, Equatable, LocalizedError {
         case .webhookNotLoopback: "the reply webhook must use 127.0.0.1, localhost, or ::1"
         case .forwardFailed(let value): "forwarding the reply failed: \(value)"
         case .corruptStore(let value): "light-relay store is unreadable (\(value))"
+        case .invalidJob(let value): "invalid request id \(value)"
         }
     }
 }
@@ -485,6 +538,9 @@ public final class LightRelay: @unchecked Sendable {
     private var threads: [String: LightThread] = [:]
     private var ledger: [String: Ticket] = [:]
     private var outbox: [OutboxItem] = []
+    private var inbox: [LightNodeJob] = []
+    private var nodeSeen: [String: Date] = [:]
+    private var appliedJobs: [String: Date] = [:]
     private var logs: [String: [LightLogEntry]] = [:]
     private var rejectionLog: [LightRejection] = []
     private var inflight: Set<String> = []
@@ -657,7 +713,71 @@ public final class LightRelay: @unchecked Sendable {
         let report = sync { expireLocked() }
         let flushed = pump()
         return LightSweepReport(expiredReplies: report.expiredReplies, expiredQueued: report.expiredQueued,
-                                flushed: flushed, notices: report.notices)
+                                flushed: flushed, notices: report.notices, expiredInbox: report.expiredInbox)
+    }
+
+    // MARK: Node inbox
+    //
+    // One queue per node, in this same store. A node pulls on heartbeat.
+    // Ack removes the job. The queue TTL is the outbox TTL (72h). A second
+    // enqueue or ack of the same id does nothing.
+
+    /// Same liveness window the Broker uses when it drops a node heartbeat.
+    public static let nodeHeartbeatWindow: TimeInterval = 70
+
+    public static func nodeOfflineMessage(lastSeen: Date?) -> String {
+        if let lastSeen {
+            return "node offline; last-seen \(Int(lastSeen.timeIntervalSince1970))"
+        }
+        return "node offline; last-seen never"
+    }
+
+    public func nodeStatus(_ host: String) -> LightNodeStatus {
+        sync { nodeStatusLocked(host) }
+    }
+
+    /// Record a heartbeat and hand back every job still waiting on that node.
+    @discardableResult
+    public func heartbeat(node host: String) throws -> [LightNodeJob] {
+        try pull(node: host)
+    }
+
+    /// Pull is the reconnect path: it records the heartbeat, then returns
+    /// unacked jobs. Pulling again before ack delivers the same ids again.
+    public func pull(node host: String) throws -> [LightNodeJob] {
+        try sync {
+            let name = try Self.validateLabel(host, failure: LightRelayError.invalidHost)
+            nodeSeen[name] = now()
+            let jobs = try collectPullLocked(name)
+            try persistLocked()
+            return jobs
+        }
+    }
+
+    public func nodeJob(_ id: String) -> LightNodeJob? {
+        sync { inbox.first { $0.id == id } }
+    }
+
+    public func nodeJobWasApplied(_ id: String) -> Bool {
+        sync { appliedJobs[id] != nil }
+    }
+
+    @discardableResult
+    public func enqueueNodeJob(id: String? = nil, node: String, kind: String, payload: String) throws -> LightEnqueueResult {
+        try sync { try enqueueNodeJobLocked(id: id, node: node, kind: kind, payload: payload) }
+    }
+
+    /// Removes the job. A second ack, or an unknown id, returns false and changes nothing.
+    @discardableResult
+    public func ack(job id: String) -> Bool {
+        sync {
+            if appliedJobs[id] != nil { return false }
+            guard let index = inbox.firstIndex(where: { $0.id == id }) else { return false }
+            inbox.remove(at: index)
+            appliedJobs[id] = now()
+            try? persistLocked()
+            return true
+        }
     }
 
     @discardableResult
@@ -702,12 +822,65 @@ public final class LightRelay: @unchecked Sendable {
         var expiresAt: Date
     }
 
+    private struct NodeSeen: Codable, Equatable {
+        var host: String
+        var lastSeen: Date
+    }
+
+    private struct AppliedJob: Codable, Equatable {
+        var id: String
+        var at: Date
+    }
+
     private struct Snapshot: Codable {
         var version: Int
         var members: [LightMember]
         var threads: [LightThread]
         var ledger: [Ticket]
         var outbox: [OutboxItem]
+        var inbox: [LightNodeJob]
+        var nodes: [NodeSeen]
+        var applied: [AppliedJob]
+
+        private enum CodingKeys: String, CodingKey {
+            case version, members, threads, ledger, outbox, inbox, nodes, applied
+        }
+
+        init(version: Int, members: [LightMember], threads: [LightThread], ledger: [Ticket],
+             outbox: [OutboxItem], inbox: [LightNodeJob], nodes: [NodeSeen], applied: [AppliedJob]) {
+            self.version = version
+            self.members = members
+            self.threads = threads
+            self.ledger = ledger
+            self.outbox = outbox
+            self.inbox = inbox
+            self.nodes = nodes
+            self.applied = applied
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            version = try container.decode(Int.self, forKey: .version)
+            members = try container.decode([LightMember].self, forKey: .members)
+            threads = try container.decode([LightThread].self, forKey: .threads)
+            ledger = try container.decode([Ticket].self, forKey: .ledger)
+            outbox = try container.decode([OutboxItem].self, forKey: .outbox)
+            inbox = try container.decodeIfPresent([LightNodeJob].self, forKey: .inbox) ?? []
+            nodes = try container.decodeIfPresent([NodeSeen].self, forKey: .nodes) ?? []
+            applied = try container.decodeIfPresent([AppliedJob].self, forKey: .applied) ?? []
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(version, forKey: .version)
+            try container.encode(members, forKey: .members)
+            try container.encode(threads, forKey: .threads)
+            try container.encode(ledger, forKey: .ledger)
+            try container.encode(outbox, forKey: .outbox)
+            try container.encode(inbox, forKey: .inbox)
+            try container.encode(nodes, forKey: .nodes)
+            try container.encode(applied, forKey: .applied)
+        }
     }
 
     private struct SendPlan {
@@ -763,6 +936,22 @@ public final class LightRelay: @unchecked Sendable {
     }
 
     private func deliverNow(_ target: PreparedTarget) throws -> LightDelivery {
+        let parked = try sync { () -> LightNodeStatus? in
+            let status = nodeStatusLocked(target.member.host)
+            guard status.lastSeen != nil, !status.online else { return nil }
+            _ = try enqueueNodeJobLocked(id: target.ticket.replyID, node: target.member.host,
+                                         kind: "deliver", payload: target.body)
+            try appendDeliveryLocked(threadID: target.ticket.threadID, to: target.member.name,
+                                     replyID: target.ticket.replyID, state: .queued, route: nil,
+                                     fallback: false, liveVerified: false, header: target.header,
+                                     hop: target.ticket.hop)
+            return status
+        }
+        if let parked {
+            return LightDelivery(to: target.member.name, replyID: target.ticket.replyID, state: .queued,
+                                 route: nil, fallback: false, liveVerified: false, header: target.header,
+                                 detail: Self.nodeOfflineMessage(lastSeen: parked.lastSeen))
+        }
         let claim = try sync { () -> Claim? in
             if outbox.contains(where: { $0.to == target.member.name }) || inflight.contains(target.member.name) {
                 try enqueueLocked(target, routeNote: nil)
@@ -1010,6 +1199,7 @@ public final class LightRelay: @unchecked Sendable {
     }
 
     private func claimNextLocked(skipping blocked: Set<String>) -> Claim? {
+        parkOfflineOutboxLocked()
         for (index, item) in outbox.enumerated() {
             if blocked.contains(item.to) || inflight.contains(item.to) { continue }
             guard let member = members[item.to] else { continue }
@@ -1040,6 +1230,7 @@ public final class LightRelay: @unchecked Sendable {
         var expiredReplies: Int
         var expiredQueued: Int
         var notices: Int
+        var expiredInbox: Int
     }
 
     private func expireLocked() -> ExpireReport {
@@ -1047,6 +1238,15 @@ public final class LightRelay: @unchecked Sendable {
         var expiredReplies = 0
         var expiredQueued = 0
         var notices = 0
+        var expiredInbox = 0
+        let staleInbox = inbox.filter { $0.expiresAt <= moment }
+        if !staleInbox.isEmpty {
+            let staleIDs = Set(staleInbox.map(\.id))
+            inbox.removeAll { staleIDs.contains($0.id) }
+            expiredInbox = staleInbox.count
+        }
+        let staleApplied = appliedJobs.filter { $0.value.addingTimeInterval(limits.queueTTL) <= moment }
+        for id in staleApplied.keys { appliedJobs[id] = nil }
         let stale = outbox.filter { item in
             item.expiresAt <= moment || (ledger[item.replyID]?.expiresAt ?? .distantPast) <= moment
         }
@@ -1073,10 +1273,11 @@ public final class LightRelay: @unchecked Sendable {
             ledger[ticket.replyID] = nil
             expiredReplies += 1
         }
-        if expiredQueued > 0 || expiredReplies > 0 {
+        if expiredQueued > 0 || expiredReplies > 0 || expiredInbox > 0 || !staleApplied.isEmpty {
             try? persistLocked()
         }
-        return ExpireReport(expiredReplies: expiredReplies, expiredQueued: expiredQueued, notices: notices)
+        return ExpireReport(expiredReplies: expiredReplies, expiredQueued: expiredQueued, notices: notices,
+                            expiredInbox: expiredInbox)
     }
 
     private func headerLocked(from: String, thread: String, replyID: String, hop: Int, limit: Int) -> String {
@@ -1211,6 +1412,89 @@ public final class LightRelay: @unchecked Sendable {
         return value
     }
 
+    private func nodeStatusLocked(_ host: String) -> LightNodeStatus {
+        guard let seen = nodeSeen[host] else {
+            return LightNodeStatus(host: host, online: false, lastSeen: nil)
+        }
+        let online = now().timeIntervalSince(seen) < Self.nodeHeartbeatWindow
+        return LightNodeStatus(host: host, online: online, lastSeen: seen)
+    }
+
+    private func enqueueNodeJobLocked(id explicit: String?, node: String, kind: String, payload: String,
+                                      persist: Bool = true) throws -> LightEnqueueResult {
+        let name = try Self.validateLabel(node, failure: LightRelayError.invalidHost)
+        let trimmedKind = kind.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKind.isEmpty, trimmedKind.count <= 64 else { throw LightRelayError.invalidJob(kind) }
+        let id: String
+        if let explicit {
+            guard Self.isJobID(explicit) else { throw LightRelayError.invalidJob(explicit) }
+            id = explicit
+        } else {
+            id = try tokenLocked("n")
+        }
+        if let existing = inbox.first(where: { $0.id == id }) {
+            return LightEnqueueResult(job: existing, duplicate: true)
+        }
+        if appliedJobs[id] != nil {
+            let ghost = LightNodeJob(id: id, node: name, kind: trimmedKind, payload: payload, enqueuedAt: now(),
+                                    expiresAt: now(), deliveries: 0)
+            return LightEnqueueResult(job: ghost, duplicate: true)
+        }
+        let issued = now()
+        let job = LightNodeJob(id: id, node: name, kind: trimmedKind, payload: payload, enqueuedAt: issued,
+                               expiresAt: issued.addingTimeInterval(limits.queueTTL), deliveries: 0)
+        inbox.append(job)
+        if persist { try persistLocked() }
+        return LightEnqueueResult(job: job, duplicate: false)
+    }
+
+    private func collectPullLocked(_ node: String) throws -> [LightNodeJob] {
+        let moment = now()
+        let expired = inbox.filter { $0.expiresAt <= moment }
+        if !expired.isEmpty {
+            let ids = Set(expired.map(\.id))
+            inbox.removeAll { ids.contains($0.id) }
+        }
+        var handed: [LightNodeJob] = []
+        for index in inbox.indices where inbox[index].node == node {
+            inbox[index].deliveries += 1
+            handed.append(inbox[index])
+        }
+        return handed
+    }
+
+    private func parkOfflineOutboxLocked() {
+        var kept: [OutboxItem] = []
+        var moved = false
+        for item in outbox {
+            if let member = members[item.to] {
+                let status = nodeStatusLocked(member.host)
+                if status.lastSeen != nil && !status.online {
+                    do {
+                        _ = try enqueueNodeJobLocked(id: item.replyID, node: member.host, kind: "deliver",
+                                                     payload: item.body, persist: false)
+                        moved = true
+                        continue
+                    } catch {
+                        kept.append(item)
+                        continue
+                    }
+                }
+            }
+            kept.append(item)
+        }
+        if moved {
+            outbox = kept
+            try? persistLocked()
+        }
+    }
+
+    private static func isJobID(_ value: String) -> Bool {
+        LightTokens.isValid(value, prefix: "n")
+            || LightTokens.isValid(value, prefix: "q")
+            || LightTokens.isValid(value, prefix: "r")
+    }
+
     // MARK: Disk
 
     private static func makeEncoder() -> JSONEncoder {
@@ -1241,11 +1525,14 @@ public final class LightRelay: @unchecked Sendable {
         } catch {
             throw LightRelayError.corruptStore("state.json")
         }
-        guard snapshot.version == 2 else { throw LightRelayError.corruptStore("state.json") }
+        guard snapshot.version == 2 || snapshot.version == 3 else { throw LightRelayError.corruptStore("state.json") }
         members = Dictionary(uniqueKeysWithValues: snapshot.members.map { ($0.name, $0) })
         threads = Dictionary(uniqueKeysWithValues: snapshot.threads.map { ($0.id, $0) })
         ledger = Dictionary(uniqueKeysWithValues: snapshot.ledger.map { ($0.replyID, $0) })
         outbox = snapshot.outbox
+        inbox = snapshot.inbox
+        nodeSeen = Dictionary(uniqueKeysWithValues: snapshot.nodes.map { ($0.host, $0.lastSeen) })
+        appliedJobs = Dictionary(uniqueKeysWithValues: snapshot.applied.map { ($0.id, $0.at) })
         for thread in snapshot.threads {
             logs[thread.id] = try readJSONL(logURL(thread.id))
         }
@@ -1253,10 +1540,13 @@ public final class LightRelay: @unchecked Sendable {
     }
 
     private func persistLocked() throws {
-        let snapshot = Snapshot(version: 2, members: members.values.sorted { $0.name < $1.name },
+        let snapshot = Snapshot(version: 3, members: members.values.sorted { $0.name < $1.name },
                                 threads: threads.values.sorted { $0.id < $1.id },
                                 ledger: ledger.values.sorted { $0.replyID < $1.replyID },
-                                outbox: outbox)
+                                outbox: outbox,
+                                inbox: inbox.sorted { $0.id < $1.id },
+                                nodes: nodeSeen.map { NodeSeen(host: $0.key, lastSeen: $0.value) }.sorted { $0.host < $1.host },
+                                applied: appliedJobs.map { AppliedJob(id: $0.key, at: $0.value) }.sorted { $0.id < $1.id })
         let data = try Self.makeEncoder().encode(snapshot)
         try data.write(to: stateURL, options: .atomic)
         chmod(stateURL.path, 0o600)

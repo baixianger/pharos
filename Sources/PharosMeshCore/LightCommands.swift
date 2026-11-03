@@ -201,6 +201,7 @@ public enum LightCommands {
             let verified = delivery.liveVerified ? "verified" : "unverified"
             let fallback = delivery.fallback ? " fallback" : ""
             lines.append("\(delivery.state.rawValue)\t\(delivery.to)\t\(delivery.replyID)\t\(route)\t\(verified)\(fallback)")
+            if delivery.detail.contains("node offline") { lines.append(delivery.detail) }
         }
         if !result.unresolved.isEmpty {
             lines.append("unresolved \(result.unresolved.joined(separator: ","))")
