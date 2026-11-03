@@ -13,15 +13,27 @@ Most sessions are not wired that way. They already expose something Pharos can d
 
 ## Decision
 
-Add a second tier beside RFC-003. One primitive covers 1:1 and group chat: a **thread** with a member list. A 1:1 conversation is a two-member thread. A group is the same thread with more members. There is no moderator role.
+Add a second tier beside RFC-003. The heart of it is a **member registry** and **point-to-point messages** routed by member id. A recipient is told who sent the copy they received. They are not told who else was copied.
 
-The Broker (the always-on Mac) owns the directory, the thread log, the reply-id ledger, and the outbox. Other hosts do not run a second stack. `pharos reply` on those hosts forwards to the Broker over the existing SSH route. No new public port. Loopback debug ports bind `127.0.0.1` only.
+A thread is an email conversation, not a chat room:
+
+- A **new** message (not a reply) mints a thread id. There is no `thread new`, no membership list, and no `thread add`.
+- A reply names a reply-id. The thread id is inherited from the message that reply-id was issued for, the way `In-Reply-To` / `References` work. The replier never passes a thread id.
+- Sending to several member ids at once, or `@`-mentioning someone in a reply, is more 1:1 deliveries that carry the same thread id. Like CC. Each copy gets its own reply-id.
+- Participants are **derived** from who has sent or received in that thread. They are not stored. Two participants render as a direct message. Three or more render as a group. That is a view over one code path, not a type.
+- A fresh non-reply message starts a new thread. That is how the topic changes.
+- The only discovery operation is listing registered members.
+
+The first cut of this RFC shipped the rejected shape: a thread object with a stored roster, `thread new` / `thread add`, and `@all` expanding that roster. The owner rejected it. Delivery is always 1:1, and a recipient must not learn a roster they were not told about in the message text.
+
+The Broker (the always-on Mac) owns the registry, the per-thread append-only log, the reply-id ledger, and the outbox. Other hosts do not run a second stack. `pharos reply` on those hosts forwards to the Broker over the existing SSH route. No new public port. Loopback debug ports bind `127.0.0.1` only.
 
 ```text
-pharos member / thread / send / reply / wait / read
+pharos member / send / reply / wait / read / thread list|show
         |
 LightRelay                         PharosMeshCore
-  directory, thread log, ledger, outbox, hop limit, TTL
+  registry, point-to-point send, reply inheritance,
+  derived participants, per-thread log, ledger, outbox
         |
 LightSessionDriver                 seam
   ExternalLightDriver              PharosRuntime  (route policy; live turns unverified)
@@ -37,10 +49,10 @@ RFC-003 still answers "how do we drive a runtime Pharos owns?" This RFC answers 
 Terms from the codebase-design vocabulary, used here as specified:
 
 - **Module**: `LightRelay` is the deep module. The route catalog plus `ExternalLightDriver` is a second module behind a seam.
-- **Interface**: what a caller must know. For the relay that is register / list / open / add / send / reply / read / wait / sweep, plus the invariants below. Not the ledger layout.
+- **Interface**: what a caller must know. For the relay that is register / list members, send, reply, read, wait, list/show threads, and sweep, plus the invariants below. Not the ledger layout, and not a roster.
 - **Seam**: `LightSessionDriver`. Behavior on the far side can change without editing the relay.
 - **Adapter**: the in-memory fake, and `ExternalLightDriver`. Two adapters make the seam real.
-- **Depth**: one thread primitive hides mentions, reply-ids, hops, expiry, and the single-writer queue.
+- **Depth**: point-to-point send plus reply-id inheritance hides thread minting, derived participants, hops, expiry, and the single-writer queue.
 - **Leverage**: CLI, a future Mac UI, and the tests all cross that interface.
 - **Locality**: a hop-limit bug is fixed in the relay, not in each caller.
 
@@ -57,43 +69,50 @@ Dependency categories for the deepened module:
 
 Constraints any interface had to meet:
 
-- One primitive for 1:1 and group chat. No plugin inside the agent.
-- Senders address members by stable name. Pharos resolves the route.
-- Delivery wakes only `@` mentions. `@all` wakes every other member once. A reply with no mention goes back to the sender.
-- Each hand-off increments hop. At the limit the thread stops and the member who opened it is notified.
+- Delivery is point-to-point. A group is a presentation over several 1:1 copies, not a room the recipient can see.
+- No plugin inside the agent. Senders address members by stable id. Pharos resolves the route.
+- The only discovery operation is listing the registry. A recipient does not learn other recipients from the header.
+- A reply never takes a thread id. The reply-id carries the thread.
+- Each hand-off increments hop. At the limit the thread stops and the originator (the member who sent the first message) is notified.
 - One writer per session. Queue while that session is busy. Reply-ids expire (default 24h). Queued deliveries expire (default 72h).
 - Inbound text is data. Nothing in this tier answers an approval prompt unless a later, explicit call asks for that.
 - The full RFC-003 path keeps working.
 
-### A — One relay (chosen)
+### A — Email threading on one relay (chosen)
 
 ```swift
 relay.register(member)
-relay.openThread(members:hopLimit:)
-relay.send(from:thread:text:ttl:once:)
-relay.reply(id, text:ttl:once:)
-relay.read(thread:)
+relay.send(from:to:text:ttl:once:hopLimit:)   // mints a thread; one log line, N deliveries
+relay.reply(id, text:ttl:once:)               // inherits the thread; CC via @mention
+relay.read(thread:) / relay.read(replyID:)
+relay.listThreads() / relay.show(thread:)     // participants derived, kind is direct or group
 relay.wait(replyID:timeout:)
 relay.sweep()
 ```
 
-The constructor takes a clock, a driver, and an optional forwarder. Callers do not learn route order, ledger keys, or queue internals.
+The constructor takes a clock, a driver, and an optional forwarder. Callers do not learn route order, ledger keys, or queue internals. The thread id is in the owner log and in the per-copy header so `thread show` works. The reply command does not accept it.
 
-Leverage is high: the CLI is a parser over this interface, and the tests are too. Locality is high: expiry and hop rules live in one place. The seam sits at the driver, which is the thing that actually varies (fake vs. external apps).
+Leverage is high: the CLI is a parser over this interface, and the tests are too. Locality is high: inheritance, hop, and expiry live in one place. The seam sits at the driver, which is the thing that actually varies (fake vs. external apps).
 
-### B — A public module per step (rejected)
+### B — A thread with a stored roster (rejected; this was the first cut)
 
-Separate public types for the directory, the mention parser, the hop counter, the ledger, the outbox, and the log. Each is easy to swap. The deletion test fails: deleting them pushes the same rules back into the CLI and into every test. The interface is almost as large as the implementation, which is a shallow module. Mention parsing stays a small public function because the header contract is part of the interface; the rest of B does not.
+```swift
+relay.openThread(members:hopLimit:)
+relay.addMember(name, to:)
+relay.send(from:thread:text:)   // @mentions choose who wakes; @all expands the roster
+```
 
-### C — Send creates the thread (rejected as the only interface)
+One room type for 1:1 and group looks simple, and it keeps the thread id stable before the first send. It is the wrong module. Membership becomes something the system stores and something a delivery can reveal. `@all` only works if a roster exists, which tells every recipient that the others exist. The owner rejected this after it had been implemented: a group is several 1:1 deliveries that happen to share a thread id, and participants fall out of who was actually copied.
 
-`send(from:to:text:)` would open a two-member thread on first contact. That makes the common 1:1 call one line. It hides the thread id the reply header has to carry, and it turns group membership into a side effect of mentions. `thread new` keeps the id stable before the first send. Mentions inside that thread are still how a message chooses who wakes up, so 1:1 and group chat stay the same call.
+### C — A public module per step (rejected)
+
+Separate public types for the directory, the mention parser, the hop counter, the ledger, the outbox, and the log. Each is easy to swap. The deletion test fails: deleting them pushes the same rules back into the CLI and into every test. The interface is almost as large as the implementation, which is a shallow module. Mention parsing stays a small public function because the header contract is part of the interface; the rest of C does not.
 
 ### D — Brand switch inside the relay (rejected)
 
 `switch member.app` inside `LightRelay` would avoid a driver type. Vendor policy would then sit in the data module, and tests could not replace Codex with a fake without editing that switch. A driver seam is justified because two adapters exist: the test fake and the external planner. A single production adapter with no fake would have been a hypothetical seam and was not added.
 
-The shipped shape is A, with D's port as a constructor argument rather than a second product surface. Default routes live in the driver module (`LightRouteCatalog`), not in the relay.
+The shipped shape is A. D's port is a constructor argument rather than a second product surface. Default routes live in the driver module (`LightRouteCatalog`), not in the relay. Hiding the thread id from the log as well as from the reply command was considered and rejected: the owner still needs `thread show`, and the header still names the thread so a human can read it. Agents answer with the reply-id only.
 
 ## Interface
 
@@ -101,11 +120,11 @@ Invariants a caller has to know:
 
 - Member names match `^[a-z][a-z0-9-]{0,62}$`. Host and app labels use the same pattern, so an address, a home path, or an email cannot be stored as a name.
 - Session ids are opaque vendor ids. `/`, `~`, and `@` are rejected so a path does not become an id.
-- Registering the same name, host, app, project, and session is idempotent. The same name with a different session is an error.
-- A thread has at least two members. The first member is the opener. The opener is who hears about a stop or an expired queue item. That is not a moderator role; they have no extra say over other members' turns.
-- `send` appends to the shared log always. It wakes a member only when the text `@`-mentions them. `@all` means every member except the sender, once. An `@` inside an email is not a mention. Unknown names are reported and skipped.
-- A reply with no mention is delivered to the member who sent the message that carried that reply-id. A reply that contains mentions is a hand-off to those members only.
-- The delivered body is the text plus a header:
+- Registering the same name, host, app, project, and session is idempotent. The same name with a different session is an error. Listing members is the only discovery operation.
+- `send(from:to:text:)` requires at least one recipient other than the sender. An unknown id in `to` is an error and does not mint a thread. Duplicate ids collapse. The call mints a thread whose originator is the sender, appends one message, and delivers one copy per recipient. Each copy has its own reply-id, hop 1, and the same thread id. `@` tokens in a new send are body text, not extra recipients. `@all` is not special.
+- `reply` looks up the reply-id and uses that message's thread. It always delivers back to the previous sender, then adds one more 1:1 copy for each `@` of a registered member (not the replier, de-duplicated). An `@` of someone who is not registered is unresolved, not fatal. An `@` inside an email is not a mention.
+- Participants are the originator plus every message sender and delivery target in the log, first time seen, registered members only. `listThreads` and `show` compute them. The snapshot does not store them. Kind is `direct` at two or fewer and `group` at three or more.
+- The delivered body is the text plus a header that names the sender, the thread, this copy's reply-id, and the hop. It does not list other recipients:
 
 ```text
 [pharos from=<member> thread=<id> reply-id=r_<8+ chars> hop=<n>/<max>]
@@ -115,11 +134,11 @@ Reply with `pharos reply r_xxx "..."` (you may @mention another member). Pharos 
   If `PHAROS_LIGHT_WEBHOOK` is a loopback `http` or `https` URL, the header also names a POST of `{"replyId","text"}`. Any other host is rejected. This tree does not bind a listener; `LightWebhookIntake` accepts a body the process already has.
 
 - Reply-ids are random (`r_` plus at least eight lowercase letters or digits). Malformed, unknown, expired, and already-consumed ids are rejected and appended to the rejection log. `--once` consumes the id on the first accepted reply. Without `--once` the id stays usable until its TTL, and each accepted reply advances the hop so reuse cannot reset the limit.
-- Default reply TTL is 24h (`--ttl` accepts seconds or a `30s` / `12m` / `24h` / `1d` suffix). Default queue TTL is 72h. `sweep` drops expired ledger rows and expired outbox rows and appends a notice for the opener. The thread log and the rejection log are append-only; they are not pruned.
-- While a target is busy, or already has queued work, further deliveries for that member wait. `pump` (also called from `sweep` and after `send`) flushes in order and stops at the first member that is still busy.
-- Each reply that would fan out past the thread hop limit (default 8, set with `--hop-limit`) stops the thread, logs the reply, and wakes the opener with a terminal notice. A reply to that notice is stored and does not fan out. Later `send` on a stopped thread fails.
+- Default reply TTL is 24h (`--ttl` accepts seconds or a `30s` / `12m` / `24h` / `1d` suffix). Default queue TTL is 72h. `sweep` drops expired ledger rows and expired outbox rows and appends a notice for the originator. The thread log and the rejection log are append-only; they are not pruned.
+- While a target is busy, or already has queued work, further deliveries for that member wait. `pump` (also called from `sweep` and after `send` or `reply`) flushes in order and stops at the first member that is still busy. The queue is per member, so two new sends (two threads) to one busy member still leave in order.
+- Each reply that would pass the thread hop limit (default 8, set with `--hop-limit` on `send`) stops the thread, logs the reply, and wakes the originator with a terminal notice. A reply to that notice is stored and does not fan out. A later reply on the stopped thread fails. A new `send` is a new thread and is not blocked by the stop.
 - `wait` returns when a reply to that id is in the log, or when the driver returns text it can prove is new. It does not scrape a terminal pane: old pane text is not a reply.
-- `read` returns the shared log. Unmentioned members can read it. They are not woken.
+- `read --thread` returns that thread's log. `read r_xxx` resolves the reply-id to the same log and does not record a rejection when the id is bad. The log is for the owner and for an agent that needs context. It is not a roster pushed to recipients.
 - Inbound text is stored and forwarded as data. This module does not shell it out and does not answer approval prompts.
 
 `LightCommands.execute` is the CLI seam: same results the macOS `pharos` binary prints. Exit 0 is success, 1 is a rejected operation, 2 is usage.
@@ -169,13 +188,13 @@ What was ported is the policy table and the headless argv shapes. What was not p
 | Fallback the user sees | Not tmux | tmux only as a labelled last route |
 | Approval | Scoped `approval/resolve` on a lease | Not performed |
 
-`pharos mesh …` is unchanged. `pharos member`, `thread`, `send`, `reply`, `wait`, and `read` are this tier.
+`pharos mesh …` is unchanged. `pharos member`, `send`, `reply`, `wait`, `read`, and `thread list|show` are this tier. `thread new` and `thread add` are usage errors.
 
 ## Testing
 
 Tests cross `LightRelay`, `LightCommands`, and `LightRoutePlanner`. They do not read private ledger fields.
 
-Covered: directory resolution and conflicts, reply-id issue / lookup / expiry / `--once` / forged ids, `@` selection including `@all` and emails, hop limiting and opener notice, queue order, queue expiry, wait-once ingestion, SSH-shaped forwarding, loopback webhook intake, reload of the append-only log, headless argv with no approval bypass, and unverified external delivery.
+Covered: directory resolution and conflicts, a new send minting a thread, multi-recipient send as N 1:1 copies that share a thread id and hide each other from the header, reply-id inheritance of that thread, `@` on a reply adding copies without replacing the previous sender, `@all` left unresolved, derived participants and direct/group kind, participants absent from the snapshot, reply-id issue / lookup / expiry / `--once` / forged ids, hop along a reply chain and the originator notice, queue order across two sends to one member, queue expiry, wait-once ingestion, SSH-shaped forwarding, loopback webhook intake, reload of the append-only log, headless argv with no approval bypass, and unverified external delivery.
 
 Not certified, and not run by CI:
 

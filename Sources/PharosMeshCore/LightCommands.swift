@@ -82,43 +82,53 @@ public enum LightCommands {
             let threads = relay.listThreads()
             if argv.flag("json") { return json(threads) }
             if threads.isEmpty { return ok("no threads") }
-            let lines = threads.map { thread in
-                let flag = thread.stopped ? "stopped" : "open"
-                return "\(thread.id)\t\(flag)\t\(thread.hopLimit)\t\(thread.members.joined(separator: ","))"
+            let lines = threads.map { view in
+                let flag = view.thread.stopped ? "stopped" : "open"
+                let people = view.participants.joined(separator: ",")
+                return "\(view.thread.id)\t\(flag)\t\(view.thread.hopLimit)\t\(view.kind.rawValue)\t\(people)"
             }
-            return ok((["THREAD\tSTATE\tHOP\tMEMBERS"] + lines).joined(separator: "\n"))
-        case "new":
-            let names = argv.multi("member")
-            guard names.count >= 2 else { return usage("pharos thread new --member A --member B [--hop-limit N]") }
-            let hop = try argv.int("hop-limit")
-            let thread = try relay.openThread(members: names, hopLimit: hop)
-            if argv.flag("json") { return json(thread) }
-            return ok("thread \(thread.id)")
-        case "add":
-            guard let id = argv.positional.dropFirst().first ?? argv.option("thread") else {
-                return usage("pharos thread add <thread> --member NAME")
+            return ok((["THREAD\tSTATE\tHOP\tKIND\tPARTICIPANTS"] + lines).joined(separator: "\n"))
+        case "show":
+            guard let id = argv.positional.dropFirst().first else {
+                return usage("pharos thread show <id>")
             }
-            let names = argv.multi("member")
-            guard !names.isEmpty else { return usage("pharos thread add <thread> --member NAME") }
-            var thread: LightThread?
-            for name in names {
-                thread = try relay.addMember(name, to: id)
-            }
-            guard let thread else { return usage("pharos thread add <thread> --member NAME") }
-            if argv.flag("json") { return json(thread) }
-            return ok("thread \(thread.id)")
+            let view = try relay.show(thread: id)
+            if argv.flag("json") { return json(view) }
+            let flag = view.thread.stopped ? "stopped" : "open"
+            let people = view.participants.joined(separator: ",")
+            let head = [
+                "thread \(view.thread.id)",
+                "kind \(view.kind.rawValue)",
+                "state \(flag)",
+                "originator \(view.thread.originator)",
+                "hop-limit \(view.thread.hopLimit)",
+                "participants \(people)",
+            ]
+            let entries = try relay.read(thread: id)
+            let body = formatLog(entries)
+            return ok((head + (body.isEmpty ? [] : [body])).joined(separator: "\n"))
+        case "new", "add":
+            return usage("threads are not created or joined explicitly. pharos send starts one. pharos thread list|show <id>")
         default:
-            return usage("pharos thread new|add|list")
+            return usage("pharos thread list|show <id>")
         }
     }
 
     private static func send(_ argv: LightArgv, relay: LightRelay) throws -> LightCLIResult {
-        guard let from = argv.option("from"), let thread = argv.option("thread") else {
-            return usage("pharos send --from NAME --thread ID <text>")
+        guard let from = argv.option("from") else {
+            return usage("pharos send --from NAME [--to NAME]... [--hop-limit N] <member...> -- <text>")
         }
-        let text = argv.positional.joined(separator: " ")
-        guard !text.isEmpty else { return usage("pharos send --from NAME --thread ID <text>") }
-        let result = try relay.send(from: from, thread: thread, text: text, ttl: try argv.duration("ttl"), once: argv.flag("once"))
+        var recipients = argv.multi("to")
+        var words = argv.positional
+        while let first = words.first, first != from, relay.member(named: first) != nil {
+            recipients.append(words.removeFirst())
+        }
+        let text = (words + argv.forcedText).joined(separator: " ")
+        guard !text.isEmpty else {
+            return usage("pharos send --from NAME [--to NAME]... <member...> -- <text>")
+        }
+        let result = try relay.send(from: from, to: recipients, text: text, ttl: try argv.duration("ttl"),
+                                    once: argv.flag("once"), hopLimit: try argv.int("hop-limit"))
         return render(result, json: argv.flag("json"))
     }
 
@@ -148,11 +158,21 @@ public enum LightCommands {
     }
 
     private static func read(_ argv: LightArgv, relay: LightRelay) throws -> LightCLIResult {
-        guard let thread = argv.option("thread") else { return usage("pharos read --thread ID") }
-        let entries = try relay.read(thread: thread)
+        let entries: [LightLogEntry]
+        if let thread = argv.option("thread") {
+            entries = try relay.read(thread: thread)
+        } else if let token = argv.positional.first, LightTokens.isValid(token, prefix: "r") {
+            entries = try relay.read(replyID: token)
+        } else {
+            return usage("pharos read --thread ID | pharos read r_xxx")
+        }
         if argv.flag("json") { return json(entries) }
-        if entries.isEmpty { return ok("empty") }
-        let lines = entries.map { entry -> String in
+        let text = formatLog(entries)
+        return ok(text.isEmpty ? "empty" : text)
+    }
+
+    private static func formatLog(_ entries: [LightLogEntry]) -> String {
+        entries.map { entry -> String in
             switch entry.kind {
             case .message:
                 return "message\t\(entry.from ?? "")\t\(entry.text)"
@@ -163,8 +183,7 @@ public enum LightCommands {
                 let verified = (entry.liveVerified ?? false) ? "verified" : "unverified"
                 return "delivery\t\(entry.to ?? "")\t\(entry.state?.rawValue ?? "")\t\(entry.replyID ?? "")\t\(route)\t\(verified)"
             }
-        }
-        return ok(lines.joined(separator: "\n"))
+        }.joined(separator: "\n")
     }
 
     private static func render(_ result: LightSendResult, json: Bool) -> LightCLIResult {
@@ -210,12 +229,14 @@ public enum LightCommands {
 
 private struct LightArgv {
     var positional: [String] = []
+    /// Tokens after `--`. They are always message text, even when they name a member.
+    var forcedText: [String] = []
     var options: [String: String] = [:]
     var repeated: [String: [String]] = [:]
     var flags: Set<String> = []
 
     static let knownFlags: Set<String> = ["json", "once"]
-    static let repeatedKeys: Set<String> = ["route", "member"]
+    static let repeatedKeys: Set<String> = ["route", "to"]
 
     static func parse(_ tokens: [String]) -> LightArgv {
         var argv = LightArgv()
@@ -223,7 +244,7 @@ private struct LightArgv {
         while index < tokens.count {
             let token = tokens[index]
             if token == "--" {
-                argv.positional.append(contentsOf: tokens[(index + 1)...])
+                argv.forcedText.append(contentsOf: tokens[(index + 1)...])
                 break
             }
             if token.hasPrefix("--") {

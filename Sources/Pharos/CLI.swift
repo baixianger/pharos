@@ -943,16 +943,19 @@ enum CLI {
           runtime set broker           Run a local Broker plus the required Node
           runtime reconcile            Re-apply the saved runtime configuration
 
-        LIGHTWEIGHT MESSAGING (no plugin in the agent; Broker-owned directory)
+        LIGHTWEIGHT MESSAGING (point-to-point; a thread is email-style, not a room)
           member register --name N --host H --app codex|claude|dsh|ag --project P --session S [--route R]...
           member list [--json]
-          thread new --member A --member B [--hop-limit N]
-          thread add <thread> --member NAME
-          thread list [--json]
-          send --from NAME --thread ID <text with @mentions> [--ttl 24h] [--once]
+          send --from NAME [--to NAME]... [--hop-limit N] [--ttl 24h] [--once] <member...> -- <text>
           reply r_xxx <text> [--ttl 24h] [--once]
           wait r_xxx [--timeout 30s]
-          read --thread ID [--json]
+          read --thread ID [--json] | read r_xxx [--json]
+          thread list [--json]
+          thread show <id> [--json]
+          A new send mints a thread. A reply inherits that thread from the reply-id
+          and may @mention more members (each mention is another 1:1 copy).
+          `thread new` and `thread add` are not commands. Participants are derived.
+          Leading words that name registered members are recipients until `--`.
           Set PHAROS_LIGHT_SSH_HOST to an existing SSH alias to forward `reply`
           from a non-Broker host. Set PHAROS_LIGHT_WEBHOOK only to a loopback URL.
           PHAROS_LIGHT_LIVE=1 enables headless codex/claude/tmux execution; desktop

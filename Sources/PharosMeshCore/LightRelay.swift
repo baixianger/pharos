@@ -8,7 +8,9 @@ import Glibc
 // MARK: - Lightweight tier
 //
 // `LightRelay` is the deep module for the no-intubation messaging tier.
-// Callers learn threads, member names, and reply-ids. Route priority, hop
+// Delivery is point-to-point by member id. A new send mints a thread; a reply
+// inherits that thread from the reply-id. Participants are derived from who
+// has sent or received, never stored as a roster. Route priority, hop
 // accounting, expiry, the single-writer queue, and the append-only log stay
 // behind that interface. The full Broker / Host Runtime path is a different
 // module and is not consulted here.
@@ -65,21 +67,43 @@ public struct LightMember: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+/// A thread is an email-style conversation id, not a room. It stores who sent
+/// the first message (the hop-limit notify target) and nothing about who else
+/// has been copied. Participants are derived when someone lists or shows it.
 public struct LightThread: Codable, Equatable, Sendable, Identifiable {
     public var id: String
-    public var members: [String]
-    public var openedBy: String
+    public var originator: String
     public var hopLimit: Int
     public var stopped: Bool
     public var createdAt: Date
 
-    public init(id: String, members: [String], openedBy: String, hopLimit: Int, stopped: Bool, createdAt: Date) {
+    public init(id: String, originator: String, hopLimit: Int, stopped: Bool, createdAt: Date) {
         self.id = id
-        self.members = members
-        self.openedBy = openedBy
+        self.originator = originator
         self.hopLimit = hopLimit
         self.stopped = stopped
         self.createdAt = createdAt
+    }
+}
+
+public enum LightThreadKind: String, Codable, Sendable {
+    /// Two participants (or fewer). Rendered as a direct message.
+    case direct
+    /// Three or more participants. Rendered as a group. Same delivery path.
+    case group
+}
+
+/// Read-only view. `participants` is computed from the log and is not persisted.
+public struct LightThreadView: Codable, Equatable, Sendable, Identifiable {
+    public var id: String { thread.id }
+    public var thread: LightThread
+    public var participants: [String]
+    public var kind: LightThreadKind
+
+    public init(thread: LightThread, participants: [String], kind: LightThreadKind) {
+        self.thread = thread
+        self.participants = participants
+        self.kind = kind
     }
 }
 
@@ -315,8 +339,8 @@ public enum LightRelayError: Error, Equatable, LocalizedError {
     case duplicateMember(String)
     case unknownMember(String)
     case unknownThread(String)
-    case notMember(String)
-    case needTwoMembers
+    case noRecipients
+    case invalidLimit
     case emptyText
     case unknownReply(String)
     case expiredReply(String)
@@ -337,8 +361,8 @@ public enum LightRelayError: Error, Equatable, LocalizedError {
         case .duplicateMember(let value): "member \(value) is already registered to a different session"
         case .unknownMember(let value): "unknown member \(value)"
         case .unknownThread(let value): "unknown thread \(value)"
-        case .notMember(let value): "\(value) is not a member of that thread"
-        case .needTwoMembers: "a thread needs at least two members"
+        case .noRecipients: "a message needs at least one other recipient"
+        case .invalidLimit: "hop limit must be at least 1"
         case .emptyText: "message text is empty"
         case .unknownReply(let value): "unknown reply-id \(value)"
         case .expiredReply(let value): "expired reply-id \(value)"
@@ -370,8 +394,9 @@ public enum LightTokens {
 }
 
 public enum LightMentions {
-    /// `@name` tokens, in order, de-duplicated. `@all` is case-insensitive.
+    /// `@name` tokens, in order, de-duplicated, lowercased.
     /// An `@` inside a larger token (an email address) is ignored.
+    /// `@all` is not special: there is no roster to expand.
     public static func tokens(in text: String) -> [String] {
         var out: [String] = []
         var seen = Set<String>()
@@ -525,44 +550,20 @@ public final class LightRelay: @unchecked Sendable {
     }
 
     // MARK: Threads
+    //
+    // Threads are not created on their own. `send` mints one. `reply` inherits
+    // the thread id from the reply-id it answers. `listThreads` / `show` derive
+    // participants from the append-only log.
 
-    public func openThread(members names: [String], hopLimit: Int? = nil) throws -> LightThread {
-        try sync {
-            let unique = Self.unique(names)
-            guard unique.count >= 2 else { throw LightRelayError.needTwoMembers }
-            for name in unique where members[name] == nil {
-                throw LightRelayError.unknownMember(name)
-            }
-            let limit = hopLimit ?? limits.hopLimit
-            guard limit >= 1 else { throw LightRelayError.needTwoMembers }
-            let thread = LightThread(
-                id: try tokenLocked("t"),
-                members: unique,
-                openedBy: unique[0],
-                hopLimit: limit,
-                stopped: false,
-                createdAt: now()
-            )
-            threads[thread.id] = thread
-            logs[thread.id] = []
-            try persistLocked()
-            return thread
-        }
+    public func listThreads() -> [LightThreadView] {
+        sync { threads.values.sorted { $0.createdAt < $1.createdAt }.map { viewLocked($0) } }
     }
 
-    public func addMember(_ name: String, to threadID: String) throws -> LightThread {
+    public func show(thread threadID: String) throws -> LightThreadView {
         try sync {
-            guard var thread = threads[threadID] else { throw LightRelayError.unknownThread(threadID) }
-            guard members[name] != nil else { throw LightRelayError.unknownMember(name) }
-            if !thread.members.contains(name) { thread.members.append(name) }
-            threads[threadID] = thread
-            try persistLocked()
-            return thread
+            guard let thread = threads[threadID] else { throw LightRelayError.unknownThread(threadID) }
+            return viewLocked(thread)
         }
-    }
-
-    public func listThreads() -> [LightThread] {
-        sync { threads.values.sorted { $0.createdAt < $1.createdAt } }
     }
 
     public func read(thread threadID: String) throws -> [LightLogEntry] {
@@ -572,17 +573,29 @@ public final class LightRelay: @unchecked Sendable {
         }
     }
 
+    /// The log of the thread that issued `replyID`. A miss is not a rejection:
+    /// reading is not an attempt to answer.
+    public func read(replyID: String) throws -> [LightLogEntry] {
+        try sync {
+            guard LightTokens.isValid(replyID, prefix: "r") else { throw LightRelayError.malformedReply(replyID) }
+            guard let ticket = ledger[replyID] else { throw LightRelayError.unknownReply(replyID) }
+            guard threads[ticket.threadID] != nil else { throw LightRelayError.unknownThread(ticket.threadID) }
+            return logs[ticket.threadID] ?? []
+        }
+    }
+
     public func rejections() -> [LightRejection] {
         sync { rejectionLog }
     }
 
     // MARK: Send / reply
 
-    public func send(from name: String, thread threadID: String, text: String,
-                     ttl: TimeInterval? = nil, once: Bool = false) throws -> LightSendResult {
+    /// A new message (not a reply). Mints a thread id and delivers one copy to
+    /// each recipient. `@` tokens in `text` are body text, not extra recipients.
+    public func send(from name: String, to recipients: [String], text: String,
+                     ttl: TimeInterval? = nil, once: Bool = false, hopLimit: Int? = nil) throws -> LightSendResult {
         let plan = try sync { () -> SendPlan in
-            try planOutboundLocked(from: name, threadID: threadID, text: text, hop: 1,
-                                   replyTo: nil, ttl: ttl, once: once, allowStopped: false)
+            try planSendLocked(from: name, recipients: recipients, text: text, ttl: ttl, once: once, hopLimit: hopLimit)
         }
         return try fanout(plan)
     }
@@ -799,46 +812,40 @@ public final class LightRelay: @unchecked Sendable {
         }
     }
 
-    private func planOutboundLocked(from name: String, threadID: String, text: String, hop: Int,
-                                    replyTo: String?, ttl: TimeInterval?, once: Bool,
-                                    allowStopped: Bool) throws -> SendPlan {
+    private func planSendLocked(from name: String, recipients: [String], text: String,
+                                ttl: TimeInterval?, once: Bool, hopLimit: Int?) throws -> SendPlan {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw LightRelayError.emptyText }
-        guard let thread = threads[threadID] else { throw LightRelayError.unknownThread(threadID) }
-        guard thread.members.contains(name) else { throw LightRelayError.notMember(name) }
-        guard members[name] != nil else { throw LightRelayError.unknownMember(name) }
-        if thread.stopped && !allowStopped { throw LightRelayError.threadStopped(threadID) }
-        let mentions = LightMentions.tokens(in: trimmed)
-        var unresolved: [String] = []
+        let sender = try Self.validateName(name)
+        guard members[sender] != nil else { throw LightRelayError.unknownMember(sender) }
+        let limit = hopLimit ?? limits.hopLimit
+        guard limit >= 1 else { throw LightRelayError.invalidLimit }
         var targets: [String] = []
-        if mentions.contains("all") {
-            targets.append(contentsOf: thread.members.filter { $0 != name })
+        for raw in recipients {
+            let id = try Self.validateName(raw)
+            if id == sender { continue }
+            guard members[id] != nil else { throw LightRelayError.unknownMember(id) }
+            if !targets.contains(id) { targets.append(id) }
         }
-        for token in mentions where token != "all" {
-            if thread.members.contains(token), token != name {
-                if !targets.contains(token) { targets.append(token) }
-            } else if token != name {
-                unresolved.append(token)
-            }
-        }
+        guard !targets.isEmpty else { throw LightRelayError.noRecipients }
+        let thread = LightThread(id: try tokenLocked("t"), originator: sender, hopLimit: limit,
+                                 stopped: false, createdAt: now())
+        threads[thread.id] = thread
+        logs[thread.id] = []
+        let mentions = LightMentions.tokens(in: trimmed)
         try appendLocked(LightLogEntry(
-            id: try tokenLocked("m"), kind: .message, threadID: threadID, from: name, text: trimmed,
-            mentions: mentions, replyTo: replyTo, hop: hop, at: now()
+            id: try tokenLocked("m"), kind: .message, threadID: thread.id, from: sender, text: trimmed,
+            mentions: mentions, hop: 1, at: now()
         ))
         var prepared: [PreparedTarget] = []
         for target in targets {
-            guard let member = members[target] else {
-                unresolved.append(target)
-                continue
-            }
-            let preparedTarget = try prepareTargetLocked(member: member, from: name, thread: thread, hop: hop,
-                                                         ttl: ttl, once: once, text: trimmed, terminal: false)
-            prepared.append(preparedTarget)
+            guard let member = members[target] else { throw LightRelayError.unknownMember(target) }
+            prepared.append(try prepareTargetLocked(member: member, from: sender, thread: thread, hop: 1,
+                                                   ttl: ttl, once: once, text: trimmed, terminal: false))
         }
-        threads[threadID] = thread
         try persistLocked()
-        return SendPlan(threadID: threadID, from: name, hop: hop, hopLimit: thread.hopLimit, stopped: thread.stopped,
-                        unresolved: unresolved, notice: nil, targets: prepared)
+        return SendPlan(threadID: thread.id, from: sender, hop: 1, hopLimit: thread.hopLimit, stopped: false,
+                        unresolved: [], notice: nil, targets: prepared)
     }
 
     private func prepareTargetLocked(member: LightMember, from: String, thread: LightThread, hop: Int,
@@ -923,11 +930,11 @@ public final class LightRelay: @unchecked Sendable {
                 replyTo: replyID, hop: ticket.hop, at: now()
             ))
             try appendLocked(LightLogEntry(
-                id: try tokenLocked("m"), kind: .notice, threadID: thread.id, from: thread.openedBy, text: notice,
-                to: thread.openedBy, at: now()
+                id: try tokenLocked("m"), kind: .notice, threadID: thread.id, from: thread.originator, text: notice,
+                to: thread.originator, at: now()
             ))
             var targets: [PreparedTarget] = []
-            if thread.openedBy != ticket.to, let owner = members[thread.openedBy] {
+            if thread.originator != ticket.to, let owner = members[thread.originator] {
                 targets.append(try prepareTargetLocked(member: owner, from: ticket.to, thread: thread, hop: ticket.hop,
                                                        ttl: ttl, once: true, text: notice, terminal: true))
             }
@@ -942,22 +949,21 @@ public final class LightRelay: @unchecked Sendable {
         }
         ledger[replyID] = ticket
         threads[thread.id] = thread
+        // Always answer the previous sender, then copy each registered @mention.
+        // Mentions add deliveries; they do not replace the sender. Unknown tokens
+        // stay unresolved. There is no roster, so `@all` is just an unknown name.
         let mentions = LightMentions.tokens(in: text)
-        let explicit = !mentions.isEmpty
         var names: [String] = []
         var unresolved: [String] = []
-        if mentions.contains("all") {
-            names.append(contentsOf: thread.members.filter { $0 != ticket.to })
+        if ticket.from != ticket.to, members[ticket.from] != nil {
+            names.append(ticket.from)
         }
-        for token in mentions where token != "all" {
-            if thread.members.contains(token), token != ticket.to {
+        for token in mentions where token != ticket.to {
+            if members[token] != nil {
                 if !names.contains(token) { names.append(token) }
-            } else if token != ticket.to {
+            } else {
                 unresolved.append(token)
             }
-        }
-        if !explicit {
-            if ticket.from != ticket.to { names = [ticket.from] }
         }
         try appendLocked(LightLogEntry(
             id: try tokenLocked("m"), kind: .message, threadID: thread.id, from: ticket.to, text: text,
@@ -1049,7 +1055,7 @@ public final class LightRelay: @unchecked Sendable {
             ledger[item.replyID] = nil
             expiredQueued += 1
             let thread = threads[item.threadID]
-            let owner = thread?.openedBy
+            let owner = thread?.originator
             let notice = "Queued message for \(item.to) expired before delivery."
             if let thread {
                 try? appendLocked(LightLogEntry(
@@ -1146,9 +1152,30 @@ public final class LightRelay: @unchecked Sendable {
         }
     }
 
-    private static func unique(_ names: [String]) -> [String] {
+    private func viewLocked(_ thread: LightThread) -> LightThreadView {
+        let people = participantsLocked(thread)
+        let kind: LightThreadKind = people.count >= 3 ? .group : .direct
+        return LightThreadView(thread: thread, participants: people, kind: kind)
+    }
+
+    /// Originator, then each sender and each delivery target, first time seen.
+    /// Only registered members count. The list is not written to the snapshot.
+    private func participantsLocked(_ thread: LightThread) -> [String] {
         var seen = Set<String>()
-        return names.filter { seen.insert($0).inserted }
+        var out: [String] = []
+        func add(_ name: String?) {
+            guard let name, members[name] != nil, seen.insert(name).inserted else { return }
+            out.append(name)
+        }
+        add(thread.originator)
+        for entry in logs[thread.id] ?? [] {
+            switch entry.kind {
+            case .message: add(entry.from)
+            case .delivery: add(entry.to)
+            case .notice: break
+            }
+        }
+        return out
     }
 
     private static func validateName(_ raw: String) throws -> String {
@@ -1214,7 +1241,7 @@ public final class LightRelay: @unchecked Sendable {
         } catch {
             throw LightRelayError.corruptStore("state.json")
         }
-        guard snapshot.version == 1 else { throw LightRelayError.corruptStore("state.json") }
+        guard snapshot.version == 2 else { throw LightRelayError.corruptStore("state.json") }
         members = Dictionary(uniqueKeysWithValues: snapshot.members.map { ($0.name, $0) })
         threads = Dictionary(uniqueKeysWithValues: snapshot.threads.map { ($0.id, $0) })
         ledger = Dictionary(uniqueKeysWithValues: snapshot.ledger.map { ($0.replyID, $0) })
@@ -1226,7 +1253,7 @@ public final class LightRelay: @unchecked Sendable {
     }
 
     private func persistLocked() throws {
-        let snapshot = Snapshot(version: 1, members: members.values.sorted { $0.name < $1.name },
+        let snapshot = Snapshot(version: 2, members: members.values.sorted { $0.name < $1.name },
                                 threads: threads.values.sorted { $0.id < $1.id },
                                 ledger: ledger.values.sorted { $0.replyID < $1.replyID },
                                 outbox: outbox)
