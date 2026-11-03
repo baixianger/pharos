@@ -62,14 +62,18 @@ public struct LightInvocation: Equatable, Sendable {
     public var fallback: Bool
     public var summary: String
     public var loopback: Bool
+    /// Working directory for the spawned process; nil runs in the temporary directory.
+    public var cwd: String?
 
-    public init(argv: [String], stdin: String, executable: Bool, fallback: Bool, summary: String, loopback: Bool) {
+    public init(argv: [String], stdin: String, executable: Bool, fallback: Bool, summary: String, loopback: Bool,
+                cwd: String? = nil) {
         self.argv = argv
         self.stdin = stdin
         self.executable = executable
         self.fallback = fallback
         self.summary = summary
         self.loopback = loopback
+        self.cwd = cwd
     }
 }
 
@@ -232,11 +236,16 @@ public struct ExternalLightDriver: LightSessionDriver {
     public var allowLive: Bool
     public var runner: (any LightProcessRunning)?
     public var binaries: LightBinaries
+    /// Local Codex session store. When set, a headless resume runs in the session's
+    /// recorded cwd, and `readReply` returns the turn's final message from the rollout.
+    public var codexSessions: CodexRolloutReader?
 
-    public init(allowLive: Bool = false, runner: (any LightProcessRunning)? = nil, binaries: LightBinaries = .names) {
+    public init(allowLive: Bool = false, runner: (any LightProcessRunning)? = nil, binaries: LightBinaries = .names,
+                codexSessions: CodexRolloutReader? = nil) {
         self.allowLive = allowLive
         self.runner = runner
         self.binaries = binaries
+        self.codexSessions = codexSessions
     }
 
     public func deliver(member: LightMember, body: String) -> LightDriveResult {
@@ -253,7 +262,11 @@ public struct ExternalLightDriver: LightSessionDriver {
         }
         var notes: [String] = []
         for route in writable {
-            let planned = LightRoutePlanner.invocation(member: member, route: route, body: body, binaries: binaries)
+            var planned = LightRoutePlanner.invocation(member: member, route: route, body: body, binaries: binaries)
+            if member.app == "codex", route.id == "app-server", planned.cwd == nil {
+                // `codex exec resume` takes the turn's cwd from the process; keep the session's own folder.
+                planned.cwd = codexSessions?.cwd(sessionID: member.sessionID)
+            }
             if !planned.executable {
                 let prefix = notes.isEmpty ? "" : "previous: \(notes.joined(separator: "; ")); "
                 return LightDriveResult(state: .deferred, route: route.id, fallback: route.fallback,
@@ -272,10 +285,70 @@ public struct ExternalLightDriver: LightSessionDriver {
     }
 
     public func readReply(member: LightMember, since: Date) -> String? {
-        // Stale pane text must not become a reply. A certified reader can replace this.
-        _ = member
-        _ = since
+        // Stale pane text must not become a reply. Only a reader that can date a
+        // completed turn answers: the Codex rollout's first `task_complete` after `since`.
+        if member.app == "codex", let codexSessions {
+            return codexSessions.firstCompletedReply(sessionID: member.sessionID, since: since)
+        }
         return nil
+    }
+}
+
+/// Reads `~/.codex/sessions/**/rollout-*-<session>.jsonl` (read-only).
+public struct CodexRolloutReader: Sendable {
+    public var root: URL
+
+    public init(root: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions", isDirectory: true)) {
+        self.root = root
+    }
+
+    public func rollout(sessionID: String) -> URL? {
+        guard !sessionID.isEmpty, !sessionID.contains("/"),
+              let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return nil }
+        let suffix = "-\(sessionID).jsonl"
+        for case let url as URL in walker where url.lastPathComponent.hasPrefix("rollout-") && url.lastPathComponent.hasSuffix(suffix) {
+            return url
+        }
+        return nil
+    }
+
+    public func cwd(sessionID: String) -> String? {
+        for object in records(sessionID: sessionID) where object["type"] as? String == "session_meta" {
+            guard let cwd = (object["payload"] as? [String: Any])?["cwd"] as? String, !cwd.isEmpty else { continue }
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory), isDirectory.boolValue { return cwd }
+            return nil
+        }
+        return nil
+    }
+
+    /// The final agent message of the first turn that completed after `since`.
+    public func firstCompletedReply(sessionID: String, since: Date) -> String? {
+        for object in records(sessionID: sessionID) {
+            guard object["type"] as? String == "event_msg",
+                  let payload = object["payload"] as? [String: Any],
+                  payload["type"] as? String == "task_complete",
+                  let stamp = object["timestamp"] as? String, let at = Self.date(stamp), at > since,
+                  let text = payload["last_agent_message"] as? String else { continue }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
+    }
+
+    private func records(sessionID: String) -> [[String: Any]] {
+        guard let url = rollout(sessionID: sessionID),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").compactMap { line in
+            guard let data = line.data(using: .utf8) else { return nil }
+            return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        }
+    }
+
+    static func date(_ text: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
     }
 }
 
@@ -330,7 +403,12 @@ public struct FoundationLightProcessRunner: LightProcessRunning {
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             process.arguments = invocation.argv
         }
-        process.currentDirectoryURL = FileManager.default.temporaryDirectory
+        var isDirectory: ObjCBool = false
+        if let cwd = invocation.cwd, FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory), isDirectory.boolValue {
+            process.currentDirectoryURL = URL(fileURLWithPath: cwd, isDirectory: true)
+        } else {
+            process.currentDirectoryURL = FileManager.default.temporaryDirectory
+        }
         let input = Pipe()
         let output = Pipe()
         let error = Pipe()

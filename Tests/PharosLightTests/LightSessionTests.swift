@@ -647,6 +647,39 @@ final class LightSessionTests: XCTestCase {
                        "/opt/codex")
     }
 
+    func testCodexRolloutGivesTheResumeCwdAndOnlyATurnCompletedAfterTheTicket() throws {
+        let root = freshStore()
+        let project = root.appendingPathComponent("proj", isDirectory: true)
+        let day = root.appendingPathComponent("sessions/2026/11/04", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+        let lines = [
+            #"{"timestamp":"2026-11-03T23:23:15.483Z","type":"session_meta","payload":{"id":"s-1","cwd":"\#(project.path)"}}"#,
+            #"{"timestamp":"2026-11-03T23:23:18.642Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"OLD"}}"#,
+            #"{"timestamp":"2026-11-03T23:28:22.450Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":" PONG-1 "}}"#,
+            #"{"timestamp":"2026-11-03T23:30:00.000Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"LATER"}}"#,
+        ]
+        try lines.joined(separator: "\n").write(to: day.appendingPathComponent("rollout-2026-11-04T00-23-15-s-1.jsonl"),
+                                                atomically: true, encoding: .utf8)
+        let reader = CodexRolloutReader(root: root.appendingPathComponent("sessions", isDirectory: true))
+        XCTAssertEqual(reader.cwd(sessionID: "s-1"), project.path)
+        let issued = try XCTUnwrap(CodexRolloutReader.date("2026-11-03T23:28:18.000Z"))
+        XCTAssertEqual(reader.firstCompletedReply(sessionID: "s-1", since: issued), "PONG-1")
+        XCTAssertNil(reader.firstCompletedReply(sessionID: "s-1", since: issued.addingTimeInterval(3600)))
+        XCTAssertNil(reader.firstCompletedReply(sessionID: "missing", since: .distantPast))
+
+        let runner = ScriptedSessionRunner([output(0, "{}")])
+        let driver = ExternalLightDriver(allowLive: true, runner: runner, binaries: LightBinaries(codex: "/x/codex"),
+                                         codexSessions: reader)
+        let member = LightMember(name: "codex-a", host: "local", app: "codex", project: "proj", sessionID: "s-1",
+                                 routes: LightRouteCatalog.codex)
+        XCTAssertEqual(driver.deliver(member: member, body: "hi").state, .delivered)
+        XCTAssertEqual(runner.invocations.first?.argv.prefix(3).map { $0 }, ["/x/codex", "exec", "resume"])
+        XCTAssertEqual(runner.invocations.first?.cwd, project.path)
+        XCTAssertEqual(driver.readReply(member: member, since: issued), "PONG-1")
+        XCTAssertNil(ExternalLightDriver().readReply(member: member, since: issued))
+    }
+
     private func makeRelay(now: (@Sendable () -> Date)? = nil) throws -> LightRelay {
         if let now {
             return try LightRelay(store: freshStore(), now: now, driver: IdleLightDriver())

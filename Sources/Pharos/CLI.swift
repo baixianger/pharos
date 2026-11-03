@@ -180,7 +180,8 @@ enum CLI {
         let driver = ExternalLightDriver(
             allowLive: live,
             runner: live ? FoundationLightProcessRunner() : nil,
-            binaries: .fromEnvironment(environment)
+            binaries: .fromEnvironment(environment),
+            codexSessions: CodexRolloutReader()
         )
         return try LightRelay(
             store: LightRelay.defaultStoreURL(),
