@@ -605,6 +605,24 @@ final class LightSessionTests: XCTestCase {
         XCTAssertTrue(quiet.invocations.isEmpty)
     }
 
+    func testRealAchatWorkspaceListShapeAndTildePathsAreRecognised() throws {
+        // achat 3a6acfc: `workspace list` emits `workspaces` and abbreviates $HOME to `~`.
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let runner = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"app":"codex","workspaces":[{"name":"msg-test","path":"~/personal/msg-test","id":"p1","roots":1}]}"#),
+            output(0, #"{"ok":true,"app":"codex","workspaces":[{"name":"msg-test","path":"~/personal/msg-test","id":"p1","roots":1}]}"#),
+        ])
+        let service = makeService(relay: try makeRelay(), runner: runner, prober: ScriptProber([]))
+        let listed = service.executeProject(arguments: ["list", "--host", "local", "--app", "codex", "--json"])
+        let rows = try XCTUnwrap(json(listed.text)?["projects"] as? [[String: Any]])
+        XCTAssertEqual(rows.first?["name"] as? String, "msg-test")
+        let added = service.executeProject(arguments: ["add", "--host", "local", "--app", "codex",
+                                                       "--path", home + "/personal/msg-test", "--json"])
+        XCTAssertEqual(json(added.text)?["status"] as? String, "already", added.text)
+        XCTAssertEqual(runner.invocations.count, 2, "an already-registered folder must not call achat workspace add")
+        XCTAssertTrue(LightSessionService.samePath("~/personal/msg-test/", home + "/personal/msg-test"))
+    }
+
     private func makeRelay(now: (@Sendable () -> Date)? = nil) throws -> LightRelay {
         if let now {
             return try LightRelay(store: freshStore(), now: now, driver: IdleLightDriver())

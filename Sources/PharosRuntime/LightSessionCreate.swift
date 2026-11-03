@@ -984,6 +984,8 @@ public struct LightSessionService {
         guard let left else { return false }
         func norm(_ value: String) -> String {
             var text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            // achat abbreviates the home directory to `~`; the shell expands it in `--path`.
+            if text == "~" || text.hasPrefix("~/") { text = (text as NSString).expandingTildeInPath }
             while text.count > 1 && text.hasSuffix("/") { text.removeLast() }
             return text
         }
@@ -994,7 +996,8 @@ public struct LightSessionService {
     }
 
     static func projectRows(_ object: [String: Any]) -> [LightProjectRow] {
-        let raw = (object["projects"] as? [Any]) ?? []
+        // achat `workspace list` emits `workspaces`; older/achat `list` output uses `projects`.
+        let raw = (object["projects"] as? [Any]) ?? (object["workspaces"] as? [Any]) ?? []
         return raw.compactMap { item in
             if let name = item as? String { return LightProjectRow(name: name, path: nil) }
             guard let row = item as? [String: Any] else { return nil }
@@ -1018,6 +1021,7 @@ public struct LightSessionService {
             if !joined.isEmpty { message = joined }
         }
         if let text = object["message"] as? String, !text.isEmpty { message = text }
+        if message == nil, let hint = object["hint"] as? String, !hint.isEmpty { message = hint }
         let explicit = object["status"] as? String
         let okFlag = (object["ok"] as? Bool) != false && code == nil
         let status: String
