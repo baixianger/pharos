@@ -180,24 +180,26 @@ What was ported for ordinary sends is the policy table and the headless argv sha
 
 ## Session creation
 
-`pharos session new --host H --app dsh|ag|codex --workspace PROJECT` creates a session on that Pharos node and, on success, registers a member so `pharos send` can address it. The default member name is `<app>-<host>-<workspace>` (slug), overridable with `--name`. The same name with a different session is an error and does not replace the existing member.
+`pharos session new --host H --app dsh|ag|codex --workspace PROJECT|DIR` creates a session on that Pharos node and, on success, registers a member so `pharos send` can address it. The default member name is `<app>-<host>-<workspace>` (slug), overridable with `--name`. The same name with a different session is an error and does not replace the existing member. `--path DIR` is the directory when `--workspace` is only a project name. A `--workspace` that contains `/` or starts with `~` is the directory, and the project name is its last component.
 
 `pharos session workspaces --host H --app A` lists the projects achat can see on that node.
 
-The caller does not create the session itself. It forwards `pharos session … --here` over the existing SSH route (`ssh -o BatchMode=yes`, no tunnel). `--here` is the form the target node runs: it probes the app, optionally launches it, then runs `achat <app> new|list --host local --json`. `--title` is the optional first message achat's `new` already accepts. `--dry-run` asks achat for the plan, does not launch, and does not register a member.
+`--host local`, `localhost`, this machine's hostname and its short name, and `PHAROS_SELF_HOST` / `PHAROS_NODE_NAME` run in-process and register the member. `--here` is what a forward runs on the target: it returns JSON and does not register. A remote host is `ssh -o BatchMode=yes` of `pharos session … --here`, with no tunnel. The caller never falls back to its own machine. `--title` is the optional first message achat's `new` already accepts. `--dry-run` asks achat for the plan, does not launch, and does not register a member.
 
-`--launch` is opt-in, on `new` and on `workspaces`. The target node applies one check, then stops:
+Route choice stays in achat (`achat <app> probe` and achat's own config). Codex reaches the app through app-server/IPC and does not need a debug port. DSH can use its on-demand web server. Pharos does not require `PHAROS_<APP>_CDP_PORT` and does not probe a debug endpoint unless `--launch` is set.
+
+`--launch` is opt-in, on `new` and on `workspaces`, and it is the only path that needs an app executable and a debug port. The target applies one check, then stops:
 
 | Probe | Result |
 | --- | --- |
 | Debug endpoint answers and belongs to this app | Reuse it |
 | App process is up, endpoint is not | Do not kill it. Ask the owner to quit and relaunch. A relaunch of the same app reuses the running instance and would ignore the debug flag |
 | Port answers as something else | Touch nothing |
-| Nothing is there | Without `--launch`, `app not running`. With `--launch`, start the configured executable with `--remote-debugging-address=127.0.0.1` and wait until the endpoint belongs to the app |
+| Nothing is there | Start the configured executable with `--remote-debugging-address=127.0.0.1` and wait until the endpoint belongs to the app |
 
-Ports and app executables come from `PHAROS_DSH_CDP_PORT`, `PHAROS_AG_CDP_PORT`, `PHAROS_CODEX_CDP_PORT`, `PHAROS_DSH_APP`, `PHAROS_AG_APP`, and `PHAROS_CODEX_APP`. There is no compiled-in port. A missing port is `debug port is not configured`.
+The port is the first value that is set: `PHAROS_DSH_CDP_PORT`, `PHAROS_AG_CDP_PORT`, or `PHAROS_CODEX_CDP_PORT`; else `cdpPort` in the achat config (`PHAROS_ACHAT_CONFIG` or `ACHAT_CONFIG`, under `defaults.<app>` or the top-level app entry); else the launch default dsh `9301` and Codex `9302`. Antigravity has no compiled-in port. `--launch` with no port is `debug port is not configured`, and nothing is spawned. App executables stay `PHAROS_DSH_APP`, `PHAROS_AG_APP`, and `PHAROS_CODEX_APP`.
 
-`session new` asks the target whether that workspace is registered before it creates anything. If it is not, the command fails with `project is not registered` and does not call `achat new`. `--add-project DIR` runs project add first, then creates the session only when the result is `added` or `already`.
+`session new` lists workspaces on the target and, when the project is missing, runs project add before `achat new`. `--no-add-project` is the strict switch: the command fails with `project is not registered` and does not call `new`. That flag is forwarded as achat's `--no-add-workspace`, because achat `new` also adds a missing workspace unless told not to. Status `added` or `already` continues into session create. `needs_user_action` stops session new and surfaces the hint. A send addresses a member that already has a session. A route that has to open one uses this same add and stops only on `needs_user_action`.
 
 ## Project registration
 
@@ -224,9 +226,11 @@ Verified on a Mac, and left to achat rather than reimplemented here:
 | dsh 0.2.1 | `~/.dsh/storages/workspace.json`. There is no CLI command. `workspace/create {request:{path}}` on a `dsh web` server is idempotent. The desktop app is the single writer and rewrites the whole file, so a web-side add made while the desktop is running is lost | Desktop debug endpoint ready: `addable: ui` (Add workspace through that UI). Desktop not running: `addable: api`. Desktop running without a debug port: `addable: restart`, status `needs_user_action`, and nothing is written. A port owned by another process is left alone |
 | antigravity | One JSON file per project under `~/.gemini/config/projects/<uuid>.json`, written by the app's language server with a private token. Files dropped while the app is running are not loaded, and that directory is off limits | `addable: ui` only, and only when the debug endpoint belongs to Antigravity (Create New Project, then the folder picker). Otherwise `needs_user_action`. Pharos does not write that directory |
 
+The probe table applies when a debug port is configured. Codex is always `addable: api` and is not probed. DSH and Antigravity with no configured port are handed to achat (`api` and `ui`) instead of failing with `debug port is not configured`.
+
 ## Node inbox
 
-Each machine is a Pharos node. The only down state is that the node's heartbeat is missing or older than the Broker's 70s window. The status is `node offline`, with `last-seen` when a heartbeat was recorded. The caller does not describe a machine as unreachable, and it does not create the session or deliver the message on its own machine.
+Each machine is a Pharos node. A node is online when a heartbeat is inside the Broker's 70s window. `pharos session pull` (and `session heartbeat`, the same call) records that heartbeat and returns waiting jobs. There is no heartbeat daemon in this tier. When the heartbeat is missing or stale, presence is `ssh -o BatchMode=yes -o ConnectTimeout=5 <H> pharos --version`. A zero status runs the real command directly and does not record a heartbeat, so the probe does not pull jobs. A failed probe is `node offline`, with `last-seen` when a heartbeat was recorded and `last-seen never` when it was not, and that request is queued. A reachable machine is not reported offline. The caller does not describe a machine as unreachable, and it does not create the session or deliver the message on its own machine.
 
 The Broker keeps one inbox per node in the same store as the single-writer outbox (`state.json`, queue TTL 72h). `enqueue` appends a job. The node `pull`s on heartbeat and may see the same id again until `ack` removes it. A repeated id, or a second ack, is ignored. `sweep` drops expired jobs. That is the whole queue. There are no exchanges, routing keys, topics, priorities, consumer groups, or an external message broker.
 
@@ -253,7 +257,7 @@ A send to a member whose node has gone offline since its last heartbeat waits in
 
 Tests cross `LightRelay`, `LightCommands`, and `LightRoutePlanner`. They do not read private ledger fields.
 
-Covered: directory resolution and conflicts, a new send minting a thread, multi-recipient send as N 1:1 copies that share a thread id and hide each other from the header, reply-id inheritance of that thread, `@` on a reply adding copies without replacing the previous sender, `@all` left unresolved, derived participants and direct/group kind, participants absent from the snapshot, reply-id issue / lookup / expiry / `--once` / forged ids, hop along a reply chain and the originator notice, queue order across two sends to one member, queue expiry, wait-once ingestion, SSH-shaped forwarding, loopback webhook intake, reload of the append-only log, headless argv with no approval bypass, unverified external delivery, session-new argument mapping and achat JSON, member registration and name collision, dry-run, the launch decision table, a missing debug port, node-offline queue and `--no-queue`, no local fallback when a forward fails, inbox pull/ack/expiry, duplicate request ids, project add by path (including the already-registered no-op), the `api` / `ui` / `restart` decision, `needs_user_action` without writing app files, and `session new` failing when the project is not registered unless `--add-project` adds it first.
+Covered: directory resolution and conflicts, a new send minting a thread, multi-recipient send as N 1:1 copies that share a thread id and hide each other from the header, reply-id inheritance of that thread, `@` on a reply adding copies without replacing the previous sender, `@all` left unresolved, derived participants and direct/group kind, participants absent from the snapshot, reply-id issue / lookup / expiry / `--once` / forged ids, hop along a reply chain and the originator notice, queue order across two sends to one member, queue expiry, wait-once ingestion, SSH-shaped forwarding, loopback webhook intake, reload of the append-only log, headless argv with no approval bypass, unverified external delivery, session-new argument mapping and achat JSON, member registration and name collision, dry-run, the launch decision table, a missing debug port only when `--launch` is set, launch defaults (dsh 9301, Codex 9302) with env and achat-config overrides, session create without a debug port, `--host local` and a configured self alias running in-process, an SSH `pharos --version` probe that runs a reachable node directly and queues only when the probe fails, node-offline queue and `--no-queue`, no local fallback when a forward fails, inbox pull/ack/expiry, duplicate request ids, project add by path (including the already-registered no-op), the `api` / `ui` / `restart` decision, `needs_user_action` without writing app files, session new auto-adding a missing project, `--no-add-project` refusing to create, and `needs_user_action` stopping session new.
 
 Not certified, and not run by CI:
 
@@ -275,4 +279,4 @@ Not certified, and not run by CI:
 - Debug binds in the planned DSH and CDP routes are `127.0.0.1` only.
 - No new listening port is opened by this change.
 - `--launch` binds the debug port to `127.0.0.1` only. An endpoint that belongs to another process is left alone.
-- The achat binary path and the debug ports stay in the environment. They are not written into the tree.
+- Environment variables override debug ports. The compiled launch defaults are the public achat ports (dsh 9301, Codex 9302). Antigravity's port stays in achat config or `PHAROS_AG_CDP_PORT`. No personal path is written into the tree.

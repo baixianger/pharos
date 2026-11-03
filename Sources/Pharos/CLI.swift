@@ -196,7 +196,8 @@ enum CLI {
                 runner: FoundationLightProcessRunner(),
                 prober: LoopbackDebugProber(),
                 ports: .fromEnvironment(environment),
-                apps: .fromEnvironment(environment)
+                apps: .fromEnvironment(environment),
+                selfHost: .fromEnvironment(environment)
             ).execute(arguments: arguments)
         } catch {
             return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")
@@ -211,7 +212,8 @@ enum CLI {
                 runner: FoundationLightProcessRunner(),
                 prober: LoopbackDebugProber(),
                 ports: .fromEnvironment(environment),
-                apps: .fromEnvironment(environment)
+                apps: .fromEnvironment(environment),
+                selfHost: .fromEnvironment(environment)
             ).executeProject(arguments: arguments)
         } catch {
             return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")
@@ -986,7 +988,7 @@ enum CLI {
           read --thread ID [--json] | read r_xxx [--json]
           thread list [--json]
           thread show <id> [--json]
-          session new --host H --app dsh|ag|codex --workspace PROJECT [--title T] [--name N] [--add-project DIR] [--launch] [--dry-run] [--no-queue] [--json]
+          session new --host H --app dsh|ag|codex --workspace PROJECT|DIR [--path DIR] [--title T] [--name N] [--launch] [--dry-run] [--no-add-project] [--no-queue] [--json]
           session workspaces --host H --app dsh|ag|codex [--launch] [--no-queue] [--json]
           session pull --node H [--json]
           session ack <request-id> [--result JSON]
@@ -996,10 +998,13 @@ enum CLI {
           and may @mention more members (each mention is another 1:1 copy).
           `thread new` and `thread add` are not commands. Participants are derived.
           Leading words that name registered members are recipients until `--`.
-          `session new` and `project list|add` run on the target Pharos node. An offline
-          node is queued (72h) unless `--no-queue`. `session new` fails when that
-          project is not registered; `--add-project DIR` adds it first.
-          `--launch` is the only way a node starts an app.
+          `session new` and `project list|add` run on the target Pharos node. `--host local`
+          (or this machine's hostname / PHAROS_SELF_HOST) runs here. A node with no
+          recent heartbeat is still used when `ssh pharos --version` succeeds; only a
+          failed probe is queued (72h) unless `--no-queue`. There is no heartbeat daemon.
+          `session new` adds a missing project unless `--no-add-project`.
+          `--launch` is the only way a node starts an app, and the only command that
+          needs a debug port (env override, else achat config, else dsh 9301 / codex 9302).
           Debug ports and the achat binary come from the environment, not the repo.
           Set PHAROS_LIGHT_SSH_HOST to an existing SSH alias to forward `reply`
           from a non-Broker host. Set PHAROS_LIGHT_WEBHOOK only to a loopback URL.

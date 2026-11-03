@@ -14,12 +14,31 @@ final class LightSessionTests: XCTestCase {
     }
 
     func testDebugPortsComeFromTheEnvironment() {
-        XCTAssertNil(LightDebugPorts.fromEnvironment([:]).dsh)
-        XCTAssertNil(LightDebugPorts.fromEnvironment([:]).codex)
-        XCTAssertNil(LightDebugPorts.fromEnvironment([:]).ag)
-        XCTAssertEqual(LightDebugPorts.fromEnvironment(["PHAROS_DSH_CDP_PORT": "4401"]).dsh, 4401)
+        let defaults = LightDebugPorts.fromEnvironment([:])
+        XCTAssertEqual(defaults.dsh, LightDebugPorts.dshLaunchDefault)
+        XCTAssertEqual(defaults.codex, LightDebugPorts.codexLaunchDefault)
+        XCTAssertNil(defaults.ag)
+        let config = #"{"defaults":{"dsh":{"cdpPort":4409},"ag":{"cdpPort":[4410]},"codex":{"cdpPort":4411}}}"#
+        let configured = LightDebugPorts.fromEnvironment([:], configJSON: config)
+        XCTAssertEqual(configured.dsh, 4409)
+        XCTAssertEqual(configured.ag, 4410)
+        XCTAssertEqual(configured.codex, 4411)
+        let overridden = LightDebugPorts.fromEnvironment(["PHAROS_DSH_CDP_PORT": "4401"], configJSON: config)
+        XCTAssertEqual(overridden.dsh, 4401)
+        XCTAssertEqual(overridden.codex, 4411)
         XCTAssertEqual(LightAppBins.fromEnvironment([:]).achat, "achat")
         XCTAssertNil(LightAppBins.fromEnvironment([:]).codex)
+
+        let selfHost = LightSelfHost.fromEnvironment(["PHAROS_SELF_HOST": "desk", "PHAROS_NODE_NAME": "node-a"])
+        XCTAssertTrue(selfHost.matches("local"))
+        XCTAssertTrue(selfHost.matches("LOCAL"))
+        XCTAssertTrue(selfHost.matches("desk"))
+        XCTAssertTrue(selfHost.matches("node-a"))
+        XCTAssertTrue(selfHost.matches(ProcessInfo.processInfo.hostName))
+        if let short = ProcessInfo.processInfo.hostName.split(separator: ".").first, !short.isEmpty {
+            XCTAssertTrue(selfHost.matches(String(short)))
+        }
+        XCTAssertFalse(selfHost.matches("mini"))
     }
 
     func testNewMapsArgumentsAndRegistersTheMember() throws {
@@ -72,7 +91,7 @@ final class LightSessionTests: XCTestCase {
         XCTAssertNil(relay.member(named: "codex-mini-pharos"))
         let argv = try XCTUnwrap(runner.invocations.last?.argv)
         XCTAssertEqual(argv, ["/tmp/achat", "codex", "new", "--host", "local", "--json", "--project", "Pharos", "hello there"])
-        XCTAssertEqual(prober.calls.map(\.1), [4403])
+        XCTAssertTrue(prober.calls.isEmpty)
     }
 
     func testDryRunDoesNotRegisterOrLaunch() throws {
@@ -96,21 +115,21 @@ final class LightSessionTests: XCTestCase {
         let refuse: [(LightAppProbe, String)] = [
             (.runningWithoutDebug, "quit it and relaunch"),
             (.portHeldByOther, "held by something else"),
-            (.absent, "app not running"),
         ]
         for (probe, needle) in refuse {
-            let runner = ScriptedSessionRunner([])
+            let runner = ScriptedSessionRunner([
+                output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+            ])
             let service = makeService(relay: try makeRelay(), runner: runner, prober: ScriptProber([probe]))
-            let launch = probe == .absent ? [] : ["--launch"]
-            let result = service.execute(arguments: ["new", "--here", "--app", "dsh", "--workspace", "pharos"] + launch)
+            let result = service.execute(arguments: ["new", "--here", "--app", "dsh", "--workspace", "pharos", "--launch"])
             XCTAssertEqual(result.exitCode, 1, result.text)
             XCTAssertTrue(result.text.contains(needle), result.text)
-            XCTAssertTrue(runner.invocations.isEmpty)
+            XCTAssertFalse(runner.invocations.contains { $0.argv.dropFirst(2).first == "new" })
         }
 
         let runner = ScriptedSessionRunner([
-            output(0, ""),
             output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+            output(0, ""),
             output(0, #"{"ok":true,"created":true,"route":"desktop","threadId":"thr-1"}"#),
         ])
         let prober = ScriptProber([.absent, .ready])
@@ -118,10 +137,11 @@ final class LightSessionTests: XCTestCase {
         let result = service.execute(arguments: ["new", "--here", "--app", "ag", "--workspace", "pharos", "--launch"])
         XCTAssertEqual(result.exitCode, 0, result.text)
         XCTAssertTrue(result.text.contains("thr-1"))
-        let launch = try XCTUnwrap(runner.invocations.first?.argv)
+        let launch = try XCTUnwrap(runner.invocations.first { $0.argv.contains { $0.hasPrefix("--remote-debugging-port=") } }?.argv)
         XCTAssertTrue(launch.contains("--remote-debugging-address=127.0.0.1"))
         XCTAssertTrue(launch.contains("--remote-debugging-port=4402"))
         XCTAssertFalse(launch.joined(separator: " ").contains("0.0.0.0"))
+        XCTAssertEqual(runner.invocations.first?.argv.prefix(4).map { $0 }, ["/tmp/achat", "ag", "workspace", "list"])
         XCTAssertEqual(runner.invocations.last?.argv.prefix(3).map { $0 }, ["/tmp/achat", "ag", "new"])
     }
 
@@ -206,8 +226,13 @@ final class LightSessionTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 1)
         XCTAssertTrue(result.text.contains("node offline"))
         XCTAssertTrue(result.text.contains("last-seen"))
+        XCTAssertFalse(result.text.contains("queued"))
         XCTAssertFalse(result.text.lowercased().contains("unreachable"))
-        XCTAssertTrue(runner.invocations.isEmpty)
+        XCTAssertEqual(runner.invocations.count, 1)
+        let probe = try XCTUnwrap(runner.invocations.first?.argv)
+        XCTAssertEqual(probe.first, "ssh")
+        XCTAssertTrue(probe.contains("ConnectTimeout=5"))
+        XCTAssertEqual(probe.last, "pharos --version")
         XCTAssertTrue(try relay.pull(node: "mini").isEmpty)
     }
 
@@ -297,11 +322,16 @@ final class LightSessionTests: XCTestCase {
         XCTAssertTrue(blocked.text.contains("Create New Project"))
         XCTAssertTrue(ag.invocations.isEmpty)
 
-        let missing = LightSessionService(relay: try makeRelay(), runner: ScriptedSessionRunner([]), prober: ScriptProber([.ready]),
+        let missingRunner = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[]}"#),
+            output(0, #"{"ok":true,"status":"added","name":"pharos","path":"/src/pharos","addable":"ui"}"#),
+        ])
+        let missing = LightSessionService(relay: try makeRelay(), runner: missingRunner, prober: ScriptProber([.ready]),
                                           ports: LightDebugPorts(dsh: 4401, ag: nil, codex: 4403), apps: bins(), launchPolls: 1)
-        let unconfigured = missing.executeProject(arguments: ["add", "--here", "--app", "ag", "--path", "/src/pharos"])
-        XCTAssertEqual(json(unconfigured.text)?["status"] as? String, "needs_user_action")
-        XCTAssertTrue(unconfigured.text.contains("debug port is not configured"))
+        let unconfigured = missing.executeProject(arguments: ["add", "--here", "--app", "ag", "--path", "/src/pharos", "--name", "pharos"])
+        XCTAssertEqual(json(unconfigured.text)?["status"] as? String, "added")
+        XCTAssertFalse(unconfigured.text.contains("debug port is not configured"))
+        XCTAssertEqual(missingRunner.invocations.last?.argv.prefix(4).map { $0 }, ["/tmp/achat", "ag", "workspace", "add"])
 
         let ui = ScriptedSessionRunner([
             output(0, #"{"ok":true,"projects":[]}"#),
@@ -365,30 +395,55 @@ final class LightSessionTests: XCTestCase {
         ])
         XCTAssertEqual(stopped.exitCode, 1)
         XCTAssertTrue(stopped.text.contains("node offline"))
-        XCTAssertTrue(quiet.invocations.isEmpty)
+        XCTAssertFalse(stopped.text.contains("queued"))
+        XCTAssertEqual(quiet.invocations.count, 1)
+        XCTAssertEqual(quiet.invocations.first?.argv.last, "pharos --version")
+        XCTAssertTrue(quiet.invocations.first?.argv.contains("ConnectTimeout=5") == true)
     }
 
     func testSessionNewFailsWhenTheProjectIsNotRegistered() throws {
         let runner = ScriptedSessionRunner([
             output(0, #"{"ok":true,"projects":[{"name":"other","path":"/other"}]}"#),
+            output(0, #"{"ok":true,"status":"added","name":"pharos","path":"pharos","addable":"api"}"#),
             output(0, #"{"ok":true,"created":true,"session":{"sessionId":"sess-should-not"}}"#),
         ])
         let service = makeService(relay: try makeRelay(), runner: runner, prober: ScriptProber([.ready]))
-        let result = service.execute(arguments: ["new", "--here", "--app", "dsh", "--workspace", "pharos"])
+        let result = service.execute(arguments: [
+            "new", "--here", "--app", "codex", "--workspace", "pharos", "--no-add-project",
+        ])
         XCTAssertEqual(result.exitCode, 1, result.text)
         XCTAssertTrue(result.text.contains("project is not registered"), result.text)
         XCTAssertFalse(runner.invocations.contains { $0.argv.contains("new") })
+        XCTAssertFalse(runner.invocations.contains { $0.argv.contains("add") })
+
+        let strict = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+            output(0, #"{"ok":true,"created":true,"session":{"sessionId":"sess-strict"}}"#),
+        ])
+        let kept = makeService(relay: try makeRelay(), runner: strict, prober: ScriptProber([]))
+        let created = kept.execute(arguments: [
+            "new", "--here", "--app", "codex", "--workspace", "pharos", "--no-add-project",
+        ])
+        XCTAssertEqual(created.exitCode, 0, created.text)
+        XCTAssertTrue(strict.invocations.last?.argv.contains("--no-add-workspace") == true)
     }
 
-    func testSessionNewAddProjectRunsAddFirst() throws {
+    func testSessionNewAddsAMissingProjectThenCreates() throws {
         let runner = ScriptedSessionRunner([
             output(0, #"{"ok":true,"projects":[]}"#),
             output(0, #"{"ok":true,"status":"added","name":"pharos","path":"/src/pharos","addable":"api"}"#),
             output(0, #"{"ok":true,"created":true,"route":"web","session":{"sessionId":"sess-9"}}"#),
         ])
         let service = makeService(relay: try makeRelay(), runner: runner, prober: ScriptProber([.ready]))
+        let retired = service.execute(arguments: [
+            "new", "--here", "--app", "codex", "--workspace", "pharos", "--add-project", "/src/pharos",
+        ])
+        XCTAssertEqual(retired.exitCode, 2, retired.text)
+        XCTAssertTrue(retired.text.contains("--no-add-project"))
+        XCTAssertTrue(runner.invocations.isEmpty)
+
         let result = service.execute(arguments: [
-            "new", "--here", "--app", "codex", "--workspace", "pharos", "--add-project", "/src/pharos", "--title", "hello",
+            "new", "--here", "--app", "codex", "--workspace", "pharos", "--path", "/src/pharos", "--title", "hello",
         ])
         XCTAssertEqual(result.exitCode, 0, result.text)
         XCTAssertEqual(json(result.text)?["sessionId"] as? String, "sess-9")
@@ -397,6 +452,7 @@ final class LightSessionTests: XCTestCase {
             ["/tmp/achat", "codex", "workspace", "add", "/src/pharos", "--host", "local", "--json", "--name", "pharos"],
             ["/tmp/achat", "codex", "new", "--host", "local", "--json", "--project", "pharos", "hello"],
         ])
+        XCTAssertFalse(runner.invocations.last?.argv.contains("--no-add-workspace") == true)
 
         let relay = try makeRelay()
         _ = try relay.heartbeat(node: "mini")
@@ -405,15 +461,148 @@ final class LightSessionTests: XCTestCase {
         ])
         let caller = makeService(relay: relay, runner: forward, prober: ScriptProber([]))
         let sent = caller.execute(arguments: [
-            "new", "--host", "mini", "--app", "codex", "--workspace", "pharos", "--add-project", "/src/pharos",
+            "new", "--host", "mini", "--app", "codex", "--workspace", "/src/pharos",
         ])
         XCTAssertEqual(sent.exitCode, 0, sent.text)
         XCTAssertEqual(relay.member(named: "codex-mini-pharos")?.sessionID, "sess-forward")
         let remote = forward.invocations.first?.argv.dropFirst(7).joined(separator: " ") ?? ""
-        XCTAssertTrue(remote.contains("'--add-project'"))
+        XCTAssertTrue(remote.contains("'--workspace'"))
+        XCTAssertTrue(remote.contains("'pharos'"))
+        XCTAssertTrue(remote.contains("'--path'"))
         XCTAssertTrue(remote.contains("'/src/pharos'"))
+        XCTAssertFalse(remote.contains("--add-project"))
         XCTAssertFalse(remote.contains("--host"))
         XCTAssertEqual(forward.invocations.first?.argv.first, "ssh")
+    }
+
+    func testNeedsUserActionStopsSessionNew() throws {
+        let runner = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[]}"#),
+            output(0, #"{"ok":true,"created":true,"session":{"sessionId":"sess-no"}}"#),
+        ])
+        let service = makeService(relay: try makeRelay(), runner: runner, prober: ScriptProber([.runningWithoutDebug]))
+        let result = service.execute(arguments: ["new", "--here", "--app", "dsh", "--workspace", "pharos"])
+        XCTAssertEqual(result.exitCode, 1, result.text)
+        XCTAssertEqual(json(result.text)?["status"] as? String, "needs_user_action")
+        XCTAssertTrue(result.text.contains("Add workspace"))
+        XCTAssertEqual(runner.invocations.map { $0.argv.prefix(4).map { $0 } }, [["/tmp/achat", "dsh", "workspace", "list"]])
+    }
+
+    func testLocalHostRunsInProcess() throws {
+        let runner = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+            output(0, #"{"ok":true,"created":true,"route":"web","session":{"sessionId":"sess-local"}}"#),
+        ])
+        let relay = try makeRelay()
+        let service = makeService(relay: relay, runner: runner, prober: ScriptProber([.absent]))
+        let result = service.execute(arguments: [
+            "new", "--host", "local", "--app", "codex", "--workspace", "pharos",
+        ])
+        XCTAssertEqual(result.exitCode, 0, result.text)
+        XCTAssertTrue(result.text.contains("registered codex-local-pharos"), result.text)
+        XCTAssertTrue(result.text.contains("session sess-local"))
+        XCTAssertEqual(relay.member(named: "codex-local-pharos")?.sessionID, "sess-local")
+        XCTAssertFalse(runner.invocations.contains { $0.argv.first == "ssh" })
+        XCTAssertNil(relay.nodeStatus("local").lastSeen)
+
+        let aliasRunner = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+            output(0, #"{"ok":true,"created":true,"route":"web","session":{"sessionId":"sess-self"}}"#),
+        ])
+        let aliasRelay = try makeRelay()
+        let alias = LightSessionService(relay: aliasRelay, runner: aliasRunner, prober: ScriptProber([]),
+                                        ports: LightDebugPorts(dsh: 4401, ag: 4402, codex: 4403), apps: bins(),
+                                        selfHost: LightSelfHost(names: ["local", "this-mac"]), launchPolls: 1)
+        let aliased = alias.execute(arguments: ["new", "--host", "this-mac", "--app", "dsh", "--workspace", "pharos"])
+        XCTAssertEqual(aliased.exitCode, 0, aliased.text)
+        XCTAssertEqual(aliasRelay.member(named: "dsh-this-mac-pharos")?.host, "this-mac")
+        XCTAssertFalse(aliasRunner.invocations.contains { $0.argv.first == "ssh" })
+    }
+
+    func testVersionProbeTreatsAReachableNodeAsOnline() throws {
+        let created = #"{"ok":true,"status":"created","sessionId":"sess-live","route":"web","dryRun":false,"projects":[]}"#
+        let runner = ScriptedSessionRunner([
+            output(0, "pharos 0.11.1\n"),
+            output(0, created),
+        ])
+        let relay = try makeRelay()
+        let service = makeService(relay: relay, runner: runner, prober: ScriptProber([]))
+        let result = service.execute(arguments: ["new", "--host", "mini", "--app", "dsh", "--workspace", "pharos"])
+        XCTAssertEqual(result.exitCode, 0, result.text)
+        XCTAssertTrue(result.text.contains("registered dsh-mini-pharos"), result.text)
+        XCTAssertTrue(result.text.contains("session sess-live"))
+        XCTAssertFalse(result.text.contains("queued"))
+        XCTAssertFalse(result.text.contains("last-seen never"))
+        XCTAssertNil(relay.nodeStatus("mini").lastSeen)
+        XCTAssertEqual(runner.invocations.count, 2)
+        let probe = runner.invocations[0].argv
+        XCTAssertEqual(Array(probe.prefix(6)), ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--"])
+        XCTAssertEqual(probe.last, "pharos --version")
+        let command = runner.invocations[1].argv
+        XCTAssertTrue(command.contains("ConnectTimeout=6"))
+        XCTAssertTrue(command.last?.contains("'--here'") == true)
+        XCTAssertFalse(runner.invocations.contains { $0.argv.contains("achat") })
+
+        let down = ScriptedSessionRunner([output(255, "", "ssh: connect to host mini port 22: Connection refused")])
+        let queuedRelay = try makeRelay()
+        let queuedService = makeService(relay: queuedRelay, runner: down, prober: ScriptProber([]))
+        let queued = queuedService.execute(arguments: ["new", "--host", "mini", "--app", "dsh", "--workspace", "pharos"])
+        XCTAssertEqual(queued.exitCode, 0, queued.text)
+        XCTAssertTrue(queued.text.contains("queued "))
+        XCTAssertTrue(queued.text.contains("last-seen never"))
+        XCTAssertFalse(queued.text.lowercased().contains("unreachable"))
+        XCTAssertFalse(queued.text.contains("Connection refused"))
+        XCTAssertEqual(down.invocations.count, 1)
+        XCTAssertEqual(down.invocations.first?.argv.last, "pharos --version")
+    }
+
+    func testSessionNewWithoutLaunchDoesNotNeedADebugPort() throws {
+        let prober = ScriptProber([.absent])
+        let runner = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+            output(0, #"{"ok":true,"created":true,"route":"app-server","session":{"sessionId":"sess-ipc"}}"#),
+        ])
+        let service = LightSessionService(relay: try makeRelay(), runner: runner, prober: prober,
+                                          ports: LightDebugPorts(dsh: nil, ag: nil, codex: nil), apps: bins(), launchPolls: 1)
+        let result = service.execute(arguments: ["new", "--here", "--app", "codex", "--workspace", "pharos"])
+        XCTAssertEqual(result.exitCode, 0, result.text)
+        XCTAssertEqual(json(result.text)?["sessionId"] as? String, "sess-ipc")
+        XCTAssertFalse(result.text.contains("debug port is not configured"))
+        XCTAssertFalse(result.text.contains("app not running"))
+        XCTAssertTrue(prober.calls.isEmpty)
+
+        let launchRunner = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+            output(0, ""),
+            output(0, #"{"ok":true,"created":true,"route":"desktop","threadId":"thr-dsh"}"#),
+        ])
+        let launchProber = ScriptProber([.absent, .ready])
+        let launching = LightSessionService(relay: try makeRelay(), runner: launchRunner, prober: launchProber,
+                                            ports: LightDebugPorts.fromEnvironment([:]), apps: bins(), launchPolls: 2)
+        let launched = launching.execute(arguments: ["new", "--here", "--app", "dsh", "--workspace", "pharos", "--launch"])
+        XCTAssertEqual(launched.exitCode, 0, launched.text)
+        let argv = try XCTUnwrap(launchRunner.invocations.first { $0.argv.contains { $0.hasPrefix("--remote-debugging-port=") } }?.argv)
+        XCTAssertTrue(argv.contains("--remote-debugging-port=9301"))
+        XCTAssertTrue(argv.contains("--remote-debugging-address=127.0.0.1"))
+
+        let overridden = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+            output(0, ""),
+            output(0, #"{"ok":true,"created":true,"route":"desktop","threadId":"thr-env"}"#),
+        ])
+        let envLaunch = LightSessionService(
+            relay: try makeRelay(), runner: overridden, prober: ScriptProber([.absent, .ready]),
+            ports: LightDebugPorts.fromEnvironment(["PHAROS_DSH_CDP_PORT": "4401"]), apps: bins(), launchPolls: 2)
+        XCTAssertEqual(envLaunch.execute(arguments: ["new", "--here", "--app", "dsh", "--workspace", "pharos", "--launch"]).exitCode, 0)
+        XCTAssertTrue(overridden.invocations.contains { $0.argv.contains("--remote-debugging-port=4401") })
+
+        let quiet = ScriptedSessionRunner([])
+        let ag = LightSessionService(relay: try makeRelay(), runner: quiet, prober: ScriptProber([.ready]),
+                                     ports: LightDebugPorts.fromEnvironment([:]), apps: bins(), launchPolls: 1)
+        let blocked = ag.execute(arguments: ["new", "--here", "--app", "ag", "--workspace", "pharos", "--launch"])
+        XCTAssertEqual(blocked.exitCode, 1)
+        XCTAssertTrue(blocked.text.contains("debug port is not configured"))
+        XCTAssertTrue(quiet.invocations.isEmpty)
     }
 
     private func makeRelay(now: (@Sendable () -> Date)? = nil) throws -> LightRelay {
