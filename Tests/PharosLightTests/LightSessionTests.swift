@@ -639,6 +639,14 @@ final class LightSessionTests: XCTestCase {
         XCTAssertTrue(runner.invocations.last?.argv.last?.hasPrefix(#""$HOME"/'.local/bin/pharos' 'project' 'list'"#) == true)
     }
 
+    func testHeadlessCodexPrefersTheDesktopBundledCLI() {
+        XCTAssertEqual(LightBinaries.fromEnvironment([:], isExecutable: { _ in false }).codex, "codex")
+        XCTAssertEqual(LightBinaries.fromEnvironment([:], isExecutable: { $0 == LightBinaries.bundledCodex }).codex,
+                       LightBinaries.bundledCodex)
+        XCTAssertEqual(LightBinaries.fromEnvironment(["PHAROS_CODEX_BIN": "/opt/codex"], isExecutable: { _ in true }).codex,
+                       "/opt/codex")
+    }
+
     private func makeRelay(now: (@Sendable () -> Date)? = nil) throws -> LightRelay {
         if let now {
             return try LightRelay(store: freshStore(), now: now, driver: IdleLightDriver())

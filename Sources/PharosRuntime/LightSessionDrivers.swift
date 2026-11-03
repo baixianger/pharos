@@ -36,14 +36,18 @@ public struct LightBinaries: Equatable, Sendable {
 
     public static let names = LightBinaries()
 
-    public static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) -> LightBinaries {
+    /// The Codex desktop app ships its CLI here; the Mac usually has no `codex` on PATH.
+    public static let bundledCodex = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
+
+    public static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment,
+                                       isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }) -> LightBinaries {
         func pick(_ key: String, _ fallback: String) -> String {
             let value = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if value.isEmpty || value.contains("\n") || value.contains("\0") { return fallback }
             return value
         }
         return LightBinaries(
-            codex: pick("PHAROS_CODEX_BIN", "codex"),
+            codex: pick("PHAROS_CODEX_BIN", isExecutable(bundledCodex) ? bundledCodex : "codex"),
             claude: pick("PHAROS_CLAUDE_BIN", "claude"),
             dsh: pick("PHAROS_DSH_BIN", "dsh"),
             tmux: pick("PHAROS_TMUX_BIN", "tmux")
