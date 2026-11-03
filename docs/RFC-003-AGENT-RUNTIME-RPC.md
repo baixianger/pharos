@@ -1,5 +1,10 @@
 # RFC-003: Agent Runtime RPC and Persistent Conversations
 
+> Update (2026-11-03): the External fallback named below (tmux / SSH as the
+> only unwired path) is replaced by [RFC-005](RFC-005-LIGHTWEIGHT-AGENT-MESSAGING.md).
+> Managed and Attached runtimes, the Broker Node command route, and Host
+> Runtime RPC are unchanged. RFC-005 is a second tier, not a rewrite of this one.
+
 > Architecture decision (2026-08-22): public contracts are split by capability,
 > while vendor code is vertically packaged as one Adapter per Agent family. A
 > Codex Adapter may contain App Server, CLI, and surface Drivers; those are not

@@ -1,0 +1,390 @@
+import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+import PharosMeshCore
+
+// External session adapter for the lightweight tier.
+//
+// Policy is ported from the achat drivers (route order, loopback-only debug
+// ports, writer-lock awareness, no approval auto-answer). The relay stays
+// brand-blind. Live app turns are not certified from this tree: `liveVerified`
+// stays false, and desktop IPC, CDP, and the DSH web lifecycle are planned
+// rather than executed. Headless `codex exec resume` and `claude -p --resume`
+// can be spawned only when `allowLive` is set; that switch is off unless a
+// human turns it on outside CI.
+
+public enum LightRouteOperation: Sendable {
+    case send
+    case read
+}
+
+public struct LightBinaries: Equatable, Sendable {
+    public var codex: String
+    public var claude: String
+    public var dsh: String
+    public var tmux: String
+
+    public init(codex: String = "codex", claude: String = "claude", dsh: String = "dsh", tmux: String = "tmux") {
+        self.codex = codex
+        self.claude = claude
+        self.dsh = dsh
+        self.tmux = tmux
+    }
+
+    public static let names = LightBinaries()
+
+    public static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) -> LightBinaries {
+        func pick(_ key: String, _ fallback: String) -> String {
+            let value = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if value.isEmpty || value.contains("\n") || value.contains("\0") { return fallback }
+            return value
+        }
+        return LightBinaries(
+            codex: pick("PHAROS_CODEX_BIN", "codex"),
+            claude: pick("PHAROS_CLAUDE_BIN", "claude"),
+            dsh: pick("PHAROS_DSH_BIN", "dsh"),
+            tmux: pick("PHAROS_TMUX_BIN", "tmux")
+        )
+    }
+}
+
+public struct LightInvocation: Equatable, Sendable {
+    public var argv: [String]
+    public var stdin: String
+    public var executable: Bool
+    public var fallback: Bool
+    public var summary: String
+    public var loopback: Bool
+
+    public init(argv: [String], stdin: String, executable: Bool, fallback: Bool, summary: String, loopback: Bool) {
+        self.argv = argv
+        self.stdin = stdin
+        self.executable = executable
+        self.fallback = fallback
+        self.summary = summary
+        self.loopback = loopback
+    }
+}
+
+public struct LightProcessOutput: Equatable, Sendable {
+    public var status: Int32
+    public var stdout: String
+    public var stderr: String
+
+    public init(status: Int32, stdout: String, stderr: String) {
+        self.status = status
+        self.stdout = stdout
+        self.stderr = stderr
+    }
+}
+
+public protocol LightProcessRunning: Sendable {
+    func run(_ invocation: LightInvocation, stdin: String) -> LightProcessOutput
+}
+
+public enum LightRouteCatalog {
+    public static func defaults(for app: String) -> [LightRoute] {
+        switch app {
+        case "codex": return codex
+        case "dsh": return dsh
+        case "claude": return claude
+        case "ag": return ag
+        default:
+            return [LightRoute(id: "native", access: .write, fallback: false, summary: "app-declared native route")]
+        }
+    }
+
+    public static let codex: [LightRoute] = [
+        LightRoute(id: "app-server", access: .write, fallback: false,
+                   summary: "headless codex exec resume. Yields if a writer lock is held. Does not answer approval prompts."),
+        LightRoute(id: "ipc", access: .write, fallback: false,
+                   summary: "desktop IPC length-prefixed JSON. Live executor not certified."),
+        LightRoute(id: "desktop", access: .write, fallback: false,
+                   summary: "desktop CDP on 127.0.0.1. Live executor not certified."),
+        LightRoute(id: "tmux", access: .write, fallback: true,
+                   summary: "last resort: tmux send-keys and capture-pane."),
+    ]
+
+    public static let dsh: [LightRoute] = [
+        LightRoute(id: "web", access: .write, fallback: false,
+                   summary: "dsh web API. Start on demand with --host 127.0.0.1 --port 0 --no-open, stop after the turn to release the writer lock. Live executor not certified."),
+        LightRoute(id: "desktop", access: .write, fallback: false,
+                   summary: "desktop CDP on 127.0.0.1. Live executor not certified."),
+        LightRoute(id: "files", access: .read, fallback: false,
+                   summary: "read-only session files."),
+        LightRoute(id: "tmux", access: .write, fallback: true,
+                   summary: "last resort: tmux send-keys and capture-pane."),
+    ]
+
+    public static let claude: [LightRoute] = [
+        LightRoute(id: "headless", access: .write, fallback: false,
+                   summary: "claude -p --resume. Does not answer approval prompts."),
+        LightRoute(id: "tmux", access: .write, fallback: true,
+                   summary: "last resort: tmux send-keys and capture-pane."),
+    ]
+
+    public static let ag: [LightRoute] = [
+        LightRoute(id: "desktop", access: .write, fallback: false,
+                   summary: "desktop CDP on 127.0.0.1. Live executor not certified."),
+    ]
+}
+
+public enum LightRoutePlanner {
+    public static func routes(for member: LightMember) -> [LightRoute] {
+        member.routes.isEmpty ? LightRouteCatalog.defaults(for: member.app) : member.routes
+    }
+
+    public static func select(member: LightMember, operation: LightRouteOperation) -> LightRoute? {
+        let routes = routes(for: member)
+        switch operation {
+        case .send:
+            return routes.first { $0.access == .write }
+        case .read:
+            let preferred = ["app-server", "files", "headless", "tmux"]
+            for id in preferred {
+                if let route = routes.first(where: { $0.id == id }) { return route }
+            }
+            return routes.first
+        }
+    }
+
+    public static func invocation(member: LightMember, route: LightRoute, body: String, binaries: LightBinaries) -> LightInvocation {
+        switch (member.app, route.id) {
+        case ("codex", "app-server"):
+            return LightInvocation(
+                argv: [binaries.codex, "exec", "resume", member.sessionID, "-", "--json", "--skip-git-repo-check"],
+                stdin: body,
+                executable: true,
+                fallback: false,
+                summary: route.summary,
+                loopback: false
+            )
+        case ("claude", "headless"):
+            return LightInvocation(
+                argv: [binaries.claude, "-p", "--resume", member.sessionID],
+                stdin: body,
+                executable: true,
+                fallback: false,
+                summary: route.summary,
+                loopback: false
+            )
+        case ("dsh", "web"):
+            return LightInvocation(
+                argv: [binaries.dsh, "--profile", "web", "--no-open", "--port", "0", "--host", "127.0.0.1"],
+                stdin: "",
+                executable: false,
+                fallback: false,
+                summary: route.summary,
+                loopback: true
+            )
+        case (_, "desktop"), ("ag", "desktop"), ("codex", "desktop"), ("dsh", "desktop"):
+            return LightInvocation(
+                argv: [],
+                stdin: "",
+                executable: false,
+                fallback: false,
+                summary: route.summary,
+                loopback: true
+            )
+        case (_, "ipc"):
+            return LightInvocation(argv: [], stdin: "", executable: false, fallback: false, summary: route.summary, loopback: true)
+        case (_, "tmux"):
+            return LightInvocation(
+                argv: [binaries.tmux, "send-keys", "-t", member.sessionID, "-l", body, "Enter"],
+                stdin: "",
+                executable: true,
+                fallback: true,
+                summary: route.summary,
+                loopback: false
+            )
+        case (_, "files"):
+            return LightInvocation(argv: [], stdin: "", executable: false, fallback: false, summary: route.summary, loopback: false)
+        default:
+            return LightInvocation(argv: [], stdin: "", executable: false, fallback: route.fallback, summary: route.summary, loopback: false)
+        }
+    }
+
+    /// Read-shaped argv. Not used to ingest replies: a pane dump cannot prove the text is new.
+    public static func readInvocation(member: LightMember, route: LightRoute, binaries: LightBinaries) -> LightInvocation {
+        if route.id == "tmux" {
+            return LightInvocation(
+                argv: [binaries.tmux, "capture-pane", "-t", member.sessionID, "-p"],
+                stdin: "",
+                executable: true,
+                fallback: true,
+                summary: route.summary,
+                loopback: false
+            )
+        }
+        return LightInvocation(argv: [], stdin: "", executable: false, fallback: route.fallback,
+                               summary: route.summary, loopback: route.id == "desktop" || route.id == "web")
+    }
+}
+
+public struct ExternalLightDriver: LightSessionDriver {
+    public var allowLive: Bool
+    public var runner: (any LightProcessRunning)?
+    public var binaries: LightBinaries
+
+    public init(allowLive: Bool = false, runner: (any LightProcessRunning)? = nil, binaries: LightBinaries = .names) {
+        self.allowLive = allowLive
+        self.runner = runner
+        self.binaries = binaries
+    }
+
+    public func deliver(member: LightMember, body: String) -> LightDriveResult {
+        let writable = LightRoutePlanner.routes(for: member).filter { $0.access == .write }
+        guard !writable.isEmpty else {
+            return LightDriveResult(state: .failed, route: nil, fallback: false, liveVerified: false,
+                                    detail: "no writable route for \(member.app)")
+        }
+        if !allowLive || runner == nil {
+            let route = writable[0]
+            let planned = LightRoutePlanner.invocation(member: member, route: route, body: body, binaries: binaries)
+            return LightDriveResult(state: .deferred, route: route.id, fallback: route.fallback || planned.fallback,
+                                    liveVerified: false, detail: "unverified live; \(planned.summary)")
+        }
+        var notes: [String] = []
+        for route in writable {
+            let planned = LightRoutePlanner.invocation(member: member, route: route, body: body, binaries: binaries)
+            if !planned.executable {
+                let prefix = notes.isEmpty ? "" : "previous: \(notes.joined(separator: "; ")); "
+                return LightDriveResult(state: .deferred, route: route.id, fallback: route.fallback,
+                                        liveVerified: false, detail: "unverified live; \(prefix)\(planned.summary)")
+            }
+            let output = runner?.run(planned, stdin: planned.stdin)
+                ?? LightProcessOutput(status: 127, stdout: "", stderr: "no runner")
+            if output.status == 0 {
+                return LightDriveResult(state: .delivered, route: route.id, fallback: planned.fallback,
+                                        liveVerified: false, detail: "runner exit 0; live effect unverified")
+            }
+            notes.append("\(route.id) exit \(output.status)")
+        }
+        return LightDriveResult(state: .failed, route: nil, fallback: false, liveVerified: false,
+                                detail: notes.joined(separator: "; "))
+    }
+
+    public func readReply(member: LightMember, since: Date) -> String? {
+        // Stale pane text must not become a reply. A certified reader can replace this.
+        _ = member
+        _ = since
+        return nil
+    }
+}
+
+public struct SSHLightReplyForwarder: LightReplyForwarding {
+    public var destination: String
+    public var remoteCommand: String
+    public var runner: any LightProcessRunning
+
+    public init(destination: String, remoteCommand: String = "pharos", runner: any LightProcessRunning) {
+        self.destination = destination
+        self.remoteCommand = remoteCommand
+        self.runner = runner
+    }
+
+    public func forward(replyID: String, text: String) -> LightForwardResult? {
+        let command = "\(remoteCommand) reply \(shellQuote(replyID)) \(shellQuote(text))"
+        let invocation = LightInvocation(
+            argv: ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "--", destination, command],
+            stdin: "",
+            executable: true,
+            fallback: false,
+            summary: "forward pharos reply over the existing SSH route",
+            loopback: false
+        )
+        let output = runner.run(invocation, stdin: "")
+        if output.status == 0 {
+            return LightForwardResult(ok: true, message: "forwarded")
+        }
+        let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        return LightForwardResult(ok: false, message: detail.isEmpty ? "ssh exit \(output.status)" : detail)
+    }
+
+    public static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private func shellQuote(_ value: String) -> String { Self.shellQuote(value) }
+}
+
+public struct FoundationLightProcessRunner: LightProcessRunning {
+    public init() {}
+
+    public func run(_ invocation: LightInvocation, stdin: String) -> LightProcessOutput {
+        guard let launch = invocation.argv.first, !launch.isEmpty else {
+            return LightProcessOutput(status: 127, stdout: "", stderr: "empty command")
+        }
+        let process = Process()
+        if launch.contains("/") {
+            process.executableURL = URL(fileURLWithPath: launch)
+            process.arguments = Array(invocation.argv.dropFirst())
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = invocation.argv
+        }
+        process.currentDirectoryURL = FileManager.default.temporaryDirectory
+        let input = Pipe()
+        let output = Pipe()
+        let error = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = error
+        let collectedOut = LockedData()
+        let collectedErr = LockedData()
+        output.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+            } else {
+                collectedOut.append(chunk)
+            }
+        }
+        error.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+            } else {
+                collectedErr.append(chunk)
+            }
+        }
+        do {
+            try process.run()
+            if let data = stdin.data(using: .utf8), !data.isEmpty {
+                input.fileHandleForWriting.write(data)
+            }
+            try? input.fileHandleForWriting.close()
+            process.waitUntilExit()
+            output.fileHandleForReading.readabilityHandler = nil
+            error.fileHandleForReading.readabilityHandler = nil
+            collectedOut.append(output.fileHandleForReading.readDataToEndOfFile())
+            collectedErr.append(error.fileHandleForReading.readDataToEndOfFile())
+            return LightProcessOutput(
+                status: process.terminationStatus,
+                stdout: String(data: collectedOut.data, encoding: .utf8) ?? "",
+                stderr: String(data: collectedErr.data, encoding: .utf8) ?? ""
+            )
+        } catch {
+            return LightProcessOutput(status: 127, stdout: "", stderr: error.localizedDescription)
+        }
+    }
+}
+
+private final class LockedData: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = Data()
+    func append(_ data: Data) {
+        guard !data.isEmpty else { return }
+        lock.lock()
+        storage.append(data)
+        lock.unlock()
+    }
+    var data: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}

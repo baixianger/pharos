@@ -1,5 +1,5 @@
 import Foundation
-import PharosRuntime
+import PharosMeshCore
 import PharosRuntime
 
 /// The `pharos` command-line front door — Pharos's interface for agents and
@@ -128,6 +128,8 @@ enum CLI {
                 return ok(try PharosCore.setFlag(name: p.arg(0), flag: "tmux", value: try boolArg(p.arg(1), label: "on|off")))
             case "mesh":
                 return await runMesh(rest)
+            case "member", "thread", "send", "reply", "wait", "read":
+                return finishLight(lightExecute(command: command, arguments: rest))
             case "runtime":
                 return runRuntime(rest)
             case "skill", "skills":
@@ -146,6 +148,46 @@ enum CLI {
     }
 
     // MARK: Sub-dispatchers
+
+    private static func lightExecute(command: String, arguments: [String]) -> LightCLIResult {
+        do {
+            return LightCommands.execute(
+                command: command,
+                arguments: arguments,
+                relay: try makeLightRelay(),
+                routesForApp: LightRouteCatalog.defaults(for:)
+            )
+        } catch {
+            return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")
+        }
+    }
+
+    private static func makeLightRelay() throws -> LightRelay {
+        let environment = ProcessInfo.processInfo.environment
+        let forwarder: (any LightReplyForwarding)?
+        if let host = environment["PHAROS_LIGHT_SSH_HOST"], !host.isEmpty {
+            forwarder = SSHLightReplyForwarder(destination: host, runner: FoundationLightProcessRunner())
+        } else {
+            forwarder = nil
+        }
+        let live = environment["PHAROS_LIGHT_LIVE"] == "1"
+        let driver = ExternalLightDriver(
+            allowLive: live,
+            runner: live ? FoundationLightProcessRunner() : nil,
+            binaries: .fromEnvironment(environment)
+        )
+        return try LightRelay(
+            store: LightRelay.defaultStoreURL(),
+            driver: driver,
+            forwarder: forwarder,
+            webhook: environment["PHAROS_LIGHT_WEBHOOK"]
+        )
+    }
+
+    private static func finishLight(_ result: LightCLIResult) -> Int32 {
+        if !result.text.isEmpty { print(result.text) }
+        return result.exitCode
+    }
 
     private static func runRuntime(_ args: [String]) -> Int32 {
         let parsed = parse(Array(args.dropFirst()))
@@ -900,6 +942,21 @@ enum CLI {
                                        Run a pure Node against a remote Broker
           runtime set broker           Run a local Broker plus the required Node
           runtime reconcile            Re-apply the saved runtime configuration
+
+        LIGHTWEIGHT MESSAGING (no plugin in the agent; Broker-owned directory)
+          member register --name N --host H --app codex|claude|dsh|ag --project P --session S [--route R]...
+          member list [--json]
+          thread new --member A --member B [--hop-limit N]
+          thread add <thread> --member NAME
+          thread list [--json]
+          send --from NAME --thread ID <text with @mentions> [--ttl 24h] [--once]
+          reply r_xxx <text> [--ttl 24h] [--once]
+          wait r_xxx [--timeout 30s]
+          read --thread ID [--json]
+          Set PHAROS_LIGHT_SSH_HOST to an existing SSH alias to forward `reply`
+          from a non-Broker host. Set PHAROS_LIGHT_WEBHOOK only to a loopback URL.
+          PHAROS_LIGHT_LIVE=1 enables headless codex/claude/tmux execution; desktop
+          IPC, CDP, and the DSH web lifecycle stay planned until certified on a Mac.
 
         OTHER
           help, version

@@ -226,6 +226,11 @@ tmux poke remains legacy shipped behavior during the migration; it is not part
 of the target transport. See [RFC-003: Agent Runtime RPC and Persistent
 Conversations](docs/RFC-003-AGENT-RUNTIME-RPC.md).
 
+Agents that are not wired into the Host Runtime can still be addressed through
+the lightweight tier: one thread primitive, a Broker session directory, and a
+reply-id the agent can answer with `pharos reply` or by being read back.
+See [RFC-005: Lightweight Agent Messaging](docs/RFC-005-LIGHTWEIGHT-AGENT-MESSAGING.md).
+
 ---
 
 ## Privacy
