@@ -37,6 +37,71 @@ public protocol LightAppProbing: Sendable {
     func probe(app: String, port: Int) -> LightAppProbe
 }
 
+/// How an app can accept a new project. `restart` means the live app would
+/// discard an out-of-band write, so Pharos does not write anything.
+public enum LightProjectAddable: String, Equatable, Sendable {
+    case api
+    case ui
+    case restart
+}
+
+public struct LightProjectPlan: Equatable, Sendable {
+    public var addable: LightProjectAddable
+    public var callAchat: Bool
+    public var message: String?
+
+    public init(addable: LightProjectAddable, callAchat: Bool, message: String?) {
+        self.addable = addable
+        self.callAchat = callAchat
+        self.message = message
+    }
+}
+
+/// Per-app decision for `project add`. Codex is the app-server API. DSH is the
+/// web API only while its desktop is not the file writer, and the desktop UI
+/// when the debug endpoint belongs to DSH. Antigravity is the desktop UI only.
+public enum LightProjectAdd {
+    public static func addable(app: String) -> LightProjectAddable {
+        switch app {
+        case "codex", "dsh": return .api
+        case "ag": return .ui
+        default: return .restart
+        }
+    }
+
+    public static func plan(app: String, probe: LightAppProbe) -> LightProjectPlan {
+        switch app {
+        case "codex":
+            return LightProjectPlan(addable: .api, callAchat: true, message: nil)
+        case "dsh":
+            switch probe {
+            case .ready:
+                return LightProjectPlan(addable: .ui, callAchat: true, message: nil)
+            case .absent:
+                return LightProjectPlan(addable: .api, callAchat: true, message: nil)
+            case .runningWithoutDebug:
+                return LightProjectPlan(
+                    addable: .restart, callAchat: false,
+                    message: "dsh desktop is running without a debug port and would overwrite a web-side add. Use Add workspace in the app, or quit dsh and run this again. Nothing was written."
+                )
+            case .portHeldByOther:
+                return LightProjectPlan(addable: .ui, callAchat: false,
+                                        message: "debug port is held by something else; nothing was started")
+            }
+        case "ag":
+            if probe == .ready {
+                return LightProjectPlan(addable: .ui, callAchat: true, message: nil)
+            }
+            return LightProjectPlan(
+                addable: .ui, callAchat: false,
+                message: "Antigravity adds a project only from the desktop (Create New Project, then pick the folder). Nothing was written."
+            )
+        default:
+            return LightProjectPlan(addable: .restart, callAchat: false, message: "project add is not available for this app")
+        }
+    }
+}
+
 public struct LightDebugPorts: Equatable, Sendable {
     public var dsh: Int?
     public var ag: Int?
@@ -140,6 +205,35 @@ public struct LightSessionService {
         }
     }
 
+    public func executeProject(arguments: [String]) -> LightCLIResult {
+        let argv = SessionArgv.parse(arguments)
+        guard let op = argv.positional.first, op == "list" || op == "add" else {
+            return Self.usage("pharos project list|add --host H --app dsh|ag|codex [--path DIR] [--name N] [--dry-run] [--no-queue]")
+        }
+        guard let app = argv.option("app"), ["dsh", "ag", "codex"].contains(app) else {
+            return Self.usage("pharos project \(op) --host H --app dsh|ag|codex")
+        }
+        let path = argv.option("path") ?? ""
+        if op == "add", path.isEmpty || path.contains("\n") || path.contains("\0") {
+            return Self.usage("pharos project add --host H --app A --path DIR [--name N] [--dry-run] [--no-queue]")
+        }
+        let name = argv.option("name") ?? ""
+        if name.contains("\n") || name.contains("\0") {
+            return Self.usage("pharos project add --host H --app A --path DIR [--name N]")
+        }
+        var spec = ProjectSpec(op: op, app: app, host: argv.option("host") ?? "local", path: path, name: name,
+                               dryRun: argv.flag("dry-run"))
+        if argv.flag("here") {
+            let outcome = op == "list" ? listHere(spec) : addHere(spec)
+            return renderProject(outcome, host: spec.host, json: true)
+        }
+        guard let host = argv.option("host"), !host.isEmpty else {
+            return Self.usage("pharos project \(op) --host H --app \(app)")
+        }
+        spec.host = host
+        return forwardProject(spec, noQueue: argv.flag("no-queue"), json: argv.flag("json"))
+    }
+
     /// Apply a pulled job's result. A second completion of the same id is ignored.
     public func complete(id: String, result: String) -> LightCLIResult {
         if relay.nodeJobWasApplied(id) {
@@ -151,10 +245,10 @@ public struct LightSessionService {
         guard let object = Self.extractJSON(result), let here = Self.hereResult(object) else {
             return LightCLIResult(exitCode: 1, text: "error: unreadable session result")
         }
-        if !here.ok {
+        if !here.ok && here.status != "needs_user_action" {
             return LightCLIResult(exitCode: 1, text: "error: \(here.message ?? "session failed")")
         }
-        if job.kind == "session-new", !here.dryRun {
+        if job.kind == "session-new", !here.dryRun, here.ok {
             guard let spec = SessionSpec.from(payload: job.payload) else {
                 return LightCLIResult(exitCode: 1, text: "error: unreadable session request")
             }
@@ -195,6 +289,16 @@ public struct LightSessionService {
         return argv
     }
 
+    public static func achatWorkspaceArgv(bin: String, app: String, command: String, path: String?,
+                                          name: String?, dryRun: Bool) -> [String] {
+        var argv = [bin, app, "workspace", command]
+        if command == "add", let path, !path.isEmpty { argv.append(path) }
+        argv += ["--host", "local", "--json"]
+        if let name, !name.isEmpty { argv += ["--name", name] }
+        if dryRun { argv.append("--dry-run") }
+        return argv
+    }
+
     // MARK: Commands
 
     private enum Verb {
@@ -214,7 +318,8 @@ public struct LightSessionService {
         let hostForName = argv.option("host") ?? "local"
         let name = explicitName ?? Self.defaultMemberName(app: app, host: hostForName, workspace: workspace ?? "workspace")
         let spec = SessionSpec(app: app, host: hostForName, workspace: workspace ?? "", title: argv.option("title"),
-                               name: name, launch: argv.flag("launch"), dryRun: argv.flag("dry-run"))
+                               name: name, launch: argv.flag("launch"), dryRun: argv.flag("dry-run"),
+                               addProject: argv.option("add-project"))
         if argv.flag("here") {
             return performHere(spec, verb: verb, json: true)
         }
@@ -234,13 +339,8 @@ public struct LightSessionService {
         if !status.online {
             return hold(status: status, spec: spec, verb: verb, noQueue: noQueue, json: json)
         }
-        let command = remoteCommand(verb: verb, spec: spec)
-        let invocation = LightInvocation(
-            argv: ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "--", spec.host, command],
-            stdin: "", executable: true, fallback: false,
-            summary: "forward pharos session to the target node", loopback: false
-        )
-        let output = runner.run(invocation, stdin: "")
+        let output = ssh(spec.host, command: remoteCommand(verb: verb, spec: spec),
+                         summary: "forward pharos session to the target node")
         if let object = Self.extractJSON(output.stdout), let here = Self.hereResult(object) {
             return finishRemote(here, spec: spec, json: json)
         }
@@ -264,7 +364,8 @@ public struct LightSessionService {
     private func finishRemote(_ here: HereBody, spec: SessionSpec, json: Bool) -> LightCLIResult {
         if !here.ok {
             let message = here.message ?? "session failed"
-            if json { return Self.jsonText(["ok": false, "status": "error", "message": message], ok: false) }
+            let status = here.status == "needs_user_action" ? "needs_user_action" : "error"
+            if json { return Self.jsonText(["ok": false, "status": status, "message": message], ok: false) }
             return LightCLIResult(exitCode: 1, text: "error: \(message)")
         }
         if !spec.dryRun, !here.dryRun, spec.workspace.isEmpty == false, here.sessionId != nil, here.status != "listed" {
@@ -302,6 +403,14 @@ public struct LightSessionService {
     }
 
     private func performHere(_ spec: SessionSpec, verb: Verb, json: Bool) -> LightCLIResult {
+        var ensured = false
+        if verb == .new, let path = spec.addProject, !path.isEmpty {
+            let outcome = addHere(ProjectSpec(op: "add", app: spec.app, host: spec.host, path: path,
+                                              name: spec.workspace, dryRun: spec.dryRun))
+            let accepted = outcome.status == "added" || outcome.status == "already" || (spec.dryRun && outcome.ok)
+            if !accepted { return renderProject(outcome, host: spec.host, json: json) }
+            ensured = true
+        }
         guard let port = ports.port(for: spec.app) else {
             return hereFailure("debug port is not configured", spec: spec, json: json)
         }
@@ -338,6 +447,11 @@ public struct LightSessionService {
                 return hereFailure("app did not become ready", spec: spec, json: json)
             }
             launched = true
+        }
+        if verb == .new, !ensured {
+            if let message = registrationError(spec) {
+                return hereFailure(message, spec: spec, json: json)
+            }
         }
         let command = verb == .new ? "new" : "list"
         let achat = runner.run(LightInvocation(
@@ -400,6 +514,219 @@ public struct LightSessionService {
         return LightCLIResult(exitCode: 0, text: "acked \(id)")
     }
 
+    private func ssh(_ host: String, command: String, summary: String) -> LightProcessOutput {
+        runner.run(LightInvocation(
+            argv: ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "--", host, command],
+            stdin: "", executable: true, fallback: false, summary: summary, loopback: false
+        ), stdin: "")
+    }
+
+    private func runAchat(_ argv: [String], summary: String) -> LightProcessOutput {
+        runner.run(LightInvocation(
+            argv: argv, stdin: "", executable: true, fallback: false, summary: summary, loopback: true
+        ), stdin: "")
+    }
+
+    private func planAdd(app: String) -> LightProjectPlan {
+        if app == "codex" { return LightProjectAdd.plan(app: app, probe: .absent) }
+        guard let port = ports.port(for: app) else {
+            let mode: LightProjectAddable = app == "ag" ? .ui : .restart
+            return LightProjectPlan(addable: mode, callAchat: false, message: "debug port is not configured")
+        }
+        return LightProjectAdd.plan(app: app, probe: prober.probe(app: app, port: port))
+    }
+
+    private func forwardProject(_ spec: ProjectSpec, noQueue: Bool, json: Bool) -> LightCLIResult {
+        let status = relay.nodeStatus(spec.host)
+        if !status.online {
+            return holdProject(status: status, spec: spec, noQueue: noQueue, json: json)
+        }
+        let output = ssh(spec.host, command: projectCommand(spec), summary: "forward pharos project to the target node")
+        if let object = Self.extractJSON(output.stdout), object["status"] is String || object["ok"] is Bool {
+            return presentProject(object, spec: spec, json: json)
+        }
+        return holdProject(status: relay.nodeStatus(spec.host), spec: spec, noQueue: noQueue, json: json)
+    }
+
+    private func holdProject(status: LightNodeStatus, spec: ProjectSpec, noQueue: Bool, json: Bool) -> LightCLIResult {
+        let message = LightRelay.nodeOfflineMessage(lastSeen: status.lastSeen)
+        if spec.dryRun || noQueue {
+            return offlineResult(message: message, requestID: nil, status: status, json: json, queued: false)
+        }
+        let kind = spec.op == "add" ? "project-add" : "project-list"
+        do {
+            let queued = try relay.enqueueNodeJob(node: spec.host, kind: kind, payload: spec.payload())
+            return offlineResult(message: message, requestID: queued.job.id, status: status, json: json, queued: true)
+        } catch {
+            return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")
+        }
+    }
+
+    private func projectCommand(_ spec: ProjectSpec) -> String {
+        var args = ["pharos", "project", spec.op, "--here", "--app", spec.app]
+        if spec.op == "add" { args += ["--path", spec.path] }
+        if !spec.name.isEmpty { args += ["--name", spec.name] }
+        if spec.dryRun { args.append("--dry-run") }
+        args.append("--json")
+        return args.map(Self.shellQuote).joined(separator: " ")
+    }
+
+    private func listHere(_ spec: ProjectSpec) -> ProjectOutcome {
+        switch workspaceRows(app: spec.app, dryRun: spec.dryRun) {
+        case .failure(let failure):
+            return ProjectOutcome(ok: false, status: "error", message: failure.message, app: spec.app, path: spec.path,
+                                 name: spec.name, addable: LightProjectAdd.addable(app: spec.app).rawValue, dryRun: spec.dryRun, rows: [])
+        case .success(let rows):
+            return ProjectOutcome(ok: true, status: spec.dryRun ? "dry-run" : "listed", message: nil, app: spec.app,
+                                 path: spec.path, name: spec.name, addable: LightProjectAdd.addable(app: spec.app).rawValue,
+                                 dryRun: spec.dryRun, rows: rows)
+        }
+    }
+
+    private func addHere(_ spec: ProjectSpec) -> ProjectOutcome {
+        let plan = planAdd(app: spec.app)
+        if !plan.callAchat {
+            return ProjectOutcome(ok: false, status: "needs_user_action", message: plan.message, app: spec.app,
+                                 path: spec.path, name: spec.name, addable: plan.addable.rawValue, dryRun: spec.dryRun, rows: [])
+        }
+        let rows: [LightProjectRow]
+        switch workspaceRows(app: spec.app, dryRun: false) {
+        case .failure(let failure):
+            return ProjectOutcome(ok: false, status: "error", message: failure.message, app: spec.app, path: spec.path,
+                                 name: spec.name, addable: plan.addable.rawValue, dryRun: spec.dryRun, rows: [])
+        case .success(let listed):
+            rows = listed
+        }
+        if let found = rows.first(where: { Self.samePath($0.path, spec.path) }) {
+            return ProjectOutcome(ok: true, status: "already", message: nil, app: spec.app, path: spec.path,
+                                 name: found.name.isEmpty ? spec.name : found.name, addable: plan.addable.rawValue,
+                                 dryRun: spec.dryRun, rows: rows)
+        }
+        let output = runAchat(
+            Self.achatWorkspaceArgv(bin: apps.achat, app: spec.app, command: "add", path: spec.path,
+                                   name: spec.name.isEmpty ? nil : spec.name, dryRun: spec.dryRun),
+            summary: "achat \(spec.app) workspace add"
+        )
+        guard let object = Self.extractJSON(output.stdout) else {
+            let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return ProjectOutcome(ok: false, status: "error", message: detail.isEmpty ? "achat failed" : detail,
+                                 app: spec.app, path: spec.path, name: spec.name, addable: plan.addable.rawValue,
+                                 dryRun: spec.dryRun, rows: [])
+        }
+        let parsed = Self.interpretProject(object)
+        if output.status != 0 || !parsed.ok {
+            let status = parsed.status == "needs_user_action" ? "needs_user_action" : "error"
+            return ProjectOutcome(ok: false, status: status, message: parsed.message ?? "achat failed", app: spec.app,
+                                 path: parsed.path ?? spec.path, name: parsed.name ?? spec.name,
+                                 addable: parsed.addable ?? plan.addable.rawValue, dryRun: spec.dryRun || parsed.dryRun, rows: parsed.rows)
+        }
+        if spec.dryRun || parsed.dryRun {
+            return ProjectOutcome(ok: true, status: "dry-run", message: parsed.message, app: spec.app,
+                                 path: parsed.path ?? spec.path, name: parsed.name ?? spec.name,
+                                 addable: parsed.addable ?? plan.addable.rawValue, dryRun: true, rows: parsed.rows)
+        }
+        let status = parsed.status == "already" ? "already" : "added"
+        return ProjectOutcome(ok: true, status: status, message: parsed.message, app: spec.app,
+                             path: parsed.path ?? spec.path, name: parsed.name ?? spec.name,
+                             addable: parsed.addable ?? plan.addable.rawValue, dryRun: false, rows: parsed.rows)
+    }
+
+    private func registrationError(_ spec: SessionSpec) -> String? {
+        switch workspaceRows(app: spec.app, dryRun: false) {
+        case .failure(let failure):
+            return failure.message
+        case .success(let rows):
+            let wanted = spec.workspace.lowercased()
+            if rows.contains(where: { $0.name.lowercased() == wanted }) { return nil }
+            if let path = spec.addProject, rows.contains(where: { Self.samePath($0.path, path) }) { return nil }
+            return "project is not registered"
+        }
+    }
+
+    private struct RowFailure: Error { var message: String }
+
+    private func workspaceRows(app: String, dryRun: Bool) -> Result<[LightProjectRow], RowFailure> {
+        let output = runAchat(
+            Self.achatWorkspaceArgv(bin: apps.achat, app: app, command: "list", path: nil, name: nil, dryRun: dryRun),
+            summary: "achat \(app) workspace list"
+        )
+        guard let object = Self.extractJSON(output.stdout) else {
+            let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .failure(RowFailure(message: detail.isEmpty ? "achat failed" : detail))
+        }
+        let parsed = Self.interpretProject(object)
+        if output.status != 0 || !parsed.ok { return .failure(RowFailure(message: parsed.message ?? "achat failed")) }
+        return .success(parsed.rows)
+    }
+
+    private func renderProject(_ outcome: ProjectOutcome, host: String, json: Bool) -> LightCLIResult {
+        if json {
+            var body: [String: Any] = [
+                "ok": outcome.ok, "status": outcome.status, "app": outcome.app, "addable": outcome.addable, "dryRun": outcome.dryRun,
+            ]
+            if !host.isEmpty { body["node"] = host }
+            if !outcome.path.isEmpty { body["path"] = outcome.path }
+            if !outcome.name.isEmpty { body["name"] = outcome.name }
+            if let message = outcome.message, !message.isEmpty { body["message"] = message }
+            if outcome.status == "listed" || outcome.status == "dry-run" || !outcome.rows.isEmpty {
+                body["projects"] = outcome.rows.map { row -> [String: Any] in
+                    var item: [String: Any] = ["name": row.name]
+                    if let path = row.path { item["path"] = path }
+                    return item
+                }
+            }
+            return Self.jsonText(body, ok: outcome.ok)
+        }
+        switch outcome.status {
+        case "added", "already":
+            var lines = ["\(outcome.status) \(outcome.name)".trimmingCharacters(in: .whitespaces)]
+            if !outcome.path.isEmpty { lines.append("path \(outcome.path)") }
+            lines.append("addable \(outcome.addable)")
+            return LightCLIResult(exitCode: 0, text: lines.joined(separator: "\n"))
+        case "listed":
+            if outcome.rows.isEmpty { return LightCLIResult(exitCode: 0, text: "no projects") }
+            let lines = outcome.rows.map { row in
+                if let path = row.path, !path.isEmpty { return "\(row.name)\t\(path)" }
+                return row.name
+            }
+            return LightCLIResult(exitCode: 0, text: lines.joined(separator: "\n"))
+        case "dry-run":
+            var lines = ["dry-run", "addable \(outcome.addable)"]
+            if !outcome.path.isEmpty { lines.append("path \(outcome.path)") }
+            if !outcome.rows.isEmpty {
+                lines.append(contentsOf: outcome.rows.map { row in
+                    if let path = row.path, !path.isEmpty { return "\(row.name)\t\(path)" }
+                    return row.name
+                })
+            }
+            return LightCLIResult(exitCode: 0, text: lines.joined(separator: "\n"))
+        case "needs_user_action":
+            var lines = ["needs_user_action", "addable \(outcome.addable)"]
+            if let message = outcome.message, !message.isEmpty { lines.append(message) }
+            return LightCLIResult(exitCode: 1, text: lines.joined(separator: "\n"))
+        default:
+            return LightCLIResult(exitCode: 1, text: "error: \(outcome.message ?? "project failed")")
+        }
+    }
+
+    private func presentProject(_ object: [String: Any], spec: ProjectSpec, json: Bool) -> LightCLIResult {
+        let parsed = Self.interpretProject(object)
+        let status = object["status"] as? String ?? parsed.status
+        let outcome = ProjectOutcome(
+            ok: (object["ok"] as? Bool) != false && parsed.ok && status != "needs_user_action" && status != "error",
+            status: status, message: object["message"] as? String ?? parsed.message, app: spec.app,
+            path: object["path"] as? String ?? parsed.path ?? spec.path,
+            name: object["name"] as? String ?? parsed.name ?? spec.name,
+            addable: object["addable"] as? String ?? parsed.addable ?? LightProjectAdd.addable(app: spec.app).rawValue,
+            dryRun: (object["dryRun"] as? Bool) == true || parsed.dryRun,
+            rows: parsed.rows.isEmpty ? Self.projectRows(object) : parsed.rows
+        )
+        var shown = outcome
+        if status == "needs_user_action" || status == "error" || status == "node offline" { shown.ok = false }
+        if status == "added" || status == "already" || status == "listed" || status == "dry-run" || status == "queued" { shown.ok = true }
+        return renderProject(shown, host: spec.host, json: json)
+    }
+
     private func register(_ spec: SessionSpec, sessionID: String) throws -> LightMember {
         let project = Self.projectSlug(spec.workspace)
         return try relay.register(LightMember(
@@ -413,6 +740,7 @@ public struct LightSessionService {
         if verb == .new { args += ["--workspace", spec.workspace] }
         if let title = spec.title, !title.isEmpty { args += ["--title", title] }
         if !spec.name.isEmpty { args += ["--name", spec.name] }
+        if let path = spec.addProject, !path.isEmpty { args += ["--add-project", path] }
         if spec.dryRun { args.append("--dry-run") }
         if spec.launch { args.append("--launch") }
         args.append("--json")
@@ -504,6 +832,68 @@ public struct LightSessionService {
         return object
     }
 
+    static func samePath(_ left: String?, _ right: String) -> Bool {
+        guard let left else { return false }
+        func norm(_ value: String) -> String {
+            var text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            while text.count > 1 && text.hasSuffix("/") { text.removeLast() }
+            return text
+        }
+        let lhs = norm(left)
+        let rhs = norm(right)
+        if lhs.isEmpty || rhs.isEmpty { return false }
+        return lhs == rhs
+    }
+
+    static func projectRows(_ object: [String: Any]) -> [LightProjectRow] {
+        let raw = (object["projects"] as? [Any]) ?? []
+        return raw.compactMap { item in
+            if let name = item as? String { return LightProjectRow(name: name, path: nil) }
+            guard let row = item as? [String: Any] else { return nil }
+            let name = (row["name"] as? String) ?? ""
+            let path = row["path"] as? String
+                ?? ((row["roots"] as? [[String: Any]])?.first?["path"] as? String)
+            if name.isEmpty && (path ?? "").isEmpty { return nil }
+            return LightProjectRow(name: name, path: path)
+        }
+    }
+
+    static func interpretProject(_ object: [String: Any]) -> ProjectRead {
+        let dryRun = (object["dryRun"] as? Bool) == true
+        let rows = projectRows(object)
+        var message: String?
+        var code: String?
+        if let error = object["error"] as? [String: Any] {
+            code = error["code"] as? String
+            let text = error["message"] as? String
+            let joined = [code, text].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ": ")
+            if !joined.isEmpty { message = joined }
+        }
+        if let text = object["message"] as? String, !text.isEmpty { message = text }
+        let explicit = object["status"] as? String
+        let okFlag = (object["ok"] as? Bool) != false && code == nil
+        let status: String
+        if explicit == "needs_user_action" || code == "needs_user_action" {
+            status = "needs_user_action"
+        } else if let explicit, !explicit.isEmpty {
+            status = explicit
+        } else if !okFlag {
+            status = "error"
+        } else if dryRun {
+            status = "dry-run"
+        } else if object["created"] as? Bool == true || object["added"] as? Bool == true {
+            status = "added"
+        } else if !rows.isEmpty {
+            status = "listed"
+        } else {
+            status = "added"
+        }
+        let ok = okFlag && status != "needs_user_action" && status != "error" && status != "node offline"
+        return ProjectRead(ok: ok, status: status, message: message, name: object["name"] as? String,
+                           path: object["path"] as? String, addable: object["addable"] as? String,
+                           rows: rows, dryRun: dryRun)
+    }
+
     static func interpretAchat(_ object: [String: Any]) -> (ok: Bool, message: String?, sessionID: String?, route: String?, projects: [String], dryRun: Bool) {
         let ok = (object["ok"] as? Bool) != false
         let dryRun = (object["dryRun"] as? Bool) == true
@@ -567,12 +957,14 @@ struct SessionSpec: Equatable {
     var name: String
     var launch: Bool
     var dryRun: Bool
+    var addProject: String? = nil
 
     func payload() -> String {
         var body: [String: Any] = [
             "app": app, "host": host, "workspace": workspace, "name": name, "launch": launch, "dryRun": dryRun,
         ]
         if let title { body["title"] = title }
+        if let addProject, !addProject.isEmpty { body["addProject"] = addProject }
         guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]),
               let text = String(data: data, encoding: .utf8) else { return "{}" }
         return text
@@ -584,7 +976,54 @@ struct SessionSpec: Equatable {
               let app = object["app"] as? String, let host = object["host"] as? String,
               let workspace = object["workspace"] as? String, let name = object["name"] as? String else { return nil }
         return SessionSpec(app: app, host: host, workspace: workspace, title: object["title"] as? String,
-                           name: name, launch: (object["launch"] as? Bool) == true, dryRun: (object["dryRun"] as? Bool) == true)
+                           name: name, launch: (object["launch"] as? Bool) == true, dryRun: (object["dryRun"] as? Bool) == true,
+                           addProject: object["addProject"] as? String)
+    }
+}
+
+struct LightProjectRow: Equatable {
+    var name: String
+    var path: String?
+}
+
+struct ProjectRead {
+    var ok: Bool
+    var status: String
+    var message: String?
+    var name: String?
+    var path: String?
+    var addable: String?
+    var rows: [LightProjectRow]
+    var dryRun: Bool
+}
+
+struct ProjectOutcome {
+    var ok: Bool
+    var status: String
+    var message: String?
+    var app: String
+    var path: String
+    var name: String
+    var addable: String
+    var dryRun: Bool
+    var rows: [LightProjectRow]
+}
+
+struct ProjectSpec: Equatable {
+    var op: String
+    var app: String
+    var host: String
+    var path: String
+    var name: String
+    var dryRun: Bool
+
+    func payload() -> String {
+        let body: [String: Any] = [
+            "op": op, "app": app, "host": host, "path": path, "name": name, "dryRun": dryRun,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else { return "{}" }
+        return text
     }
 }
 
@@ -615,7 +1054,7 @@ private struct SessionArgv {
     var flags: Set<String> = []
 
     static let knownFlags: Set<String> = ["json", "dry-run", "launch", "no-queue", "here"]
-    static let knownOptions: Set<String> = ["host", "app", "workspace", "title", "name", "node", "result"]
+    static let knownOptions: Set<String> = ["host", "app", "workspace", "title", "name", "node", "result", "path", "add-project"]
 
     static func parse(_ tokens: [String]) -> SessionArgv {
         var argv = SessionArgv()

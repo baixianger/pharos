@@ -197,13 +197,40 @@ The caller does not create the session itself. It forwards `pharos session … -
 
 Ports and app executables come from `PHAROS_DSH_CDP_PORT`, `PHAROS_AG_CDP_PORT`, `PHAROS_CODEX_CDP_PORT`, `PHAROS_DSH_APP`, `PHAROS_AG_APP`, and `PHAROS_CODEX_APP`. There is no compiled-in port. A missing port is `debug port is not configured`.
 
+`session new` asks the target whether that workspace is registered before it creates anything. If it is not, the command fails with `project is not registered` and does not call `achat new`. `--add-project DIR` runs project add first, then creates the session only when the result is `added` or `already`.
+
+## Project registration
+
+`pharos project list|add --host H --app dsh|ag|codex --path DIR` registers a workspace in that app. It uses the same target-node path as session creation: the caller forwards `pharos project … --here`, or leaves one inbox job when the node is offline. The caller does not run achat, and it does not fall back to its own machine. `--no-queue` returns `node offline` immediately. `--dry-run` does not register a project. Add is idempotent: the target lists projects and returns `already` when the path is already there.
+
+The deep module stays `LightRelay` for the inbox. Project add is a small seam on `LightSessionService`: one capability (`addable`) and one achat contract. achat owns the per-app adapter. Pharos does not open the app's files.
+
+Contract, on the target only:
+
+```
+achat <app> workspace list --host local --json
+achat <app> workspace add <path> --host local --json [--name N] [--dry-run]
+```
+
+`PHAROS_ACHAT_BIN` is the executable. A project row is `{name, path}`. Statuses are `added`, `already`, `needs_user_action`, `node offline`, and `queued`. `addable` is `api`, `ui`, or `restart`.
+
+`restart` means a live app would throw away an out-of-band write. Pharos does not write the file and does not tell the owner to drop one in. It returns `needs_user_action`.
+
+Verified on a Mac, and left to achat rather than reimplemented here:
+
+| App | Where projects live | What Pharos asks for |
+| --- | --- | --- |
+| codex | `~/.codex/state_5.sqlite`, through experimental app-server `project/list`, `project/create`, and `project/delete`. The client sends `capabilities.experimentalApi: true`. `project/create` takes `{idempotencyKey, name, roots:[{path}]}` and is idempotent. Trust entries in `config.toml` are optional | `addable: api`. No debug port and no file edit |
+| dsh 0.2.1 | `~/.dsh/storages/workspace.json`. There is no CLI command. `workspace/create {request:{path}}` on a `dsh web` server is idempotent. The desktop app is the single writer and rewrites the whole file, so a web-side add made while the desktop is running is lost | Desktop debug endpoint ready: `addable: ui` (Add workspace through that UI). Desktop not running: `addable: api`. Desktop running without a debug port: `addable: restart`, status `needs_user_action`, and nothing is written. A port owned by another process is left alone |
+| antigravity | One JSON file per project under `~/.gemini/config/projects/<uuid>.json`, written by the app's language server with a private token. Files dropped while the app is running are not loaded, and that directory is off limits | `addable: ui` only, and only when the debug endpoint belongs to Antigravity (Create New Project, then the folder picker). Otherwise `needs_user_action`. Pharos does not write that directory |
+
 ## Node inbox
 
 Each machine is a Pharos node. The only down state is that the node's heartbeat is missing or older than the Broker's 70s window. The status is `node offline`, with `last-seen` when a heartbeat was recorded. The caller does not describe a machine as unreachable, and it does not create the session or deliver the message on its own machine.
 
 The Broker keeps one inbox per node in the same store as the single-writer outbox (`state.json`, queue TTL 72h). `enqueue` appends a job. The node `pull`s on heartbeat and may see the same id again until `ack` removes it. A repeated id, or a second ack, is ignored. `sweep` drops expired jobs. That is the whole queue. There are no exchanges, routing keys, topics, priorities, consumer groups, or an external message broker.
 
-`session new` and `session workspaces` enqueue when the node is offline, and report `queued` plus the request id. `--no-queue` returns `node offline` immediately. A forward that does not come back with a result is the same offline path, not a local achat call. When the node completes a `session-new` job, the Broker registers the member from that result.
+`session new`, `session workspaces`, `project list`, and `project add` enqueue when the node is offline, and report `queued` plus the request id. `--no-queue` returns `node offline` immediately. A forward that does not come back with a result is the same offline path, not a local achat call. When the node completes a `session-new` job, the Broker registers the member from that result. A `needs_user_action` result is terminal: the job is acked and not retried.
 
 A send to a member whose node has gone offline since its last heartbeat waits in that node's inbox. The driver on the caller is not invoked. A member whose node has never heartbeated is unchanged, so a local directory still delivers.
 
@@ -220,18 +247,18 @@ A send to a member whose node has gone offline since its last heartbeat waits in
 | Fallback the user sees | Not tmux | tmux only as a labelled last route |
 | Approval | Scoped `approval/resolve` on a lease | Not performed |
 
-`pharos mesh …` is unchanged. `pharos member`, `send`, `reply`, `wait`, `read`, `thread list|show`, and `session` are this tier. `thread new` and `thread add` are usage errors.
+`pharos mesh …` is unchanged. `pharos member`, `send`, `reply`, `wait`, `read`, `thread list|show`, `session`, and `project` are this tier. `thread new` and `thread add` are usage errors.
 
 ## Testing
 
 Tests cross `LightRelay`, `LightCommands`, and `LightRoutePlanner`. They do not read private ledger fields.
 
-Covered: directory resolution and conflicts, a new send minting a thread, multi-recipient send as N 1:1 copies that share a thread id and hide each other from the header, reply-id inheritance of that thread, `@` on a reply adding copies without replacing the previous sender, `@all` left unresolved, derived participants and direct/group kind, participants absent from the snapshot, reply-id issue / lookup / expiry / `--once` / forged ids, hop along a reply chain and the originator notice, queue order across two sends to one member, queue expiry, wait-once ingestion, SSH-shaped forwarding, loopback webhook intake, reload of the append-only log, headless argv with no approval bypass, unverified external delivery, session-new argument mapping and achat JSON, member registration and name collision, dry-run, the launch decision table, a missing debug port, node-offline queue and `--no-queue`, no local fallback when a forward fails, inbox pull/ack/expiry, and duplicate request ids.
+Covered: directory resolution and conflicts, a new send minting a thread, multi-recipient send as N 1:1 copies that share a thread id and hide each other from the header, reply-id inheritance of that thread, `@` on a reply adding copies without replacing the previous sender, `@all` left unresolved, derived participants and direct/group kind, participants absent from the snapshot, reply-id issue / lookup / expiry / `--once` / forged ids, hop along a reply chain and the originator notice, queue order across two sends to one member, queue expiry, wait-once ingestion, SSH-shaped forwarding, loopback webhook intake, reload of the append-only log, headless argv with no approval bypass, unverified external delivery, session-new argument mapping and achat JSON, member registration and name collision, dry-run, the launch decision table, a missing debug port, node-offline queue and `--no-queue`, no local fallback when a forward fails, inbox pull/ack/expiry, duplicate request ids, project add by path (including the already-registered no-op), the `api` / `ui` / `restart` decision, `needs_user_action` without writing app files, and `session new` failing when the project is not registered unless `--add-project` adds it first.
 
 Not certified, and not run by CI:
 
 - A real Codex, Claude, DSH, or Antigravity turn on a Mac.
-- A real `achat` create against a live desktop app, and a real `--launch` of that app.
+- A real `achat` create against a live desktop app, a real `--launch` of that app, and a real `workspace add` in Codex, DSH, or Antigravity.
 - Desktop IPC frames, CDP, and the DSH "start web, call, stop" cycle.
 - `PHAROS_LIGHT_LIVE=1` against a bundled `codex` binary.
 - SSH forwarding to a live Broker.
