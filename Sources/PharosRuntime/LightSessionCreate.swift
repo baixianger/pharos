@@ -207,12 +207,32 @@ public struct LightAppBins: Equatable, Sendable {
     public var dsh: String?
     public var ag: String?
     public var codex: String?
+    /// The `pharos` a forwarded command runs on the target node. A non-interactive
+    /// SSH shell on macOS only has /usr/bin:/bin:/usr/sbin:/sbin on PATH, so a user
+    /// install needs `PHAROS_LIGHT_REMOTE_PHAROS=~/.local/bin/pharos` (a leading `~/`
+    /// expands on the remote side).
+    public var remotePharos: String
 
-    public init(achat: String = "achat", dsh: String? = nil, ag: String? = nil, codex: String? = nil) {
+    public init(achat: String = "achat", dsh: String? = nil, ag: String? = nil, codex: String? = nil,
+                remotePharos: String = "pharos") {
         self.achat = achat
         self.dsh = dsh
         self.ag = ag
         self.codex = codex
+        self.remotePharos = remotePharos
+    }
+
+    /// Shell text for `remotePharos`: quoted, with a leading `~/` kept expandable.
+    public var remotePharosShell: String {
+        Self.remoteExecutableShell(remotePharos)
+    }
+
+    public static func remoteExecutableShell(_ value: String) -> String {
+        let quote = { (text: String) in "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        if value.hasPrefix("~/") { return "\"$HOME\"/" + quote(String(value.dropFirst(2))) }
+        let plain = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-")
+        if !value.isEmpty, value.unicodeScalars.allSatisfy(plain.contains) { return value }
+        return quote(value)
     }
 
     public func executable(for app: String) -> String? {
@@ -232,7 +252,8 @@ public struct LightAppBins: Equatable, Sendable {
         }
         let achat = pick("PHAROS_ACHAT_BIN") ?? "achat"
         return LightAppBins(achat: achat, dsh: pick("PHAROS_DSH_APP"), ag: pick("PHAROS_AG_APP"),
-                            codex: pick("PHAROS_CODEX_APP"))
+                            codex: pick("PHAROS_CODEX_APP"),
+                            remotePharos: pick("PHAROS_LIGHT_REMOTE_PHAROS") ?? "pharos")
     }
 }
 
@@ -436,7 +457,7 @@ public struct LightSessionService {
     private func reachable(_ host: String) -> LightNodeStatus {
         let status = relay.nodeStatus(host)
         if status.online { return status }
-        let probe = ssh(host, command: "pharos --version", summary: "probe pharos on the target node", timeout: 5)
+        let probe = ssh(host, command: "\(apps.remotePharosShell) --version", summary: "probe pharos on the target node", timeout: 5)
         if probe.status == 0 {
             return LightNodeStatus(host: host, online: true, lastSeen: status.lastSeen)
         }
@@ -661,12 +682,12 @@ public struct LightSessionService {
     }
 
     private func projectCommand(_ spec: ProjectSpec) -> String {
-        var args = ["pharos", "project", spec.op, "--here", "--app", spec.app]
+        var args = ["project", spec.op, "--here", "--app", spec.app]
         if spec.op == "add" { args += ["--path", spec.path] }
         if !spec.name.isEmpty { args += ["--name", spec.name] }
         if spec.dryRun { args.append("--dry-run") }
         args.append("--json")
-        return args.map(Self.shellQuote).joined(separator: " ")
+        return ([apps.remotePharosShell] + args.map(Self.shellQuote)).joined(separator: " ")
     }
 
     private func listHere(_ spec: ProjectSpec) -> ProjectOutcome {
@@ -848,7 +869,7 @@ public struct LightSessionService {
     }
 
     private func remoteCommand(verb: Verb, spec: SessionSpec) -> String {
-        var args = ["pharos", "session", verb == .new ? "new" : "workspaces", "--here", "--app", spec.app]
+        var args = ["session", verb == .new ? "new" : "workspaces", "--here", "--app", spec.app]
         if verb == .new { args += ["--workspace", spec.workspace] }
         if let title = spec.title, !title.isEmpty { args += ["--title", title] }
         if !spec.name.isEmpty { args += ["--name", spec.name] }
@@ -857,7 +878,7 @@ public struct LightSessionService {
         if spec.dryRun { args.append("--dry-run") }
         if spec.launch { args.append("--launch") }
         args.append("--json")
-        return args.map(Self.shellQuote).joined(separator: " ")
+        return ([apps.remotePharosShell] + args.map(Self.shellQuote)).joined(separator: " ")
     }
 
     private func hereFailure(_ message: String, spec: SessionSpec, json: Bool) -> LightCLIResult {

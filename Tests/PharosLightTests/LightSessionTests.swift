@@ -623,6 +623,22 @@ final class LightSessionTests: XCTestCase {
         XCTAssertTrue(LightSessionService.samePath("~/personal/msg-test/", home + "/personal/msg-test"))
     }
 
+    func testRemotePharosOverrideReachesProbeAndForwardedCommand() throws {
+        XCTAssertEqual(LightAppBins.fromEnvironment([:]).remotePharosShell, "pharos")
+        let bins = LightAppBins.fromEnvironment(["PHAROS_LIGHT_REMOTE_PHAROS": "~/.local/bin/pharos"])
+        XCTAssertEqual(bins.remotePharosShell, #""$HOME"/'.local/bin/pharos'"#)
+        XCTAssertEqual(LightAppBins.remoteExecutableShell("/opt/x y/pharos"), "'/opt/x y/pharos'")
+        let runner = ScriptedSessionRunner([
+            output(0, "pharos 0.11.1"),
+            output(0, #"{"ok":true,"status":"listed","app":"codex","projects":[]}"#),
+        ])
+        var service = makeService(relay: try makeRelay(), runner: runner, prober: ScriptProber([]))
+        service.apps = LightAppBins(achat: "/tmp/achat", remotePharos: "~/.local/bin/pharos")
+        _ = service.executeProject(arguments: ["list", "--host", "mini", "--app", "codex", "--json"])
+        XCTAssertEqual(runner.invocations.first?.argv.last, #""$HOME"/'.local/bin/pharos' --version"#)
+        XCTAssertTrue(runner.invocations.last?.argv.last?.hasPrefix(#""$HOME"/'.local/bin/pharos' 'project' 'list'"#) == true)
+    }
+
     private func makeRelay(now: (@Sendable () -> Date)? = nil) throws -> LightRelay {
         if let now {
             return try LightRelay(store: freshStore(), now: now, driver: IdleLightDriver())

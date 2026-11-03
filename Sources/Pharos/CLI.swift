@@ -170,7 +170,9 @@ enum CLI {
         let environment = ProcessInfo.processInfo.environment
         let forwarder: (any LightReplyForwarding)?
         if let host = environment["PHAROS_LIGHT_SSH_HOST"], !host.isEmpty {
-            forwarder = SSHLightReplyForwarder(destination: host, runner: FoundationLightProcessRunner())
+            forwarder = SSHLightReplyForwarder(destination: host,
+                                               remoteCommand: LightAppBins.fromEnvironment(environment).remotePharosShell,
+                                               runner: FoundationLightProcessRunner())
         } else {
             forwarder = nil
         }
@@ -1007,7 +1009,9 @@ enum CLI {
           needs a debug port (env override, else achat config, else dsh 9301 / codex 9302).
           Debug ports and the achat binary come from the environment, not the repo.
           Set PHAROS_LIGHT_SSH_HOST to an existing SSH alias to forward `reply`
-          from a non-Broker host. Set PHAROS_LIGHT_WEBHOOK only to a loopback URL.
+          from a non-Broker host. Forwarded commands run `pharos` on the target;
+          set PHAROS_LIGHT_REMOTE_PHAROS (e.g. ~/.local/bin/pharos) when it is not
+          on the target's non-interactive SSH PATH. Set PHAROS_LIGHT_WEBHOOK only to a loopback URL.
           PHAROS_LIGHT_LIVE=1 enables headless codex/claude/tmux execution; desktop
           IPC, CDP, and the DSH web lifecycle stay planned until certified on a Mac.
 
