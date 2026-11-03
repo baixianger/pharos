@@ -2723,7 +2723,19 @@ final class LegacyPeerMigrationTests: XCTestCase {
 }
 
 final class MeshDeliveryTests: XCTestCase {
-    func testBroadcastStaysInTranscriptAndOnlyMentionEntersAgentMailbox() {
+    func testBroadcastStaysInTranscriptAndOnlyMentionEntersAgentMailbox() throws {
+        // Isolate from the real ~/Library/Application Support/Pharos state.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pharos-mesh-delivery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        setenv("PHAROS_MESH_DIR", directory.path, 1)
+        setenv("PHAROS_MESH_DATA_DIR", directory.path, 1)
+        defer {
+            unsetenv("PHAROS_MESH_DIR")
+            unsetenv("PHAROS_MESH_DATA_DIR")
+            try? FileManager.default.removeItem(at: directory)
+        }
+
         let broker = MeshBroker()
         let room = "delivery-\(UUID().uuidString.lowercased())"
         XCTAssertTrue(broker.process(MeshRequest(cmd: "create", room: room)).ok)

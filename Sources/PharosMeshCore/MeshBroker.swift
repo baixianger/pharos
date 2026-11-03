@@ -2314,6 +2314,10 @@ public final class MeshBroker: @unchecked Sendable {
             _ = try? fh.seekToEnd()
             try? fh.write(contentsOf: data)
         } else {
+            // An in-process broker (tests, embedded use) never ran `serve()`,
+            // so the transcript directory may not exist yet.
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                     withIntermediateDirectories: true)
             try? data.write(to: url)
         }
     }
