@@ -272,10 +272,14 @@ public struct LightDelivery: Codable, Equatable, Sendable {
     public var detail: String
     /// `mesh`, `ssh`, `queued` (waiting in the node's inbox), or nil (this machine).
     public var via: String?
+    /// Queued because the member is waiting on a human (needs_human).
+    public var attention: LightAttention?
 
     public init(to: String, replyID: String, state: LightDeliveryState, route: String?, fallback: Bool,
-                liveVerified: Bool, header: String, detail: String, via: String? = nil) {
+                liveVerified: Bool, header: String, detail: String, via: String? = nil,
+                attention: LightAttention? = nil) {
         self.via = via
+        self.attention = attention
         self.to = to
         self.replyID = replyID
         self.state = state
@@ -335,9 +339,13 @@ public struct LightWaitResult: Codable, Equatable, Sendable {
     public var send: LightSendResult?
     /// Reply-id issued to the waiting member for this answer, when one was recorded.
     public var nextReplyID: String?
+    /// Pending because the recipient is waiting on a human; Pharos does not read its session meanwhile.
+    public var attention: LightAttention?
 
-    public init(replyID: String, status: Status, text: String?, send: LightSendResult?, nextReplyID: String? = nil) {
+    public init(replyID: String, status: Status, text: String?, send: LightSendResult?, nextReplyID: String? = nil,
+                attention: LightAttention? = nil) {
         self.nextReplyID = nextReplyID
+        self.attention = attention
         self.replyID = replyID
         self.status = status
         self.text = text
@@ -363,8 +371,12 @@ public struct LightSweepReport: Codable, Equatable, Sendable {
     public var flushed: Int
     public var notices: Int
     public var expiredInbox: Int
+    /// needs_human states whose TTL ended.
+    public var expiredAttention: Int
 
-    public init(expiredReplies: Int, expiredQueued: Int, flushed: Int, notices: Int, expiredInbox: Int = 0) {
+    public init(expiredReplies: Int, expiredQueued: Int, flushed: Int, notices: Int, expiredInbox: Int = 0,
+                expiredAttention: Int = 0) {
+        self.expiredAttention = expiredAttention
         self.expiredReplies = expiredReplies
         self.expiredQueued = expiredQueued
         self.flushed = flushed
@@ -696,6 +708,8 @@ public final class LightRelay: @unchecked Sendable {
     private var logs: [String: [LightLogEntry]] = [:]
     private var rejectionLog: [LightRejection] = []
     private var inflight: Set<String> = []
+    /// needs_human by member name. Active while `expiresAt` is ahead.
+    private var attention: [String: LightAttention] = [:]
 
     public init(store: URL,
                 now: @escaping @Sendable () -> Date = { Date() },
@@ -878,7 +892,8 @@ public final class LightRelay: @unchecked Sendable {
                 }
             }
             if timeout <= 0 || now().timeIntervalSince(start) >= timeout || polls >= 10_000 {
-                return LightWaitResult(replyID: replyID, status: .pending, text: nil, send: nil)
+                return LightWaitResult(replyID: replyID, status: .pending, text: nil, send: nil,
+                                       attention: recipientAttention(replyID))
             }
             sleep(0.02)
         }
@@ -889,7 +904,107 @@ public final class LightRelay: @unchecked Sendable {
         let report = sync { expireLocked() }
         let flushed = pump()
         return LightSweepReport(expiredReplies: report.expiredReplies, expiredQueued: report.expiredQueued,
-                                flushed: flushed, notices: report.notices, expiredInbox: report.expiredInbox)
+                                flushed: flushed, notices: report.notices, expiredInbox: report.expiredInbox,
+                                expiredAttention: report.expiredAttention)
+    }
+
+    // MARK: needs_human
+    //
+    // Recorded and reported only. Pharos never approves or denies. Matching is by
+    // session id (and app label when the source gives one); no app is special here.
+
+    /// Record or clear needs_human for every member registered to `report.sessionID`.
+    @discardableResult
+    public func reportAttention(_ report: LightAttentionReport) throws -> LightAttentionOutcome {
+        try sync {
+            let session = try Self.validateSession(report.sessionID)
+            let app = report.app.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let matched = members.values
+                .filter { $0.sessionID == session && (app.isEmpty || $0.app == app) }
+                .sorted { $0.name < $1.name }
+            var outcome = LightAttentionOutcome(state: report.state, unmatched: matched.isEmpty)
+            guard !matched.isEmpty else { return outcome }
+            let moment = now()
+            let seenAt = min(report.at ?? moment, moment)
+            let source = report.source.isEmpty ? "hook" : report.source
+            for member in matched {
+                let current = attention[member.name].flatMap { $0.expiresAt > moment ? $0 : nil }
+                switch report.state {
+                case .needsHuman:
+                    let ttl = max(1, report.ttl ?? (source == "poll" ? LightAttention.pollTTL : LightAttention.defaultTTL))
+                    let what = LightAttention.clip(report.what)
+                    attention[member.name] = LightAttention(
+                        member: member.name, what: what.isEmpty ? (current?.what ?? "") : what,
+                        host: report.host.isEmpty ? (current?.host ?? member.host) : report.host,
+                        sessionID: session, app: member.app,
+                        // A poll refreshing a hook's state keeps the hook as owner.
+                        source: current?.source == "hook" ? "hook" : source,
+                        since: current?.since ?? seenAt, seen: moment, expiresAt: moment.addingTimeInterval(ttl))
+                    outcome.recorded.append(member.name)
+                case .clear:
+                    guard let current else {
+                        attention[member.name] = nil
+                        continue
+                    }
+                    // A poll that sees nothing does not undo what a hook pushed.
+                    if source == "poll", current.source == "hook" { continue }
+                    attention[member.name] = nil
+                    outcome.cleared.append(member.name)
+                }
+            }
+            try persistLocked()
+            return outcome
+        }
+    }
+
+    /// The member's needs_human state, when active.
+    public func attention(for name: String) -> LightAttention? {
+        sync { heldLocked(name) }
+    }
+
+    /// Every active needs_human state, oldest first.
+    public func activeAttention() -> [LightAttention] {
+        sync {
+            let moment = now()
+            return attention.values.filter { $0.expiresAt > moment }.sorted { $0.since < $1.since }
+        }
+    }
+
+    /// Members worth polling for an approval prompt: an open ask or a queued
+    /// message is waiting on them, or a poll recorded their state.
+    public func attentionCandidates() -> [LightMember] {
+        sync {
+            let moment = now()
+            var names = Set(outbox.map(\.to))
+            for ticket in ledger.values where !ticket.consumed && ticket.expiresAt > moment && ticket.harvest != false {
+                names.insert(ticket.to)
+            }
+            for state in attention.values where state.expiresAt > moment && state.source == "poll" {
+                names.insert(state.member)
+            }
+            return names.compactMap { members[$0] }.sorted { $0.name < $1.name }
+        }
+    }
+
+    private func recipientAttention(_ replyID: String) -> LightAttention? {
+        sync { ledger[replyID].flatMap { heldLocked($0.to) } }
+    }
+
+    private func heldLocked(_ name: String) -> LightAttention? {
+        guard let state = attention[name], state.expiresAt > now() else { return nil }
+        return state
+    }
+
+    private func holdNoticeLocked(_ target: PreparedTarget, _ state: LightAttention) throws {
+        try appendLocked(LightLogEntry(
+            id: try tokenLocked("m"), kind: .notice, threadID: target.ticket.threadID, from: target.member.name,
+            text: "needs_human \(target.member.name): \(state.describe(at: now())); message queued until it proceeds",
+            to: target.member.name, replyID: target.ticket.replyID, at: now()
+        ))
+    }
+
+    static func holdDetail(_ state: LightAttention, at moment: Date) -> String {
+        "needs_human: \(state.describe(at: moment)); queued until it proceeds"
     }
 
     // MARK: Node inbox
@@ -930,7 +1045,8 @@ public final class LightRelay: @unchecked Sendable {
             let moment = now()
             let open = ledger.values.filter { ticket in
                 guard !ticket.consumed, ticket.harvest != false, ticket.expiresAt > moment,
-                      moment.timeIntervalSince(ticket.issuedAt) <= maxAge, members[ticket.to] != nil else { return false }
+                      moment.timeIntervalSince(ticket.issuedAt) <= maxAge, members[ticket.to] != nil,
+                      heldLocked(ticket.to) == nil else { return false }
                 let answered = logs[ticket.threadID]?.contains { $0.kind == .message && $0.replyTo == ticket.replyID } ?? false
                 return !answered
             }
@@ -941,6 +1057,7 @@ public final class LightRelay: @unchecked Sendable {
     /// Deliver one parked `deliver` job (its node is back) and ack it when the session took it.
     @discardableResult
     public func redeliverParked(_ job: LightNodeJob) -> LightDriveResult? {
+        if sync({ ledger[job.id].flatMap { heldLocked($0.to) } }) != nil { return nil }
         let target: (LightMember, LightEnvelope, String, Int)? = sync {
             guard job.kind == "deliver", let ticket = ledger[job.id], let member = members[ticket.to] else { return nil }
             let header = logs[ticket.threadID]?.last { $0.kind == .delivery && $0.replyID == job.id }?.header ?? ""
@@ -1086,13 +1203,16 @@ public final class LightRelay: @unchecked Sendable {
         var inbox: [LightNodeJob]
         var nodes: [NodeSeen]
         var applied: [AppliedJob]
+        var attention: [LightAttention] = []
 
         private enum CodingKeys: String, CodingKey {
-            case version, members, threads, ledger, outbox, inbox, nodes, applied
+            case version, members, threads, ledger, outbox, inbox, nodes, applied, attention
         }
 
         init(version: Int, members: [LightMember], threads: [LightThread], ledger: [Ticket],
-             outbox: [OutboxItem], inbox: [LightNodeJob], nodes: [NodeSeen], applied: [AppliedJob]) {
+             outbox: [OutboxItem], inbox: [LightNodeJob], nodes: [NodeSeen], applied: [AppliedJob],
+             attention: [LightAttention] = []) {
+            self.attention = attention
             self.version = version
             self.members = members
             self.threads = threads
@@ -1113,6 +1233,7 @@ public final class LightRelay: @unchecked Sendable {
             inbox = try container.decodeIfPresent([LightNodeJob].self, forKey: .inbox) ?? []
             nodes = try container.decodeIfPresent([NodeSeen].self, forKey: .nodes) ?? []
             applied = try container.decodeIfPresent([AppliedJob].self, forKey: .applied) ?? []
+            attention = try container.decodeIfPresent([LightAttention].self, forKey: .attention) ?? []
         }
 
         func encode(to encoder: Encoder) throws {
@@ -1125,6 +1246,7 @@ public final class LightRelay: @unchecked Sendable {
             try container.encode(inbox, forKey: .inbox)
             try container.encode(nodes, forKey: .nodes)
             try container.encode(applied, forKey: .applied)
+            if !attention.isEmpty { try container.encode(attention, forKey: .attention) }
         }
     }
 
@@ -1151,6 +1273,8 @@ public final class LightRelay: @unchecked Sendable {
         var envelope: LightEnvelope
         /// Kept in the thread only; the driver is not called.
         var record: Bool = false
+        /// Queued because the member is waiting on a human.
+        var hold: LightAttention? = nil
     }
 
     /// How one copy of a message is addressed and what its header asks for.
@@ -1209,6 +1333,8 @@ public final class LightRelay: @unchecked Sendable {
         for target in plan.targets where target.queued && !target.record {
             deliveries.append(queuedDelivery(target))
         }
+        // A message to a member waiting on a human stays queued: do not let this
+        // send's pump hand it over before the state clears.
         _ = pump()
         let refreshed = try refresh(deliveries, threadID: plan.threadID)
         return LightSendResult(threadID: plan.threadID, from: plan.from, hop: plan.hop, hopLimit: plan.hopLimit,
@@ -1223,6 +1349,20 @@ public final class LightRelay: @unchecked Sendable {
     }
 
     private func deliverNow(_ target: PreparedTarget) throws -> LightDelivery {
+        // needs_human holds the message before any route or node-liveness decision.
+        let waiting = try sync { () -> LightAttention? in
+            guard let state = heldLocked(target.member.name) else { return nil }
+            var queued = target
+            queued.hold = state
+            try enqueueLocked(queued, routeNote: nil)
+            try holdNoticeLocked(queued, state)
+            return state
+        }
+        if let waiting {
+            var queued = target
+            queued.hold = waiting
+            return queuedDelivery(queued)
+        }
         let parked = try sync { () -> LightNodeStatus? in
             let status = nodeStatusLocked(target.member.host)
             guard status.lastSeen != nil, !status.online else { return nil }
@@ -1283,8 +1423,13 @@ public final class LightRelay: @unchecked Sendable {
     }
 
     private func queuedDelivery(_ target: PreparedTarget, detail: String = "queued behind the session writer") -> LightDelivery {
-        LightDelivery(to: target.member.name, replyID: target.ticket.replyID, state: .queued, route: nil,
-                      fallback: false, liveVerified: false, header: target.header, detail: detail)
+        if let hold = target.hold {
+            return LightDelivery(to: target.member.name, replyID: target.ticket.replyID, state: .queued, route: nil,
+                                 fallback: false, liveVerified: false, header: target.header,
+                                 detail: Self.holdDetail(hold, at: now()), attention: hold)
+        }
+        return LightDelivery(to: target.member.name, replyID: target.ticket.replyID, state: .queued, route: nil,
+                             fallback: false, liveVerified: false, header: target.header, detail: detail)
     }
 
     private func refresh(_ deliveries: [LightDelivery], threadID: String) throws -> [LightDelivery] {
@@ -1295,7 +1440,7 @@ public final class LightRelay: @unchecked Sendable {
                 return LightDelivery(to: delivery.to, replyID: delivery.replyID, state: state, route: latest.route,
                                      fallback: latest.fallback ?? delivery.fallback,
                                      liveVerified: latest.liveVerified ?? false, header: delivery.header,
-                                     detail: delivery.detail, via: delivery.via)
+                                     detail: delivery.detail, via: delivery.via, attention: delivery.attention)
             }
         }
     }
@@ -1401,11 +1546,13 @@ public final class LightRelay: @unchecked Sendable {
             return PreparedTarget(member: member, ticket: ticket, body: body, header: header, queued: false,
                                   envelope: envelope, record: true)
         }
-        let queued = outbox.contains(where: { $0.to == member.name }) || inflight.contains(member.name)
+        let hold = heldLocked(member.name)
+        let queued = hold != nil || outbox.contains(where: { $0.to == member.name }) || inflight.contains(member.name)
         if queued {
             let target = PreparedTarget(member: member, ticket: ticket, body: body, header: header, queued: true,
-                                        envelope: envelope)
+                                        envelope: envelope, hold: hold)
             try enqueueLocked(target, routeNote: nil)
+            if let hold { try holdNoticeLocked(target, hold) }
             return target
         }
         return PreparedTarget(member: member, ticket: ticket, body: body, header: header, queued: false, envelope: envelope)
@@ -1446,6 +1593,8 @@ public final class LightRelay: @unchecked Sendable {
             throw LightRelayError.expiredReply(replyID)
         }
         guard var thread = threads[ticket.threadID] else { throw LightRelayError.unknownThread(ticket.threadID) }
+        // A member that runs `pharos reply` is no longer waiting on a human.
+        if via == "reply", attention[ticket.to] != nil { attention[ticket.to] = nil }
         var ccNames: [String] = []
         for raw in rawCC {
             let id = try Self.validateName(raw)
@@ -1608,6 +1757,8 @@ public final class LightRelay: @unchecked Sendable {
             return .pending
         }
         guard let member = members[ticket.to] else { return .pending }
+        // Waiting on a human: its session text is not an answer yet.
+        if heldLocked(member.name) != nil { return .pending }
         return .readable(member, ticket.issuedAt)
     }
 
@@ -1631,6 +1782,7 @@ public final class LightRelay: @unchecked Sendable {
         parkOfflineOutboxLocked()
         for (index, item) in outbox.enumerated() {
             if blocked.contains(item.to) || inflight.contains(item.to) { continue }
+            if heldLocked(item.to) != nil { continue }
             guard let member = members[item.to] else { continue }
             if ledger[item.replyID] == nil { continue }
             outbox.remove(at: index)
@@ -1666,10 +1818,13 @@ public final class LightRelay: @unchecked Sendable {
         var expiredQueued: Int
         var notices: Int
         var expiredInbox: Int
+        var expiredAttention: Int = 0
     }
 
     private func expireLocked() -> ExpireReport {
         let moment = now()
+        let lapsed = attention.filter { $0.value.expiresAt <= moment }.map(\.key)
+        for name in lapsed { attention[name] = nil }
         var expiredReplies = 0
         var expiredQueued = 0
         var notices = 0
@@ -1708,11 +1863,11 @@ public final class LightRelay: @unchecked Sendable {
             ledger[ticket.replyID] = nil
             expiredReplies += 1
         }
-        if expiredQueued > 0 || expiredReplies > 0 || expiredInbox > 0 || !staleApplied.isEmpty {
+        if expiredQueued > 0 || expiredReplies > 0 || expiredInbox > 0 || !staleApplied.isEmpty || !lapsed.isEmpty {
             try? persistLocked()
         }
         return ExpireReport(expiredReplies: expiredReplies, expiredQueued: expiredQueued, notices: notices,
-                            expiredInbox: expiredInbox)
+                            expiredInbox: expiredInbox, expiredAttention: lapsed.count)
     }
 
     private func headerLocked(from: String, thread: LightThread, replyID: String, hop: Int, spec: TargetSpec) -> String {
@@ -1959,7 +2114,8 @@ public final class LightRelay: @unchecked Sendable {
         var kept: [OutboxItem] = []
         var moved = false
         for item in outbox {
-            if let member = members[item.to] {
+            // Held for a human: stays in the outbox whatever the node's liveness says.
+            if let member = members[item.to], heldLocked(member.name) == nil {
                 let status = nodeStatusLocked(member.host)
                 if status.lastSeen != nil && !status.online {
                     do {
@@ -2025,6 +2181,7 @@ public final class LightRelay: @unchecked Sendable {
         inbox = snapshot.inbox
         nodeSeen = Dictionary(uniqueKeysWithValues: snapshot.nodes.map { ($0.host, $0.lastSeen) })
         appliedJobs = Dictionary(uniqueKeysWithValues: snapshot.applied.map { ($0.id, $0.at) })
+        attention = Dictionary(snapshot.attention.map { ($0.member, $0) }, uniquingKeysWith: { $1 })
         for thread in snapshot.threads {
             logs[thread.id] = try readJSONL(logURL(thread.id))
         }
@@ -2038,7 +2195,8 @@ public final class LightRelay: @unchecked Sendable {
                                 outbox: outbox,
                                 inbox: inbox.sorted { $0.id < $1.id },
                                 nodes: nodeSeen.map { NodeSeen(host: $0.key, lastSeen: $0.value) }.sorted { $0.host < $1.host },
-                                applied: appliedJobs.map { AppliedJob(id: $0.key, at: $0.value) }.sorted { $0.id < $1.id })
+                                applied: appliedJobs.map { AppliedJob(id: $0.key, at: $0.value) }.sorted { $0.id < $1.id },
+                                attention: attention.values.sorted { $0.member < $1.member })
         let data = try Self.makeEncoder().encode(snapshot)
         try data.write(to: stateURL, options: .atomic)
         chmod(stateURL.path, 0o600)

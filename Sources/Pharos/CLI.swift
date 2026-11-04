@@ -134,7 +134,7 @@ enum CLI {
                 return ok(try PharosCore.setFlag(name: p.arg(0), flag: "tmux", value: try boolArg(p.arg(1), label: "on|off")))
             case "mesh":
                 return await runMesh(rest)
-            case "member", "thread", "send", "reply", "wait", "read", "session", "project":
+            case "member", "thread", "send", "reply", "wait", "read", "session", "project", "attention":
                 return finishLight(lightDispatch(command: command, arguments: rest))
             case "node-deliver", "node-harvest":
                 return finishLight(nodeExecute(command: command, arguments: rest))
@@ -1006,6 +1006,9 @@ enum CLI {
           member register --name N --host H --app codex|claude|dsh|ag|cursor --project P --session S [--route R]...
           member register --name N --app webhook [--webhook CONFIG]      (remote assistant via HTTPS POST)
           member list [--json]
+          attention list [--json]                  Members waiting on a human (needs_human): what, host, session, age
+          attention report --state needs_human|clear --session S [--app A] [--host H] [--what T] [--ttl 20m]
+                                       (fed by per-app hooks and polls; Pharos never approves or denies)
           send --from NAME --to NAME... [--cc NAME]... [--intent ask|inform|discuss] [--deliver] [--rounds N]
                [--hop-limit N] [--ttl 24h] [--once] -- <text>
           reply r_xxx [--cc NAME]... [--intent answer|ask|inform] [--deliver] [--ttl 24h] [--once] -- <text>

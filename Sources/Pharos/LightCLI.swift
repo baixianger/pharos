@@ -212,7 +212,9 @@ extension CLI {
                     ports: .fromEnvironment(env), apps: .fromEnvironment(env), selfHost: .fromEnvironment(env),
                     nodes: lightRouter()
                 )
-                let report = LightTick(relay: relay, sessions: sessions, router: lightRouter()).run()
+                let report = LightTick(relay: relay, sessions: sessions, router: lightRouter(),
+                                       attention: attentionPoller(env)).run()
+                body["attention"] = report.attention
                 body["inboxRetried"] = report.inboxRetried
                 body["flushed"] = report.flushed
                 body["harvested"] = report.harvested
@@ -225,6 +227,16 @@ extension CLI {
               let text = String(data: data, encoding: .utf8) else { return LightCLIResult(exitCode: 1, text: "{}") }
         _ = json
         return LightCLIResult(exitCode: body["error"] == nil ? 0 : 1, text: text)
+    }
+
+    /// needs_human polls (achat `pending`) run only with live app access, for members on this machine.
+    private static func attentionPoller(_ env: [String: String]) -> (any HumanAttentionSource)? {
+        guard env["PHAROS_LIGHT_LIVE"] == "1", env["PHAROS_LIGHT_ATTENTION_POLL"] != "0" else { return nil }
+        let selfHost = LightSelfHost.fromEnvironment(env)
+        let label = ProcessInfo.processInfo.hostName.split(separator: ".").first.map(String.init) ?? "local"
+        return AchatPendingAttentionSource(runner: FoundationLightProcessRunner(),
+                                           achat: LightAppBins.fromEnvironment(env).achat,
+                                           isLocal: { selfHost.matches($0.host) }, hostLabel: label.lowercased())
     }
 
     private static func lightDispatchNoSpool(_ argv: [String]) -> LightCLIResult {

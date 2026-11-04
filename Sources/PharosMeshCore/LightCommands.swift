@@ -21,7 +21,7 @@ public enum LightCommands {
                                routeByID: (String) -> LightRoute = LightRoute.named) -> LightCLIResult {
         let argv = LightArgv.parse(arguments)
         do {
-            if ["thread", "wait", "read"].contains(command),
+            if ["thread", "wait", "read", "attention"].contains(command),
                let forwarded = relay.forwardCommand(command: command, arguments: arguments) {
                 return forwarded
             }
@@ -43,6 +43,8 @@ public enum LightCommands {
                 return try wait(argv, relay: relay)
             case "read":
                 return try read(argv, relay: relay)
+            case "attention":
+                return try attention(argv, relay: relay)
             default:
                 return usage("unknown light command \(command)")
             }
@@ -65,11 +67,18 @@ public enum LightCommands {
             let members = relay.listMembers()
             if argv.flag("json") { return json(members) }
             if members.isEmpty { return ok("no members") }
+            let moment = Date()
             let lines = members.map { member in
                 let routes = member.routes.map(\.id).joined(separator: ",")
-                return "\(member.name)\t\(member.app)\t\(member.host)\t\(member.project)\t\(member.sessionID)\t\(routes)"
+                let state = relay.attention(for: member.name)
+                    .map { "needs_human \(LightAttention.age(moment.timeIntervalSince($0.since)))" } ?? "-"
+                return "\(member.name)\t\(member.app)\t\(member.host)\t\(member.project)\t\(member.sessionID)\t\(routes)\t\(state)"
             }
-            return ok((["NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES"] + lines).joined(separator: "\n"))
+            var out = ["NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES\tSTATE"] + lines
+            for state in relay.activeAttention() {
+                out.append("needs_human \(state.member): \(state.describe(at: moment))")
+            }
+            return ok(out.joined(separator: "\n"))
         case "register" where argv.option("app") == "webhook":
             // A remote assistant reached by HTTPS POST. Its session id is the webhook config name.
             guard let name = argv.option("name") else {
@@ -133,7 +142,7 @@ public enum LightCommands {
                 "hop-limit \(view.thread.hopLimit)",
                 "participants \(people)",
                 "intent \((view.thread.intent ?? .ask).rawValue)",
-            ] + discussLines(view.thread)
+            ] + discussLines(view.thread) + attentionLines(view.participants, relay: relay)
             let entries = try relay.read(thread: id)
             let body = formatLog(entries)
             return ok((head + (body.isEmpty ? [] : [body])).joined(separator: "\n"))
@@ -188,6 +197,53 @@ public enum LightCommands {
         return render(result, json: argv.flag("json"))
     }
 
+    /// `needs_human codex-a: Bash: rm -rf build (host mini, session 01a1…, 2m ago)` per waiting participant.
+    private static func attentionLines(_ names: [String], relay: LightRelay) -> [String] {
+        let moment = Date()
+        return names.compactMap { name in
+            relay.attention(for: name).map { "needs_human \(name): \($0.describe(at: moment))" }
+        }
+    }
+
+    static let attentionUsage = "pharos attention report --state needs_human|clear --session S [--app A] [--host H] [--what TEXT] [--ttl 20m] [--at EPOCH] [--source hook|poll] | pharos attention list [--json]"
+
+    /// needs_human is recorded and reported only. There is no approve or deny command.
+    private static func attention(_ argv: LightArgv, relay: LightRelay) throws -> LightCLIResult {
+        switch argv.positional.first {
+        case "list", nil:
+            let states = relay.activeAttention()
+            if argv.flag("json") { return json(states) }
+            if states.isEmpty { return ok("no member needs a human") }
+            let moment = Date()
+            return ok(states.map { "needs_human \($0.member): \($0.describe(at: moment))" }.joined(separator: "\n"))
+        case "report":
+            guard let state = LightAttentionState.parse(argv.option("state")), let session = argv.option("session") else {
+                return usage(attentionUsage)
+            }
+            var at: Date? = nil
+            if let raw = argv.option("at") {
+                guard let seconds = Double(raw) else { return usage("--at takes epoch seconds") }
+                // Hooks may report milliseconds.
+                at = Date(timeIntervalSince1970: seconds > 1e11 ? seconds / 1000 : seconds)
+            }
+            let what = argv.option("what") ?? (argv.positional.dropFirst() + argv.forcedText).joined(separator: " ")
+            let outcome = try relay.reportAttention(LightAttentionReport(
+                state: state, what: what, sessionID: session, app: argv.option("app") ?? "",
+                host: argv.option("host") ?? "", at: at, ttl: try argv.duration("ttl"),
+                source: argv.option("source") ?? "hook"))
+            if argv.flag("json") { return json(outcome) }
+            if outcome.unmatched { return ok("no member has session \(session)") }
+            switch state {
+            case .needsHuman: return ok("needs_human \(outcome.recorded.joined(separator: ","))")
+            case .clear: return ok(outcome.cleared.isEmpty ? "nothing to clear" : "cleared \(outcome.cleared.joined(separator: ","))")
+            }
+        case "approve", "deny", "answer":
+            return usage("Pharos does not approve or deny; answer the prompt in the agent's own app")
+        default:
+            return usage(attentionUsage)
+        }
+    }
+
     private static func discussLines(_ thread: LightThread) -> [String] {
         var lines: [String] = []
         if thread.intent == .discuss {
@@ -214,6 +270,9 @@ public enum LightCommands {
         case .replied:
             return LightCLIResult(exitCode: 0, text: result.text ?? "", notes: notes)
         case .pending:
+            if let state = result.attention {
+                return LightCLIResult(exitCode: 2, text: "pending \(id)\nneeds_human \(state.member): \(state.describe(at: Date()))")
+            }
             return LightCLIResult(exitCode: 2, text: "pending \(id)")
         case .expired:
             return LightCLIResult(exitCode: 1, text: "error: expired reply-id \(id)")
@@ -278,7 +337,9 @@ public enum LightCommands {
             let fallback = delivery.fallback ? " fallback" : ""
             let via = delivery.via.map { "\tvia \($0)" } ?? ""
             lines.append("\(delivery.state.rawValue)\t\(delivery.to)\t\(delivery.replyID)\t\(route)\t\(verified)\(fallback)\(via)")
-            if delivery.detail.contains("node offline") {
+            if delivery.attention != nil {
+                lines.append("  " + delivery.detail)
+            } else if delivery.detail.contains("node offline") {
                 lines.append(delivery.detail)
             } else if delivery.state == .failed, !delivery.detail.isEmpty {
                 lines.append("  " + delivery.detail.split(separator: "\n").prefix(2).joined(separator: " "))
@@ -441,6 +502,15 @@ extension LightCommands {
     WAIT / READ
       pharos wait r_xxx [--timeout 5m] [--json]   Answer text; JSON adds nextReplyID.
       pharos thread show T [--json]               Intent, rounds, conclusion, every message.
+
+    NEEDS HUMAN (an agent waiting on its own approval prompt)
+      pharos attention list [--json]     Members waiting on a human: what, host, session, age.
+      Per-app hooks (Claude Code / Codex PermissionRequest, dsh approval events) and
+      polls (Antigravity / dsh / Cursor pending) report it; it clears when the agent
+      proceeds or after its TTL (20m from a hook). Meanwhile a send to that member is
+      queued ("queued ... needs_human: ...") and Pharos does not read its session.
+      `member list` and `thread show` mark it. Pharos never approves or denies: the
+      human answers in the agent's own app.
 
     WEBHOOK MEMBERS (remote assistants)
       pharos webhook set NAME --url https://… [--header-name H] --secret-stdin|--secret-file F|--secret-env VAR

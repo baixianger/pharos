@@ -31,7 +31,7 @@ public struct LightNodeHarvest: Codable, Equatable, Sendable {
 public enum LightNodeExec {
     /// Commands a node accepts over the mesh (`light` node command). Nothing else runs.
     public static let allowed: Set<String> = [
-        "session", "project", "member", "thread", "send", "reply", "wait", "read",
+        "session", "project", "member", "thread", "send", "reply", "wait", "read", "attention",
         "node-deliver", "node-harvest",
     ]
 
@@ -195,8 +195,13 @@ public struct LightTick {
     /// At most this many sessions read per tick.
     public var harvestLimit: Int
 
+    /// Poll side of needs_human (apps without a hookable approval event). Nil skips it.
+    public var attention: (any HumanAttentionSource)?
+
     public init(relay: LightRelay, sessions: LightSessionService, router: any LightNodeRouting,
-                harvestWindow: TimeInterval = 30 * 60, harvestLimit: Int = 6) {
+                harvestWindow: TimeInterval = 30 * 60, harvestLimit: Int = 6,
+                attention: (any HumanAttentionSource)? = nil) {
+        self.attention = attention
         self.relay = relay
         self.sessions = sessions
         self.router = router
@@ -209,11 +214,18 @@ public struct LightTick {
         public var flushed: Int = 0
         public var harvested: [String] = []
         public var checked: Int = 0
+        public var attention: Int = 0
     }
 
     public func run() -> Report {
         var report = Report()
         report.inboxRetried = sessions.drainInbox()
+        // Before the sweep, so a state that just cleared flushes its queue this pass.
+        if let attention {
+            for observation in attention.poll(members: relay.attentionCandidates()) {
+                if (try? relay.reportAttention(observation)) != nil { report.attention += 1 }
+            }
+        }
         report.flushed = relay.sweep().flushed
         for replyID in relay.pendingHarvest(maxAge: harvestWindow, limit: harvestLimit) {
             report.checked += 1
