@@ -62,6 +62,22 @@ answer, do **not** reply unless you need clarification.
 - `--deliver` (on `send`, applying to its replies, or on `reply`) wakes the sender's
   session instead of only recording the answer.
 
+## needs_human (an agent waiting on its own approval prompt)
+When a member's agent stops on a permission/approval prompt in its own app, Pharos
+records `needs_human` for it (what, host, session, age) and queues messages to it
+until it proceeds or the state expires (20 min for hook reports). It only records and
+reports: nobody approves remotely, and there is no approve/deny command; the prompt
+is answered in that agent's own app.
+- `pharos member list` shows a STATE column; `pharos attention list` lists the waits.
+- `pharos thread show` / `pharos wait` print `needs_human NAME: ...`; a send to such a
+  member prints `queued` with `needs_human: ...; queued until it proceeds`.
+- Sources: per-app hook adapters (`achat hook claude|codex|dsh`, installed per project
+  with `achat hook install <app> --dir <project>`; async, observe only, no output),
+  and a poll of `achat <app> pending` from the hub tick. Codex runs project hooks only
+  after the user trusts the project and reviews the hooks; never bypass that.
+- Adapters feed `pharos attention report --state needs_human|clear --session S
+  [--app A --host H --what TEXT --ttl 20m --source hook]`.
+
 ## Discussions
 `pharos send --from ME --to PEER --intent discuss --rounds 3 -- "<topic>"`.
 Each reply is one round. A reply of `DONE`, or reaching the cap, closes the

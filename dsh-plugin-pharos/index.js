@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import net from 'node:net'
 import os from 'node:os'
@@ -183,6 +183,39 @@ async function reconcileBinding(binding, signal, runner = runPharos) {
       '--session', binding.memberID, '--kind', 'dsh',
     ], signal)
   }
+}
+
+// needs_human: dsh records a tool call waiting on the user's approval as the session
+// events approval/asked and approval/decided. They are handed, as-is, to the achat
+// dsh hook adapter, which normalizes them and reports to `pharos attention report`.
+// Observe only: nothing here answers, approves, or denies an approval.
+const ATTENTION_EVENTS = new Set(['approval/asked', 'approval/decided', 'turn/end'])
+
+function attentionPayload(session, event, waiting) {
+  if (!event || !ATTENTION_EVENTS.has(event.type)) return null
+  const id = session && (session.id || (session.header && session.header.id))
+  if (!id) return null
+  const sessionId = String(id)
+  // turn/end only matters after an approval/asked in this session.
+  if (event.type === 'turn/end' && !waiting.has(sessionId)) return null
+  if (event.type === 'approval/asked') waiting.add(sessionId)
+  else waiting.delete(sessionId)
+  const data = event.data || {}
+  return { type: event.type, sessionId, data: { id: data.id, toolName: data.toolName, reason: data.reason, outcome: data.outcome } }
+}
+
+function achatBin(cfg) {
+  return cfg.achatBin || process.env.ACHAT_BIN || 'achat'
+}
+
+function handOff(bin, payload) {
+  try {
+    const child = spawn(bin, ['hook', 'dsh'], { detached: true, stdio: ['pipe', 'ignore', 'ignore'] })
+    child.on('error', () => {})
+    child.stdin.on('error', () => {})
+    child.stdin.end(JSON.stringify(payload))
+    child.unref()
+  } catch {}
 }
 
 function s(description) { return { type: 'string', description } }
@@ -437,6 +470,14 @@ export function apply(ctx, config) {
     }, pollIntervalMs)
   }
 
+  if (cfg.attention !== false) {
+    const waiting = new Set()
+    ctx.on('session/event', (session, event) => {
+      const payload = attentionPayload(session, event, waiting)
+      if (payload) handOff(achatBin(cfg), payload)
+    })
+  }
+
   ctx.on('agent/disposed', ({ agent }) => {
     let binding
     try { binding = sessionBinding(agent, cfg) } catch { return }
@@ -449,6 +490,7 @@ export function apply(ctx, config) {
 }
 
 export const __testing = {
+  attentionPayload,
   limitOrDefault,
   meshSendResult,
   parseUnreadCount,

@@ -34,6 +34,7 @@ pharos mesh install-hooks --dsh.)
 |---|---|---|
 | PHAROS_BIN | pharos (PATH) | Absolute path to the Pharos CLI. Set it to Pharos.app/Contents/MacOS/Pharos if pharos is not on PATH. |
 | PHAROS_MESH_NICK | (unset) | Fallback nick prefix when config.nickPrefix/config.nick is not set. |
+| ACHAT_BIN | achat (PATH) | achat launcher used for the needs_human hand-off (or config.achatBin). |
 | PHAROS_MESH_TCP | (unset) | Not needed — the pharos CLI resolves its own broker endpoint. |
 
 ## Tools
@@ -62,6 +63,17 @@ cannot remove a replacement session.
 
 This is the in-process equivalent of the Claude/Codex Stop hook. Plain room
 messages remain transcript-only; only explicit `@mentions` wake DSH agents.
+
+## needs_human (approval prompts)
+
+When a dsh tool call waits on the user's approval, dsh appends the session events
+`approval/asked` and later `approval/decided`. The plugin hands each one (and the
+`turn/end` after an unanswered ask) to `achat hook dsh`, which normalizes it and
+reports to `pharos attention report`. Pharos then marks the member `needs_human`
+and queues messages to it until the approval is decided. Observe only: the plugin
+never answers an approval. Set `config.achatBin` (or `ACHAT_BIN`) when `achat` is not
+on PATH; `config.attention: false` turns it off. Without the plugin, Pharos still
+sees dsh approvals by polling `achat dsh pending --via files`.
 
 ## Plugin contract
 

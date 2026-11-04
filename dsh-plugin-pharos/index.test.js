@@ -55,3 +55,15 @@ test('mesh send omits an absent optional mention', () => {
   })
   assert.equal(__testing.meshSendResult(binding, '@worker').mention, 'worker')
 })
+
+test('approval session events become needs_human payloads for achat hook dsh', () => {
+  const waiting = new Set()
+  const session = { id: 'session-1' }
+  assert.equal(__testing.attentionPayload(session, { type: 'turn/end' }, waiting), null, 'no wait yet')
+  assert.equal(__testing.attentionPayload(session, { type: 'approval/request', data: {} }, waiting), null)
+  const asked = __testing.attentionPayload(session, { type: 'approval/asked', data: { id: 'a1', toolName: 'exec_command', reason: 'network' } }, waiting)
+  assert.deepEqual(asked, { type: 'approval/asked', sessionId: 'session-1', data: { id: 'a1', toolName: 'exec_command', reason: 'network', outcome: undefined } })
+  assert.equal(__testing.attentionPayload(session, { type: 'approval/decided', data: { id: 'a1', outcome: 'approved' } }, waiting).type, 'approval/decided')
+  assert.equal(__testing.attentionPayload(session, { type: 'turn/end' }, waiting), null, 'already cleared')
+  assert.equal(__testing.attentionPayload({ header: { id: 'session-2' } }, { type: 'approval/asked', data: {} }, waiting).sessionId, 'session-2')
+})
