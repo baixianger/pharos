@@ -48,6 +48,34 @@ public struct LightRoute: Codable, Equatable, Sendable {
     }
 }
 
+public struct LightTmuxBinding: Codable, Equatable, Sendable {
+    public var session: String        // tmux session name, e.g. "pharos-alice"
+    public var cwd: String            // working directory the CLI runs in
+    public var model: String?         // model label passed at launch (agy), nil = app default
+    public var agentPID: Int32?       // pid of the CLI process inside the pane
+    public var agentStarted: String?  // process start time (`ps -o lstart=`) to guard against pid reuse
+    public var launchedAt: Date?
+    public var endedAt: Date?         // set when Pharos observed the tmux session gone
+
+    public init(
+        session: String,
+        cwd: String,
+        model: String? = nil,
+        agentPID: Int32? = nil,
+        agentStarted: String? = nil,
+        launchedAt: Date? = nil,
+        endedAt: Date? = nil
+    ) {
+        self.session = session
+        self.cwd = cwd
+        self.model = model
+        self.agentPID = agentPID
+        self.agentStarted = agentStarted
+        self.launchedAt = launchedAt
+        self.endedAt = endedAt
+    }
+}
+
 public struct LightMember: Codable, Equatable, Sendable, Identifiable {
     public var id: String { name }
     public var name: String
@@ -56,14 +84,16 @@ public struct LightMember: Codable, Equatable, Sendable, Identifiable {
     public var project: String
     public var sessionID: String
     public var routes: [LightRoute]
+    public var tmux: LightTmuxBinding?
 
-    public init(name: String, host: String, app: String, project: String, sessionID: String, routes: [LightRoute]) {
+    public init(name: String, host: String, app: String, project: String, sessionID: String, routes: [LightRoute], tmux: LightTmuxBinding? = nil) {
         self.name = name
         self.host = host
         self.app = app
         self.project = project
         self.sessionID = sessionID
         self.routes = routes
+        self.tmux = tmux
     }
 }
 
@@ -762,6 +792,7 @@ public final class LightRelay: @unchecked Sendable {
                     && existing.host == host && existing.project == project
                 guard same else { throw LightRelayError.duplicateMember(name) }
                 if !stored.routes.isEmpty { existing.routes = stored.routes }
+                if let t = stored.tmux { existing.tmux = t }
                 members[name] = existing
                 try persistLocked()
                 return existing
@@ -778,6 +809,15 @@ public final class LightRelay: @unchecked Sendable {
 
     public func member(named name: String) -> LightMember? {
         sync { members[name] }
+    }
+
+    public func updateTmux(member name: String, _ binding: LightTmuxBinding?) throws {
+        try sync {
+            guard var existing = members[name] else { throw LightRelayError.unknownMember(name) }
+            existing.tmux = binding
+            members[name] = existing
+            try persistLocked()
+        }
     }
 
     // MARK: Threads
