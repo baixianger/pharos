@@ -651,10 +651,10 @@ public struct CLIAgentLifecycle: Sendable {
             } else if let client = daemon() {
                 info = try? client.readThread(member.sessionID)
             } else {
-                return CLIAgentStatus(tmux: binding.session, live: live.label, activity: .unknown, detail: "daemon missing")
+                return codexPaneStatus(binding: binding, live: live.label, why: "daemon missing")
             }
             guard let info else {
-                return CLIAgentStatus(tmux: binding.session, live: live.label, activity: .unknown, detail: "read thread failed")
+                return codexPaneStatus(binding: binding, live: live.label, why: "read thread failed")
             }
             switch info.status {
             case .idle:
@@ -668,12 +668,26 @@ public struct CLIAgentLifecycle: Sendable {
                     return CLIAgentStatus(tmux: binding.session, live: live.label, activity: .thinking, detail: flags.joined(separator: ", "))
                 }
             case .notLoaded:
-                return CLIAgentStatus(tmux: binding.session, live: live.label, activity: .unknown, detail: "notLoaded")
+                // A TUI that is not attached to the shared daemon (e.g. codex 0.162): read its pane.
+                return codexPaneStatus(binding: binding, live: live.label, why: "notLoaded")
             case .systemError:
                 return CLIAgentStatus(tmux: binding.session, live: live.label, activity: .unknown, detail: "systemError")
             }
         } else {
             return CLIAgentStatus(tmux: binding.session, live: live.label, activity: .unknown, detail: "-")
+        }
+    }
+
+    private func codexPaneStatus(binding: LightTmuxBinding, live: String, why: String) -> CLIAgentStatus {
+        switch CodexPane.classify(tmux.capture(binding.session) ?? "") {
+        case .idle:
+            return CLIAgentStatus(tmux: binding.session, live: live, activity: .idle, detail: "idle (pane; \(why))")
+        case .busy:
+            return CLIAgentStatus(tmux: binding.session, live: live, activity: .thinking, detail: "busy (pane; \(why))")
+        case .needsHuman(let what):
+            return CLIAgentStatus(tmux: binding.session, live: live, activity: .needsHuman, detail: what)
+        case .unknown:
+            return CLIAgentStatus(tmux: binding.session, live: live, activity: .unknown, detail: why)
         }
     }
 

@@ -208,7 +208,9 @@ public enum LightCommands {
                         stateStr = "-"
                     }
                     runtime = st
-                } else if let report = relay.runtime(for: member.name) {
+                } else if let report = relay.runtime(for: member.name),
+                          // A stop/exit recorded after the node's last report wins over that report.
+                          !(binding?.endedAt.map { $0 > report.at } ?? false) {
                     reportedAt = report.at
                     reportedBy = report.node
                     let age = moment.timeIntervalSince(report.at)
