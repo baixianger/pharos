@@ -22,7 +22,7 @@ public struct AchatPendingAttentionSource: HumanAttentionSource {
     public var isLocal: @Sendable (LightMember) -> Bool
     /// Host label written into the reports.
     public var hostLabel: String
-    /// At most this many members per pass.
+    /// At most this many `achat` runs per pass (a shared window read counts once).
     public var limit: Int
 
     public static let defaultApps: Set<String> = ["ag", "dsh", "cursor"]
@@ -40,13 +40,16 @@ public struct AchatPendingAttentionSource: HumanAttentionSource {
     public func poll(members: [LightMember]) -> [LightAttentionReport] {
         var reports: [LightAttentionReport] = []
         var windowRead: [String: String] = [:]
-        for member in members.filter({ apps.contains($0.app) && isLocal($0) }).prefix(max(0, limit)) {
+        var runs = 0
+        for member in members where apps.contains(member.app) && isLocal(member) {
             let argv = Self.pendingArgv(bin: achat, member: member)
             let key = argv.joined(separator: " ")
             let stdout: String
             if let cached = windowRead[key] {
                 stdout = cached
             } else {
+                guard runs < max(0, limit) else { continue }
+                runs += 1
                 let output = runner.run(LightInvocation(argv: argv, stdin: "", executable: true, fallback: false,
                                                         summary: "achat \(member.app) pending", loopback: true), stdin: "")
                 guard output.status == 0 else { continue }

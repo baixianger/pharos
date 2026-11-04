@@ -939,7 +939,9 @@ public final class LightRelay: @unchecked Sendable {
                         sessionID: session, app: member.app,
                         // A poll refreshing a hook's state keeps the hook as owner.
                         source: current?.source == "hook" ? "hook" : source,
-                        since: current?.since ?? seenAt, seen: moment, expiresAt: moment.addingTimeInterval(ttl))
+                        since: current?.since ?? seenAt, seen: moment,
+                        // A short poll refresh never cuts a longer hook TTL.
+                        expiresAt: max(current?.expiresAt ?? moment, moment.addingTimeInterval(ttl)))
                     outcome.recorded.append(member.name)
                 case .clear:
                     guard let current else {
@@ -970,19 +972,23 @@ public final class LightRelay: @unchecked Sendable {
         }
     }
 
-    /// Members worth polling for an approval prompt: an open ask or a queued
-    /// message is waiting on them, or a poll recorded their state.
+    /// Members worth polling for an approval prompt: a state is recorded for them
+    /// (so a still-open prompt outlives a lapsed hook TTL and a closed one clears),
+    /// a queued message or an open ask is waiting on them.
     public func attentionCandidates() -> [LightMember] {
         sync {
             let moment = now()
-            var names = Set(outbox.map(\.to))
+            // Rank: a recorded state first (it must be refreshed or cleared), then queued
+            // messages, then open asks, so a pass limit never drops the member that matters.
+            var rank: [String: Int] = [:]
+            func note(_ name: String, _ value: Int) { rank[name] = min(rank[name] ?? value, value) }
+            for state in attention.values where state.expiresAt > moment { note(state.member, 0) }
+            for item in outbox { note(item.to, 1) }
             for ticket in ledger.values where !ticket.consumed && ticket.expiresAt > moment && ticket.harvest != false {
-                names.insert(ticket.to)
+                note(ticket.to, 2)
             }
-            for state in attention.values where state.expiresAt > moment && state.source == "poll" {
-                names.insert(state.member)
-            }
-            return names.compactMap { members[$0] }.sorted { $0.name < $1.name }
+            return rank.keys.compactMap { members[$0] }
+                .sorted { (rank[$0.name] ?? 3, $0.name) < (rank[$1.name] ?? 3, $1.name) }
         }
     }
 

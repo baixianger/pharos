@@ -134,7 +134,7 @@ final class LightAttentionTests: XCTestCase {
         try first.reportAttention(LightAttentionReport(state: .needsHuman, what: "Bash: ls", sessionID: "sess-codex", host: "mini"))
         let second = try LightRelay(store: store)
         XCTAssertEqual(second.attention(for: "codex-a")?.what, "Bash: ls")
-        XCTAssertEqual(second.attentionCandidates().map(\.name), [])
+        XCTAssertEqual(second.attentionCandidates().map(\.name), ["codex-a"], "a recorded state is re-checked")
         _ = try second.send(from: "owner", to: ["codex-a"], text: "q")
         XCTAssertEqual(second.attentionCandidates().map(\.name), ["codex-a"])
     }
@@ -217,6 +217,25 @@ final class LightAttentionTests: XCTestCase {
         XCTAssertEqual(reports.map(\.sessionID), ["conv-1"])
         XCTAssertEqual(reports.first?.host, "mini")
         XCTAssertEqual(runner.calls, 1)
+    }
+
+    func testARecordedStateIsPolledFirstAndSharedWindowReadsDoNotUseTheLimit() throws {
+        let driver = CountingDriver()
+        let relay = try makeRelay(driver: driver)
+        try registerPair(relay)
+        _ = try relay.register(LightMember(name: "aaa", host: "broker", app: "shell", project: "pharos", sessionID: "sess-aaa",
+                                           routes: [LightRoute.named("app-server")]))
+        _ = try relay.send(from: "owner", to: ["aaa"], text: "question?")
+        _ = try relay.reportAttention(LightAttentionReport(state: .needsHuman, what: "Bash", sessionID: "sess-codex", app: "codex"))
+        XCTAssertEqual(relay.attentionCandidates().first?.name, "codex-a", "a recorded state outranks an open ask")
+
+        let runner = PendingRunner(stdout: #"{"ok":true,"sessionId":"session-1","pending":[]}"#)
+        let source = AchatPendingAttentionSource(runner: runner, achat: "achat", isLocal: { _ in true }, hostLabel: "mini", limit: 2)
+        let ags = (1...5).map { LightMember(name: "ag-\($0)", host: "local", app: "ag", project: "p", sessionID: "conv-\($0)", routes: []) }
+        let dsh = LightMember(name: "dsh-a", host: "local", app: "dsh", project: "p", sessionID: "session-1", routes: [])
+        let reports = source.poll(members: ags + [dsh])
+        XCTAssertEqual(runner.calls, 2, "one shared Antigravity window read plus dsh")
+        XCTAssertEqual(reports.map(\.sessionID), ["session-1"])
     }
 
     // MARK: helpers
