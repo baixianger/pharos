@@ -184,8 +184,8 @@ public struct LightReplySpool: Sendable {
 
 /// One bounded pass of the node's background work. Cheap when there is nothing to do.
 /// Hub only (it owns the ledger): retry inbox jobs whose node is back, pump the
-/// outbox, and harvest recent unanswered asks from read-only agents so nobody has
-/// to run `pharos wait`.
+/// outbox, and harvest recent unanswered asks from read-only agents (replies are
+/// harvested by the hub tick; `pharos wait` is a hidden test/script utility, capped at 300 s).
 public struct LightTick {
     public var relay: LightRelay
     public var sessions: LightSessionService

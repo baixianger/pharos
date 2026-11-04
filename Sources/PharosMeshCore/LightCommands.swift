@@ -552,8 +552,9 @@ extension LightCommands {
       as "Pharos node offline".
 
     RECOMMENDED PATTERN
-      Hand Pharos messaging to a subagent: it sends, runs the discussion, and
-      returns only the conclusion to you. Your own context stays small, and you are not
-      woken by every turn. (A recommendation, not enforced.)
+      For an ask, send with --intent ask --deliver and carry on — do not block.
+      The answer is delivered into your session when it lands (or check pharos thread
+      show T later). A subagent is useful for running a multi-round --intent discuss
+      and reporting only the conclusion (recorded in the thread).
     """
 }

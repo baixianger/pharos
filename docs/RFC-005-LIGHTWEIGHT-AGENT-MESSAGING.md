@@ -167,7 +167,7 @@ achat <app> send --host local --json --session <id> --no-webhook "<header+body>"
 achat <app> read --host local --json --session <id> --open
 ```
 
-`achat read` has no timestamps. Pharos records `repliesBefore` (a read before send, or the count achat returns on send) and treats a later read with a higher `replies` count as the new reply. `achat <app> wait` exists and blocks; `pharos wait` polls `read` instead. Without `PHAROS_LIGHT_LIVE=1` those routes stay deferred.
+`achat read` has no timestamps. Pharos records `repliesBefore` (a read before send, or the count achat returns on send) and treats a later read with a higher `replies` count as the new reply. `achat <app> wait` exists and blocks; replies are harvested by the hub tick (and `pharos wait` is a hidden test/script utility, capped at 300 s). Without `PHAROS_LIGHT_LIVE=1` those routes stay deferred.
 
 ## Relay
 

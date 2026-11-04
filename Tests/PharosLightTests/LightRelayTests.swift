@@ -297,6 +297,23 @@ final class LightRelayTests: XCTestCase {
         XCTAssertEqual(clock.sleeps, [0.5, 1.0, 2.0, 4.0, 8.0, 10.0, 4.5])
     }
 
+    func testWaitFixedClockWithNoopSleepTerminatesAndBoundsReads() throws {
+        let fixed = Date(timeIntervalSince1970: 1_700_000_000)
+        let driver = FakeDriver(delivered("app-server"))
+        let relay = try makeRelay(
+            driver: driver,
+            now: { fixed },
+            sleep: { _ in }
+        )
+        let sent = try sendToCodex(relay, text: "question")
+        let replyID = try XCTUnwrap(sent.deliveries.first?.replyID)
+
+        let result = try relay.wait(replyID: replyID, timeout: 30)
+        XCTAssertEqual(result.status, .pending)
+        XCTAssertLessThanOrEqual(driver.readCalls.count, 8)
+        XCTAssertGreaterThan(driver.readCalls.count, 1)
+    }
+
     func testWaitTimeoutZeroProbesOnceWithoutSleep() throws {
         let clock = ManualClock()
         let driver = FakeDriver(delivered("app-server"))

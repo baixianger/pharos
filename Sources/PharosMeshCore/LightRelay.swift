@@ -873,6 +873,7 @@ public final class LightRelay: @unchecked Sendable {
     public func wait(replyID: String, timeout: TimeInterval) throws -> LightWaitResult {
         let start = now()
         var delay: TimeInterval = 0.5
+        var waited: TimeInterval = 0
         while true {
             if let logged = try loggedReply(replyID) {
                 return LightWaitResult(replyID: replyID, status: .replied, text: logged, send: nil,
@@ -898,13 +899,14 @@ public final class LightRelay: @unchecked Sendable {
                                            nextReplyID: nextReplyID(after: replyID))
                 }
             }
-            let elapsed = now().timeIntervalSince(start)
+            let elapsed = max(now().timeIntervalSince(start), waited)
             if timeout <= 0 || elapsed >= timeout {
                 return LightWaitResult(replyID: replyID, status: .pending, text: nil, send: nil,
                                        attention: recipientAttention(replyID))
             }
             let step = min(delay, timeout - elapsed)
             sleep(step)
+            waited += step
             delay = min(delay * 2, 10.0)
         }
     }

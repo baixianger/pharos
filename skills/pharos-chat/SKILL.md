@@ -8,13 +8,17 @@ description: Message other agents (or a webhook-backed assistant) through Pharos
 Run `pharos help chat` for the built-in version of this page.
 
 ## Recommended: delegate the conversation
-Hand Pharos messaging to a **subagent**. The subagent sends, runs any
-discussion, and returns **only the conclusion** to you. Your context stays small
-and you are not woken by every turn. This is a recommendation, not a rule.
+For an ask, send with `--intent ask --deliver` and carry on — do not block.
+The answer is delivered into your session when it lands (or check
+`pharos thread show <thread>` later).
+
+A **subagent** is useful for running a multi-round `--intent discuss` and
+reporting only the conclusion (recorded in the thread). Your context stays small
+and you are not woken by every turn.
 
 Example brief for the subagent:
-> Using `pharos`, ask `<member>` "<question>" (`--intent ask --deliver`), and
-> return only their answer in one or two sentences. Do not edit files.
+> Using `pharos`, run a discussion with `<member>` on "<topic>" (`--intent discuss --rounds 3`),
+> and return only the conclusion in one or two sentences. Do not edit files.
 
 ## Addressing: parameters only
 ```
@@ -67,8 +71,8 @@ until it proceeds or the state expires (20 min for hook reports). It only record
 reports: nobody approves remotely, and there is no approve/deny command; the prompt
 is answered in that agent's own app.
 - `pharos member list` shows a STATE column; `pharos attention list` lists the waits.
-- `pharos thread show` / `pharos read` print `needs_human NAME: ...`; a send to such a
-  member prints `queued` with `needs_human: ...; queued until it proceeds`.
+- `pharos thread show` (and `pharos attention list` / `pharos member list`) show `needs_human NAME: ...`;
+  a send to such a member prints `queued` with `needs_human: ...; queued until it proceeds`.
 - Sources: per-app hook adapters (`achat hook claude|codex|dsh`, installed per project
   with `achat hook install <app> --dir <project>`; async, observe only, no output),
   and a poll of `achat <app> pending` from the hub tick. Codex runs project hooks only

@@ -482,7 +482,8 @@ public struct ExternalLightDriver: LightSessionDriver {
     }
 
     /// `achat read` has no timestamps. A reply is new when its count is above the
-    /// count captured before send (`repliesBefore`). `achat wait` blocks; `pharos wait` polls this instead.
+    /// count captured before send (`repliesBefore`). Replies are harvested by the hub tick
+    /// (and `pharos wait` is a hidden test/script utility, capped at 300 s).
     private func harvest(_ member: LightMember) -> String? {
         guard let runner else { return nil }
         let output = runner.run(Self.readInvocation(bin: achat, member: member, host: achatHost(member)), stdin: "")
@@ -569,8 +570,8 @@ public struct ExternalLightDriver: LightSessionDriver {
 /// Reply counts observed through achat. `read` has no timestamps, so a higher
 /// count than the pre-send floor is the new reply. Shared by reference so a
 /// later `readReply` sees what `deliver` recorded. With a store file the floor
-/// also survives the process: `pharos send` records it, a later `pharos wait`
-/// (a new process) harvests against it.
+/// also survives the process: `pharos send` records it, and replies are harvested
+/// by the hub tick (or a later `pharos wait`, a hidden test/script utility capped at 300 s).
 final class AchatReplyFloor: @unchecked Sendable {
     private let lock = NSLock()
     private var counts: [String: Int] = [:]
