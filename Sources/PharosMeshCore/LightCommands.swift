@@ -278,7 +278,11 @@ public enum LightCommands {
             let fallback = delivery.fallback ? " fallback" : ""
             let via = delivery.via.map { "\tvia \($0)" } ?? ""
             lines.append("\(delivery.state.rawValue)\t\(delivery.to)\t\(delivery.replyID)\t\(route)\t\(verified)\(fallback)\(via)")
-            if delivery.detail.contains("node offline") { lines.append(delivery.detail) }
+            if delivery.detail.contains("node offline") {
+                lines.append(delivery.detail)
+            } else if delivery.state == .failed, !delivery.detail.isEmpty {
+                lines.append("  " + delivery.detail.split(separator: "\n").prefix(2).joined(separator: " "))
+            }
         }
         if !result.unresolved.isEmpty {
             lines.append("unresolved \(result.unresolved.joined(separator: ","))")

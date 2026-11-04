@@ -294,6 +294,18 @@ final class LightNodeRoutingTests: XCTestCase {
         XCTAssertTrue(relay.pendingHarvest(maxAge: 1800, limit: 8).isEmpty)
     }
 
+    func testFailedDeliveryShowsWhy() throws {
+        let driver = SwitchDriver()
+        driver.state = .failed
+        let relay = try LightRelay(store: temp("relay"), driver: driver)
+        _ = try relay.register(LightMember(name: "a", host: "local", app: "webhook", project: "p", sessionID: "w", routes: []))
+        _ = try relay.register(LightMember(name: "b", host: "local", app: "dsh", project: "p", sessionID: "s", routes: []))
+        let out = LightCommands.execute(command: "send", arguments: ["--from", "a", "--to", "b", "--", "q"], relay: relay,
+                                        routesForApp: { _ in [] })
+        XCTAssertTrue(out.text.contains("failed\tb"), out.text)
+        XCTAssertTrue(out.text.contains("  ok"), out.text)
+    }
+
     func testHeaderTellsTheAgentToStayQuietAfterReplying() throws {
         let driver = SwitchDriver()
         driver.state = .delivered

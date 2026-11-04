@@ -106,7 +106,13 @@ extension CLI {
         var config = LightHostsFile.standard(env).load()
         let roster = MeshBrokerLink.fromEnvironment(env).roster()
         let directory = LightHostDirectory(nodes: roster ?? [], config: config)
-        let words = rest.dropFirst().filter { !$0.hasPrefix("--") }
+        var words: [String] = []
+        var skip = false
+        for token in rest.dropFirst() {
+            if skip { skip = false; continue }
+            if token == "--ssh" { skip = true; continue }
+            if !token.hasPrefix("--") { words.append(token) }
+        }
         switch sub {
         case "list", "ls":
             let moment = Date()
