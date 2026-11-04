@@ -28,13 +28,14 @@ private final class AtomicBool: @unchecked Sendable {
     }
 }
 
-private final class FakeCodexDaemonServer: @unchecked Sendable {
+final class FakeCodexDaemonServer: @unchecked Sendable {
     let path: String
     private var serverFd: Int32 = -1
     private var clientFd: Int32 = -1
     private let isRunning = AtomicBool(true)
     private let lock = NSLock()
     private var _receivedPayloads: [String] = []
+    var threadStatus: [String: Any]?
 
     var receivedPayloads: [String] {
         lock.lock()
@@ -227,6 +228,10 @@ private final class FakeCodexDaemonServer: @unchecked Sendable {
                     "command": "touch x"
                 ]
             ])
+            let statusObj = threadStatus ?? [
+                "type": "active",
+                "activeFlags": ["waitingOnApproval"]
+            ]
             // Response
             sendFrame([
                 "id": reqId ?? 1,
@@ -236,10 +241,7 @@ private final class FakeCodexDaemonServer: @unchecked Sendable {
                         "cwd": "/Users/x/dir",
                         "path": "/Users/x/.codex/sessions/rollout.jsonl",
                         "originator": "codex-tui",
-                        "status": [
-                            "type": "active",
-                            "activeFlags": ["waitingOnApproval"]
-                        ]
+                        "status": statusObj
                     ]
                 ]
             ])

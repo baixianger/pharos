@@ -177,6 +177,10 @@ public enum LightRoutePlanner {
 
     public static func invocation(member: LightMember, route: LightRoute, body: String, binaries: LightBinaries) -> LightInvocation {
         switch (member.app, route.id) {
+        case ("codex", "daemon"):
+            return LightInvocation(argv: [], stdin: "", executable: false, fallback: false, summary: route.summary, loopback: true)
+        case (_, "tui"):
+            return LightInvocation(argv: [], stdin: "", executable: false, fallback: route.fallback, summary: route.summary, loopback: true)
         case ("codex", "app-server"):
             return LightInvocation(
                 argv: [binaries.codex, "exec", "resume", member.sessionID, "-", "--json", "--skip-git-repo-check"],
@@ -268,12 +272,14 @@ public struct ExternalLightDriver: LightSessionDriver {
     public var selfHost: LightSelfHost?
     /// Node routing for members on other machines. Nil falls back to `achat --host` over SSH.
     public var nodes: (any LightNodeRouting)?
+    public var cliAgents: CLIAgentDriver?
 
     public init(allowLive: Bool = false, runner: (any LightProcessRunning)? = nil, binaries: LightBinaries = .names,
                 codexSessions: CodexRolloutReader? = nil, achat: String = "achat", replyFloorStore: URL? = nil,
                 webhooks: LightWebhookStore = LightWebhookStore(),
                 webhookPoster: any LightWebhookPosting = URLSessionWebhookPoster(),
-                selfHost: LightSelfHost? = nil, nodes: (any LightNodeRouting)? = nil) {
+                selfHost: LightSelfHost? = nil, nodes: (any LightNodeRouting)? = nil,
+                cliAgents: CLIAgentDriver? = nil) {
         self.selfHost = selfHost
         self.nodes = nodes
         self.webhooks = webhooks
@@ -284,6 +290,7 @@ public struct ExternalLightDriver: LightSessionDriver {
         self.codexSessions = codexSessions
         self.achat = achat
         self.replyFloor = AchatReplyFloor(store: replyFloorStore)
+        self.cliAgents = cliAgents
     }
 
     /// Desktop, IPC, and web (and Cursor's headless CLI) are achat's routes.
@@ -329,6 +336,9 @@ public struct ExternalLightDriver: LightSessionDriver {
         if !Self.isWebhook(member), allowLive, isRemote(member), let nodes {
             return deliverThroughNode(member: member, envelope: envelope, nodes: nodes)
         }
+        if allowLive, let cli = cliAgents, CLIAgentDriver.handles(member), !isRemote(member) {
+            return cli.deliver(member: member, text: envelope.prompt, replyID: envelope.replyId.isEmpty ? nil : envelope.replyId)
+        }
         guard Self.isWebhook(member) else { return deliver(member: member, body: envelope.prompt) }
         guard allowLive else {
             return LightDriveResult(state: .deferred, route: "webhook", fallback: false, liveVerified: false,
@@ -353,6 +363,9 @@ public struct ExternalLightDriver: LightSessionDriver {
             let planned = LightRoutePlanner.invocation(member: member, route: route, body: body, binaries: binaries)
             return LightDriveResult(state: .deferred, route: route.id, fallback: route.fallback || planned.fallback,
                                     liveVerified: false, detail: "unverified live; \(planned.summary)")
+        }
+        if allowLive, let cli = cliAgents, CLIAgentDriver.handles(member), !isRemote(member) {
+            return cli.deliver(member: member, text: body, replyID: nil)
         }
         if isRemote(member), let nodes {
             let envelope = LightEnvelope(replyId: "", threadId: "", from: "", to: member.name, cc: [], intent: "inform",
@@ -442,6 +455,9 @@ public struct ExternalLightDriver: LightSessionDriver {
             return trimmed.isEmpty ? nil : trimmed
         }
         if isRemote(member) { return Self.achatApps.contains(member.app) ? harvest(member) : nil }
+        if let cli = cliAgents, CLIAgentDriver.handles(member) {
+            return cli.readReply(member: member, since: since)
+        }
         if let route = LightRoutePlanner.select(member: member, operation: .send),
            Self.delegatesToAchat(app: member.app, routeID: route.id) {
             return harvest(member)
