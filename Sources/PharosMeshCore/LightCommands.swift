@@ -244,6 +244,7 @@ public enum LightCommands {
                 let to = entry.recipients ?? []
                 if !to.isEmpty { who += " -> " + to.joined(separator: ",") }
                 if let cc = entry.cc, !cc.isEmpty { who += " cc " + cc.joined(separator: ",") }
+                if entry.via == "harvest" { who += " (read from session)" }
                 return "message\t\((entry.intent ?? .ask).rawValue)\t\(who)\t\(entry.text)"
             case .notice:
                 return "notice\t\(entry.text)"

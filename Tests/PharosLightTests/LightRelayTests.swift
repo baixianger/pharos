@@ -228,6 +228,11 @@ final class LightRelayTests: XCTestCase {
         let waited = try relay.wait(replyID: replyID, timeout: 0)
         XCTAssertEqual(waited.status, .replied)
         XCTAssertEqual(waited.text, "answer from the session")
+        let harvested = try relay.read(thread: sent.threadID).last { $0.kind == .message }
+        XCTAssertEqual(harvested?.via, "harvest", "the thread must show the answer was read from the session")
+        let shown = LightCommands.execute(command: "thread", arguments: ["show", sent.threadID], relay: relay,
+                                          routesForApp: { _ in [] })
+        XCTAssertTrue(shown.text.contains("(read from session)"))
         let callsAfter = driver.calls.count
         let again = try relay.wait(replyID: replyID, timeout: 0)
         XCTAssertEqual(again.status, .replied)

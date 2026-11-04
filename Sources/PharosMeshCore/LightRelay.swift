@@ -229,12 +229,16 @@ public struct LightLogEntry: Codable, Equatable, Sendable, Identifiable {
     /// Message entries: explicit addressees (`--to`, or the member a reply answers) and copies (`--cc`).
     public var recipients: [String]?
     public var cc: [String]?
+    /// Reply messages: `reply` when the member ran `pharos reply`, `harvest` when Pharos read
+    /// the answer from the member's session. Nil for older logs and for sends.
+    public var via: String?
 
     public init(id: String, kind: LightLogKind, threadID: String, from: String? = nil, text: String,
                 mentions: [String] = [], replyTo: String? = nil, hop: Int? = nil, to: String? = nil,
                 replyID: String? = nil, state: LightDeliveryState? = nil, route: String? = nil,
                 fallback: Bool? = nil, liveVerified: Bool? = nil, header: String? = nil, at: Date,
-                intent: LightIntent? = nil, recipients: [String]? = nil, cc: [String]? = nil) {
+                intent: LightIntent? = nil, recipients: [String]? = nil, cc: [String]? = nil, via: String? = nil) {
+        self.via = via
         self.intent = intent
         self.recipients = recipients
         self.cc = cc
@@ -799,7 +803,8 @@ public final class LightRelay: @unchecked Sendable {
     /// sender is recorded in the thread and not delivered unless `deliver` (or the
     /// original `send --deliver`) asks for it. An `ask` reply is always delivered.
     public func reply(_ replyID: String, text: String, cc: [String] = [], intent: LightIntent? = nil,
-                      deliver: Bool = false, ttl: TimeInterval? = nil, once: Bool = false) throws -> LightSendResult {
+                      deliver: Bool = false, ttl: TimeInterval? = nil, once: Bool = false,
+                      harvested: Bool = false) throws -> LightSendResult {
         if let forwarder, let forwarded = forwarder.forward(replyID: replyID, text: text) {
             guard forwarded.ok else { throw LightRelayError.forwardFailed(forwarded.message) }
             return LightSendResult(threadID: "", from: "", hop: 0, hopLimit: 0, stopped: false,
@@ -808,7 +813,8 @@ public final class LightRelay: @unchecked Sendable {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw LightRelayError.emptyText }
         let decision = try sync { () -> ReplyDecision in
-            try decideReplyLocked(replyID, text: trimmed, cc: cc, intent: intent, deliver: deliver, ttl: ttl, once: once)
+            try decideReplyLocked(replyID, text: trimmed, cc: cc, intent: intent, deliver: deliver, ttl: ttl, once: once,
+                                  via: harvested ? "harvest" : "reply")
         }
         switch decision {
         case .finished(let result):
@@ -841,7 +847,7 @@ public final class LightRelay: @unchecked Sendable {
                 if let text = driver.readReply(member: member, since: since)?
                     .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
                     // A harvested reply goes only to the original sender. It is never copied.
-                    let send = try reply(replyID, text: text)
+                    let send = try reply(replyID, text: text, harvested: true)
                     let logged = try loggedReply(replyID)
                     return LightWaitResult(replyID: replyID, status: .replied, text: logged ?? text, send: send,
                                            nextReplyID: nextReplyID(after: replyID))
@@ -1324,7 +1330,7 @@ public final class LightRelay: @unchecked Sendable {
     }
 
     private func decideReplyLocked(_ replyID: String, text: String, cc rawCC: [String], intent requested: LightIntent?,
-                                   deliver: Bool, ttl: TimeInterval?, once: Bool) throws -> ReplyDecision {
+                                   deliver: Bool, ttl: TimeInterval?, once: Bool, via: String? = nil) throws -> ReplyDecision {
         if !LightTokens.isValid(replyID, prefix: "r") {
             try rejectLocked(replyID, reason: "malformed")
             throw LightRelayError.malformedReply(replyID)
@@ -1357,7 +1363,7 @@ public final class LightRelay: @unchecked Sendable {
             threads[thread.id] = thread
             try appendLocked(LightLogEntry(
                 id: try tokenLocked("m"), kind: .message, threadID: thread.id, from: ticket.to, text: text,
-                replyTo: replyID, hop: ticket.hop, at: now(), intent: .inform
+                replyTo: replyID, hop: ticket.hop, at: now(), intent: .inform, via: via
             ))
             try appendLocked(LightLogEntry(
                 id: try tokenLocked("m"), kind: .notice, threadID: thread.id, from: ticket.to,
@@ -1374,7 +1380,7 @@ public final class LightRelay: @unchecked Sendable {
             ledger[replyID] = ticket
             try appendLocked(LightLogEntry(
                 id: try tokenLocked("m"), kind: .message, threadID: thread.id, from: ticket.to, text: text,
-                replyTo: replyID, hop: ticket.hop, at: now(), intent: requested ?? .answer
+                replyTo: replyID, hop: ticket.hop, at: now(), intent: requested ?? .answer, via: via
             ))
             try persistLocked()
             return .finished(LightSendResult(threadID: thread.id, from: ticket.to, hop: ticket.hop,
@@ -1397,7 +1403,7 @@ public final class LightRelay: @unchecked Sendable {
             let notice = "Hop limit \(thread.hopLimit) reached. Thread stopped. Last reply from \(ticket.to): \(text)"
             try appendLocked(LightLogEntry(
                 id: try tokenLocked("m"), kind: .message, threadID: thread.id, from: ticket.to, text: text,
-                replyTo: replyID, hop: ticket.hop, at: now(), intent: replyIntent, recipients: [ticket.from]
+                replyTo: replyID, hop: ticket.hop, at: now(), intent: replyIntent, recipients: [ticket.from], via: via
             ))
             try appendLocked(LightLogEntry(
                 id: try tokenLocked("m"), kind: .notice, threadID: thread.id, from: thread.originator, text: notice,
@@ -1424,7 +1430,7 @@ public final class LightRelay: @unchecked Sendable {
         try appendLocked(LightLogEntry(
             id: try tokenLocked("m"), kind: .message, threadID: thread.id, from: ticket.to, text: text,
             replyTo: replyID, hop: nextHop, at: now(), intent: replyIntent,
-            recipients: ticket.from == ticket.to ? [] : [ticket.from], cc: ccNames.isEmpty ? nil : ccNames
+            recipients: ticket.from == ticket.to ? [] : [ticket.from], cc: ccNames.isEmpty ? nil : ccNames, via: via
         ))
         var targets: [PreparedTarget] = []
         var notice: String? = nil

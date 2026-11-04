@@ -55,6 +55,7 @@ final class LightIntentTests: XCTestCase {
         // Asking back is delivered.
         let back = try relay.reply(ask.replyID, text: "which base?", intent: .ask)
         XCTAssertEqual(back.deliveries.map(\.state), [.delivered])
+        XCTAssertEqual(try relay.read(thread: sent.threadID).last { $0.kind == .message }?.via, "reply")
 
         // --deliver on send applies to its replies.
         let woke = try relay.send(from: "codex", to: ["claude"], text: "ping", deliverReplies: true)
