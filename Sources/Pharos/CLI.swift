@@ -189,7 +189,8 @@ enum CLI {
             binaries: .fromEnvironment(environment),
             codexSessions: CodexRolloutReader(),
             achat: bins.achat,
-            replyFloorStore: LightRelay.defaultStoreURL().appendingPathComponent("achat-reply-floors.json")
+            replyFloorStore: LightRelay.defaultStoreURL().appendingPathComponent("achat-reply-floors.json"),
+            selfHost: .fromEnvironment(environment)
         )
         return try LightRelay(
             store: LightRelay.defaultStoreURL(),

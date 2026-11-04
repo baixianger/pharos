@@ -261,11 +261,17 @@ public struct ExternalLightDriver: LightSessionDriver {
     /// Named webhook configs for `app == "webhook"` members.
     public var webhooks: LightWebhookStore
     public var webhookPoster: any LightWebhookPosting
+    /// Names that mean this machine. A member on any other host is reached only through
+    /// `achat --host <member.host>` (achat runs there over SSH); local headless codex, tmux,
+    /// and the local Codex rollout never stand in for another machine. Nil keeps every host local.
+    public var selfHost: LightSelfHost?
 
     public init(allowLive: Bool = false, runner: (any LightProcessRunning)? = nil, binaries: LightBinaries = .names,
                 codexSessions: CodexRolloutReader? = nil, achat: String = "achat", replyFloorStore: URL? = nil,
                 webhooks: LightWebhookStore = LightWebhookStore(),
-                webhookPoster: any LightWebhookPosting = URLSessionWebhookPoster()) {
+                webhookPoster: any LightWebhookPosting = URLSessionWebhookPoster(),
+                selfHost: LightSelfHost? = nil) {
+        self.selfHost = selfHost
         self.webhooks = webhooks
         self.webhookPoster = webhookPoster
         self.allowLive = allowLive
@@ -284,13 +290,24 @@ public struct ExternalLightDriver: LightSessionDriver {
         return app == "cursor" && routeID == "cursor-agent"
     }
 
-    public static func achatSendArgv(bin: String, app: String, session: String, text: String) -> [String] {
-        [bin, app, "send", "--host", "local", "--json", "--session", session, "--no-webhook", text]
+    public static func achatSendArgv(bin: String, app: String, session: String, text: String, host: String = "local") -> [String] {
+        [bin, app, "send", "--host", host, "--json", "--session", session, "--no-webhook", text]
     }
 
-    public static func achatReadArgv(bin: String, app: String, session: String) -> [String] {
-        [bin, app, "read", "--host", "local", "--json", "--session", session, "--open"]
+    public static func achatReadArgv(bin: String, app: String, session: String, host: String = "local") -> [String] {
+        [bin, app, "read", "--host", host, "--json", "--session", session, "--open"]
     }
+
+    /// Apps achat can drive on another machine.
+    static let achatApps: Set<String> = ["dsh", "ag", "codex", "cursor"]
+
+    /// The `--host` achat gets for this member: `local` here, else the member's SSH alias.
+    func achatHost(_ member: LightMember) -> String {
+        guard let selfHost, !selfHost.matches(member.host) else { return "local" }
+        return member.host
+    }
+
+    func isRemote(_ member: LightMember) -> Bool { achatHost(member) != "local" }
 
     static func isWebhook(_ member: LightMember) -> Bool {
         member.app == "webhook" || LightRoutePlanner.routes(for: member).first?.id == "webhook"
@@ -321,6 +338,17 @@ public struct ExternalLightDriver: LightSessionDriver {
             let planned = LightRoutePlanner.invocation(member: member, route: route, body: body, binaries: binaries)
             return LightDriveResult(state: .deferred, route: route.id, fallback: route.fallback || planned.fallback,
                                     liveVerified: false, detail: "unverified live; \(planned.summary)")
+        }
+        if isRemote(member) {
+            // Another machine: only achat over SSH can reach the session there.
+            guard Self.achatApps.contains(member.app) else {
+                return LightDriveResult(state: .failed, route: nil, fallback: false, liveVerified: false,
+                                        detail: "\(member.app) on \(member.host) is not reachable from this node")
+            }
+            let sent = achatSend(member: member, body: body)
+            return LightDriveResult(state: sent.ok ? .delivered : .failed, route: sent.ok ? (sent.route ?? "achat") : nil,
+                                    fallback: false, liveVerified: false,
+                                    detail: sent.ok ? "\(sent.detail) --host \(member.host)" : sent.detail)
         }
         var notes: [String] = []
         var delegated = false
@@ -361,6 +389,7 @@ public struct ExternalLightDriver: LightSessionDriver {
     public func readReply(member: LightMember, since: Date) -> String? {
         // A webhook member answers with `pharos reply`; there is no session to read.
         if Self.isWebhook(member) { return nil }
+        if isRemote(member) { return Self.achatApps.contains(member.app) ? harvest(member) : nil }
         if let route = LightRoutePlanner.select(member: member, operation: .send),
            Self.delegatesToAchat(app: member.app, routeID: route.id) {
             return harvest(member)
@@ -374,17 +403,18 @@ public struct ExternalLightDriver: LightSessionDriver {
         return nil
     }
 
-    private func achatSend(member: LightMember, body: String) -> (ok: Bool, detail: String) {
-        guard let runner else { return (false, "no runner") }
+    private func achatSend(member: LightMember, body: String) -> (ok: Bool, detail: String, route: String?) {
+        guard let runner else { return (false, "no runner", nil) }
         let key = Self.floorKey(member)
         // Always re-read: a floor persisted by an earlier process may be below replies
         // that arrived since, and a send without `repliesBefore` would then harvest stale text.
-        let prior = runner.run(Self.readInvocation(bin: achat, member: member), stdin: "")
+        let prior = runner.run(Self.readInvocation(bin: achat, member: member, host: achatHost(member)), stdin: "")
         if prior.status == 0, let count = Self.interpretAchatTurn(prior.stdout).replies {
             replyFloor.set(key, count)
         }
         let invocation = LightInvocation(
-            argv: Self.achatSendArgv(bin: achat, app: member.app, session: member.sessionID, text: body),
+            argv: Self.achatSendArgv(bin: achat, app: member.app, session: member.sessionID, text: body,
+                                     host: achatHost(member)),
             stdin: "", executable: true, fallback: false,
             summary: "achat \(member.app) send", loopback: true
         )
@@ -392,17 +422,18 @@ public struct ExternalLightDriver: LightSessionDriver {
         let parsed = Self.interpretAchatTurn(output.stdout)
         if output.status != 0 || !parsed.ok {
             let detail = parsed.message ?? output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            return (false, detail.isEmpty ? "achat exit \(output.status)" : detail)
+            return (false, detail.isEmpty ? "achat exit \(output.status)" : detail, nil)
         }
         if let before = parsed.repliesBefore { replyFloor.set(key, before) }
-        return (true, "achat \(member.app) send")
+        let route = (LightSessionService.extractJSON(output.stdout)?["route"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        return (true, "achat \(member.app) send", route)
     }
 
     /// `achat read` has no timestamps. A reply is new when its count is above the
     /// count captured before send (`repliesBefore`). `achat wait` blocks; `pharos wait` polls this instead.
     private func harvest(_ member: LightMember) -> String? {
         guard let runner else { return nil }
-        let output = runner.run(Self.readInvocation(bin: achat, member: member), stdin: "")
+        let output = runner.run(Self.readInvocation(bin: achat, member: member, host: achatHost(member)), stdin: "")
         guard output.status == 0 else { return nil }
         let parsed = Self.interpretAchatTurn(output.stdout)
         guard parsed.ok, let count = parsed.replies else { return nil }
@@ -419,9 +450,9 @@ public struct ExternalLightDriver: LightSessionDriver {
         return nil
     }
 
-    private static func readInvocation(bin: String, member: LightMember) -> LightInvocation {
+    private static func readInvocation(bin: String, member: LightMember, host: String = "local") -> LightInvocation {
         LightInvocation(
-            argv: achatReadArgv(bin: bin, app: member.app, session: member.sessionID),
+            argv: achatReadArgv(bin: bin, app: member.app, session: member.sessionID, host: host),
             stdin: "", executable: true, fallback: false,
             summary: "achat \(member.app) read", loopback: true
         )

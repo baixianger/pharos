@@ -552,6 +552,42 @@ final class LightDriverTests: XCTestCase {
         XCTAssertNil(driver.readReply(member: ag, since: Date()))
     }
 
+    func testARemoteMemberIsReachedOnlyThroughAchatOnItsHost() {
+        let runner = ScriptedRunner([
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"replies":0}"#, stderr: ""),
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"sent":true,"repliesBefore":0,"route":"app-server"}"#, stderr: ""),
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"replies":1,"reply":"codex on the air"}"#, stderr: ""),
+        ])
+        let driver = ExternalLightDriver(allowLive: true, runner: runner, binaries: LightBinaries(codex: "/x/codex"),
+                                         achat: "/tmp/achat", selfHost: LightSelfHost(names: ["local", "mini"]))
+        // Codex's first route is a local headless resume; for another host it must not run here.
+        let codex = LightMember(name: "codex-air", host: "mac-air", app: "codex", project: "pharos",
+                                sessionID: "t-1", routes: LightRouteCatalog.defaults(for: "codex"))
+        let sent = driver.deliver(member: codex, body: "hello")
+        XCTAssertEqual(sent.state, .delivered)
+        XCTAssertEqual(sent.route, "app-server")
+        XCTAssertEqual(runner.invocations.count, 2)
+        for invocation in runner.invocations {
+            XCTAssertEqual(invocation.argv.first, "/tmp/achat")
+            let index = invocation.argv.firstIndex(of: "--host")
+            XCTAssertEqual(index.map { invocation.argv[$0 + 1] }, "mac-air")
+        }
+        XCTAssertEqual(driver.readReply(member: codex, since: Date()), "codex on the air")
+        XCTAssertEqual(runner.invocations.last?.argv.prefix(3), ["/tmp/achat", "codex", "read"])
+        XCTAssertTrue(runner.invocations.last?.argv.contains("mac-air") == true)
+
+        // A member on this machine (by any self name) keeps `--host local`.
+        let localRunner = ScriptedRunner([
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"replies":0}"#, stderr: ""),
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"sent":true,"repliesBefore":0}"#, stderr: ""),
+        ])
+        let local = ExternalLightDriver(allowLive: true, runner: localRunner, achat: "/tmp/achat",
+                                        selfHost: LightSelfHost(names: ["local", "mini"]))
+        let ag = LightMember(name: "ag-mini", host: "mini", app: "ag", project: "pharos", sessionID: "c-1", routes: [])
+        XCTAssertEqual(local.deliver(member: ag, body: "hello").state, .delivered)
+        XCTAssertEqual(localRunner.invocations[1].argv[4], "local")
+    }
+
     func testAchatReplyFloorSurvivesANewProcess() throws {
         let store = FileManager.default.temporaryDirectory
             .appendingPathComponent("pharos-floor-\(UUID().uuidString)/achat-reply-floors.json")
