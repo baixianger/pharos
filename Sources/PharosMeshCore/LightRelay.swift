@@ -56,6 +56,8 @@ public struct LightTmuxBinding: Codable, Equatable, Sendable {
     public var agentStarted: String?  // process start time (`ps -o lstart=`) to guard against pid reuse
     public var launchedAt: Date?
     public var endedAt: Date?         // set when Pharos observed the tmux session gone
+    public var autoRevive: Bool?      // opt-in per member, default nil/false
+    public var endedReason: String?   // "stopped" (explicit member stop), "exited" (agent/tmux went away on its own)
 
     public init(
         session: String,
@@ -64,7 +66,9 @@ public struct LightTmuxBinding: Codable, Equatable, Sendable {
         agentPID: Int32? = nil,
         agentStarted: String? = nil,
         launchedAt: Date? = nil,
-        endedAt: Date? = nil
+        endedAt: Date? = nil,
+        autoRevive: Bool? = nil,
+        endedReason: String? = nil
     ) {
         self.session = session
         self.cwd = cwd
@@ -73,6 +77,8 @@ public struct LightTmuxBinding: Codable, Equatable, Sendable {
         self.agentStarted = agentStarted
         self.launchedAt = launchedAt
         self.endedAt = endedAt
+        self.autoRevive = autoRevive
+        self.endedReason = endedReason
     }
 }
 

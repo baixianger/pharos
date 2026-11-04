@@ -14,16 +14,26 @@ public struct LightMemberRuntimeStatus: Codable, Equatable, Sendable {
     }
 }
 
+public struct LightMemberAgentsError: Error, LocalizedError, Equatable {
+    public var message: String
+    public init(_ message: String) { self.message = message }
+    public var errorDescription: String? { message }
+}
+
 public protocol LightMemberAgents: Sendable {
     func launch(name: String, app: String, cwd: String, host: String, model: String?, tmuxSession: String?,
                 openingMessage: String?, project: String) throws -> LightMember   // returns member with tmux binding + routes
     func revive(_ member: LightMember) throws -> LightTmuxBinding
+    func stop(_ member: LightMember, force: Bool) throws -> LightTmuxBinding
     func status(_ member: LightMember) -> LightMemberRuntimeStatus?   // nil = not a tmux CLI member
     var notes: [String] { get }
 }
 
 extension LightMemberAgents {
     public var notes: [String] { [] }
+    public func stop(_ member: LightMember, force: Bool) throws -> LightTmuxBinding {
+        throw LightMemberAgentsError("member stop needs live CLI access")
+    }
 }
 
 public struct LightMemberListEntry: Codable, Sendable {
@@ -157,9 +167,13 @@ public enum LightCommands {
                 } else if var st = agents?.status(member) {
                     if st.live == "dead" && binding?.endedAt == nil {
                         binding?.endedAt = moment
+                        binding?.endedReason = "exited"
                         try? relay.updateTmux(member: member.name, binding)
                         st.live = "ended"
                         st.detail = "ended"
+                    }
+                    if binding?.endedReason == "stopped" && (st.live == "ended" || st.live == "dead") {
+                        st.live = "stopped"
                     }
                     liveStr = st.live
                     let existingAttention = relay.attention(for: member.name)
@@ -176,7 +190,7 @@ public enum LightCommands {
                     runtime = st
                 } else {
                     if binding?.endedAt != nil {
-                        liveStr = "ended"
+                        liveStr = (binding?.endedReason == "stopped") ? "stopped" : "ended"
                     } else {
                         liveStr = "?"
                     }
@@ -210,7 +224,7 @@ public enum LightCommands {
             guard let app = argv.option("app"),
                   let name = argv.option("name"),
                   let dir = argv.option("dir") else {
-                return usage("pharos member launch --app codex|agy --name N --dir D [--host H] [--model M] [--tmux SESSION] [--message TEXT] [--project P] [--json]")
+                return usage("pharos member launch --app codex|agy --name N --dir D [--host H] [--model M] [--tmux SESSION] [--message TEXT] [--project P] [--auto-revive] [--json]")
             }
             guard let agents else {
                 return LightCLIResult(exitCode: 1, text: "error: member launch needs live CLI access (PHAROS_LIGHT_LIVE=1)")
@@ -232,7 +246,7 @@ public enum LightCommands {
                 throw LightRelayError.duplicateMember(validatedName)
             }
 
-            let member = try agents.launch(
+            var member = try agents.launch(
                 name: validatedName,
                 app: app,
                 cwd: dir,
@@ -242,6 +256,9 @@ public enum LightCommands {
                 openingMessage: message,
                 project: project
             )
+            if argv.flag("auto-revive") {
+                member.tmux?.autoRevive = true
+            }
 
             let registered = try relay.register(member)
             if argv.flag("json") { return json(registered) }
@@ -251,6 +268,58 @@ public enum LightCommands {
                 text: "launched \(registered.name) (app \(registered.app)) in tmux \(tmuxName), session \(registered.sessionID)",
                 notes: agents.notes
             )
+        case "stop":
+            guard let name = argv.positional.dropFirst().first else {
+                return usage("pharos member stop N [--force] [--json]")
+            }
+            guard let agents else {
+                return LightCLIResult(exitCode: 1, text: "error: member stop needs live CLI access (PHAROS_LIGHT_LIVE=1)")
+            }
+            guard let member = relay.member(named: name) else {
+                throw LightRelayError.unknownMember(name)
+            }
+            guard member.tmux != nil else {
+                return LightCLIResult(exitCode: 1, text: "error: member \(name) has no tmux binding")
+            }
+            let binding = try agents.stop(member, force: argv.flag("force"))
+            try relay.updateTmux(member: name, binding)
+            _ = try? relay.reportAttention(LightAttentionReport(
+                state: .clear,
+                sessionID: member.sessionID,
+                app: member.app,
+                source: "hook"
+            ))
+            var updated = member
+            updated.tmux = binding
+            if argv.flag("json") { return json(updated) }
+            let how = agents.notes.first { $0.hasPrefix("stop: ") }?.dropFirst("stop: ".count) ?? "graceful"
+            return ok("stopped \(name) (\(how)); revive with: pharos member revive \(name)")
+        case "set":
+            guard let name = argv.positional.dropFirst().first else {
+                return usage("pharos member set N --auto-revive on|off")
+            }
+            guard let member = relay.member(named: name) else {
+                throw LightRelayError.unknownMember(name)
+            }
+            guard var binding = member.tmux else {
+                return LightCLIResult(exitCode: 1, text: "error: member \(name) has no tmux binding")
+            }
+            guard let raw = argv.option("auto-revive") else {
+                return usage("pharos member set N --auto-revive on|off")
+            }
+            let val: Bool
+            switch raw.lowercased() {
+            case "on", "true", "1", "yes": val = true
+            case "off", "false", "0", "no": val = false
+            default:
+                return usage("pharos member set N --auto-revive on|off")
+            }
+            binding.autoRevive = val
+            try relay.updateTmux(member: name, binding)
+            var updated = member
+            updated.tmux = binding
+            if argv.flag("json") { return json(updated) }
+            return ok("set \(name) auto-revive \(val ? "on" : "off")")
         case "revive":
             guard let name = argv.positional.dropFirst().first else {
                 return usage("pharos member revive N [--json]")
@@ -264,7 +333,10 @@ public enum LightCommands {
             guard member.tmux != nil else {
                 return LightCLIResult(exitCode: 1, text: "error: member \(name) has no tmux binding")
             }
-            let newBinding = try agents.revive(member)
+            var newBinding = try agents.revive(member)
+            newBinding.autoRevive = member.tmux?.autoRevive
+            newBinding.endedReason = nil
+            newBinding.endedAt = nil
             try relay.updateTmux(member: name, newBinding)
             var updated = member
             updated.tmux = newBinding
@@ -298,7 +370,7 @@ public enum LightCommands {
             if argv.flag("json") { return json(member) }
             return ok("registered \(member.name)")
         default:
-            return usage("pharos member register|list|launch|revive")
+            return usage("pharos member register|list|launch|revive|stop|set")
         }
     }
 
@@ -585,7 +657,7 @@ private struct LightArgv {
     var repeated: [String: [String]] = [:]
     var flags: Set<String> = []
 
-    static let knownFlags: Set<String> = ["json", "once", "deliver"]
+    static let knownFlags: Set<String> = ["json", "once", "deliver", "force"]
     static let repeatedKeys: Set<String> = ["route", "to", "cc"]
 
     static func parse(_ tokens: [String]) -> LightArgv {
@@ -718,10 +790,12 @@ extension LightCommands {
       human answers in the agent's own app.
 
     CLI AGENT MEMBERS (tmux-backed codex / agy)
-      pharos member launch --app codex|agy --name N --dir D [--host H] [--model M] [--tmux SESSION] [--message TEXT] [--project P] [--json]
+      pharos member launch --app codex|agy --name N --dir D [--host H] [--model M] [--tmux SESSION] [--message TEXT] [--project P] [--auto-revive] [--json]
       pharos member revive N [--json]
-      Launches or revives a tmux-backed CLI agent member. Replies are read from the daemon
-      (codex) / transcript (agy). needs_human is report-only.
+      pharos member stop N [--force] [--json]
+      pharos member set N --auto-revive on|off
+      Launches, revives, or stops a tmux-backed CLI agent member. Replies are read from the
+      daemon (codex) / transcript (agy). needs_human is report-only.
 
     WEBHOOK MEMBERS (remote assistants)
       pharos webhook set NAME --url https://… [--header-name H] --secret-stdin|--secret-file F|--secret-env VAR

@@ -6,6 +6,7 @@ final class FakeMemberAgents: LightMemberAgents, @unchecked Sendable {
     var onLaunch: ((_ name: String, _ app: String, _ cwd: String, _ host: String, _ model: String?, _ tmuxSession: String?,
                     _ openingMessage: String?, _ project: String) throws -> LightMember)?
     var onRevive: ((_ member: LightMember) throws -> LightTmuxBinding)?
+    var onStop: ((_ member: LightMember, _ force: Bool) throws -> LightTmuxBinding)?
     var onStatus: ((_ member: LightMember) -> LightMemberRuntimeStatus?)?
     var notes: [String] = []
 
@@ -52,16 +53,37 @@ final class FakeMemberAgents: LightMemberAgents, @unchecked Sendable {
         )
     }
 
+    func stop(_ member: LightMember, force: Bool) throws -> LightTmuxBinding {
+        if let onStop {
+            return try onStop(member, force)
+        }
+        guard var binding = member.tmux else {
+            throw CLIAgentLifecycleError.invalid("no tmux binding")
+        }
+        binding.endedAt = Date()
+        binding.endedReason = "stopped"
+        notes = ["stop: graceful"]
+        return binding
+    }
+
     func status(_ member: LightMember) -> LightMemberRuntimeStatus? {
         if let onStatus {
             return onStatus(member)
         }
         guard let binding = member.tmux else { return nil }
+        let live: String
+        if binding.endedReason == "stopped" {
+            live = "stopped"
+        } else if binding.endedAt != nil {
+            live = "ended"
+        } else {
+            live = "alive"
+        }
         return LightMemberRuntimeStatus(
             tmux: binding.session,
-            live: "alive",
-            activity: "idle",
-            detail: "idle"
+            live: live,
+            activity: (binding.endedAt != nil) ? "-" : "idle",
+            detail: (binding.endedAt != nil) ? "-" : "idle"
         )
     }
 }
@@ -343,6 +365,230 @@ final class CLIMemberCommandsTests: XCTestCase {
 
         let fallback = CLIAgentEnvironment.resolveTmuxBin(env: [:])
         XCTAssertFalse(fallback.isEmpty)
+    }
+
+    func testMemberStopClearsAttentionAndPrintsHow() throws {
+        let relay = try makeRelay()
+        let fakeAgents = FakeMemberAgents()
+
+        let binding = LightTmuxBinding(session: "tmux-stop", cwd: "/tmp", launchedAt: Date())
+        _ = try relay.register(LightMember(
+            name: "stop-bot", host: "local", app: "codex", project: "p", sessionID: "s-stop", routes: [],
+            tmux: binding
+        ))
+
+        // Record needs_human attention
+        _ = try relay.reportAttention(LightAttentionReport(
+            state: .needsHuman, what: "allow rm -rf", sessionID: "s-stop", app: "codex"
+        ))
+        XCTAssertNotNil(relay.attention(for: "stop-bot"))
+
+        let res = run(relay, "member", ["stop", "stop-bot"], agents: fakeAgents)
+        XCTAssertEqual(res.exitCode, 0)
+        XCTAssertTrue(res.text.contains("stopped stop-bot (graceful); revive with: pharos member revive stop-bot"))
+
+        // Binding updated
+        let updated = try XCTUnwrap(relay.member(named: "stop-bot")?.tmux)
+        XCTAssertEqual(updated.endedReason, "stopped")
+        XCTAssertNotNil(updated.endedAt)
+
+        // Attention cleared
+        XCTAssertNil(relay.attention(for: "stop-bot"))
+    }
+
+    func testMemberStopForceAndJson() throws {
+        let relay = try makeRelay()
+        let fakeAgents = FakeMemberAgents()
+        fakeAgents.onStop = { member, force in
+            XCTAssertTrue(force)
+            fakeAgents.notes = ["stop: killed"]
+            var b = member.tmux!
+            b.endedAt = Date()
+            b.endedReason = "stopped"
+            return b
+        }
+
+        let binding = LightTmuxBinding(session: "tmux-json-stop", cwd: "/tmp", launchedAt: Date())
+        _ = try relay.register(LightMember(
+            name: "json-stop-bot", host: "local", app: "codex", project: "p", sessionID: "s-jstop", routes: [],
+            tmux: binding
+        ))
+
+        let res = run(relay, "member", ["stop", "json-stop-bot", "--force", "--json"], agents: fakeAgents)
+        XCTAssertEqual(res.exitCode, 0)
+        guard let data = res.text.data(using: .utf8),
+              let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tmuxDict = dict["tmux"] as? [String: Any] else {
+            return XCTFail("expected JSON output with tmux object")
+        }
+        XCTAssertEqual(tmuxDict["endedReason"] as? String, "stopped")
+    }
+
+    func testMemberSetAutoRevive() throws {
+        let relay = try makeRelay()
+        let binding = LightTmuxBinding(session: "tmux-set", cwd: "/tmp", launchedAt: Date())
+        _ = try relay.register(LightMember(
+            name: "set-bot", host: "local", app: "codex", project: "p", sessionID: "s-set", routes: [],
+            tmux: binding
+        ))
+
+        // Set on
+        let onRes = run(relay, "member", ["set", "set-bot", "--auto-revive", "on"])
+        XCTAssertEqual(onRes.exitCode, 0)
+        XCTAssertEqual(relay.member(named: "set-bot")?.tmux?.autoRevive, true)
+
+        // Set off
+        let offRes = run(relay, "member", ["set", "set-bot", "--auto-revive", "off"])
+        XCTAssertEqual(offRes.exitCode, 0)
+        XCTAssertEqual(relay.member(named: "set-bot")?.tmux?.autoRevive, false)
+
+        // No binding error
+        _ = try relay.register(LightMember(
+            name: "no-b", host: "local", app: "codex", project: "p", sessionID: "s-nob", routes: []
+        ))
+        let failRes = run(relay, "member", ["set", "no-b", "--auto-revive", "on"])
+        XCTAssertEqual(failRes.exitCode, 1)
+        XCTAssertTrue(failRes.text.contains("has no tmux binding"))
+    }
+
+    func testMemberLaunchWithAutoRevive() throws {
+        let relay = try makeRelay()
+        let fakeAgents = FakeMemberAgents()
+
+        let res = run(relay, "member", [
+            "launch", "--app", "codex", "--name", "auto-bot", "--dir", "/tmp/autorevive",
+            "--auto-revive"
+        ], agents: fakeAgents)
+
+        XCTAssertEqual(res.exitCode, 0)
+        let member = try XCTUnwrap(relay.member(named: "auto-bot"))
+        XCTAssertEqual(member.tmux?.autoRevive, true)
+    }
+
+    func testMemberListShowsStopped() throws {
+        let relay = try makeRelay()
+        let fakeAgents = FakeMemberAgents()
+
+        let binding = LightTmuxBinding(
+            session: "tmux-stopped", cwd: "/tmp", launchedAt: Date(),
+            endedAt: Date(), autoRevive: false, endedReason: "stopped"
+        )
+        _ = try relay.register(LightMember(
+            name: "stopped-bot", host: "local", app: "codex", project: "p", sessionID: "s-stop-list", routes: [],
+            tmux: binding
+        ))
+
+        let res = run(relay, "member", ["list"], agents: fakeAgents)
+        XCTAssertEqual(res.exitCode, 0)
+        let lines = res.text.components(separatedBy: "\n")
+        let line = try XCTUnwrap(lines.first { $0.hasPrefix("stopped-bot\t") })
+        XCTAssertTrue(line.contains("\ttmux-stopped\tstopped\t-"), "shows 'stopped' instead of 'ended'")
+    }
+
+    func testLightNodeExecNodeAgentPayloadRoundTripAndErrors() throws {
+        let fakeAgents = FakeMemberAgents()
+
+        // 1. Launch request
+        let spec = LightNodeLaunchSpec(
+            name: "node-launched", app: "codex", cwd: "/tmp/node", project: "node", host: "remote-node"
+        )
+        let req = LightNodeAgentRequest(action: "launch", launch: spec)
+        let b64 = LightNodeExec.encode(req)
+
+        let res = LightNodeExec.executeAgent(arguments: ["node-agent", "--payload", b64], agents: fakeAgents)
+        XCTAssertEqual(res.exitCode, 0)
+        let resp = try XCTUnwrap(CLIMemberAgents.parseResponse(res.text))
+        XCTAssertTrue(resp.ok)
+        XCTAssertEqual(resp.member?.name, "node-launched")
+        XCTAssertEqual(resp.member?.host, "remote-node")
+
+        // 2. Unreadable payload -> exit code 2
+        let badRes = LightNodeExec.executeAgent(arguments: ["node-agent", "--payload", "not-valid-base64-json!!!"], agents: fakeAgents)
+        XCTAssertEqual(badRes.exitCode, 2)
+        XCTAssertTrue(badRes.text.contains("unreadable agent payload"))
+
+        // 3. No live agents -> ok = false response
+        let noAgentsRes = LightNodeExec.executeAgent(arguments: ["node-agent", "--payload", b64], agents: nil)
+        XCTAssertEqual(noAgentsRes.exitCode, 0)
+        let noAgentsResp = try XCTUnwrap(CLIMemberAgents.parseResponse(noAgentsRes.text))
+        XCTAssertFalse(noAgentsResp.ok)
+        XCTAssertTrue(noAgentsResp.error?.contains("PHAROS_LIGHT_LIVE=1") ?? false)
+    }
+
+    func testCLIMemberAgentsRemoteLaunchReviveStop() throws {
+        let runner = FakeTestRunner()
+        let tmux = TmuxController(tmux: "tmux", runner: runner)
+        let lifecycle = CLIAgentLifecycle(tmux: tmux, runner: runner)
+        let selfHost = LightSelfHost(names: ["local"])
+
+        final class FakeRouter: LightNodeRouting, @unchecked Sendable {
+            var cannedRun: LightNodeRun?
+            var cannedStatus: LightNodeStatus = LightNodeStatus(host: "remote-host", online: false, lastSeen: nil)
+
+            func run(_ node: String, argv: [String], timeout: TimeInterval) -> LightNodeRun? {
+                cannedRun
+            }
+
+            func status(_ node: String) -> LightNodeStatus {
+                cannedStatus
+            }
+
+            func directory() -> LightHostDirectory? {
+                nil
+            }
+        }
+
+        let router = FakeRouter()
+        let agents = CLIMemberAgents(lifecycle: lifecycle, selfHost: selfHost, nodes: router)
+
+        // 1. Remote launch success
+        let returnedMember = LightMember(
+            name: "remote-bot", host: "remote-host", app: "codex", project: "proj", sessionID: "s-remote", routes: [],
+            tmux: LightTmuxBinding(session: "pharos-remote", cwd: "/tmp", launchedAt: Date())
+        )
+        let launchResp = LightNodeAgentResponse(ok: true, member: returnedMember, notes: ["remote launch note"])
+        let encoder = JSONEncoder()
+        let jsonStr = String(data: try encoder.encode(launchResp), encoding: .utf8)!
+
+        router.cannedRun = LightNodeRun(path: .mesh, status: 0, stdout: jsonStr, stderr: "", node: "remote-host")
+
+        let launched = try agents.launch(
+            name: "remote-bot", app: "codex", cwd: "/tmp", host: "remote-host",
+            model: nil, tmuxSession: nil, openingMessage: nil, project: "proj"
+        )
+        XCTAssertEqual(launched.name, "remote-bot")
+        XCTAssertEqual(launched.host, "remote-host")
+        XCTAssertTrue(agents.notes.contains("remote launch note"))
+        XCTAssertTrue(agents.notes.contains("via mesh on remote-host"))
+
+        // 2. Remote revive success
+        let reviveBinding = LightTmuxBinding(session: "pharos-remote", cwd: "/tmp", agentPID: 4321, launchedAt: Date())
+        let reviveResp = LightNodeAgentResponse(ok: true, binding: reviveBinding)
+        router.cannedRun = LightNodeRun(path: .ssh, status: 0, stdout: String(data: try encoder.encode(reviveResp), encoding: .utf8)!, stderr: "", node: "remote-host")
+
+        let revivedBinding = try agents.revive(returnedMember)
+        XCTAssertEqual(revivedBinding.agentPID, 4321)
+        XCTAssertTrue(agents.notes.contains("via ssh on remote-host"))
+
+        // 3. Remote stop success
+        let stopBinding = LightTmuxBinding(session: "pharos-remote", cwd: "/tmp", endedAt: Date(), endedReason: "stopped")
+        let stopResp = LightNodeAgentResponse(ok: true, binding: stopBinding, notes: ["stop: graceful"])
+        router.cannedRun = LightNodeRun(path: .mesh, status: 0, stdout: String(data: try encoder.encode(stopResp), encoding: .utf8)!, stderr: "", node: "remote-host")
+
+        let stoppedBinding = try agents.stop(returnedMember, force: false)
+        XCTAssertEqual(stoppedBinding.endedReason, "stopped")
+        XCTAssertTrue(agents.notes.contains("stop: graceful"))
+
+        // 4. Offline node -> error
+        router.cannedRun = nil
+        router.cannedStatus = LightNodeStatus(host: "remote-host", online: false, lastSeen: nil)
+
+        XCTAssertThrowsError(try agents.launch(
+            name: "off-bot", app: "codex", cwd: "/tmp", host: "remote-host",
+            model: nil, tmuxSession: nil, openingMessage: nil, project: "proj"
+        )) { error in
+            XCTAssertTrue((error as? CLIMemberAgentsError)?.message.contains("Pharos node remote-host is offline") ?? false)
+        }
     }
 }
 

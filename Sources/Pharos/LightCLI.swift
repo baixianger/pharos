@@ -207,6 +207,16 @@ extension CLI {
         LightNodeExec.execute(command: command, arguments: arguments, driver: localDriver())
     }
 
+    static func nodeAgentExecute(_ arguments: [String]) -> LightCLIResult {
+        let env = lightEnvironment
+        guard let cliEnv = CLIAgentEnvironment.make(env: env) else {
+            let resp = LightNodeAgentResponse(ok: false, error: "node has no live CLI access (PHAROS_LIGHT_LIVE=1)")
+            return LightNodeExec.encodeLine(resp)
+        }
+        let localAgents = CLIMemberAgents(lifecycle: cliEnv.lifecycle, selfHost: .all)
+        return LightNodeExec.executeAgent(arguments: arguments, agents: localAgents)
+    }
+
     /// One bounded background pass, run by the node every ~20s: drain the reply
     /// spool, and on the Broker machine retry parked jobs and read back answers.
     static func lightTick(json: Bool) -> LightCLIResult {

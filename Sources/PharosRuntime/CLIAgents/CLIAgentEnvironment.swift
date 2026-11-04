@@ -42,7 +42,8 @@ public struct CLIAgentEnvironment: Sendable {
     public static func make(
         env: [String: String] = ProcessInfo.processInfo.environment,
         storeURL: URL = LightRelay.defaultStoreURL(),
-        runner: any LightProcessRunning = FoundationLightProcessRunner()
+        runner: any LightProcessRunning = FoundationLightProcessRunner(),
+        nodes: (any LightNodeRouting)? = nil
     ) -> CLIAgentEnvironment? {
         guard env["PHAROS_LIGHT_LIVE"] == "1" else { return nil }
 
@@ -65,7 +66,7 @@ public struct CLIAgentEnvironment: Sendable {
         )
 
         let selfHost = LightSelfHost.fromEnvironment(env)
-        let memberAgents = CLIMemberAgents(lifecycle: lifecycle, selfHost: selfHost)
+        let memberAgents = CLIMemberAgents(lifecycle: lifecycle, selfHost: selfHost, nodes: nodes)
 
         let driver = CLIAgentDriver(
             tmux: tmux,

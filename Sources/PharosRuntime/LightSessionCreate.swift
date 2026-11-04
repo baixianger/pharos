@@ -194,12 +194,17 @@ public struct LightDebugPorts: Equatable, Sendable {
 /// hostname and `PHAROS_SELF_HOST` / `PHAROS_NODE_NAME`.
 public struct LightSelfHost: Equatable, Sendable {
     public var names: Set<String>
+    public var matchAny: Bool
 
-    public init(names: Set<String>) {
+    public init(names: Set<String>, matchAny: Bool = false) {
         self.names = names
+        self.matchAny = matchAny
     }
 
+    public static let all = LightSelfHost(names: [], matchAny: true)
+
     public func matches(_ host: String) -> Bool {
+        if matchAny { return true }
         let folded = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !folded.isEmpty else { return false }
         return names.contains { $0.lowercased() == folded }

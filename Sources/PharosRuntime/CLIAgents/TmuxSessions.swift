@@ -196,6 +196,23 @@ public struct TmuxController: Sendable {
         return enterOut.status == 0
     }
 
+    /// `tmux send-keys -t =NAME: KEY`
+    public func sendKey(_ name: String, _ key: String) -> Bool {
+        let args = [tmux, "send-keys", "-t", "=\(name):", key]
+        let out = runner.run(
+            LightInvocation(
+                argv: args,
+                stdin: "",
+                executable: true,
+                fallback: false,
+                summary: "tmux send-keys key \(name)",
+                loopback: true
+            ),
+            stdin: ""
+        )
+        return out.status == 0
+    }
+
     /// `tmux capture-pane -p -t =NAME:` (optionally `-S -N` for scrollback)
     public func capture(_ name: String, lines: Int? = nil) -> String? {
         var args = [tmux, "capture-pane", "-p", "-t", "=\(name):"]

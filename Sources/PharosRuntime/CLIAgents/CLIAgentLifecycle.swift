@@ -59,6 +59,16 @@ public enum CLIAgentLifecycleError: Error, Equatable, LocalizedError {
     }
 }
 
+public struct CLIAgentStopResult: Equatable, Sendable {
+    public var binding: LightTmuxBinding
+    public var how: String // "graceful" | "killed" | "already-ended"
+
+    public init(binding: LightTmuxBinding, how: String) {
+        self.binding = binding
+        self.how = how
+    }
+}
+
 public struct CLIAgentStatus: Equatable, Sendable {
     public var tmux: String
     public var live: String
@@ -359,8 +369,96 @@ public struct CLIAgentLifecycle: Sendable {
             agentPID: newPid,
             agentStarted: newStart,
             launchedAt: now(),
-            endedAt: nil
+            endedAt: nil,
+            autoRevive: binding.autoRevive,
+            endedReason: nil
         )
+    }
+
+    public func stop(member: LightMember, force: Bool, timeout: TimeInterval = 20) throws -> CLIAgentStopResult {
+        guard let binding = member.tmux else {
+            throw CLIAgentLifecycleError.invalid("member has no tmux binding")
+        }
+
+        guard tmux.hasSession(binding.session) else {
+            var updated = binding
+            updated.endedAt = binding.endedAt ?? now()
+            updated.endedReason = "stopped"
+            return CLIAgentStopResult(binding: updated, how: "already-ended")
+        }
+
+        guard let descriptor = CLIAgentDescriptor.named(member.app, env: env) else {
+            throw CLIAgentLifecycleError.invalid("unsupported app: \(member.app)")
+        }
+
+        var isBusy = false
+        var isNeedsHuman = false
+
+        if member.app == "agy" {
+            let capture = tmux.capture(binding.session, lines: 100) ?? ""
+            let paneState = AgyPane.classify(capture)
+            if paneState == .busy { isBusy = true }
+            if case .needsHuman = paneState { isNeedsHuman = true }
+        } else if member.app == "codex" {
+            if let client = daemon(), let info = try? client.readThread(member.sessionID) {
+                if info.status.needsHuman {
+                    isNeedsHuman = true
+                } else if info.status.busy {
+                    isBusy = true
+                }
+            } else {
+                let capture = tmux.capture(binding.session, lines: 100) ?? ""
+                let paneState = CodexPane.classify(capture)
+                if paneState == .busy { isBusy = true }
+                if case .needsHuman = paneState { isNeedsHuman = true }
+            }
+        }
+
+        if isNeedsHuman && !force {
+            throw CLIAgentLifecycleError.invalid("member is waiting on a prompt; answer it or use --force")
+        }
+        if isBusy && !force {
+            throw CLIAgentLifecycleError.invalid("member is busy; use --force to interrupt and stop")
+        }
+
+        if (isNeedsHuman || isBusy) && force {
+            _ = tmux.sendKey(binding.session, "Escape")
+            sleep(1)
+        }
+
+        _ = tmux.sendText(binding.session, descriptor.exitCommand)
+
+        let start = now()
+        var how = "killed"
+        while now().timeIntervalSince(start) < timeout {
+            let sessionExists = tmux.hasSession(binding.session)
+            if !sessionExists {
+                how = "graceful"
+                break
+            }
+            let p = tmux.pane(binding.session)
+            let paneDead = p?.dead ?? false
+            let pidAlive = (p?.pid != nil) && (tmux.processStart(pid: p!.pid) != nil)
+            if paneDead || !pidAlive {
+                if tmux.hasSession(binding.session) {
+                    _ = tmux.kill(binding.session)
+                }
+                how = "graceful"
+                break
+            }
+            sleep(pollInterval)
+        }
+
+        if how == "killed" {
+            if tmux.hasSession(binding.session) {
+                _ = tmux.kill(binding.session)
+            }
+        }
+
+        var updated = binding
+        updated.endedAt = now()
+        updated.endedReason = "stopped"
+        return CLIAgentStopResult(binding: updated, how: how)
     }
 
     public func status(member: LightMember) -> CLIAgentStatus {
@@ -370,7 +468,14 @@ public struct CLIAgentLifecycle: Sendable {
 
         let tmuxAlive = tmux.hasSession(binding.session)
         guard tmuxAlive else {
-            let live = binding.endedAt != nil ? "ended" : "dead"
+            let live: String
+            if binding.endedReason == "stopped" {
+                live = "stopped"
+            } else if binding.endedAt != nil {
+                live = "ended"
+            } else {
+                live = "dead"
+            }
             return CLIAgentStatus(tmux: binding.session, live: live, activity: .unknown, detail: live)
         }
 

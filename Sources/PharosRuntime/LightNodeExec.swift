@@ -28,11 +28,76 @@ public struct LightNodeHarvest: Codable, Equatable, Sendable {
     }
 }
 
+public struct LightNodeLaunchSpec: Codable, Equatable, Sendable {
+    public var name, app, cwd, project: String
+    public var host: String
+    public var model, tmuxSession, openingMessage: String?
+
+    public init(
+        name: String,
+        app: String,
+        cwd: String,
+        project: String,
+        host: String,
+        model: String? = nil,
+        tmuxSession: String? = nil,
+        openingMessage: String? = nil
+    ) {
+        self.name = name
+        self.app = app
+        self.cwd = cwd
+        self.project = project
+        self.host = host
+        self.model = model
+        self.tmuxSession = tmuxSession
+        self.openingMessage = openingMessage
+    }
+}
+
+public struct LightNodeAgentRequest: Codable, Equatable, Sendable {
+    public var action: String          // "launch" | "revive" | "stop" | "status"
+    public var member: LightMember?    // revive/stop/status
+    public var launch: LightNodeLaunchSpec?   // launch
+    public var force: Bool?
+
+    public init(action: String, member: LightMember? = nil, launch: LightNodeLaunchSpec? = nil, force: Bool? = nil) {
+        self.action = action
+        self.member = member
+        self.launch = launch
+        self.force = force
+    }
+}
+
+public struct LightNodeAgentResponse: Codable, Equatable, Sendable {
+    public var ok: Bool
+    public var error: String?
+    public var member: LightMember?            // launch
+    public var binding: LightTmuxBinding?      // revive/stop
+    public var status: LightMemberRuntimeStatus?   // status
+    public var notes: [String]?
+
+    public init(
+        ok: Bool,
+        error: String? = nil,
+        member: LightMember? = nil,
+        binding: LightTmuxBinding? = nil,
+        status: LightMemberRuntimeStatus? = nil,
+        notes: [String]? = nil
+    ) {
+        self.ok = ok
+        self.error = error
+        self.member = member
+        self.binding = binding
+        self.status = status
+        self.notes = notes
+    }
+}
+
 public enum LightNodeExec {
     /// Commands a node accepts over the mesh (`light` node command). Nothing else runs.
     public static let allowed: Set<String> = [
         "session", "project", "member", "thread", "send", "reply", "wait", "read", "attention",
-        "node-deliver", "node-harvest",
+        "node-deliver", "node-harvest", "node-agent",
     ]
 
     public static func encode<T: Encodable>(_ value: T) -> String {
@@ -76,6 +141,73 @@ public enum LightNodeExec {
         default:
             return LightCLIResult(exitCode: 2, text: "error: unknown node command \(command)")
         }
+    }
+
+    /// `node-agent --payload B64`, run against this machine only.
+    public static func executeAgent(arguments: [String], agents: (any LightMemberAgents)?) -> LightCLIResult {
+        guard let index = arguments.firstIndex(of: "--payload"), index + 1 < arguments.count else {
+            return LightCLIResult(exitCode: 2, text: "error: pharos node-agent --payload B64")
+        }
+        let payload = arguments[index + 1]
+        guard let request = decode(LightNodeAgentRequest.self, payload) else {
+            return LightCLIResult(exitCode: 2, text: "error: unreadable agent payload")
+        }
+        guard let agents else {
+            let resp = LightNodeAgentResponse(ok: false, error: "node has no live CLI access (PHAROS_LIGHT_LIVE=1)")
+            return encodeLine(resp)
+        }
+        do {
+            switch request.action {
+            case "launch":
+                guard let spec = request.launch else {
+                    return encodeLine(LightNodeAgentResponse(ok: false, error: "missing launch spec"))
+                }
+                var member = try agents.launch(
+                    name: spec.name,
+                    app: spec.app,
+                    cwd: spec.cwd,
+                    host: spec.host,
+                    model: spec.model,
+                    tmuxSession: spec.tmuxSession,
+                    openingMessage: spec.openingMessage,
+                    project: spec.project
+                )
+                member.host = spec.host
+                return encodeLine(LightNodeAgentResponse(ok: true, member: member, notes: agents.notes))
+            case "revive":
+                guard let member = request.member else {
+                    return encodeLine(LightNodeAgentResponse(ok: false, error: "missing member for revive"))
+                }
+                let binding = try agents.revive(member)
+                return encodeLine(LightNodeAgentResponse(ok: true, binding: binding, notes: agents.notes))
+            case "stop":
+                guard let member = request.member else {
+                    return encodeLine(LightNodeAgentResponse(ok: false, error: "missing member for stop"))
+                }
+                let binding = try agents.stop(member, force: request.force ?? false)
+                return encodeLine(LightNodeAgentResponse(ok: true, binding: binding, notes: agents.notes))
+            case "status":
+                guard let member = request.member else {
+                    return encodeLine(LightNodeAgentResponse(ok: false, error: "missing member for status"))
+                }
+                let status = agents.status(member)
+                return encodeLine(LightNodeAgentResponse(ok: true, status: status, notes: agents.notes))
+            default:
+                return encodeLine(LightNodeAgentResponse(ok: false, error: "unknown agent action \(request.action)"))
+            }
+        } catch {
+            return encodeLine(LightNodeAgentResponse(ok: false, error: error.localizedDescription))
+        }
+    }
+
+    public static func encodeLine<T: Encodable>(_ response: T) -> LightCLIResult {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        guard let data = try? encoder.encode(response),
+              let line = String(data: data, encoding: .utf8) else {
+            return LightCLIResult(exitCode: 1, text: #"{"ok":false,"error":"could not encode response"}"#)
+        }
+        return LightCLIResult(exitCode: 0, text: line)
     }
 
     static func json(_ body: [String: Any]) -> LightCLIResult {

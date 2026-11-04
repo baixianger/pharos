@@ -138,6 +138,8 @@ enum CLI {
                 return finishLight(lightDispatch(command: command, arguments: rest))
             case "node-deliver", "node-harvest":
                 return finishLight(nodeExecute(command: command, arguments: rest))
+            case "node-agent":
+                return finishLight(nodeAgentExecute(rest))
             case "light-tick":
                 return finishLight(lightTick(json: true))
             case "webhook", "webhooks":
@@ -164,7 +166,7 @@ enum CLI {
     static func lightExecute(command: String, arguments: [String]) -> LightCLIResult {
         do {
             let environment = ProcessInfo.processInfo.environment
-            let cliEnv = CLIAgentEnvironment.make(env: environment)
+            let cliEnv = CLIAgentEnvironment.make(env: environment, nodes: lightRouter())
             return LightCommands.execute(
                 command: command,
                 arguments: arguments,

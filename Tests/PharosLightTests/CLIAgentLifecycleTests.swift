@@ -78,6 +78,7 @@ final class CLIAgentLifecycleTests: XCTestCase {
         XCTAssertEqual(codex.routes.map(\.id), ["daemon", "tui"])
         XCTAssertTrue(codex.routes[0].summary.contains("shared app-server daemon"))
         XCTAssertTrue(codex.routes[1].fallback)
+        XCTAssertEqual(codex.exitCommand, "/quit")
 
         let agy = CLIAgentDescriptor.agy(env: [:])
         XCTAssertEqual(agy.app, "agy")
@@ -89,6 +90,7 @@ final class CLIAgentLifecycleTests: XCTestCase {
         XCTAssertEqual(agy.lockPath(sessionID: "u-456", home: "/Users/test"), "/Users/test/.gemini/antigravity-cli/presence/u-456.lock")
         XCTAssertTrue(agy.openingMessageRequired)
         XCTAssertEqual(agy.routes.map(\.id), ["tui"])
+        XCTAssertEqual(agy.exitCommand, "/exit")
 
         XCTAssertEqual(CLIAgentDescriptor.named("codex", env: [:])?.app, "codex")
         XCTAssertEqual(CLIAgentDescriptor.named("agy", env: [:])?.app, "agy")
@@ -634,5 +636,215 @@ final class CLIAgentLifecycleTests: XCTestCase {
             CodexThreadInfo(id: "s-cx", cwd: "/tmp", path: nil, originator: "codex-tui", status: .active(flags: ["waitingOnApproval"]))
         }
         XCTAssertEqual(lifecycleAlive.status(member: codexMember).activity, .needsHuman)
+    }
+
+    // MARK: - Stop and Revive Tests
+
+    func testStopAlreadyEnded() throws {
+        let runner = FakeLifecycleRunner()
+        // has-session returns exit 1 (session missing)
+        runner.addHandler { argv in
+            if argv.contains("has-session") {
+                return LightProcessOutput(status: 1, stdout: "", stderr: "can't find session")
+            }
+            return nil
+        }
+        let tmux = TmuxController(runner: runner)
+        let clock = TestClock()
+        let lifecycle = CLIAgentLifecycle(tmux: tmux, runner: runner, now: clock.now)
+
+        let member = LightMember(
+            name: "m-stop", host: "local", app: "codex", project: "p", sessionID: "s-1", routes: [],
+            tmux: LightTmuxBinding(session: "pharos-m-stop", cwd: "/tmp", launchedAt: Date())
+        )
+
+        let res = try lifecycle.stop(member: member, force: false)
+        XCTAssertEqual(res.how, "already-ended")
+        XCTAssertEqual(res.binding.endedReason, "stopped")
+        XCTAssertNotNil(res.binding.endedAt)
+    }
+
+    func testStopGraceful() throws {
+        let runner = FakeLifecycleRunner()
+        var sessionAlive = true
+        runner.addHandler { argv in
+            if argv.contains("has-session") {
+                return LightProcessOutput(status: sessionAlive ? 0 : 1, stdout: "", stderr: "")
+            }
+            if argv.contains("capture-pane") {
+                return LightProcessOutput(status: 0, stdout: "› prompt\n", stderr: "") // idle
+            }
+            if argv.contains("send-keys") && argv.contains("/quit") {
+                sessionAlive = false // session exits after /quit
+                return LightProcessOutput(status: 0, stdout: "", stderr: "")
+            }
+            return nil
+        }
+        let tmux = TmuxController(runner: runner)
+        let clock = TestClock()
+        let lifecycle = CLIAgentLifecycle(tmux: tmux, runner: runner, now: clock.now)
+
+        let member = LightMember(
+            name: "m-graceful", host: "local", app: "codex", project: "p", sessionID: "s-2", routes: [],
+            tmux: LightTmuxBinding(session: "pharos-m-graceful", cwd: "/tmp", launchedAt: Date())
+        )
+
+        let res = try lifecycle.stop(member: member, force: false)
+        XCTAssertEqual(res.how, "graceful")
+        XCTAssertEqual(res.binding.endedReason, "stopped")
+        XCTAssertNotNil(res.binding.endedAt)
+    }
+
+    func testStopTimeoutKilled() throws {
+        let runner = FakeLifecycleRunner()
+        var killed = false
+        runner.addHandler { argv in
+            if argv.contains("has-session") {
+                return LightProcessOutput(status: killed ? 1 : 0, stdout: "", stderr: "")
+            }
+            if argv.contains("capture-pane") {
+                return LightProcessOutput(status: 0, stdout: "› prompt\n", stderr: "") // idle
+            }
+            if argv.contains("kill-session") {
+                killed = true
+                return LightProcessOutput(status: 0, stdout: "", stderr: "")
+            }
+            if argv.contains("list-panes") {
+                return LightProcessOutput(status: 0, stdout: "1234\tcodex\t0\n", stderr: "")
+            }
+            if argv.contains("ps") {
+                return LightProcessOutput(status: 0, stdout: "Mon Nov 4 21:00:00 2026\n", stderr: "")
+            }
+            return nil
+        }
+        let tmux = TmuxController(runner: runner)
+        let clock = TestClock()
+        let lifecycle = CLIAgentLifecycle(
+            tmux: tmux, runner: runner,
+            timeout: 5, pollInterval: 1,
+            sleep: { _ in clock.advance(2) },
+            now: clock.now
+        )
+
+        let member = LightMember(
+            name: "m-kill", host: "local", app: "codex", project: "p", sessionID: "s-3", routes: [],
+            tmux: LightTmuxBinding(session: "pharos-m-kill", cwd: "/tmp", launchedAt: Date())
+        )
+
+        let res = try lifecycle.stop(member: member, force: false, timeout: 5)
+        XCTAssertEqual(res.how, "killed")
+        XCTAssertTrue(killed, "tmux kill-session was called")
+        XCTAssertEqual(res.binding.endedReason, "stopped")
+    }
+
+    func testStopBusyWithoutForceThrowsAndWithForceSendsEscape() throws {
+        let runner = FakeLifecycleRunner()
+        var sessionAlive = true
+        var escapeSent = false
+        runner.addHandler { argv in
+            if argv.contains("has-session") {
+                return LightProcessOutput(status: sessionAlive ? 0 : 1, stdout: "", stderr: "")
+            }
+            if argv.contains("capture-pane") {
+                return LightProcessOutput(status: 0, stdout: "esc to cancel\n", stderr: "") // agy busy
+            }
+            if argv.contains("send-keys") && argv.contains("Escape") {
+                escapeSent = true
+                return LightProcessOutput(status: 0, stdout: "", stderr: "")
+            }
+            if argv.contains("send-keys") && argv.contains("/exit") {
+                sessionAlive = false
+                return LightProcessOutput(status: 0, stdout: "", stderr: "")
+            }
+            return nil
+        }
+        let tmux = TmuxController(runner: runner)
+        let clock = TestClock()
+        let lifecycle = CLIAgentLifecycle(tmux: tmux, runner: runner, sleep: { _ in }, now: clock.now)
+
+        let member = LightMember(
+            name: "m-busy", host: "local", app: "agy", project: "p", sessionID: "s-4", routes: [],
+            tmux: LightTmuxBinding(session: "pharos-m-busy", cwd: "/tmp", launchedAt: Date())
+        )
+
+        // Without force -> throws invalid("member is busy; use --force to interrupt and stop")
+        XCTAssertThrowsError(try lifecycle.stop(member: member, force: false)) { error in
+            XCTAssertEqual((error as? CLIAgentLifecycleError)?.errorDescription, "invalid: member is busy; use --force to interrupt and stop")
+        }
+        XCTAssertFalse(escapeSent)
+
+        // With force -> sends Escape then /exit
+        let res = try lifecycle.stop(member: member, force: true)
+        XCTAssertTrue(escapeSent)
+        XCTAssertEqual(res.how, "graceful")
+    }
+
+    func testStopNeedsHumanWithoutForceThrows() throws {
+        let runner = FakeLifecycleRunner()
+        runner.addHandler { argv in
+            if argv.contains("has-session") {
+                return LightProcessOutput(status: 0, stdout: "", stderr: "")
+            }
+            if argv.contains("capture-pane") {
+                return LightProcessOutput(status: 0, stdout: "Requesting permission for:\nrm -rf\n", stderr: "") // needsHuman
+            }
+            return nil
+        }
+        let tmux = TmuxController(runner: runner)
+        let clock = TestClock()
+        let lifecycle = CLIAgentLifecycle(tmux: tmux, runner: runner, now: clock.now)
+
+        let member = LightMember(
+            name: "m-prompt", host: "local", app: "agy", project: "p", sessionID: "s-5", routes: [],
+            tmux: LightTmuxBinding(session: "pharos-m-prompt", cwd: "/tmp", launchedAt: Date())
+        )
+
+        XCTAssertThrowsError(try lifecycle.stop(member: member, force: false)) { error in
+            XCTAssertEqual((error as? CLIAgentLifecycleError)?.errorDescription, "invalid: member is waiting on a prompt; answer it or use --force")
+        }
+    }
+
+    func testReviveClearsEndedReasonAndPreservesAutoRevive() throws {
+        let runner = FakeLifecycleRunner()
+        var respawned = false
+        runner.addHandler { argv in
+            if argv.contains("has-session") {
+                return LightProcessOutput(status: 0, stdout: "", stderr: "")
+            }
+            if argv.contains("respawn-pane") {
+                respawned = true
+                return LightProcessOutput(status: 0, stdout: "", stderr: "")
+            }
+            if argv.contains("capture-pane") {
+                return LightProcessOutput(status: 0, stdout: "› ready\n", stderr: "")
+            }
+            if argv.contains("list-panes") {
+                let deadStr = respawned ? "0" : "1"
+                return LightProcessOutput(status: 0, stdout: "5555\tcodex\t\(deadStr)\n", stderr: "")
+            }
+            if argv.contains("ps") {
+                return LightProcessOutput(status: respawned ? 0 : 1, stdout: "Mon Nov 4 21:00:00 2026\n", stderr: "")
+            }
+            return nil
+        }
+        let tmux = TmuxController(runner: runner)
+        let clock = TestClock()
+        let lifecycle = CLIAgentLifecycle(tmux: tmux, runner: runner, now: clock.now)
+
+        let oldBinding = LightTmuxBinding(
+            session: "pharos-cx-rev", cwd: "/tmp", model: "o3-mini",
+            agentPID: 1111, agentStarted: "start", launchedAt: Date(),
+            endedAt: Date(), autoRevive: true, endedReason: "stopped"
+        )
+        let member = LightMember(
+            name: "cx-rev", host: "local", app: "codex", project: "p", sessionID: "s-rev", routes: [],
+            tmux: oldBinding
+        )
+
+        let newBinding = try lifecycle.revive(member: member)
+        XCTAssertEqual(newBinding.autoRevive, true, "autoRevive is preserved")
+        XCTAssertNil(newBinding.endedReason, "endedReason is cleared")
+        XCTAssertNil(newBinding.endedAt, "endedAt is cleared")
+        XCTAssertEqual(newBinding.agentPID, 5555)
     }
 }

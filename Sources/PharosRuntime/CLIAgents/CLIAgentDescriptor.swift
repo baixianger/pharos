@@ -11,6 +11,7 @@ public struct CLIAgentDescriptor: Sendable, Equatable {
     public var modelChain: [String]
     public var routes: [LightRoute]
     public var openingMessageRequired: Bool
+    public var exitCommand: String
 
     public init(
         app: String,
@@ -21,7 +22,8 @@ public struct CLIAgentDescriptor: Sendable, Equatable {
         appDataDir: String,
         modelChain: [String],
         routes: [LightRoute],
-        openingMessageRequired: Bool
+        openingMessageRequired: Bool,
+        exitCommand: String = ""
     ) {
         self.app = app
         self.displayName = displayName
@@ -32,6 +34,7 @@ public struct CLIAgentDescriptor: Sendable, Equatable {
         self.modelChain = modelChain
         self.routes = routes
         self.openingMessageRequired = openingMessageRequired
+        self.exitCommand = exitCommand
     }
 
     /// argv for a fresh session: codex: [bin, "--no-alt-screen"] (+ ["-m", model]); agy: [bin] (+ ["--model", model])
@@ -147,7 +150,8 @@ public struct CLIAgentDescriptor: Sendable, Equatable {
                 summary: "tmux send-keys into the member's tmux session (idle check first); replies from the transcript (agy) or the daemon/rollout (codex)."
             )
         ],
-        openingMessageRequired: false
+        openingMessageRequired: false,
+        exitCommand: "/quit"
     )
 
     public static func agy(env: [String: String]) -> CLIAgentDescriptor {
@@ -170,7 +174,8 @@ public struct CLIAgentDescriptor: Sendable, Equatable {
                     summary: "tmux send-keys into the member's tmux session (idle check first); replies from the transcript (agy) or the daemon/rollout (codex)."
                 )
             ],
-            openingMessageRequired: true
+            openingMessageRequired: true,
+            exitCommand: "/exit"
         )
     }
 
