@@ -443,7 +443,19 @@ public struct ExternalLightDriver: LightSessionDriver {
             } else { break }
         }
         let kept = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        return dropped && !kept.isEmpty ? kept : text
+        return dropped && !kept.isEmpty ? kept : unwrapReplyCommand(text)
+    }
+
+    /// A read-only agent that answers with only the bare command it would have run
+    /// (`pharos reply r_x "text"`) meant `text`. Backticked or partial forms stay as is.
+    static func unwrapReplyCommand(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = #"^pharos reply r_[A-Za-z0-9]+\s+(?:--\s+)?(["'])([\s\S]+)\1$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+              let range = Range(match.range(at: 2), in: trimmed) else { return text }
+        let inner = String(trimmed[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return inner.isEmpty ? text : inner
     }
 
     static func interpretAchatTurn(_ stdout: String) -> (ok: Bool, replies: Int?, repliesBefore: Int?, reply: String?, message: String?, busy: Bool) {

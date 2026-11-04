@@ -749,6 +749,9 @@ final class LightSessionTests: XCTestCase {
         XCTAssertEqual(ExternalLightDriver.stripReplyEcho("MIXED-OK\n```\npharos reply r_ab12 \"MIXED-OK\"\n```"), "MIXED-OK")
         XCTAssertEqual(ExternalLightDriver.stripReplyEcho("`pharos reply r_ab12 \"x\"`"), "`pharos reply r_ab12 \"x\"`")
         XCTAssertEqual(ExternalLightDriver.stripReplyEcho("Run pharos reply r_ab12 later.\nDone"), "Run pharos reply r_ab12 later.\nDone")
+        XCTAssertEqual(ExternalLightDriver.stripReplyEcho("pharos reply r_dmff15gokgl2 \"Conclusion: YAML wins.\""), "Conclusion: YAML wins.")
+        XCTAssertEqual(ExternalLightDriver.stripReplyEcho("pharos reply r_ab12 -- 'ok then'"), "ok then")
+        XCTAssertEqual(ExternalLightDriver.stripReplyEcho("pharos reply r_ab12"), "pharos reply r_ab12")
         XCTAssertEqual(ExternalLightDriver.stripReplyEcho("plain"), "plain")
     }
 
