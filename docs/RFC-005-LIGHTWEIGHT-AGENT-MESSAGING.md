@@ -300,3 +300,25 @@ Not certified, and not run by CI:
 - No new listening port is opened by this change.
 - `--launch` binds the debug port to `127.0.0.1` only. An endpoint that belongs to another process is left alone.
 - Environment variables override debug ports. The compiled launch defaults are the public achat ports (dsh 9301, Codex 9302). Antigravity's port stays in achat config or `PHAROS_AG_CDP_PORT`. No personal path is written into the tree.
+
+## Addendum (2026-11): addressing, intents, webhook members
+
+- **Addressing is by parameters only.** `send --to/--cc` and `reply --cc` name every
+  recipient. `@name` in a body is plain text; an unaddressed registered member yields a
+  `hint:` line (stderr / `hints` in JSON), never a delivery. A reply goes back only to
+  the sender of the message it answers, plus `--cc`. Harvested replies are never copied.
+- **Intents** (`--intent`): `ask` (default for send; delivered, reply expected),
+  `inform` (delivered FYI, no reply expected), `answer` (default for reply; recorded in the
+  thread for the asker and delivered only with `--deliver` on the send or the reply),
+  `discuss` (delivered each turn; `--rounds N`, default 4, still bounded by the hop limit;
+  `DONE` or the cap closes it and the originator is asked for a one-line conclusion that is
+  recorded in the thread). Intent is stored on the thread and each message and shown by
+  `thread show`. Tickets issued with FYI/answer/cc/recorded copies are not harvested by `wait`.
+- **Headers** say the intent; FYI and answer headers say "do not reply unless you need
+  clarification" and carry no `pharos reply` invitation.
+- **Webhook members** (`--app webhook`) are remote assistants reached by HTTPS POST of the
+  delivery envelope to a named config in `~/.config/pharos/webhooks.json` (mode 600; secret
+  from stdin/file/env, never argv, never printed). They answer with `pharos reply`; there is
+  no harvest. Delivery needs `PHAROS_LIGHT_LIVE=1`, like every live route.
+- Agents are encouraged (not required) to delegate messaging to a subagent that returns only
+  the conclusion. See `pharos help chat` and `skills/pharos-chat/SKILL.md`.

@@ -101,6 +101,7 @@ public enum LightRouteCatalog {
         case "claude": return claude
         case "ag": return ag
         case "cursor": return cursor
+        case "webhook": return webhook
         default:
             return [LightRoute(id: "native", access: .write, fallback: false, summary: "app-declared native route")]
         }
@@ -138,6 +139,12 @@ public enum LightRouteCatalog {
     public static let ag: [LightRoute] = [
         LightRoute(id: "desktop", access: .write, fallback: false,
                    summary: "desktop CDP on 127.0.0.1, delegated to achat."),
+    ]
+
+    /// A remote assistant: HTTPS POST of the envelope to a named webhook config. Write-only.
+    public static let webhook: [LightRoute] = [
+        LightRoute(id: "webhook", access: .write, fallback: false,
+                   summary: "HTTPS POST of the message envelope to the named webhook config"),
     ]
 
     /// Design routes for Cursor. Pharos does not spawn `cursor-agent`; achat owns both.
@@ -251,9 +258,16 @@ public struct ExternalLightDriver: LightSessionDriver {
     /// `achat` executable. Desktop, IPC, and web routes delegate send/read here.
     public var achat: String
     let replyFloor: AchatReplyFloor
+    /// Named webhook configs for `app == "webhook"` members.
+    public var webhooks: LightWebhookStore
+    public var webhookPoster: any LightWebhookPosting
 
     public init(allowLive: Bool = false, runner: (any LightProcessRunning)? = nil, binaries: LightBinaries = .names,
-                codexSessions: CodexRolloutReader? = nil, achat: String = "achat", replyFloorStore: URL? = nil) {
+                codexSessions: CodexRolloutReader? = nil, achat: String = "achat", replyFloorStore: URL? = nil,
+                webhooks: LightWebhookStore = LightWebhookStore(),
+                webhookPoster: any LightWebhookPosting = URLSessionWebhookPoster()) {
+        self.webhooks = webhooks
+        self.webhookPoster = webhookPoster
         self.allowLive = allowLive
         self.runner = runner
         self.binaries = binaries
@@ -278,7 +292,25 @@ public struct ExternalLightDriver: LightSessionDriver {
         [bin, app, "read", "--host", "local", "--json", "--session", session, "--open"]
     }
 
+    static func isWebhook(_ member: LightMember) -> Bool {
+        member.app == "webhook" || LightRoutePlanner.routes(for: member).first?.id == "webhook"
+    }
+
+    public func deliver(member: LightMember, envelope: LightEnvelope) -> LightDriveResult {
+        guard Self.isWebhook(member) else { return deliver(member: member, body: envelope.prompt) }
+        guard allowLive else {
+            return LightDriveResult(state: .deferred, route: "webhook", fallback: false, liveVerified: false,
+                                    detail: "unverified live; webhook POST needs PHAROS_LIGHT_LIVE=1")
+        }
+        return LightWebhookDelivery.deliver(member: member, envelope: envelope, store: webhooks, poster: webhookPoster)
+    }
+
     public func deliver(member: LightMember, body: String) -> LightDriveResult {
+        if Self.isWebhook(member) {
+            let envelope = LightEnvelope(replyId: "", threadId: "", from: "", to: member.name, cc: [], intent: "inform",
+                                         text: body, hop: 0, hopLimit: 0, expectsReply: false, replyCommand: nil, prompt: body)
+            return deliver(member: member, envelope: envelope)
+        }
         let writable = LightRoutePlanner.routes(for: member).filter { $0.access == .write }
         guard !writable.isEmpty else {
             return LightDriveResult(state: .failed, route: nil, fallback: false, liveVerified: false,
@@ -327,6 +359,8 @@ public struct ExternalLightDriver: LightSessionDriver {
     }
 
     public func readReply(member: LightMember, since: Date) -> String? {
+        // A webhook member answers with `pharos reply`; there is no session to read.
+        if Self.isWebhook(member) { return nil }
         if let route = LightRoutePlanner.select(member: member, operation: .send),
            Self.delegatesToAchat(app: member.app, routeID: route.id) {
             return harvest(member)

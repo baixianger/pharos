@@ -34,6 +34,9 @@ enum CLI {
 
         switch command {
         case "help", "--help", "-h":
+            if let topic = rest.first, ["chat", "messaging", "send", "reply", "intents", "webhook"].contains(topic) {
+                print(LightCommands.chatHelp); return 0
+            }
             printUsage(); return 0
         case "version", "--version", "-v":
             print("pharos \(version)"); return 0
@@ -130,6 +133,8 @@ enum CLI {
                 return await runMesh(rest)
             case "member", "thread", "send", "reply", "wait", "read":
                 return finishLight(lightExecute(command: command, arguments: rest))
+            case "webhook", "webhooks":
+                return finishLight(LightWebhookCommands.execute(arguments: rest, store: LightWebhookStore()))
             case "session":
                 return finishLight(sessionExecute(arguments: rest))
             case "project":
@@ -228,6 +233,7 @@ enum CLI {
 
     private static func finishLight(_ result: LightCLIResult) -> Int32 {
         if !result.text.isEmpty { print(result.text) }
+        for note in result.notes { FileHandle.standardError.write(Data((note + "\n").utf8)) }
         return result.exitCode
     }
 
@@ -986,11 +992,16 @@ enum CLI {
           runtime reconcile            Re-apply the saved runtime configuration
 
         LIGHTWEIGHT MESSAGING (point-to-point; a thread is email-style, not a room)
+          See `pharos help chat` for intents, --to/--cc, --deliver, --rounds, and the subagent pattern.
           member register --name N --host H --app codex|claude|dsh|ag|cursor --project P --session S [--route R]...
+          member register --name N --app webhook [--webhook CONFIG]      (remote assistant via HTTPS POST)
           member list [--json]
-          send --from NAME [--to NAME]... [--hop-limit N] [--ttl 24h] [--once] <member...> -- <text>
-          reply r_xxx <text> [--ttl 24h] [--once]
-          wait r_xxx [--timeout 30s]
+          send --from NAME --to NAME... [--cc NAME]... [--intent ask|inform|discuss] [--deliver] [--rounds N]
+               [--hop-limit N] [--ttl 24h] [--once] -- <text>
+          reply r_xxx [--cc NAME]... [--intent answer|ask|inform] [--deliver] [--ttl 24h] [--once] -- <text>
+          wait r_xxx [--timeout 30s] [--json]
+          webhook set NAME --url URL [--header-name H] --secret-stdin|--secret-file F|--secret-env VAR
+          webhook list [--json] | show NAME | remove NAME   (secrets always shown as ***)
           read --thread ID [--json] | read r_xxx [--json]
           thread list [--json]
           thread show <id> [--json]
@@ -1000,8 +1011,10 @@ enum CLI {
           session ack <request-id> [--result JSON]
           project list --host H --app dsh|ag|codex|cursor [--dry-run] [--no-queue] [--json]
           project add --host H --app dsh|ag|codex|cursor --path DIR [--name N] [--dry-run] [--no-queue] [--json]
-          A new send mints a thread. A reply inherits that thread from the reply-id
-          and may @mention more members (each mention is another 1:1 copy).
+          A new send mints a thread. A reply inherits that thread from the reply-id and
+          goes back only to the sender, plus --cc. `@name` in text is plain text (a hint is
+          printed when it names an unaddressed member). An answer is recorded, not delivered,
+          unless --deliver. Hand messaging to a subagent that returns only the conclusion.
           `thread new` and `thread add` are not commands. Participants are derived.
           Leading words that name registered members are recipients until `--`.
           Tokens after `--` are the message, including a token that looks like a flag

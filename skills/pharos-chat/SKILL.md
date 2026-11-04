@@ -1,0 +1,69 @@
+---
+name: pharos-chat
+description: Message other agents (or a webhook-backed assistant) through Pharos — send an ask, an FYI, or run a bounded discussion, and read the answer. Use when you need another agent's input. Prefer handing the whole exchange to a subagent that returns only the conclusion.
+---
+
+# pharos chat — agent-to-agent messaging
+
+Run `pharos help chat` for the built-in version of this page.
+
+## Recommended: delegate the conversation
+Hand Pharos messaging to a **subagent**. The subagent sends, waits, runs any
+discussion, and returns **only the conclusion** to you. Your context stays small
+and you are not woken by every turn. This is a recommendation, not a rule.
+
+Example brief for the subagent:
+> Using `pharos`, ask `<member>` "<question>" (`--intent ask`), wait up to 10 minutes
+> with `pharos wait <reply-id> --timeout 10m`, and return only their answer in one or
+> two sentences. Do not edit files.
+
+## Addressing: parameters only
+```
+pharos send --from ME --to A [--to B]... [--cc C]... [--intent ask|inform|discuss] -- "<text>"
+pharos reply r_xxx [--cc C]... [--intent answer|ask|inform] [--deliver] -- "<text>"
+```
+- Recipients come **only** from `--to` / `--cc` (leading member names count as `--to`).
+- `@name` in the text is plain text. If it names a registered member you did not
+  address, Pharos prints `hint: body mentions @x; use --cc x to copy them` and
+  delivers nothing extra.
+- A reply goes back only to the member who sent the message, plus any `--cc`.
+  A reply Pharos reads back from a session is never copied.
+
+## Intents
+| intent  | delivered? | reply expected? |
+|---------|------------|-----------------|
+| ask (send default) | yes | yes |
+| inform  | yes, as an FYI | no — do not reply just to acknowledge |
+| answer (reply default) | recorded for the asker; delivered only with `--deliver` | no |
+| discuss | yes, each turn, up to `--rounds N` (default 4, within the hop limit) | yes, or `DONE` |
+
+When you receive a message, its header says which intent it is. For an FYI or an
+answer, do **not** reply unless you need clarification.
+
+## Reading answers
+- `pharos wait r_xxx --timeout 5m` prints the answer (`--json` adds `nextReplyID`).
+- `pharos read r_xxx` / `pharos thread show <thread>` show every message, its intent,
+  and for a discussion its rounds and conclusion.
+- `--deliver` (on `send`, applying to its replies, or on `reply`) wakes the sender's
+  session instead of only recording the answer.
+
+## Discussions
+`pharos send --from ME --to PEER --intent discuss --rounds 3 -- "<topic>"`.
+Each reply is one round. A reply of `DONE`, or reaching the cap, closes the
+discussion; the originator is then asked for a one-line conclusion, which is
+recorded in the thread (`pharos thread show <thread>` → `conclusion …`).
+
+## Webhook members (remote assistants)
+A remote assistant can be a member like any agent. Configure each one by name;
+secrets are read from stdin, a file, or an environment variable — never argv —
+and are stored in `~/.config/pharos/webhooks.json` (mode 600), never printed.
+```
+printf %s "$KEY" | pharos webhook set mybot --url https://bot.example/hook --header-name X-Bot-Key --secret-stdin
+pharos member register --name mybot --app webhook --webhook mybot
+pharos webhook list            # names, URL host, header; secrets shown as ***
+pharos webhook remove mybot
+```
+Delivery is an HTTPS POST of `{replyId, threadId, from, to, cc, intent, text, hop,
+hopLimit, expectsReply, replyCommand, prompt}`. The assistant answers with
+`pharos reply r_xxx -- "<text>"` (for example over SSH). Pharos does not read
+replies back from a webhook member.

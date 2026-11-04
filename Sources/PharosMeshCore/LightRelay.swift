@@ -76,13 +76,97 @@ public struct LightThread: Codable, Equatable, Sendable, Identifiable {
     public var hopLimit: Int
     public var stopped: Bool
     public var createdAt: Date
+    /// Intent of the opening message. Nil in threads written before intents existed (read as ask).
+    public var intent: LightIntent?
+    /// `send --deliver`: replies to the originator wake its session instead of only being recorded.
+    public var deliverReplies: Bool?
+    /// Discuss only: reply cap and replies used so far.
+    public var rounds: Int?
+    public var roundsUsed: Int?
+    /// Discuss only: the discussion ended (DONE or round cap). Replies are recorded, not delivered.
+    public var closed: Bool?
+    /// Discuss only: the one-line conclusion recorded after it closed.
+    public var conclusion: String?
 
-    public init(id: String, originator: String, hopLimit: Int, stopped: Bool, createdAt: Date) {
+    public init(id: String, originator: String, hopLimit: Int, stopped: Bool, createdAt: Date,
+                intent: LightIntent? = nil, deliverReplies: Bool? = nil, rounds: Int? = nil,
+                roundsUsed: Int? = nil, closed: Bool? = nil, conclusion: String? = nil) {
         self.id = id
         self.originator = originator
         self.hopLimit = hopLimit
         self.stopped = stopped
         self.createdAt = createdAt
+        self.intent = intent
+        self.deliverReplies = deliverReplies
+        self.rounds = rounds
+        self.roundsUsed = roundsUsed
+        self.closed = closed
+        self.conclusion = conclusion
+    }
+}
+
+/// Why a message was sent. Addressing (`--to` / `--cc`) says who gets it;
+/// intent says what the recipient is expected to do with it.
+public enum LightIntent: String, Codable, Sendable, CaseIterable {
+    /// Delivered; a reply is expected.
+    case ask
+    /// Delivered as a notification; the recipient should not reply just to acknowledge.
+    case inform
+    /// A reply to an ask. Recorded for the asker; delivered only on `--deliver`.
+    case answer
+    /// Back-and-forth, delivered each turn, capped by `--rounds`; DONE ends it.
+    case discuss
+
+    public var expectsReply: Bool { self == .ask || self == .discuss }
+
+    public static func parse(_ raw: String?) -> LightIntent? {
+        guard let raw else { return nil }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch value {
+        case "fyi": return .inform
+        case "discussion": return .discuss
+        default: return LightIntent(rawValue: value)
+        }
+    }
+}
+
+/// Structured form of one delivery. Session drivers type `prompt` into the app;
+/// a webhook member receives this JSON as the POST body.
+public struct LightEnvelope: Codable, Equatable, Sendable {
+    public var replyId: String
+    public var threadId: String
+    public var from: String
+    public var to: String
+    public var cc: [String]
+    public var intent: String
+    public var text: String
+    public var hop: Int
+    public var hopLimit: Int
+    public var round: Int?
+    public var rounds: Int?
+    public var expectsReply: Bool
+    /// How to answer, when an answer is expected: `pharos reply r_xxx -- "<text>"`.
+    public var replyCommand: String?
+    /// The full text a session driver delivers (message plus Pharos header).
+    public var prompt: String
+
+    public init(replyId: String, threadId: String, from: String, to: String, cc: [String], intent: String,
+                text: String, hop: Int, hopLimit: Int, round: Int? = nil, rounds: Int? = nil,
+                expectsReply: Bool, replyCommand: String?, prompt: String) {
+        self.replyId = replyId
+        self.threadId = threadId
+        self.from = from
+        self.to = to
+        self.cc = cc
+        self.intent = intent
+        self.text = text
+        self.hop = hop
+        self.hopLimit = hopLimit
+        self.round = round
+        self.rounds = rounds
+        self.expectsReply = expectsReply
+        self.replyCommand = replyCommand
+        self.prompt = prompt
     }
 }
 
@@ -114,6 +198,8 @@ public enum LightDeliveryState: String, Codable, Sendable {
     case failed
     case expired
     case suppressed
+    /// Not delivered into the session: kept in the thread for `wait` / `read` / `thread show`.
+    case recorded
 }
 
 public enum LightLogKind: String, Codable, Sendable {
@@ -139,11 +225,19 @@ public struct LightLogEntry: Codable, Equatable, Sendable, Identifiable {
     public var liveVerified: Bool?
     public var header: String?
     public var at: Date
+    public var intent: LightIntent?
+    /// Message entries: explicit addressees (`--to`, or the member a reply answers) and copies (`--cc`).
+    public var recipients: [String]?
+    public var cc: [String]?
 
     public init(id: String, kind: LightLogKind, threadID: String, from: String? = nil, text: String,
                 mentions: [String] = [], replyTo: String? = nil, hop: Int? = nil, to: String? = nil,
                 replyID: String? = nil, state: LightDeliveryState? = nil, route: String? = nil,
-                fallback: Bool? = nil, liveVerified: Bool? = nil, header: String? = nil, at: Date) {
+                fallback: Bool? = nil, liveVerified: Bool? = nil, header: String? = nil, at: Date,
+                intent: LightIntent? = nil, recipients: [String]? = nil, cc: [String]? = nil) {
+        self.intent = intent
+        self.recipients = recipients
+        self.cc = cc
         self.id = id
         self.kind = kind
         self.threadID = threadID
@@ -196,9 +290,18 @@ public struct LightSendResult: Codable, Equatable, Sendable {
     public var deliveries: [LightDelivery]
     public var unresolved: [String]
     public var notice: String?
+    public var intent: LightIntent?
+    /// Registered members named with `@` in the body but not addressed. Never delivered.
+    public var hints: [String]?
+    /// Discuss only: this reply ended the discussion.
+    public var closed: Bool?
 
     public init(threadID: String, from: String, hop: Int, hopLimit: Int, stopped: Bool, forwarded: Bool = false,
-                deliveries: [LightDelivery], unresolved: [String], notice: String?) {
+                deliveries: [LightDelivery], unresolved: [String], notice: String?,
+                intent: LightIntent? = nil, hints: [String]? = nil, closed: Bool? = nil) {
+        self.intent = intent
+        self.hints = hints
+        self.closed = closed
         self.threadID = threadID
         self.from = from
         self.hop = hop
@@ -223,8 +326,11 @@ public struct LightWaitResult: Codable, Equatable, Sendable {
     public var status: Status
     public var text: String?
     public var send: LightSendResult?
+    /// Reply-id issued to the waiting member for this answer, when one was recorded.
+    public var nextReplyID: String?
 
-    public init(replyID: String, status: Status, text: String?, send: LightSendResult?) {
+    public init(replyID: String, status: Status, text: String?, send: LightSendResult?, nextReplyID: String? = nil) {
+        self.nextReplyID = nextReplyID
         self.replyID = replyID
         self.status = status
         self.text = text
@@ -350,9 +456,17 @@ public struct LightDriveResult: Equatable, Sendable {
 /// and the external planner in PharosRuntime. The relay does not switch on app brand.
 public protocol LightSessionDriver: Sendable {
     func deliver(member: LightMember, body: String) -> LightDriveResult
+    /// Structured delivery. The default types `envelope.prompt` through `deliver(member:body:)`.
+    func deliver(member: LightMember, envelope: LightEnvelope) -> LightDriveResult
     /// Text the session produced after `since`, only when the adapter can tell
     /// new text from older history. Return nil rather than a stale pane.
     func readReply(member: LightMember, since: Date) -> String?
+}
+
+extension LightSessionDriver {
+    public func deliver(member: LightMember, envelope: LightEnvelope) -> LightDriveResult {
+        deliver(member: member, body: envelope.prompt)
+    }
 }
 
 public struct IdleLightDriver: LightSessionDriver {
@@ -455,6 +569,8 @@ public enum LightTokens {
     }
 }
 
+/// `@name` tokens in a body. Not an addressing mechanism: recipients come only from
+/// `--to` / `--cc`. The relay uses the tokens to hint at members that were named but not copied.
 public enum LightMentions {
     /// `@name` tokens, in order, de-duplicated, lowercased.
     /// An `@` inside a larger token (an email address) is ignored.
@@ -662,17 +778,28 @@ public final class LightRelay: @unchecked Sendable {
 
     // MARK: Send / reply
 
+    /// Default reply cap for `--intent discuss`.
+    public static let defaultDiscussRounds = 4
+
     /// A new message (not a reply). Mints a thread id and delivers one copy to
-    /// each recipient. `@` tokens in `text` are body text, not extra recipients.
-    public func send(from name: String, to recipients: [String], text: String,
+    /// each `to` and `cc` member. `@` tokens in `text` are plain text: a registered
+    /// member named that way but not addressed comes back in `hints`, never as a delivery.
+    public func send(from name: String, to recipients: [String], cc: [String] = [], text: String,
+                     intent: LightIntent = .ask, deliverReplies: Bool = false, rounds: Int? = nil,
                      ttl: TimeInterval? = nil, once: Bool = false, hopLimit: Int? = nil) throws -> LightSendResult {
         let plan = try sync { () -> SendPlan in
-            try planSendLocked(from: name, recipients: recipients, text: text, ttl: ttl, once: once, hopLimit: hopLimit)
+            try planSendLocked(from: name, recipients: recipients, cc: cc, text: text, intent: intent,
+                               deliverReplies: deliverReplies, rounds: rounds, ttl: ttl, once: once, hopLimit: hopLimit)
         }
         return try fanout(plan)
     }
 
-    public func reply(_ replyID: String, text: String, ttl: TimeInterval? = nil, once: Bool = false) throws -> LightSendResult {
+    /// Answer a reply-id. The answer goes back only to the member who sent the message,
+    /// plus each `cc`. Outside an open discussion, an `answer` / `inform` reply to the
+    /// sender is recorded in the thread and not delivered unless `deliver` (or the
+    /// original `send --deliver`) asks for it. An `ask` reply is always delivered.
+    public func reply(_ replyID: String, text: String, cc: [String] = [], intent: LightIntent? = nil,
+                      deliver: Bool = false, ttl: TimeInterval? = nil, once: Bool = false) throws -> LightSendResult {
         if let forwarder, let forwarded = forwarder.forward(replyID: replyID, text: text) {
             guard forwarded.ok else { throw LightRelayError.forwardFailed(forwarded.message) }
             return LightSendResult(threadID: "", from: "", hop: 0, hopLimit: 0, stopped: false,
@@ -681,7 +808,7 @@ public final class LightRelay: @unchecked Sendable {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw LightRelayError.emptyText }
         let decision = try sync { () -> ReplyDecision in
-            try decideReplyLocked(replyID, text: trimmed, ttl: ttl, once: once)
+            try decideReplyLocked(replyID, text: trimmed, cc: cc, intent: intent, deliver: deliver, ttl: ttl, once: once)
         }
         switch decision {
         case .finished(let result):
@@ -697,7 +824,8 @@ public final class LightRelay: @unchecked Sendable {
         while true {
             polls += 1
             if let logged = try loggedReply(replyID) {
-                return LightWaitResult(replyID: replyID, status: .replied, text: logged, send: nil)
+                return LightWaitResult(replyID: replyID, status: .replied, text: logged, send: nil,
+                                       nextReplyID: nextReplyID(after: replyID))
             }
             let probe = try sync { () -> WaitProbe in
                 try probeReplyLocked(replyID)
@@ -712,9 +840,11 @@ public final class LightRelay: @unchecked Sendable {
             case .readable(let member, let since):
                 if let text = driver.readReply(member: member, since: since)?
                     .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+                    // A harvested reply goes only to the original sender. It is never copied.
                     let send = try reply(replyID, text: text)
                     let logged = try loggedReply(replyID)
-                    return LightWaitResult(replyID: replyID, status: .replied, text: logged ?? text, send: send)
+                    return LightWaitResult(replyID: replyID, status: .replied, text: logged ?? text, send: send,
+                                           nextReplyID: nextReplyID(after: replyID))
                 }
             }
             if timeout <= 0 || now().timeIntervalSince(start) >= timeout || polls >= 10_000 {
@@ -803,7 +933,7 @@ public final class LightRelay: @unchecked Sendable {
         while true {
             let claim: Claim? = sync { claimNextLocked(skipping: blocked) }
             guard let claim else { break }
-            let result = driver.deliver(member: claim.member, body: claim.item.body)
+            let result = driver.deliver(member: claim.member, envelope: claim.item.envelope ?? Self.bareEnvelope(claim.item))
             let delivered = sync { finishClaimLocked(claim, result: result, blocked: &blocked) }
             if delivered { flushed += 1 }
         }
@@ -823,6 +953,14 @@ public final class LightRelay: @unchecked Sendable {
         var consumed: Bool
         var terminal: Bool
         var issuedAt: Date
+        var intent: LightIntent?
+        /// False when the ticket was issued with a notification (inform, answer, cc, recorded)
+        /// or to a webhook member: `wait` must not harvest session text for it. Nil reads as true.
+        var harvest: Bool?
+        /// Replies on this ticket wake the member who sent it (`--deliver`).
+        var deliverReply: Bool?
+        /// This ticket asks for the one-line conclusion of a closed discussion.
+        var conclusion: Bool?
     }
 
     private struct OutboxItem: Codable, Equatable {
@@ -836,6 +974,7 @@ public final class LightRelay: @unchecked Sendable {
         var fallbackRoute: String?
         var enqueuedAt: Date
         var expiresAt: Date
+        var envelope: LightEnvelope?
     }
 
     private struct NodeSeen: Codable, Equatable {
@@ -908,6 +1047,9 @@ public final class LightRelay: @unchecked Sendable {
         var unresolved: [String]
         var notice: String?
         var targets: [PreparedTarget]
+        var intent: LightIntent? = nil
+        var hints: [String]? = nil
+        var closed: Bool? = nil
     }
 
     private struct PreparedTarget {
@@ -916,6 +1058,34 @@ public final class LightRelay: @unchecked Sendable {
         var body: String
         var header: String
         var queued: Bool
+        var envelope: LightEnvelope
+        /// Kept in the thread only; the driver is not called.
+        var record: Bool = false
+    }
+
+    /// How one copy of a message is addressed and what its header asks for.
+    private struct TargetSpec {
+        var intent: LightIntent
+        /// The member is on `--cc`: an FYI copy, no reply expected.
+        var copied = false
+        /// Hop-limit notice: invites nothing.
+        var terminal = false
+        /// Record in the thread instead of waking the session.
+        var record = false
+        /// Replies on this copy wake the sender (`--deliver`).
+        var deliverReply = false
+        /// The copy asks for a closed discussion's one-line conclusion; `note` says why it closed.
+        var conclusion = false
+        var note: String? = nil
+        /// Everyone copied on this message, for the envelope.
+        var cc: [String] = []
+        /// Discuss: the round the recipient's reply would be.
+        var round: Int? = nil
+
+        var expectsReply: Bool {
+            if terminal || copied || record { return false }
+            return conclusion || intent.expectsReply
+        }
     }
 
     private enum ReplyDecision {
@@ -938,17 +1108,28 @@ public final class LightRelay: @unchecked Sendable {
 
     private func fanout(_ plan: SendPlan) throws -> LightSendResult {
         var deliveries: [LightDelivery] = []
-        for target in plan.targets where !target.queued {
+        for target in plan.targets where target.record {
+            deliveries.append(LightDelivery(to: target.member.name, replyID: target.ticket.replyID, state: .recorded,
+                                            route: nil, fallback: false, liveVerified: false, header: target.header,
+                                            detail: "recorded in the thread; not delivered (use --deliver to wake the sender)"))
+        }
+        for target in plan.targets where !target.queued && !target.record {
             deliveries.append(try deliverNow(target))
         }
-        for target in plan.targets where target.queued {
+        for target in plan.targets where target.queued && !target.record {
             deliveries.append(queuedDelivery(target))
         }
         _ = pump()
         let refreshed = try refresh(deliveries, threadID: plan.threadID)
         return LightSendResult(threadID: plan.threadID, from: plan.from, hop: plan.hop, hopLimit: plan.hopLimit,
                                stopped: plan.stopped, deliveries: refreshed, unresolved: plan.unresolved,
-                               notice: plan.notice)
+                               notice: plan.notice, intent: plan.intent, hints: plan.hints, closed: plan.closed)
+    }
+
+    private static func bareEnvelope(_ item: OutboxItem) -> LightEnvelope {
+        LightEnvelope(replyId: item.replyID, threadId: item.threadID, from: "", to: item.to, cc: [], intent: LightIntent.ask.rawValue,
+                      text: item.body, hop: item.hop, hopLimit: item.hop, expectsReply: true,
+                      replyCommand: "pharos reply \(item.replyID) -- \"...\"", prompt: item.body)
     }
 
     private func deliverNow(_ target: PreparedTarget) throws -> LightDelivery {
@@ -981,7 +1162,7 @@ public final class LightRelay: @unchecked Sendable {
         if !held {
             return queuedDelivery(target)
         }
-        let result = driver.deliver(member: target.member, body: target.body)
+        let result = driver.deliver(member: target.member, envelope: target.envelope)
         return try sync {
             inflight.remove(target.member.name)
             if result.state == .busy {
@@ -1017,7 +1198,8 @@ public final class LightRelay: @unchecked Sendable {
         }
     }
 
-    private func planSendLocked(from name: String, recipients: [String], text: String,
+    private func planSendLocked(from name: String, recipients: [String], cc: [String], text: String,
+                                intent: LightIntent, deliverReplies: Bool, rounds: Int?,
                                 ttl: TimeInterval?, once: Bool, hopLimit: Int?) throws -> SendPlan {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw LightRelayError.emptyText }
@@ -1025,6 +1207,7 @@ public final class LightRelay: @unchecked Sendable {
         guard members[sender] != nil else { throw LightRelayError.unknownMember(sender) }
         let limit = hopLimit ?? limits.hopLimit
         guard limit >= 1 else { throw LightRelayError.invalidLimit }
+        if let rounds, rounds < 1 { throw LightRelayError.invalidLimit }
         var targets: [String] = []
         for raw in recipients {
             let id = try Self.validateName(raw)
@@ -1033,46 +1216,97 @@ public final class LightRelay: @unchecked Sendable {
             if !targets.contains(id) { targets.append(id) }
         }
         guard !targets.isEmpty else { throw LightRelayError.noRecipients }
+        var copies: [String] = []
+        for raw in cc {
+            let id = try Self.validateName(raw)
+            if id == sender || targets.contains(id) { continue }
+            guard members[id] != nil else { throw LightRelayError.unknownMember(id) }
+            if !copies.contains(id) { copies.append(id) }
+        }
+        let discuss = intent == .discuss
         let thread = LightThread(id: try tokenLocked("t"), originator: sender, hopLimit: limit,
-                                 stopped: false, createdAt: now())
+                                 stopped: false, createdAt: now(), intent: intent,
+                                 deliverReplies: deliverReplies ? true : nil,
+                                 rounds: discuss ? (rounds ?? Self.defaultDiscussRounds) : nil,
+                                 roundsUsed: discuss ? 0 : nil)
         threads[thread.id] = thread
         logs[thread.id] = []
-        let mentions = LightMentions.tokens(in: trimmed)
+        let hints = hintsLocked(trimmed, addressed: targets + copies + [sender])
         try appendLocked(LightLogEntry(
             id: try tokenLocked("m"), kind: .message, threadID: thread.id, from: sender, text: trimmed,
-            mentions: mentions, hop: 1, at: now()
+            hop: 1, at: now(), intent: intent, recipients: targets, cc: copies.isEmpty ? nil : copies
         ))
         var prepared: [PreparedTarget] = []
         for target in targets {
             guard let member = members[target] else { throw LightRelayError.unknownMember(target) }
+            let spec = TargetSpec(intent: intent, deliverReply: deliverReplies, cc: copies, round: discuss ? 1 : nil)
             prepared.append(try prepareTargetLocked(member: member, from: sender, thread: thread, hop: 1,
-                                                   ttl: ttl, once: once, text: trimmed, terminal: false))
+                                                   ttl: ttl, once: once, text: trimmed, spec: spec))
+        }
+        for copy in copies {
+            guard let member = members[copy] else { throw LightRelayError.unknownMember(copy) }
+            let spec = TargetSpec(intent: intent, copied: true, deliverReply: deliverReplies, cc: copies)
+            prepared.append(try prepareTargetLocked(member: member, from: sender, thread: thread, hop: 1,
+                                                   ttl: ttl, once: once, text: trimmed, spec: spec))
         }
         try persistLocked()
         return SendPlan(threadID: thread.id, from: sender, hop: 1, hopLimit: thread.hopLimit, stopped: false,
-                        unresolved: [], notice: nil, targets: prepared)
+                        unresolved: [], notice: nil, targets: prepared, intent: intent,
+                        hints: hints.isEmpty ? nil : hints)
+    }
+
+    /// Registered members named with `@` in `text` that are not addressed. Hints only.
+    private func hintsLocked(_ text: String, addressed: [String]) -> [String] {
+        LightMentions.tokens(in: text).filter { members[$0] != nil && !addressed.contains($0) }
+    }
+
+    /// A discussion turn that is just `DONE` (any case, optional punctuation) ends it.
+    static func isDone(_ text: String) -> Bool {
+        let upper = text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let letters = upper.drop { !$0.isLetter }
+        guard letters.hasPrefix("DONE") else { return false }
+        guard let next = letters.dropFirst(4).first else { return true }
+        return !(next.isLetter || next.isNumber)
     }
 
     private func prepareTargetLocked(member: LightMember, from: String, thread: LightThread, hop: Int,
-                                     ttl: TimeInterval?, once: Bool, text: String, terminal: Bool) throws -> PreparedTarget {
+                                     ttl: TimeInterval?, once: Bool, text: String, spec: TargetSpec) throws -> PreparedTarget {
         let replyTTL = ttl ?? limits.replyTTL
         let issued = now()
         let replyID = try tokenLocked("r")
+        let expects = spec.expectsReply
         let ticket = Ticket(replyID: replyID, threadID: thread.id, from: from, to: member.name, hop: hop,
                             expiresAt: issued.addingTimeInterval(replyTTL), once: once, consumed: false,
-                            terminal: terminal, issuedAt: issued)
+                            terminal: spec.terminal, issuedAt: issued, intent: spec.intent,
+                            harvest: expects && member.app != "webhook",
+                            deliverReply: spec.deliverReply ? true : nil,
+                            conclusion: spec.conclusion ? true : nil)
         ledger[replyID] = ticket
         // A hop-limit notice is terminal. It must not invite another `pharos reply`.
-        let header = headerLocked(from: from, thread: thread.id, replyID: replyID, hop: hop, limit: thread.hopLimit,
-                                 inviteReply: !terminal)
+        let header = headerLocked(from: from, thread: thread, replyID: replyID, hop: hop, spec: spec)
         let body = text + "\n\n" + header
+        let envelope = LightEnvelope(
+            replyId: replyID, threadId: thread.id, from: from, to: member.name, cc: spec.cc,
+            intent: spec.intent.rawValue, text: text, hop: hop, hopLimit: thread.hopLimit,
+            round: spec.round, rounds: spec.round == nil ? nil : (thread.rounds ?? Self.defaultDiscussRounds),
+            expectsReply: expects,
+            replyCommand: spec.terminal ? nil : "pharos reply \(replyID) -- \"...\"",
+            prompt: body
+        )
+        if spec.record {
+            try appendDeliveryLocked(threadID: thread.id, to: member.name, replyID: replyID, state: .recorded,
+                                     route: nil, fallback: false, liveVerified: false, header: header, hop: hop)
+            return PreparedTarget(member: member, ticket: ticket, body: body, header: header, queued: false,
+                                  envelope: envelope, record: true)
+        }
         let queued = outbox.contains(where: { $0.to == member.name }) || inflight.contains(member.name)
         if queued {
-            let target = PreparedTarget(member: member, ticket: ticket, body: body, header: header, queued: true)
+            let target = PreparedTarget(member: member, ticket: ticket, body: body, header: header, queued: true,
+                                        envelope: envelope)
             try enqueueLocked(target, routeNote: nil)
             return target
         }
-        return PreparedTarget(member: member, ticket: ticket, body: body, header: header, queued: false)
+        return PreparedTarget(member: member, ticket: ticket, body: body, header: header, queued: false, envelope: envelope)
     }
 
     private func enqueueLocked(_ target: PreparedTarget, routeNote: String?) throws {
@@ -1082,14 +1316,15 @@ public final class LightRelay: @unchecked Sendable {
         let item = OutboxItem(id: try tokenLocked("q"), threadID: target.ticket.threadID, to: target.member.name,
                               replyID: target.ticket.replyID, body: target.body, header: target.header,
                               hop: target.ticket.hop, fallbackRoute: routeNote, enqueuedAt: now(),
-                              expiresAt: now().addingTimeInterval(limits.queueTTL))
+                              expiresAt: now().addingTimeInterval(limits.queueTTL), envelope: target.envelope)
         outbox.append(item)
         try appendDeliveryLocked(threadID: target.ticket.threadID, to: target.member.name,
                                  replyID: target.ticket.replyID, state: .queued, route: routeNote,
                                  fallback: false, liveVerified: false, header: target.header, hop: target.ticket.hop)
     }
 
-    private func decideReplyLocked(_ replyID: String, text: String, ttl: TimeInterval?, once: Bool) throws -> ReplyDecision {
+    private func decideReplyLocked(_ replyID: String, text: String, cc rawCC: [String], intent requested: LightIntent?,
+                                   deliver: Bool, ttl: TimeInterval?, once: Bool) throws -> ReplyDecision {
         if !LightTokens.isValid(replyID, prefix: "r") {
             try rejectLocked(replyID, reason: "malformed")
             throw LightRelayError.malformedReply(replyID)
@@ -1109,12 +1344,37 @@ public final class LightRelay: @unchecked Sendable {
             throw LightRelayError.expiredReply(replyID)
         }
         guard var thread = threads[ticket.threadID] else { throw LightRelayError.unknownThread(ticket.threadID) }
+        var ccNames: [String] = []
+        for raw in rawCC {
+            let id = try Self.validateName(raw)
+            guard members[id] != nil else { throw LightRelayError.unknownMember(id) }
+            if id != ticket.to, !ccNames.contains(id) { ccNames.append(id) }
+        }
+        if ticket.conclusion == true {
+            ticket.consumed = true
+            ledger[replyID] = ticket
+            thread.conclusion = text
+            threads[thread.id] = thread
+            try appendLocked(LightLogEntry(
+                id: try tokenLocked("m"), kind: .message, threadID: thread.id, from: ticket.to, text: text,
+                replyTo: replyID, hop: ticket.hop, at: now(), intent: .inform
+            ))
+            try appendLocked(LightLogEntry(
+                id: try tokenLocked("m"), kind: .notice, threadID: thread.id, from: ticket.to,
+                text: "Conclusion (\(ticket.to)): \(text)", at: now()
+            ))
+            try persistLocked()
+            return .finished(LightSendResult(threadID: thread.id, from: ticket.to, hop: ticket.hop,
+                                             hopLimit: thread.hopLimit, stopped: thread.stopped, deliveries: [],
+                                             unresolved: [], notice: "conclusion recorded", intent: .inform,
+                                             closed: true))
+        }
         if ticket.terminal {
             ticket.consumed = true
             ledger[replyID] = ticket
             try appendLocked(LightLogEntry(
                 id: try tokenLocked("m"), kind: .message, threadID: thread.id, from: ticket.to, text: text,
-                replyTo: replyID, hop: ticket.hop, at: now()
+                replyTo: replyID, hop: ticket.hop, at: now(), intent: requested ?? .answer
             ))
             try persistLocked()
             return .finished(LightSendResult(threadID: thread.id, from: ticket.to, hop: ticket.hop,
@@ -1125,16 +1385,19 @@ public final class LightRelay: @unchecked Sendable {
             try rejectLocked(replyID, reason: "stopped", threadID: thread.id)
             throw LightRelayError.threadStopped(thread.id)
         }
+        let discussOpen = thread.intent == .discuss && thread.closed != true
+        let replyIntent = requested ?? (discussOpen ? .discuss : .answer)
         let nextHop = ticket.hop + 1
         if nextHop > thread.hopLimit {
             ticket.consumed = true
             ledger[replyID] = ticket
             thread.stopped = true
+            if discussOpen { thread.closed = true }
             threads[thread.id] = thread
             let notice = "Hop limit \(thread.hopLimit) reached. Thread stopped. Last reply from \(ticket.to): \(text)"
             try appendLocked(LightLogEntry(
                 id: try tokenLocked("m"), kind: .message, threadID: thread.id, from: ticket.to, text: text,
-                replyTo: replyID, hop: ticket.hop, at: now()
+                replyTo: replyID, hop: ticket.hop, at: now(), intent: replyIntent, recipients: [ticket.from]
             ))
             try appendLocked(LightLogEntry(
                 id: try tokenLocked("m"), kind: .notice, threadID: thread.id, from: thread.originator, text: notice,
@@ -1143,11 +1406,13 @@ public final class LightRelay: @unchecked Sendable {
             var targets: [PreparedTarget] = []
             if thread.originator != ticket.to, let owner = members[thread.originator] {
                 targets.append(try prepareTargetLocked(member: owner, from: ticket.to, thread: thread, hop: ticket.hop,
-                                                       ttl: ttl, once: true, text: notice, terminal: true))
+                                                       ttl: ttl, once: true, text: notice,
+                                                       spec: TargetSpec(intent: .inform, terminal: true)))
             }
             try persistLocked()
             return .fanout(SendPlan(threadID: thread.id, from: ticket.to, hop: ticket.hop, hopLimit: thread.hopLimit,
-                                    stopped: true, unresolved: [], notice: notice, targets: targets))
+                                    stopped: true, unresolved: [], notice: notice, targets: targets,
+                                    intent: replyIntent, closed: discussOpen ? true : nil))
         }
         if ticket.once {
             ticket.consumed = true
@@ -1155,39 +1420,70 @@ public final class LightRelay: @unchecked Sendable {
             ticket.hop = nextHop
         }
         ledger[replyID] = ticket
-        threads[thread.id] = thread
-        // Always answer the previous sender, then copy each registered @mention.
-        // Mentions add deliveries; they do not replace the sender. Unknown tokens
-        // stay unresolved. There is no roster, so `@all` is just an unknown name.
-        let mentions = LightMentions.tokens(in: text)
-        var names: [String] = []
-        var unresolved: [String] = []
-        if ticket.from != ticket.to, members[ticket.from] != nil {
-            names.append(ticket.from)
-        }
-        for token in mentions where token != ticket.to {
-            if members[token] != nil {
-                if !names.contains(token) { names.append(token) }
-            } else {
-                unresolved.append(token)
-            }
-        }
+        let hints = hintsLocked(text, addressed: [ticket.from, ticket.to] + ccNames)
         try appendLocked(LightLogEntry(
             id: try tokenLocked("m"), kind: .message, threadID: thread.id, from: ticket.to, text: text,
-            mentions: mentions, replyTo: replyID, hop: nextHop, at: now()
+            replyTo: replyID, hop: nextHop, at: now(), intent: replyIntent,
+            recipients: ticket.from == ticket.to ? [] : [ticket.from], cc: ccNames.isEmpty ? nil : ccNames
         ))
         var targets: [PreparedTarget] = []
-        for name in names {
-            guard let member = members[name] else {
-                unresolved.append(name)
-                continue
+        var notice: String? = nil
+        var closed: Bool? = nil
+        let back = ticket.from != ticket.to ? members[ticket.from] : nil
+        if discussOpen {
+            // Each reply in an open discussion is one round. DONE or the cap closes it,
+            // and the originator is asked for a one-line conclusion.
+            let cap = thread.rounds ?? Self.defaultDiscussRounds
+            let used = (thread.roundsUsed ?? 0) + 1
+            thread.roundsUsed = used
+            let done = Self.isDone(text)
+            if done || used >= cap {
+                thread.closed = true
+                closed = true
+                let reason = done ? "\(ticket.to) answered DONE" : "round cap \(cap) reached"
+                notice = "Discussion closed: \(reason)."
+                threads[thread.id] = thread
+                try appendLocked(LightLogEntry(
+                    id: try tokenLocked("m"), kind: .notice, threadID: thread.id, from: thread.originator,
+                    text: notice ?? "", to: thread.originator, at: now()
+                ))
+                if let owner = members[thread.originator] {
+                    let last = done ? "" : " Last message from \(ticket.to): \(text)"
+                    targets.append(try prepareTargetLocked(
+                        member: owner, from: ticket.to, thread: thread, hop: nextHop, ttl: ttl, once: true,
+                        text: "Discussion closed: \(reason).\(last)",
+                        spec: TargetSpec(intent: .inform, conclusion: true, note: reason)))
+                }
+            } else {
+                threads[thread.id] = thread
+                if let back {
+                    targets.append(try prepareTargetLocked(
+                        member: back, from: ticket.to, thread: thread, hop: nextHop, ttl: ttl, once: once, text: text,
+                        spec: TargetSpec(intent: .discuss, cc: ccNames, round: used + 1)))
+                }
             }
-            targets.append(try prepareTargetLocked(member: member, from: ticket.to, thread: thread, hop: nextHop,
-                                                   ttl: ttl, once: once, text: text, terminal: false))
+        } else {
+            threads[thread.id] = thread
+            // The answer goes back to the sender. It wakes the sender only on --deliver
+            // (here or on the original send) or when it is itself a question.
+            let wake = deliver || ticket.deliverReply == true || replyIntent == .ask
+            if let back {
+                targets.append(try prepareTargetLocked(
+                    member: back, from: ticket.to, thread: thread, hop: nextHop, ttl: ttl, once: once, text: text,
+                    spec: TargetSpec(intent: replyIntent, record: !wake, deliverReply: thread.deliverReplies == true,
+                                     cc: ccNames)))
+            }
+        }
+        for name in ccNames where name != ticket.from {
+            guard let member = members[name] else { continue }
+            targets.append(try prepareTargetLocked(
+                member: member, from: ticket.to, thread: thread, hop: nextHop, ttl: ttl, once: once, text: text,
+                spec: TargetSpec(intent: replyIntent == .discuss ? .inform : replyIntent, copied: true, cc: ccNames)))
         }
         try persistLocked()
         return .fanout(SendPlan(threadID: thread.id, from: ticket.to, hop: nextHop, hopLimit: thread.hopLimit,
-                                stopped: false, unresolved: unresolved, notice: nil, targets: targets))
+                                stopped: false, unresolved: [], notice: notice, targets: targets,
+                                intent: replyIntent, hints: hints.isEmpty ? nil : hints, closed: closed))
     }
 
     private func probeReplyLocked(_ replyID: String) throws -> WaitProbe {
@@ -1205,6 +1501,10 @@ public final class LightRelay: @unchecked Sendable {
         if ticket.consumed {
             return .pending
         }
+        // No reply is expected (FYI, answer, cc, recorded, webhook): session text is not a reply.
+        if ticket.harvest == false {
+            return .pending
+        }
         guard let member = members[ticket.to] else { return .pending }
         return .readable(member, ticket.issuedAt)
     }
@@ -1213,6 +1513,15 @@ public final class LightRelay: @unchecked Sendable {
         sync {
             guard let ticket = ledger[replyID] else { return nil }
             return logs[ticket.threadID]?.last { $0.kind == .message && $0.replyTo == replyID }?.text
+        }
+    }
+
+    /// The reply-id issued back to the waiting member for the answer to `replyID`.
+    private func nextReplyID(after replyID: String) -> String? {
+        sync {
+            guard let ticket = ledger[replyID], let log = logs[ticket.threadID],
+                  let index = log.lastIndex(where: { $0.kind == .message && $0.replyTo == replyID }) else { return nil }
+            return log[(index + 1)...].first { $0.kind == .delivery && $0.to == ticket.from }?.replyID
         }
     }
 
@@ -1298,15 +1607,33 @@ public final class LightRelay: @unchecked Sendable {
                             expiredInbox: expiredInbox)
     }
 
-    private func headerLocked(from: String, thread: String, replyID: String, hop: Int, limit: Int, inviteReply: Bool) -> String {
-        var lines = [
-            "[pharos from=\(from) thread=\(thread) reply-id=\(replyID) hop=\(hop)/\(limit)]",
-        ]
-        if inviteReply {
-            lines.append("Reply with `pharos reply \(replyID) \"...\"` (you may @mention another member). Pharos reads this session if you cannot run that command.")
-            if let webhook {
-                lines.append("Or POST {\"replyId\":\"\(replyID)\",\"text\":\"...\"} to \(webhook).")
+    private func headerLocked(from: String, thread: LightThread, replyID: String, hop: Int, spec: TargetSpec) -> String {
+        var tag = "[pharos from=\(from) thread=\(thread.id) reply-id=\(replyID) hop=\(hop)/\(thread.hopLimit) intent=\(spec.intent.rawValue)"
+        if spec.copied { tag += " cc" }
+        if let round = spec.round { tag += " round=\(round)/\(thread.rounds ?? Self.defaultDiscussRounds)" }
+        tag += "]"
+        var lines = [tag]
+        if spec.terminal || spec.record { return tag }
+        let command = "`pharos reply \(replyID) \"...\"`"
+        let harvest = "Pharos reads this session if you cannot run that command."
+        if spec.conclusion {
+            lines.append("The discussion is closed (\(spec.note ?? "ended")). Reply with a one-line conclusion: \(command). It is recorded in the thread, not sent to anyone. \(harvest)")
+        } else if spec.copied {
+            lines.append("You are copied. This is an FYI; do not reply unless you need clarification.")
+        } else {
+            switch spec.intent {
+            case .ask:
+                lines.append("Reply with \(command). \(harvest)")
+            case .inform:
+                lines.append("This is an FYI; do not reply unless you need clarification.")
+            case .answer:
+                lines.append("This is an answer; do not reply unless you need clarification.")
+            case .discuss:
+                lines.append("Discussion: reply with \(command) only if you add something new; otherwise answer DONE. \(harvest)")
             }
+        }
+        if spec.expectsReply, let webhook {
+            lines.append("Or POST {\"replyId\":\"\(replyID)\",\"text\":\"...\"} to \(webhook).")
         }
         return lines.joined(separator: "\n")
     }

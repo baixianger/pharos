@@ -35,7 +35,7 @@ final class LightRelayTests: XCTestCase {
         XCTAssertTrue(LightTokens.isValid(replyID, prefix: "r"))
         XCTAssertGreaterThanOrEqual(replyID.count, 10)
         XCTAssertTrue(sent.deliveries[0].header.contains("pharos reply \(replyID)"))
-        XCTAssertTrue(sent.deliveries[0].header.contains("[pharos from=owner thread=\(sent.threadID) reply-id=\(replyID) hop=1/8]"))
+        XCTAssertTrue(sent.deliveries[0].header.contains("[pharos from=owner thread=\(sent.threadID) reply-id=\(replyID) hop=1/8 intent=ask]"))
         XCTAssertFalse(sent.deliveries[0].header.contains("codex-mini-pharos"))
 
         let answered = try relay.reply(replyID, text: "ack")
@@ -116,12 +116,16 @@ final class LightRelayTests: XCTestCase {
         let broadcast = try relay.reply(direct.deliveries[0].replyID, text: "@ALL everyone")
         XCTAssertEqual(broadcast.threadID, direct.threadID)
         XCTAssertEqual(broadcast.deliveries.map(\.to), ["owner"])
-        XCTAssertEqual(broadcast.unresolved, ["all"])
+        XCTAssertEqual(broadcast.unresolved, [])
 
+        // `@` in a body is plain text: it only produces a hint. --cc is what copies.
         let mentioned = try relay.reply(copied.deliveries[1].replyID, text: "@owner @codex-mini-pharos your turn @ghost")
         XCTAssertEqual(mentioned.threadID, copied.threadID)
-        XCTAssertEqual(mentioned.deliveries.map(\.to), ["owner", "codex-mini-pharos"])
-        XCTAssertEqual(mentioned.unresolved, ["ghost"])
+        XCTAssertEqual(mentioned.deliveries.map(\.to), ["owner"])
+        XCTAssertEqual(mentioned.hints, ["codex-mini-pharos"])
+        XCTAssertEqual(mentioned.unresolved, [])
+        let copiedReply = try relay.reply(copied.deliveries[1].replyID, text: "your turn", cc: ["codex-mini-pharos"])
+        XCTAssertEqual(copiedReply.deliveries.map(\.to), ["owner", "codex-mini-pharos"])
         XCTAssertEqual(try relay.show(thread: copied.threadID).participants, ["owner", "codex-mini-pharos", "claude-mini"])
 
         let fresh = try relay.send(from: "owner", to: ["claude-mini"], text: "@all @codex-mini-pharos new topic")
@@ -136,7 +140,7 @@ final class LightRelayTests: XCTestCase {
         let sent = try relay.send(from: "owner", to: ["codex-mini-pharos"], text: "start", hopLimit: 3)
         XCTAssertEqual(sent.hop, 1)
         let toCodex = try XCTUnwrap(sent.deliveries.first?.replyID)
-        let back = try relay.reply(toCodex, text: "@claude-mini joining")
+        let back = try relay.reply(toCodex, text: "joining", cc: ["claude-mini"])
         XCTAssertEqual(back.hop, 2)
         XCTAssertEqual(back.threadID, sent.threadID)
         XCTAssertEqual(back.deliveries.map(\.to), ["owner", "claude-mini"])

@@ -41,3 +41,5 @@ surfaces for the human — don't just mention it in your reply and lose it.
 - Logging is cheap and it's how the human stays in the loop — when in doubt, file it.
 - If you're collaborating in a room (`mesh` skill) and surface a bug mid-discussion,
   file it here so it outlives the conversation.
+- To message another agent (ask, FYI, discussion), use the `pharos-chat` skill or
+  `pharos help chat`; prefer a subagent that returns only the conclusion.

@@ -3,10 +3,13 @@ import Foundation
 public struct LightCLIResult: Equatable, Sendable {
     public var exitCode: Int32
     public var text: String
+    /// Advisory lines for stderr (e.g. `hint: body mentions @x; use --cc x to copy them`).
+    public var notes: [String]
 
-    public init(exitCode: Int32, text: String) {
+    public init(exitCode: Int32, text: String, notes: [String] = []) {
         self.exitCode = exitCode
         self.text = text
+        self.notes = notes
     }
 }
 
@@ -19,6 +22,11 @@ public enum LightCommands {
         let argv = LightArgv.parse(arguments)
         do {
             if ["thread", "wait", "read"].contains(command),
+               let forwarded = relay.forwardCommand(command: command, arguments: arguments) {
+                return forwarded
+            }
+            // `reply` with addressing or intent options needs the whole argv on the Broker.
+            if command == "reply", !argv.multi("cc").isEmpty || argv.option("intent") != nil || argv.flag("deliver"),
                let forwarded = relay.forwardCommand(command: command, arguments: arguments) {
                 return forwarded
             }
@@ -62,6 +70,20 @@ public enum LightCommands {
                 return "\(member.name)\t\(member.app)\t\(member.host)\t\(member.project)\t\(member.sessionID)\t\(routes)"
             }
             return ok((["NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES"] + lines).joined(separator: "\n"))
+        case "register" where argv.option("app") == "webhook":
+            // A remote assistant reached by HTTPS POST. Its session id is the webhook config name.
+            guard let name = argv.option("name") else {
+                return usage("pharos member register --name N --app webhook [--webhook CONFIG] [--host H] [--project P]")
+            }
+            let config = argv.option("webhook") ?? argv.option("session") ?? name
+            let member = try relay.register(LightMember(
+                name: name, host: argv.option("host") ?? "webhook", app: "webhook",
+                project: argv.option("project") ?? "webhook", sessionID: config,
+                routes: [LightRoute(id: "webhook", access: .write, fallback: false,
+                                    summary: "HTTPS POST of the message envelope to the named webhook config")]
+            ))
+            if argv.flag("json") { return json(member) }
+            return ok("registered \(member.name) (webhook \(member.sessionID))")
         case "register":
             guard let name = argv.option("name"), let host = argv.option("host"),
                   let app = argv.option("app"), let project = argv.option("project"),
@@ -110,7 +132,8 @@ public enum LightCommands {
                 "originator \(view.thread.originator)",
                 "hop-limit \(view.thread.hopLimit)",
                 "participants \(people)",
-            ]
+                "intent \((view.thread.intent ?? .ask).rawValue)",
+            ] + discussLines(view.thread)
             let entries = try relay.read(thread: id)
             let body = formatLog(entries)
             return ok((head + (body.isEmpty ? [] : [body])).joined(separator: "\n"))
@@ -121,37 +144,67 @@ public enum LightCommands {
         }
     }
 
+    static let sendUsage = "pharos send --from NAME --to NAME... [--cc NAME]... [--intent ask|inform|discuss] [--deliver] [--rounds N] [--hop-limit N] -- <text>"
+    static let replyUsage = "pharos reply r_xxx [--cc NAME]... [--intent answer|ask|inform] [--deliver] -- <text>"
+
     private static func send(_ argv: LightArgv, relay: LightRelay) throws -> LightCLIResult {
-        guard let from = argv.option("from") else {
-            return usage("pharos send --from NAME [--to NAME]... [--hop-limit N] <member...> -- <text>")
-        }
+        guard let from = argv.option("from") else { return usage(sendUsage) }
+        // Recipients come only from parameters: --to, --cc, and leading member names (same as --to).
         var recipients = argv.multi("to")
         var words = argv.positional
         while let first = words.first, first != from, relay.member(named: first) != nil {
             recipients.append(words.removeFirst())
         }
         let text = (words + argv.forcedText).joined(separator: " ")
-        guard !text.isEmpty else {
-            return usage("pharos send --from NAME [--to NAME]... <member...> -- <text>")
+        guard !text.isEmpty else { return usage(sendUsage) }
+        let intent: LightIntent
+        if let raw = argv.option("intent") {
+            guard let parsed = LightIntent.parse(raw) else { return usage("unknown intent \(raw); use ask|inform|answer|discuss") }
+            intent = parsed
+        } else {
+            intent = .ask
         }
-        let result = try relay.send(from: from, to: recipients, text: text, ttl: try argv.duration("ttl"),
-                                    once: argv.flag("once"), hopLimit: try argv.int("hop-limit"))
+        let rounds = try argv.int("rounds")
+        if rounds != nil, intent != .discuss { return usage("--rounds applies only to --intent discuss") }
+        let result = try relay.send(from: from, to: recipients, cc: argv.multi("cc"), text: text, intent: intent,
+                                    deliverReplies: argv.flag("deliver"), rounds: rounds,
+                                    ttl: try argv.duration("ttl"), once: argv.flag("once"),
+                                    hopLimit: try argv.int("hop-limit"))
         return render(result, json: argv.flag("json"))
     }
 
     private static func reply(_ argv: LightArgv, relay: LightRelay) throws -> LightCLIResult {
-        guard let id = argv.positional.first else { return usage("pharos reply r_xxx <text>") }
+        guard let id = argv.positional.first else { return usage(replyUsage) }
         // `--` protects text that starts with `-`, same as `send`.
         let text = (Array(argv.positional.dropFirst()) + argv.forcedText).joined(separator: " ")
-        guard !text.isEmpty else { return usage("pharos reply r_xxx <text>") }
-        let result = try relay.reply(id, text: text, ttl: try argv.duration("ttl"), once: argv.flag("once"))
+        guard !text.isEmpty else { return usage(replyUsage) }
+        var intent: LightIntent? = nil
+        if let raw = argv.option("intent") {
+            guard let parsed = LightIntent.parse(raw) else { return usage("unknown intent \(raw); use ask|inform|answer|discuss") }
+            intent = parsed
+        }
+        let result = try relay.reply(id, text: text, cc: argv.multi("cc"), intent: intent, deliver: argv.flag("deliver"),
+                                     ttl: try argv.duration("ttl"), once: argv.flag("once"))
         return render(result, json: argv.flag("json"))
+    }
+
+    private static func discussLines(_ thread: LightThread) -> [String] {
+        var lines: [String] = []
+        if thread.intent == .discuss {
+            let cap = thread.rounds ?? LightRelay.defaultDiscussRounds
+            lines.append("rounds \(thread.roundsUsed ?? 0)/\(cap)")
+            lines.append("discussion \(thread.closed == true ? "closed" : "open")")
+        }
+        if thread.deliverReplies == true { lines.append("deliver-replies yes") }
+        if let conclusion = thread.conclusion { lines.append("conclusion \(conclusion)") }
+        return lines
     }
 
     private static func wait(_ argv: LightArgv, relay: LightRelay) throws -> LightCLIResult {
         guard let id = argv.positional.first else { return usage("pharos wait r_xxx [--timeout 30s]") }
         let timeout = try argv.duration("timeout") ?? 0
         let result = try relay.wait(replyID: id, timeout: timeout)
+        let notes = result.nextReplyID.map { ["next reply-id \($0) (pharos reply \($0) -- \"...\" to continue)"] } ?? []
         if argv.flag("json") {
             let encoded = json(result, ok: result.status == .replied)
             if result.status == .pending { return LightCLIResult(exitCode: 2, text: encoded.text) }
@@ -159,7 +212,7 @@ public enum LightCommands {
         }
         switch result.status {
         case .replied:
-            return ok(result.text ?? "")
+            return LightCLIResult(exitCode: 0, text: result.text ?? "", notes: notes)
         case .pending:
             return LightCLIResult(exitCode: 2, text: "pending \(id)")
         case .expired:
@@ -187,7 +240,11 @@ public enum LightCommands {
         entries.map { entry -> String in
             switch entry.kind {
             case .message:
-                return "message\t\(entry.from ?? "")\t\(entry.text)"
+                var who = entry.from ?? ""
+                let to = entry.recipients ?? []
+                if !to.isEmpty { who += " -> " + to.joined(separator: ",") }
+                if let cc = entry.cc, !cc.isEmpty { who += " cc " + cc.joined(separator: ",") }
+                return "message\t\((entry.intent ?? .ask).rawValue)\t\(who)\t\(entry.text)"
             case .notice:
                 return "notice\t\(entry.text)"
             case .delivery:
@@ -199,14 +256,20 @@ public enum LightCommands {
     }
 
     private static func render(_ result: LightSendResult, json: Bool) -> LightCLIResult {
-        if json { return self.json(result) }
+        if json {
+            var encoded = self.json(result)
+            encoded.notes = hintLines(result)
+            return encoded
+        }
         if result.forwarded { return ok(result.notice ?? "forwarded") }
         var lines: [String] = []
         if result.stopped {
             lines.append("stopped \(result.threadID)")
         } else {
-            lines.append("thread \(result.threadID) hop \(result.hop)/\(result.hopLimit)")
+            let intent = result.intent.map { " intent \($0.rawValue)" } ?? ""
+            lines.append("thread \(result.threadID) hop \(result.hop)/\(result.hopLimit)\(intent)")
         }
+        if result.closed == true, result.notice == nil { lines.append("discussion closed") }
         if let notice = result.notice { lines.append(notice) }
         for delivery in result.deliveries {
             let route = delivery.route ?? "-"
@@ -218,7 +281,11 @@ public enum LightCommands {
         if !result.unresolved.isEmpty {
             lines.append("unresolved \(result.unresolved.joined(separator: ","))")
         }
-        return ok(lines.joined(separator: "\n"))
+        return LightCLIResult(exitCode: 0, text: lines.joined(separator: "\n"), notes: hintLines(result))
+    }
+
+    static func hintLines(_ result: LightSendResult) -> [String] {
+        (result.hints ?? []).map { "hint: body mentions @\($0); use --cc \($0) to copy them" }
     }
 
     private static func ok(_ text: String) -> LightCLIResult {
@@ -256,8 +323,8 @@ private struct LightArgv {
     var repeated: [String: [String]] = [:]
     var flags: Set<String> = []
 
-    static let knownFlags: Set<String> = ["json", "once"]
-    static let repeatedKeys: Set<String> = ["route", "to"]
+    static let knownFlags: Set<String> = ["json", "once", "deliver"]
+    static let repeatedKeys: Set<String> = ["route", "to", "cc"]
 
     static func parse(_ tokens: [String]) -> LightArgv {
         var argv = LightArgv()
@@ -329,4 +396,52 @@ private struct LightArgv {
         default: throw LightRelayError.invalidName(raw)
         }
     }
+}
+
+extension LightCommands {
+    /// `pharos help chat`: how agents message each other through Pharos.
+    public static let chatHelp = """
+    pharos help chat — messaging between agents (lightweight tier)
+
+    ADDRESSING (parameters only)
+      pharos send --from ME --to A [--to B]... [--cc C]... [--intent I] -- "<text>"
+      pharos reply r_xxx [--cc C]... [--intent I] [--deliver] -- "<text>"
+      Recipients come only from --to / --cc (leading member names count as --to).
+      An @name in the text is plain text. If it names a registered member who is not
+      addressed, Pharos prints `hint: body mentions @x; use --cc x to copy them` and
+      delivers nothing extra. A reply goes back only to the member who sent the message,
+      plus any --cc. A reply Pharos reads back from a session is never copied.
+
+    INTENTS (--intent; send defaults to ask, reply to answer)
+      ask      Delivered; a reply is expected.
+      inform   Delivered as an FYI. The recipient should not reply just to acknowledge.
+      answer   A reply to an ask. Recorded in the thread for the asker; not delivered.
+      discuss  Back-and-forth, delivered each turn, capped by --rounds N (default 4,
+               and still bounded by --hop-limit). Each reply is one round. A reply of
+               DONE, or reaching the cap, closes the discussion; the originator is then
+               asked for a one-line conclusion, which is recorded in the thread.
+
+    WAKING THE SENDER
+      By default an answer to your ask is only recorded: read it with
+      `pharos wait r_xxx --timeout 5m`, `pharos read r_xxx`, or `pharos thread show T`.
+      --deliver on send (applies to its replies) or on reply wakes the sender's session.
+      A reply with --intent ask is always delivered.
+
+    WAIT / READ
+      pharos wait r_xxx [--timeout 5m] [--json]   Answer text; JSON adds nextReplyID.
+      pharos thread show T [--json]               Intent, rounds, conclusion, every message.
+
+    WEBHOOK MEMBERS (remote assistants)
+      pharos webhook set NAME --url https://… [--header-name H] --secret-stdin|--secret-file F|--secret-env VAR
+      pharos member register --name BOT --app webhook [--webhook NAME]
+      Delivery is an HTTPS POST of {replyId, threadId, from, to, cc, intent, text, hop,
+      hopLimit, expectsReply, replyCommand, prompt} with the secret in header H.
+      The bot answers with `pharos reply r_xxx -- "<text>"` (e.g. over SSH). Pharos does
+      not read replies back from a webhook member.
+
+    RECOMMENDED PATTERN
+      Hand Pharos messaging to a subagent: it sends, waits, runs the discussion, and
+      returns only the conclusion to you. Your own context stays small, and you are not
+      woken by every turn. (A recommendation, not enforced.)
+    """
 }
