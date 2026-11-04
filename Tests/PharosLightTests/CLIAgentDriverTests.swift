@@ -286,7 +286,7 @@ final class CLIAgentDriverTests: XCTestCase {
         XCTAssertEqual(res.route, "tui")
 
         let cur = cursors.get(member: "agy-1")
-        XCTAssertEqual(cur?.kind, "agy-step")
+        XCTAssertEqual(cur?.kind, "agy-line")
         XCTAssertEqual(cur?.value, "1")
 
         let sendKeys = runner.recordedArgvs.filter { $0.contains("send-keys") }
@@ -412,6 +412,42 @@ final class CLIAgentDriverTests: XCTestCase {
         cursors.set(member: "agy-read", CLIReplyCursor(kind: "agy-step", value: "2", at: Date()))
         let reply = driver.readReply(member: member, since: Date())
         XCTAssertEqual(reply, "Ready to proceed")
+    }
+
+    /// A resumed agy TUI restarts step_index at 0 in the same transcript: the record-count cursor still finds the reply.
+    func testAgyReplyAfterStepIndexResetUsesRecordCount() throws {
+        let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent("pharos-agy-reset-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tmpDir) }
+        let logs = tmpDir.appendingPathComponent(".gemini/antigravity-cli/brain/agy-reset-1/.system_generated/logs")
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        let lines = [
+            #"{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-04T21:20:00Z","content":"<USER_REQUEST>first</USER_REQUEST>"}"#,
+            #"{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-04T21:20:02Z","content":"OLD-ANSWER"}"#,
+            #"{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-04T21:23:05Z","content":"<USER_REQUEST>after revive</USER_REQUEST>"}"#,
+            #"{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-04T21:23:07Z","content":"NEW-ANSWER"}"#,
+        ]
+        try (lines.joined(separator: "\n") + "\n").write(to: logs.appendingPathComponent("transcript.jsonl"), atomically: true, encoding: .utf8)
+        let cursors = CLIReplyCursorBook()
+        let driver = CLIAgentDriver(tmux: TmuxController(runner: FakeDriverRunner()), cursors: cursors,
+                                    home: tmpDir.path, sleep: { _ in })
+        let member = LightMember(
+            name: "agy-reset", host: "local", app: "agy", project: "p", sessionID: "agy-reset-1", routes: [],
+            tmux: LightTmuxBinding(session: "pharos-agy-reset", cwd: tmpDir.path)
+        )
+        let sent = Date()
+        cursors.set(member: "agy-reset", CLIReplyCursor(kind: "agy-line", value: "2", at: sent))
+        XCTAssertEqual(driver.readReply(member: member, since: sent), "NEW-ANSWER")
+    }
+
+    func testCursorBookMatchesTheSendForEachTicket() {
+        let book = CLIReplyCursorBook()
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        book.set(member: "m", CLIReplyCursor(kind: "codex-client", value: "r1", at: t0))
+        book.set(member: "m", CLIReplyCursor(kind: "codex-client", value: "r2", at: t0.addingTimeInterval(60)))
+        XCTAssertEqual(book.match(member: "m", since: t0)?.value, "r1")
+        XCTAssertEqual(book.match(member: "m", since: t0.addingTimeInterval(59))?.value, "r2")
+        XCTAssertNil(book.match(member: "m", since: t0.addingTimeInterval(120)))
+        XCTAssertEqual(book.get(member: "m")?.value, "r2")
     }
 
     func testDeadTmuxReturnsFailedWithReviveHint() {

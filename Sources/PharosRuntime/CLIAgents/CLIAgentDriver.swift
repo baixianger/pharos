@@ -300,8 +300,10 @@ public struct CLIAgentDriver: Sendable {
         } else {
             steps = []
         }
-        let cursorVal = AgyTranscript.cursor(steps)
-        cursors.set(member: member.name, CLIReplyCursor(kind: "agy-step", value: "\(cursorVal)", at: now()))
+        // agy restarts step_index at 0 when a TUI resumes a conversation, so the cursor is the
+        // record count ("agy-line"), not the highest step index.
+        let cursorCount = steps.count
+        cursors.set(member: member.name, CLIReplyCursor(kind: "agy-line", value: "\(cursorCount)", at: now()))
 
         guard tmux.sendText(binding.session, text) else {
             return LightDriveResult(
@@ -346,7 +348,7 @@ public struct CLIAgentDriver: Sendable {
 
             if let transcriptPath {
                 let latestSteps = AgyTranscript.load(URL(fileURLWithPath: transcriptPath))
-                if let latestIndex = latestSteps.last?.index, latestIndex > cursorVal {
+                if latestSteps.count > cursorCount {
                     return LightDriveResult(
                         state: .delivered,
                         route: "tui",
@@ -394,8 +396,11 @@ public struct CLIAgentDriver: Sendable {
             guard !steps.isEmpty else { return nil }
 
             if let cursor = cursors.match(member: member.name, since: since),
-               cursor.kind == "agy-step",
-               let stepIndex = Int(cursor.value) {
+               cursor.kind == "agy-line", let count = Int(cursor.value), count <= steps.count {
+                let newer = Array(steps.dropFirst(count))
+                return AgyTranscript.reply(after: Int.min, in: newer)?.text
+            } else if let cursor = cursors.match(member: member.name, since: since),
+               cursor.kind == "agy-step", let stepIndex = Int(cursor.value) {
                 let reply = AgyTranscript.reply(after: stepIndex, in: steps)
                 return reply?.text
             } else {

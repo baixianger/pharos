@@ -199,10 +199,14 @@ public struct CLIAgentLifecycle: Sendable {
                         break
                     }
                 } else {
-                    guard let client = daemon() else {
-                        throw CLIAgentLifecycleError.needsHuman("codex daemon not available; start codex or launch daemon")
+                    // The TUI starts the shared daemon itself; its socket can appear a moment after the prompt.
+                    guard let client = daemon(), let current = try? client.loadedThreads() else {
+                        if now().timeIntervalSince(discStart) >= timeout {
+                            throw CLIAgentLifecycleError.needsHuman("codex daemon not available (the TUI normally starts it); check `codex app-server daemon version`")
+                        }
+                        sleep(pollInterval)
+                        continue
                     }
-                    let current = try client.loadedThreads()
                     let candidates = (adopted && snapshot.isEmpty) ? current : current.filter { !snapshot.contains($0) }
                     var matching: [String] = []
                     for id in candidates {
