@@ -200,4 +200,28 @@ final class CodexRolloutTests: XCTestCase {
         let found3 = reader.rollout(sessionID: sess3)
         XCTAssertEqual(found3?.resolvingSymlinksInPath().path, zstFile3.resolvingSymlinksInPath().path)
     }
+
+    func testReplyAfterMarkerPicksTheAnswerToThatTurn() throws {
+        let tempDir = createTempDir()
+        let sessionsDir = tempDir.appendingPathComponent("sessions/2026/11/04", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+        let sessionID = "sess-marker-1"
+        let rolloutFile = sessionsDir.appendingPathComponent("rollout-20261104-120000-\(sessionID).jsonl")
+        // Two queued sends flushed back to back: each answer must go to its own ask.
+        let fixture = """
+        {"timestamp":"2026-11-04T23:05:00.000Z","type":"session_meta","payload":{"id":"\(sessionID)","cwd":"/tmp"}}
+        {"timestamp":"2026-11-04T23:05:30.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"x reply-id=r_first"}]}}
+        {"timestamp":"2026-11-04T23:05:38.000Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"x"}}
+        {"timestamp":"2026-11-04T23:06:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"what was the code? reply-id=r_second"}}
+        {"timestamp":"2026-11-04T23:06:26.000Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"TANGERINE-42"}}
+        """
+        try fixture.write(to: rolloutFile, atomically: true, encoding: .utf8)
+        let reader = CodexRolloutReader(root: tempDir.appendingPathComponent("sessions", isDirectory: true))
+
+        let first = reader.reply(sessionID: sessionID, afterMarker: "reply-id=r_first")
+        XCTAssertTrue(first.found); XCTAssertEqual(first.text, "x")
+        let second = reader.reply(sessionID: sessionID, afterMarker: "reply-id=r_second")
+        XCTAssertTrue(second.found); XCTAssertEqual(second.text, "TANGERINE-42")
+        XCTAssertFalse(reader.reply(sessionID: sessionID, afterMarker: "reply-id=r_none").found)
+    }
 }

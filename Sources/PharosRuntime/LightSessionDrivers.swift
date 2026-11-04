@@ -775,6 +775,35 @@ public struct CodexRolloutReader: Sendable {
         return nil
     }
 
+    /// The answer to the turn that carried `marker` (e.g. "reply-id=r_x"): the first
+    /// `task_complete` after the user message containing it. `found` is false when no user
+    /// message carries the marker (callers may then fall back to a time window).
+    public func reply(sessionID: String, afterMarker marker: String) -> (found: Bool, text: String?) {
+        var seen = false
+        for object in records(sessionID: sessionID) {
+            let payload = object["payload"] as? [String: Any] ?? [:]
+            if !seen {
+                if Self.userText(object, payload).contains(marker) { seen = true }
+                continue
+            }
+            guard object["type"] as? String == "event_msg", payload["type"] as? String == "task_complete" else { continue }
+            let text = (payload["last_agent_message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return (true, text.isEmpty ? nil : text)
+        }
+        return (seen, nil)
+    }
+
+    static func userText(_ object: [String: Any], _ payload: [String: Any]) -> String {
+        if object["type"] as? String == "event_msg", payload["type"] as? String == "user_message" {
+            return payload["message"] as? String ?? ""
+        }
+        if object["type"] as? String == "response_item", payload["type"] as? String == "message",
+           payload["role"] as? String == "user", let content = payload["content"] as? [[String: Any]] {
+            return content.compactMap { $0["text"] as? String }.joined(separator: "\n")
+        }
+        return ""
+    }
+
     private func records(sessionID: String) -> [[String: Any]] {
         guard let url = rollout(sessionID: sessionID) else { return [] }
         let text: String

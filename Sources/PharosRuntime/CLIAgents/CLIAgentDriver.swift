@@ -191,7 +191,7 @@ public struct CLIAgentDriver: Sendable {
             do {
                 let info = try client.readThread(member.sessionID)
                 if info.status == .notLoaded || info.status == .systemError {
-                    return deliverCodexTUI(member: member, binding: binding, text: text, fallbackReason: "status is \(info.status)")
+                    return deliverCodexTUI(member: member, binding: binding, text: text, replyID: replyID, fallbackReason: "status is \(info.status)")
                 }
                 let clientID = replyID ?? "pharos-\(UUID().uuidString)"
                 let submissionID = try client.queueAdd(thread: member.sessionID, text: text, clientID: clientID)
@@ -210,14 +210,14 @@ public struct CLIAgentDriver: Sendable {
                     detail: detail
                 )
             } catch {
-                return deliverCodexTUI(member: member, binding: binding, text: text, fallbackReason: error.localizedDescription)
+                return deliverCodexTUI(member: member, binding: binding, text: text, replyID: replyID, fallbackReason: error.localizedDescription)
             }
         } else {
-            return deliverCodexTUI(member: member, binding: binding, text: text, fallbackReason: "daemon unavailable")
+            return deliverCodexTUI(member: member, binding: binding, text: text, replyID: replyID, fallbackReason: "daemon unavailable")
         }
     }
 
-    private func deliverCodexTUI(member: LightMember, binding: LightTmuxBinding, text: String, fallbackReason: String) -> LightDriveResult {
+    private func deliverCodexTUI(member: LightMember, binding: LightTmuxBinding, text: String, replyID: String?, fallbackReason: String) -> LightDriveResult {
         // Visible screen only: an approval that was answered earlier may still sit in the scrollback.
         let capture = tmux.capture(binding.session) ?? ""
         let paneState = CodexPane.classify(capture)
@@ -248,7 +248,8 @@ public struct CLIAgentDriver: Sendable {
                     detail: "failed to send text to tmux session \(binding.session)"
                 )
             }
-            cursors.set(member: member.name, CLIReplyCursor(kind: "codex-client", value: "", at: now()))
+            // No daemon turn id on this path: the envelope's reply-id ties the answer to this send.
+            cursors.set(member: member.name, CLIReplyCursor(kind: "codex-marker", value: replyID.map { "reply-id=\($0)" } ?? "", at: now()))
             return LightDriveResult(
                 state: .delivered,
                 route: "tui",
@@ -375,9 +376,15 @@ public struct CLIAgentDriver: Sendable {
     public func readReply(member: LightMember, since: Date) -> String? {
         if member.app.lowercased() == "codex" {
             var clientID: String? = nil
-            if let cursor = cursors.match(member: member.name, since: since),
-               cursor.kind == "codex-client", !cursor.value.isEmpty {
+            let cursor = cursors.match(member: member.name, since: since)
+            if let cursor, cursor.kind == "codex-client", !cursor.value.isEmpty {
                 clientID = cursor.value
+            }
+            // Sent by typing into the TUI: read the answer to the turn that carried our reply-id,
+            // so queued sends flushed back to back do not all take the first answer after `since`.
+            if let cursor, cursor.kind == "codex-marker", !cursor.value.isEmpty {
+                let hit = rollouts.reply(sessionID: member.sessionID, afterMarker: cursor.value)
+                if hit.found { return hit.text }
             }
 
             if let client = daemon() {
