@@ -45,8 +45,10 @@ public struct LightMemberListEntry: Codable, Sendable {
     public var routes: [LightRoute]
     public var tmux: LightTmuxBinding?
     public var runtime: LightMemberRuntimeStatus?
+    public var reportedAt: Date?
+    public var reportedBy: String?
 
-    public init(member: LightMember, runtime: LightMemberRuntimeStatus?) {
+    public init(member: LightMember, runtime: LightMemberRuntimeStatus?, reportedAt: Date? = nil, reportedBy: String? = nil) {
         self.name = member.name
         self.host = member.host
         self.app = member.app
@@ -55,10 +57,12 @@ public struct LightMemberListEntry: Codable, Sendable {
         self.routes = member.routes
         self.tmux = member.tmux
         self.runtime = runtime
+        self.reportedAt = reportedAt
+        self.reportedBy = reportedBy
     }
 
     enum CodingKeys: String, CodingKey {
-        case name, host, app, project, sessionID, routes, tmux, runtime
+        case name, host, app, project, sessionID, routes, tmux, runtime, reportedAt, reportedBy
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -71,6 +75,8 @@ public struct LightMemberListEntry: Codable, Sendable {
         try container.encode(routes, forKey: .routes)
         try container.encodeIfPresent(tmux, forKey: .tmux)
         try container.encodeIfPresent(runtime, forKey: .runtime)
+        try container.encodeIfPresent(reportedAt, forKey: .reportedAt)
+        try container.encodeIfPresent(reportedBy, forKey: .reportedBy)
     }
 }
 
@@ -93,7 +99,8 @@ public enum LightCommands {
     public static func execute(command: String, arguments: [String], relay: LightRelay,
                                routesForApp: (String) -> [LightRoute],
                                routeByID: (String) -> LightRoute = LightRoute.named,
-                               agents: (any LightMemberAgents)? = nil) -> LightCLIResult {
+                               agents: (any LightMemberAgents)? = nil,
+                               hostOwner: (@Sendable (String) -> String)? = nil) -> LightCLIResult {
         let argv = LightArgv.parse(arguments)
         do {
             if ["thread", "wait", "read", "attention"].contains(command),
@@ -107,7 +114,7 @@ public enum LightCommands {
             }
             switch command {
             case "member":
-                return try member(argv, relay: relay, routesForApp: routesForApp, routeByID: routeByID, agents: agents)
+                return try member(argv, relay: relay, routesForApp: routesForApp, routeByID: routeByID, agents: agents, hostOwner: hostOwner)
             case "thread":
                 return try thread(argv, relay: relay)
             case "send":
@@ -137,7 +144,8 @@ public enum LightCommands {
     private static func member(_ argv: LightArgv, relay: LightRelay,
                                routesForApp: (String) -> [LightRoute],
                                routeByID: (String) -> LightRoute,
-                               agents: (any LightMemberAgents)? = nil) throws -> LightCLIResult {
+                               agents: (any LightMemberAgents)? = nil,
+                               hostOwner: (@Sendable (String) -> String)? = nil) throws -> LightCLIResult {
         switch argv.positional.first {
         case "list", nil:
             let members = relay.listMembers()
@@ -149,6 +157,8 @@ public enum LightCommands {
                 let live: String
                 let state: String
                 let runtime: LightMemberRuntimeStatus?
+                let reportedAt: Date?
+                let reportedBy: String?
             }
 
             let rows: [MemberRow] = members.map { member in
@@ -157,6 +167,8 @@ public enum LightCommands {
                 let liveStr: String
                 let stateStr: String
                 let runtime: LightMemberRuntimeStatus?
+                var reportedAt: Date? = nil
+                var reportedBy: String? = nil
 
                 if binding == nil {
                     liveStr = "-"
@@ -188,6 +200,40 @@ public enum LightCommands {
                         stateStr = "-"
                     }
                     runtime = st
+                } else if let report = relay.runtime(for: member.name) {
+                    reportedAt = report.at
+                    reportedBy = report.node
+                    let age = moment.timeIntervalSince(report.at)
+                    if age > 90 {
+                        liveStr = "stale"
+                        stateStr = "-"
+                        let ageStr = LightAttention.age(age)
+                        let suffix = " (last report \(ageStr) ago)"
+                        let jsonDetail = report.detail.isEmpty ? suffix.trimmingCharacters(in: .whitespaces) : "\(report.detail)\(suffix)"
+                        runtime = LightMemberRuntimeStatus(
+                            tmux: report.tmux,
+                            live: "stale",
+                            activity: "-",
+                            detail: jsonDetail
+                        )
+                    } else {
+                        liveStr = report.live
+                        let existingAttention = relay.attention(for: member.name)
+                            .map { "needs_human \(LightAttention.age(moment.timeIntervalSince($0.since)))" }
+                        if let existingAttention {
+                            stateStr = existingAttention
+                        } else if report.activity != "unknown" && !report.activity.isEmpty && report.activity != "-" {
+                            stateStr = report.activity
+                        } else {
+                            stateStr = "-"
+                        }
+                        runtime = LightMemberRuntimeStatus(
+                            tmux: report.tmux,
+                            live: report.live,
+                            activity: report.activity,
+                            detail: report.detail
+                        )
+                    }
                 } else {
                     if binding?.endedAt != nil {
                         liveStr = (binding?.endedReason == "stopped") ? "stopped" : "ended"
@@ -200,12 +246,18 @@ public enum LightCommands {
                     runtime = nil
                 }
 
-                return MemberRow(member: member, tmux: tmuxStr, live: liveStr, state: stateStr, runtime: runtime)
+                return MemberRow(
+                    member: member, tmux: tmuxStr, live: liveStr, state: stateStr,
+                    runtime: runtime, reportedAt: reportedAt, reportedBy: reportedBy
+                )
             }
 
             if argv.flag("json") {
                 let entries = rows.map { row in
-                    LightMemberListEntry(member: row.member, runtime: row.runtime)
+                    LightMemberListEntry(
+                        member: row.member, runtime: row.runtime,
+                        reportedAt: row.reportedAt, reportedBy: row.reportedBy
+                    )
                 }
                 return json(entries)
             }
@@ -216,10 +268,37 @@ public enum LightCommands {
                 return "\(row.member.name)\t\(row.member.app)\t\(row.member.host)\t\(row.member.project)\t\(row.member.sessionID)\t\(routes)\t\(row.tmux)\t\(row.live)\t\(row.state)"
             }
             var out = ["NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES\tTMUX\tLIVE\tSTATE"] + lines
-            for state in relay.activeAttention() {
-                out.append("needs_human \(state.member): \(state.describe(at: moment))")
-            }
+            let tableNames = Set(members.map(\.name))
+            out.append(contentsOf: groupedAttentionLines(relay.activeAttention(), at: moment, filterMembers: tableNames))
             return ok(out.joined(separator: "\n"))
+        case "node-members":
+            guard let node = argv.option("node") else {
+                return usage("pharos member node-members --node N --json")
+            }
+            let owner = hostOwner ?? { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            let matched = relay.listMembers().filter { m in
+                guard m.tmux != nil else { return false }
+                let oMember = owner(m.host)
+                let oNode = owner(node)
+                if oMember == oNode { return true }
+                return (m.host.lowercased() == "local" || oMember == "local") && (node.lowercased() == "local" || oNode == "local")
+            }
+            return json(matched)
+        case "node-report":
+            guard let node = argv.option("node"), let payload = argv.option("payload") else {
+                return usage("pharos member node-report --node N --payload B64")
+            }
+            guard let reports = LightCodec.decode([LightMemberRuntimeReport].self, payload) else {
+                return LightCLIResult(exitCode: 2, text: "error: unreadable report payload")
+            }
+            let owner = hostOwner ?? { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            let accepted = try relay.recordRuntime(reports) { member in
+                let oMember = owner(member.host)
+                let oNode = owner(node)
+                if oMember == oNode { return true }
+                return (member.host.lowercased() == "local" || oMember == "local") && (node.lowercased() == "local" || oNode == "local")
+            }
+            return json(["accepted": accepted])
         case "launch":
             guard let app = argv.option("app"),
                   let name = argv.option("name"),
@@ -460,6 +539,37 @@ public enum LightCommands {
         return render(result, json: argv.flag("json"))
     }
 
+    private struct AttentionGroupKey: Hashable {
+        let sessionID: String
+        let app: String
+    }
+
+    private static func groupedAttentionLines(_ states: [LightAttention], at moment: Date, filterMembers: Set<String>? = nil) -> [String] {
+        var groups: [AttentionGroupKey: [LightAttention]] = [:]
+        var order: [AttentionGroupKey] = []
+        for state in states {
+            let key = AttentionGroupKey(sessionID: state.sessionID, app: state.app)
+            if groups[key] == nil {
+                order.append(key)
+                groups[key] = [state]
+            } else {
+                groups[key]?.append(state)
+            }
+        }
+        var lines: [String] = []
+        for key in order {
+            guard let group = groups[key], !group.isEmpty else { continue }
+            if let filterMembers {
+                let anyPresent = group.contains { filterMembers.contains($0.member) }
+                if !anyPresent { continue }
+            }
+            let memberNames = group.map(\.member).sorted().joined(separator: ",")
+            let oldest = group.min { $0.since < $1.since } ?? group[0]
+            lines.append("needs_human \(memberNames): \(oldest.describe(at: moment))")
+        }
+        return lines
+    }
+
     /// `needs_human codex-a: Bash: rm -rf build (host mini, session 01a1…, 2m ago)` per waiting participant.
     private static func attentionLines(_ names: [String], relay: LightRelay) -> [String] {
         let moment = Date()
@@ -478,7 +588,7 @@ public enum LightCommands {
             if argv.flag("json") { return json(states) }
             if states.isEmpty { return ok("no member needs a human") }
             let moment = Date()
-            return ok(states.map { "needs_human \($0.member): \($0.describe(at: moment))" }.joined(separator: "\n"))
+            return ok(groupedAttentionLines(states, at: moment).joined(separator: "\n"))
         case "report":
             guard let state = LightAttentionState.parse(argv.option("state")), let session = argv.option("session") else {
                 return usage(attentionUsage)

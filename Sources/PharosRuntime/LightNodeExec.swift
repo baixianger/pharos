@@ -101,18 +101,11 @@ public enum LightNodeExec {
     ]
 
     public static func encode<T: Encodable>(_ value: T) -> String {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .secondsSince1970
-        encoder.outputFormatting = [.sortedKeys]
-        let data = (try? encoder.encode(value)) ?? Data()
-        return data.base64EncodedString()
+        LightCodec.encode(value) ?? ""
     }
 
     public static func decode<T: Decodable>(_ type: T.Type, _ text: String) -> T? {
-        guard let data = Data(base64Encoded: text) else { return nil }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .secondsSince1970
-        return try? decoder.decode(type, from: data)
+        LightCodec.decode(type, text)
     }
 
     /// `node-deliver --payload B64` / `node-harvest --payload B64`, run against this machine only.

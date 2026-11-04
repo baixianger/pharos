@@ -60,7 +60,7 @@ extension MeshNode {
             let output = runBounded(pharos, ["light-tick"], timeout: 120, direct: false)
             if output.status != 0 {
                 log("light-tick exit \(output.status): \(output.stderr.prefix(300))")
-            } else if output.stdout.contains("\"harvested\":[\""), let line = output.stdout.split(separator: "\n").last {
+            } else if (output.stdout.contains("\"harvested\":[\"") || output.stdout.contains("\"revived\":[\"")), let line = output.stdout.split(separator: "\n").last {
                 log("light-tick \(line.prefix(300))")
             }
         }

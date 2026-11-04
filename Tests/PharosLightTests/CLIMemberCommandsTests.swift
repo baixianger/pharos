@@ -590,6 +590,205 @@ final class CLIMemberCommandsTests: XCTestCase {
             XCTAssertTrue((error as? CLIMemberAgentsError)?.message.contains("Pharos node remote-host is offline") ?? false)
         }
     }
+
+    func testLightRelayRecordRuntimeAndPersistence() throws {
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pharos-record-runtime-\(UUID().uuidString)")
+        stores.append(store)
+        let relay = try LightRelay(store: store)
+
+        let initialBinding = LightTmuxBinding(session: "tmux-run", cwd: "/tmp", launchedAt: Date())
+        _ = try relay.register(LightMember(
+            name: "m-run", host: "node-a", app: "codex", project: "p", sessionID: "s-run", routes: [],
+            tmux: initialBinding
+        ))
+        _ = try relay.register(LightMember(
+            name: "m-foreign", host: "node-b", app: "codex", project: "p", sessionID: "s-foreign", routes: [],
+            tmux: initialBinding
+        ))
+
+        var updatedBinding = initialBinding
+        updatedBinding.endedAt = Date()
+        updatedBinding.endedReason = "exited"
+
+        let reportRun = LightMemberRuntimeReport(
+            member: "m-run", node: "node-a", tmux: "tmux-run", live: "ended",
+            activity: "needs_human", detail: "prompt question", at: Date(), binding: updatedBinding
+        )
+        let reportForeign = LightMemberRuntimeReport(
+            member: "m-foreign", node: "node-b", tmux: "tmux-run", live: "alive",
+            activity: "idle", detail: "idle", at: Date()
+        )
+
+        // 1. Record runtime: nodeMatches only accepts node-a
+        let accepted = try relay.recordRuntime([reportRun, reportForeign]) { $0.host == "node-a" }
+        XCTAssertEqual(accepted, ["m-run"])
+        XCTAssertEqual(relay.member(named: "m-run")?.tmux?.endedReason, "exited")
+        XCTAssertNotNil(relay.attention(for: "m-run"))
+        XCTAssertEqual(relay.attention(for: "m-run")?.what, "prompt question")
+
+        // 2. Clear via poll when activity is idle
+        let reportRunIdle = LightMemberRuntimeReport(
+            member: "m-run", node: "node-a", tmux: "tmux-run", live: "alive",
+            activity: "idle", detail: "running", at: Date()
+        )
+        let accepted2 = try relay.recordRuntime([reportRunIdle]) { _ in true }
+        XCTAssertEqual(accepted2, ["m-run"])
+        XCTAssertNil(relay.attention(for: "m-run"), "idle runtime clears poll attention")
+
+        // 3. Persistence round trip
+        let relay2 = try LightRelay(store: store)
+        let savedReport = relay2.runtime(for: "m-run")
+        XCTAssertEqual(savedReport?.member, "m-run")
+        XCTAssertEqual(savedReport?.activity, "idle")
+
+        // 4. Old state file without 'runtime' loads
+        let oldStateJSON = """
+        {
+          "version": 3,
+          "members": [],
+          "threads": [],
+          "ledger": [],
+          "outbox": [],
+          "inbox": [],
+          "nodes": [],
+          "applied": [],
+          "attention": []
+        }
+        """
+        let oldStore = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pharos-old-store-\(UUID().uuidString)")
+        stores.append(oldStore)
+        try FileManager.default.createDirectory(at: oldStore, withIntermediateDirectories: true)
+        try oldStateJSON.data(using: .utf8)!.write(to: oldStore.appendingPathComponent("state.json"))
+        XCTAssertNoThrow(try LightRelay(store: oldStore))
+    }
+
+    func testMemberNodeMembersAndNodeReport() throws {
+        let relay = try makeRelay()
+        let binding = LightTmuxBinding(session: "tmux-node", cwd: "/tmp", launchedAt: Date())
+        _ = try relay.register(LightMember(
+            name: "bot-a", host: "node-a", app: "codex", project: "p", sessionID: "s-a", routes: [],
+            tmux: binding
+        ))
+        _ = try relay.register(LightMember(
+            name: "bot-b", host: "node-b", app: "codex", project: "p", sessionID: "s-b", routes: [],
+            tmux: binding
+        ))
+
+        // 1. node-members
+        let resMembers = run(relay, "member", ["node-members", "--node", "node-a", "--json"])
+        XCTAssertEqual(resMembers.exitCode, 0)
+        let members: [LightMember] = try JSONDecoder().decode([LightMember].self, from: resMembers.text.data(using: .utf8)!)
+        XCTAssertEqual(members.count, 1)
+        XCTAssertEqual(members[0].name, "bot-a")
+
+        // 2. node-report
+        let report = LightMemberRuntimeReport(
+            member: "bot-a", node: "node-a", tmux: "tmux-node", live: "alive",
+            activity: "idle", detail: "ok", at: Date()
+        )
+        let b64 = LightCodec.encode([report])!
+        let resReport = run(relay, "member", ["node-report", "--node", "node-a", "--payload", b64])
+        XCTAssertEqual(resReport.exitCode, 0)
+        let dict = try JSONDecoder().decode([String: [String]].self, from: resReport.text.data(using: .utf8)!)
+        XCTAssertEqual(dict["accepted"], ["bot-a"])
+        XCTAssertEqual(relay.runtime(for: "bot-a")?.detail, "ok")
+    }
+
+    func testMemberListRemoteFreshAndStaleRows() throws {
+        let relay = try makeRelay()
+        let binding = LightTmuxBinding(session: "tmux-remote", cwd: "/tmp", launchedAt: Date())
+        _ = try relay.register(LightMember(
+            name: "remote-fresh", host: "remote-host", app: "codex", project: "p", sessionID: "s-f", routes: [],
+            tmux: binding
+        ))
+        _ = try relay.register(LightMember(
+            name: "remote-stale", host: "remote-host", app: "codex", project: "p", sessionID: "s-s", routes: [],
+            tmux: binding
+        ))
+        _ = try relay.register(LightMember(
+            name: "remote-none", host: "remote-host", app: "codex", project: "p", sessionID: "s-n", routes: [],
+            tmux: binding
+        ))
+
+        let now = Date()
+        let freshReport = LightMemberRuntimeReport(
+            member: "remote-fresh", node: "remote-host", tmux: "tmux-remote", live: "alive",
+            activity: "thinking", detail: "computing", at: now.addingTimeInterval(-10)
+        )
+        let staleReport = LightMemberRuntimeReport(
+            member: "remote-stale", node: "remote-host", tmux: "tmux-remote", live: "alive",
+            activity: "thinking", detail: "old task", at: now.addingTimeInterval(-180) // 3m ago > 90s
+        )
+
+        _ = try relay.recordRuntime([freshReport, staleReport]) { _ in true }
+
+        // Plain text list (agents == nil -> treats remote as having no local agent)
+        let res = run(relay, "member", ["list"])
+        XCTAssertEqual(res.exitCode, 0)
+        let lines = res.text.components(separatedBy: "\n")
+
+        let freshLine = try XCTUnwrap(lines.first { $0.hasPrefix("remote-fresh\t") })
+        XCTAssertTrue(freshLine.contains("\ttmux-remote\talive\tthinking"))
+
+        let staleLine = try XCTUnwrap(lines.first { $0.hasPrefix("remote-stale\t") })
+        XCTAssertTrue(staleLine.contains("\ttmux-remote\tstale\t-"))
+
+        let noneLine = try XCTUnwrap(lines.first { $0.hasPrefix("remote-none\t") })
+        XCTAssertTrue(noneLine.contains("\ttmux-remote\t?\t-"))
+
+        // JSON list includes reportedAt, reportedBy, and stale detail annotation
+        let jsonRes = run(relay, "member", ["list", "--json"])
+        XCTAssertEqual(jsonRes.exitCode, 0)
+        let entries: [LightMemberListEntry] = try JSONDecoder().decode([LightMemberListEntry].self, from: jsonRes.text.data(using: .utf8)!)
+        let staleEntry = try XCTUnwrap(entries.first { $0.name == "remote-stale" })
+        XCTAssertEqual(staleEntry.runtime?.live, "stale")
+        XCTAssertTrue(staleEntry.runtime?.detail.contains("3m ago") ?? false)
+        XCTAssertEqual(staleEntry.reportedBy, "remote-host")
+        XCTAssertNotNil(staleEntry.reportedAt)
+    }
+
+    func testAttentionListAndMemberListDeDuplication() throws {
+        let relay = try makeRelay()
+        _ = try relay.register(LightMember(
+            name: "bot-1", host: "local", app: "codex", project: "p", sessionID: "shared-sess", routes: []
+        ))
+        _ = try relay.register(LightMember(
+            name: "bot-2", host: "local", app: "codex", project: "p", sessionID: "shared-sess", routes: []
+        ))
+
+        // 1. Report needs_human on shared session
+        _ = try relay.reportAttention(LightAttentionReport(
+            state: .needsHuman, what: "allow rm -rf", sessionID: "shared-sess", app: "codex",
+            host: "local", source: "hook"
+        ))
+
+        // attention list: grouped into single line with sorted members
+        let resAtt = run(relay, "attention", ["list"])
+        XCTAssertEqual(resAtt.exitCode, 0)
+        let attLines = resAtt.text.components(separatedBy: "\n").filter { !$0.isEmpty }
+        XCTAssertEqual(attLines.count, 1)
+        XCTAssertTrue(attLines[0].hasPrefix("needs_human bot-1,bot-2:"))
+        XCTAssertTrue(attLines[0].contains("allow rm -rf"))
+
+        // member list: trailing attention is grouped into single line
+        let resMember = run(relay, "member", ["list"])
+        XCTAssertEqual(resMember.exitCode, 0)
+        let memTrailing = resMember.text.components(separatedBy: "\n").filter { $0.hasPrefix("needs_human ") }
+        XCTAssertEqual(memTrailing.count, 1)
+        XCTAssertTrue(memTrailing[0].hasPrefix("needs_human bot-1,bot-2:"))
+
+        // 2. Hook and poll for same member: poll refresh keeps hook ownership
+        _ = try relay.reportAttention(LightAttentionReport(
+            state: .needsHuman, what: "poll refreshed", sessionID: "shared-sess", app: "codex",
+            host: "local", source: "poll"
+        ))
+        let resAtt2 = run(relay, "attention", ["list"])
+        let attLines2 = resAtt2.text.components(separatedBy: "\n").filter { !$0.isEmpty }
+        XCTAssertEqual(attLines2.count, 1)
+        XCTAssertTrue(attLines2[0].hasPrefix("needs_human bot-1,bot-2:"))
+    }
 }
 
 private final class FakeTestRunner: LightProcessRunning, @unchecked Sendable {

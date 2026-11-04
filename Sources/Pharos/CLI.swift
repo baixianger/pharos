@@ -166,13 +166,24 @@ enum CLI {
     static func lightExecute(command: String, arguments: [String]) -> LightCLIResult {
         do {
             let environment = ProcessInfo.processInfo.environment
-            let cliEnv = CLIAgentEnvironment.make(env: environment, nodes: lightRouter())
+            let router = lightRouter()
+            let cliEnv = CLIAgentEnvironment.make(env: environment, nodes: router)
+            let hubName = router.hubName()
+            let selfHost = LightSelfHost.fromEnvironment(environment)
+            let hostOwner: @Sendable (String) -> String = { label in
+                let folded = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if folded == "local" || selfHost.matches(folded) {
+                    if let hub = hubName { return router.canonical(hub) }
+                }
+                return router.canonical(label)
+            }
             return LightCommands.execute(
                 command: command,
                 arguments: arguments,
                 relay: try makeLightRelay(),
                 routesForApp: LightRouteCatalog.defaults(for:),
-                agents: cliEnv?.memberAgents
+                agents: cliEnv?.memberAgents,
+                hostOwner: hostOwner
             )
         } catch {
             return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")

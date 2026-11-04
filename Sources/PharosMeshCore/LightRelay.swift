@@ -752,6 +752,8 @@ public final class LightRelay: @unchecked Sendable {
     private var inflight: Set<String> = []
     /// needs_human by member name. Active while `expiresAt` is ahead.
     private var attention: [String: LightAttention] = [:]
+    /// Supervised runtime reports by member name.
+    private var runtime: [String: LightMemberRuntimeReport] = [:]
 
     public init(store: URL,
                 now: @escaping @Sendable () -> Date = { Date() },
@@ -986,35 +988,122 @@ public final class LightRelay: @unchecked Sendable {
             let seenAt = min(report.at ?? moment, moment)
             let source = report.source.isEmpty ? "hook" : report.source
             for member in matched {
-                let current = attention[member.name].flatMap { $0.expiresAt > moment ? $0 : nil }
-                switch report.state {
-                case .needsHuman:
-                    let ttl = max(1, report.ttl ?? (source == "poll" ? LightAttention.pollTTL : LightAttention.defaultTTL))
-                    let what = LightAttention.clip(report.what)
-                    attention[member.name] = LightAttention(
-                        member: member.name, what: what.isEmpty ? (current?.what ?? "") : what,
-                        host: report.host.isEmpty ? (current?.host ?? member.host) : report.host,
-                        sessionID: session, app: member.app,
-                        // A poll refreshing a hook's state keeps the hook as owner.
-                        source: current?.source == "hook" ? "hook" : source,
-                        since: current?.since ?? seenAt, seen: moment,
-                        // A short poll refresh never cuts a longer hook TTL.
-                        expiresAt: max(current?.expiresAt ?? moment, moment.addingTimeInterval(ttl)))
-                    outcome.recorded.append(member.name)
-                case .clear:
-                    guard let current else {
-                        attention[member.name] = nil
-                        continue
-                    }
-                    // A poll that sees nothing does not undo what a hook pushed.
-                    if source == "poll", current.source == "hook" { continue }
-                    attention[member.name] = nil
-                    outcome.cleared.append(member.name)
-                }
+                let outcomeFlags = applyMemberAttentionLocked(
+                    member: member,
+                    state: report.state,
+                    what: report.what,
+                    host: report.host,
+                    sessionID: session,
+                    source: source,
+                    at: seenAt,
+                    ttl: report.ttl,
+                    moment: moment
+                )
+                if outcomeFlags.recorded { outcome.recorded.append(member.name) }
+                if outcomeFlags.cleared { outcome.cleared.append(member.name) }
             }
             try persistLocked()
             return outcome
         }
+    }
+
+    @discardableResult
+    private func applyMemberAttentionLocked(
+        member: LightMember,
+        state: LightAttentionState,
+        what: String,
+        host: String,
+        sessionID: String,
+        source: String,
+        at seenAt: Date,
+        ttl: TimeInterval?,
+        moment: Date
+    ) -> (recorded: Bool, cleared: Bool) {
+        let current = attention[member.name].flatMap { $0.expiresAt > moment ? $0 : nil }
+        switch state {
+        case .needsHuman:
+            let resolvedTTL = max(1, ttl ?? (source == "poll" ? LightAttention.pollTTL : LightAttention.defaultTTL))
+            let clippedWhat = LightAttention.clip(what)
+            attention[member.name] = LightAttention(
+                member: member.name,
+                what: clippedWhat.isEmpty ? (current?.what ?? "") : clippedWhat,
+                host: host.isEmpty ? (current?.host ?? member.host) : host,
+                sessionID: sessionID,
+                app: member.app,
+                // A poll refreshing a hook's state keeps the hook as owner.
+                source: current?.source == "hook" ? "hook" : source,
+                since: current?.since ?? seenAt,
+                seen: moment,
+                // A short poll refresh never cuts a longer hook TTL.
+                expiresAt: max(current?.expiresAt ?? moment, moment.addingTimeInterval(resolvedTTL))
+            )
+            return (recorded: true, cleared: false)
+        case .clear:
+            guard let current else {
+                attention[member.name] = nil
+                return (recorded: false, cleared: false)
+            }
+            // A poll that sees nothing does not undo what a hook pushed.
+            if source == "poll", current.source == "hook" { return (recorded: false, cleared: false) }
+            attention[member.name] = nil
+            return (recorded: false, cleared: true)
+        }
+    }
+
+    /// Record runtime reports from a supervising node.
+    @discardableResult
+    public func recordRuntime(_ reports: [LightMemberRuntimeReport], nodeMatches: (LightMember) -> Bool) throws -> [String] {
+        try sync {
+            var accepted: [String] = []
+            let moment = now()
+            for report in reports {
+                guard var member = members[report.member], nodeMatches(member) else {
+                    continue
+                }
+                runtime[member.name] = report
+                accepted.append(member.name)
+
+                if let newBinding = report.binding, newBinding != member.tmux {
+                    member.tmux = newBinding
+                    members[member.name] = member
+                }
+
+                if report.activity == "needs_human" {
+                    applyMemberAttentionLocked(
+                        member: member,
+                        state: .needsHuman,
+                        what: report.detail,
+                        host: report.node,
+                        sessionID: member.sessionID,
+                        source: "poll",
+                        at: report.at,
+                        ttl: LightAttention.pollTTL,
+                        moment: moment
+                    )
+                } else if ["idle", "thinking"].contains(report.activity) || report.live != "alive" {
+                    applyMemberAttentionLocked(
+                        member: member,
+                        state: .clear,
+                        what: report.detail,
+                        host: report.node,
+                        sessionID: member.sessionID,
+                        source: "poll",
+                        at: report.at,
+                        ttl: nil,
+                        moment: moment
+                    )
+                }
+            }
+            if !accepted.isEmpty {
+                try persistLocked()
+            }
+            return accepted
+        }
+    }
+
+    /// The member's latest supervised runtime report, if any.
+    public func runtime(for name: String) -> LightMemberRuntimeReport? {
+        sync { members[name] != nil ? runtime[name] : nil }
     }
 
     /// The member's needs_human state, when active.
@@ -1275,15 +1364,18 @@ public final class LightRelay: @unchecked Sendable {
         var nodes: [NodeSeen]
         var applied: [AppliedJob]
         var attention: [LightAttention] = []
+        var runtime: [LightMemberRuntimeReport] = []
 
         private enum CodingKeys: String, CodingKey {
-            case version, members, threads, ledger, outbox, inbox, nodes, applied, attention
+            case version, members, threads, ledger, outbox, inbox, nodes, applied, attention, runtime
         }
 
         init(version: Int, members: [LightMember], threads: [LightThread], ledger: [Ticket],
              outbox: [OutboxItem], inbox: [LightNodeJob], nodes: [NodeSeen], applied: [AppliedJob],
-             attention: [LightAttention] = []) {
+             attention: [LightAttention] = [],
+             runtime: [LightMemberRuntimeReport] = []) {
             self.attention = attention
+            self.runtime = runtime
             self.version = version
             self.members = members
             self.threads = threads
@@ -1305,6 +1397,7 @@ public final class LightRelay: @unchecked Sendable {
             nodes = try container.decodeIfPresent([NodeSeen].self, forKey: .nodes) ?? []
             applied = try container.decodeIfPresent([AppliedJob].self, forKey: .applied) ?? []
             attention = try container.decodeIfPresent([LightAttention].self, forKey: .attention) ?? []
+            runtime = try container.decodeIfPresent([LightMemberRuntimeReport].self, forKey: .runtime) ?? []
         }
 
         func encode(to encoder: Encoder) throws {
@@ -1318,6 +1411,7 @@ public final class LightRelay: @unchecked Sendable {
             try container.encode(nodes, forKey: .nodes)
             try container.encode(applied, forKey: .applied)
             if !attention.isEmpty { try container.encode(attention, forKey: .attention) }
+            if !runtime.isEmpty { try container.encode(runtime, forKey: .runtime) }
         }
     }
 
@@ -2261,6 +2355,7 @@ public final class LightRelay: @unchecked Sendable {
         nodeSeen = Dictionary(uniqueKeysWithValues: snapshot.nodes.map { ($0.host, $0.lastSeen) })
         appliedJobs = Dictionary(uniqueKeysWithValues: snapshot.applied.map { ($0.id, $0.at) })
         attention = Dictionary(snapshot.attention.map { ($0.member, $0) }, uniquingKeysWith: { $1 })
+        runtime = Dictionary(snapshot.runtime.map { ($0.member, $0) }, uniquingKeysWith: { $1 })
         for thread in snapshot.threads {
             logs[thread.id] = try readJSONL(logURL(thread.id))
         }
@@ -2268,6 +2363,7 @@ public final class LightRelay: @unchecked Sendable {
     }
 
     private func persistLocked() throws {
+        runtime = runtime.filter { members[$0.key] != nil }
         let snapshot = Snapshot(version: 3, members: members.values.sorted { $0.name < $1.name },
                                 threads: threads.values.sorted { $0.id < $1.id },
                                 ledger: ledger.values.sorted { $0.replyID < $1.replyID },
@@ -2275,7 +2371,8 @@ public final class LightRelay: @unchecked Sendable {
                                 inbox: inbox.sorted { $0.id < $1.id },
                                 nodes: nodeSeen.map { NodeSeen(host: $0.key, lastSeen: $0.value) }.sorted { $0.host < $1.host },
                                 applied: appliedJobs.map { AppliedJob(id: $0.key, at: $0.value) }.sorted { $0.id < $1.id },
-                                attention: attention.values.sorted { $0.member < $1.member })
+                                attention: attention.values.sorted { $0.member < $1.member },
+                                runtime: runtime.values.sorted { $0.member < $1.member })
         let data = try Self.makeEncoder().encode(snapshot)
         try data.write(to: stateURL, options: .atomic)
         chmod(stateURL.path, 0o600)

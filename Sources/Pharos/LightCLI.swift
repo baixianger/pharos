@@ -207,6 +207,13 @@ extension CLI {
         LightNodeExec.execute(command: command, arguments: arguments, driver: localDriver())
     }
 
+    /// Hub JSON encodes dates as seconds since 1970.
+    static var secondsDecoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        return decoder
+    }
+
     static func nodeAgentExecute(_ arguments: [String]) -> LightCLIResult {
         let env = lightEnvironment
         guard let cliEnv = CLIAgentEnvironment.make(env: env) else {
@@ -226,6 +233,50 @@ extension CLI {
             return result.exitCode == 0
         }
         body["spooled"] = spooled
+
+        let env = lightEnvironment
+        if let cliEnv = CLIAgentEnvironment.make(env: env) {
+            let nodeName = LightHostDirectory.nodeName(ProcessInfo.processInfo.hostName)
+            let supervisorStore = LightRelay.defaultStoreURL().deletingLastPathComponent().appendingPathComponent("cli-supervisor.json")
+            let supervisor = CLISupervisor(lifecycle: cliEnv.lifecycle, node: nodeName, stateStore: supervisorStore)
+
+            if lightIsHub {
+                if let relay = try? makeLightRelay() {
+                    let selfHost = LightSelfHost.fromEnvironment(env)
+                    let hubMembers = relay.listMembers().filter { m in
+                        guard m.tmux != nil else { return false }
+                        return m.host == "local" || selfHost.matches(m.host)
+                    }
+                    let reports = supervisor.pass(members: hubMembers)
+                    _ = try? relay.recordRuntime(reports, nodeMatches: { _ in true })
+                    let revived = reports.filter { $0.detail == "auto-revived" }.map(\.member)
+                    body["supervised"] = hubMembers.count
+                    body["revived"] = revived
+                }
+            } else {
+                let router = lightRouter()
+                if let hub = router.hubName() {
+                    let runResult = router.run(hub, argv: ["member", "node-members", "--node", nodeName, "--json"], timeout: 30)
+                    if let out = runResult, out.status == 0,
+                       let data = out.stdout.data(using: .utf8),
+                       let members = try? Self.secondsDecoder.decode([LightMember].self, from: data) {
+                        if !members.isEmpty {
+                            let reports = supervisor.pass(members: members)
+                            let revived = reports.filter { $0.detail == "auto-revived" }.map(\.member)
+                            body["supervised"] = members.count
+                            body["revived"] = revived
+                            if let b64 = LightCodec.encode(reports) {
+                                _ = router.run(hub, argv: ["member", "node-report", "--node", nodeName, "--payload", b64], timeout: 30)
+                            }
+                        } else {
+                            body["supervised"] = 0
+                            body["revived"] = [String]()
+                        }
+                    }
+                }
+            }
+        }
+
         if lightIsHub, FileManager.default.fileExists(atPath: LightRelay.defaultStoreURL().path) {
             do {
                 let relay = try makeLightRelay()
