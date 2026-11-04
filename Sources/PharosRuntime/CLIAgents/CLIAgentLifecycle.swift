@@ -207,6 +207,8 @@ public struct CLIAgentLifecycle: Sendable {
         if descriptor.app == "codex" {
             let discStart = now()
             var foundID: String?
+            var nudged = false
+            var nudgeNote: String? = nil
             while true {
                 if let finder = threadFinder {
                     if let id = try finder(snapshot, resolvedCwd) {
@@ -240,12 +242,21 @@ public struct CLIAgentLifecycle: Sendable {
                     let scanSince = adopted ? Date.distantPast : launchStart.addingTimeInterval(-2)
                     if let rolloutID = scanRolloutSessionID(root: rolloutsDir, since: scanSince, cwd: resolvedCwd) {
                         foundID = rolloutID
-                        rolloutNote = "session id from rollout (this codex TUI is not on the shared daemon)"
+                        rolloutNote = "session id from rollout (this codex TUI is not on the shared daemon)" + (nudgeNote.map { "; \($0)" } ?? "")
                         break
                     }
 
+                    // Older codex TUIs (not on the shared daemon) write the rollout only on the first
+                    // submitted message: send the opening message once, then keep scanning.
+                    if !nudged, !adopted, now().timeIntervalSince(discStart) >= min(10, timeout / 3) {
+                        nudged = true
+                        let opening = request.openingMessage ?? "Pharos registered this session as member \(request.name). Reply with exactly: ready"
+                        if tmux.sendText(sessionName, opening) {
+                            nudgeNote = "this codex TUI creates its session on the first message; sent the opening message"
+                        }
+                    }
                     if now().timeIntervalSince(discStart) >= timeout {
-                        throw CLIAgentLifecycleError.needsHuman("codex daemon not available (the TUI normally starts it); check `codex app-server daemon version`")
+                        throw CLIAgentLifecycleError.needsHuman("no codex session id: no new thread on the shared daemon and no new rollout in \(resolvedCwd)\(nudged ? " after the opening message" : ""); check the tmux session \(sessionName)")
                     }
                     sleep(pollInterval)
                     continue
