@@ -44,10 +44,14 @@ public struct TmuxLiveness: Equatable, Sendable {
 public struct TmuxController: Sendable {
     public var tmux: String           // tmux binary path
     public var runner: any LightProcessRunning
+    /// Pause between the typed text and Enter. TUIs with paste detection (codex) treat an
+    /// Enter that arrives with the text as a newline, so live use sets this (~0.6s).
+    public var enterDelay: TimeInterval
 
-    public init(tmux: String = "tmux", runner: any LightProcessRunning) {
+    public init(tmux: String = "tmux", runner: any LightProcessRunning, enterDelay: TimeInterval = 0) {
         self.tmux = tmux
         self.runner = runner
+        self.enterDelay = enterDelay
     }
 
     /// `tmux has-session -t =NAME` exit 0
@@ -197,6 +201,7 @@ public struct TmuxController: Sendable {
             stdin: ""
         )
         guard sendOut.status == 0 else { return false }
+        if enterDelay > 0 { Thread.sleep(forTimeInterval: enterDelay) }
 
         let enterArgs = [tmux, "send-keys", "-t", "=\(name):", "Enter"]
         let enterOut = runner.run(

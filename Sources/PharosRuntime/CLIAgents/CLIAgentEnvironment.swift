@@ -48,7 +48,7 @@ public struct CLIAgentEnvironment: Sendable {
         guard env["PHAROS_LIGHT_LIVE"] == "1" else { return nil }
 
         let tmuxBin = resolveTmuxBin(env: env)
-        let tmux = TmuxController(tmux: tmuxBin, runner: runner)
+        let tmux = TmuxController(tmux: tmuxBin, runner: runner, enterDelay: 0.6)
         let quota = CLIQuotaBook(store: storeURL.appendingPathComponent("cli-quota.json"))
         let cursors = CLIReplyCursorBook(store: storeURL.appendingPathComponent("cli-reply-cursors.json"))
 
