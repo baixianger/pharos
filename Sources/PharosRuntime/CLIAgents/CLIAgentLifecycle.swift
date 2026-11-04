@@ -656,8 +656,16 @@ public struct CLIAgentLifecycle: Sendable {
 
             guard let handle = try? FileHandle(forReadingFrom: url) else { continue }
             defer { try? handle.close() }
-            let chunk = handle.readData(ofLength: 4096)
-            guard let firstLine = String(data: chunk, encoding: .utf8)?.components(separatedBy: "\n").first,
+            // session_meta carries the base instructions: the first line is often well over 4 KiB.
+            var chunk = Data()
+            while chunk.count < 4_000_000 {
+                let part = handle.readData(ofLength: 65_536)
+                if part.isEmpty { break }
+                chunk.append(part)
+                if part.contains(0x0A) { break }
+            }
+            if let newline = chunk.firstIndex(of: 0x0A) { chunk = chunk.prefix(upTo: newline) }
+            guard let firstLine = String(data: chunk, encoding: .utf8),
                   let lineData = firstLine.data(using: .utf8),
                   let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
                   json["type"] as? String == "session_meta",
