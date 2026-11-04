@@ -11,6 +11,19 @@ public protocol HumanAttentionSource: Sendable {
     func poll(members: [LightMember]) -> [LightAttentionReport]
 }
 
+/// Combines multiple attention poll sources into one pass.
+public struct CombinedAttentionSource: HumanAttentionSource {
+    public var sources: [any HumanAttentionSource]
+
+    public init(sources: [any HumanAttentionSource]) {
+        self.sources = sources
+    }
+
+    public func poll(members: [LightMember]) -> [LightAttentionReport] {
+        sources.flatMap { $0.poll(members: members) }
+    }
+}
+
 /// Reads `achat <app> pending` for members on this machine. Read-only: dsh from
 /// its session log (`--via files`), Antigravity from the open window over CDP on
 /// 127.0.0.1 without navigating it, Cursor from its own pending surface.

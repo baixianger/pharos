@@ -163,11 +163,14 @@ enum CLI {
 
     static func lightExecute(command: String, arguments: [String]) -> LightCLIResult {
         do {
+            let environment = ProcessInfo.processInfo.environment
+            let cliEnv = CLIAgentEnvironment.make(env: environment)
             return LightCommands.execute(
                 command: command,
                 arguments: arguments,
                 relay: try makeLightRelay(),
-                routesForApp: LightRouteCatalog.defaults(for:)
+                routesForApp: LightRouteCatalog.defaults(for:),
+                agents: cliEnv?.memberAgents
             )
         } catch {
             return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")
@@ -187,6 +190,7 @@ enum CLI {
         }
         let live = environment["PHAROS_LIGHT_LIVE"] == "1"
         let router = lightRouter()
+        let cliEnv = CLIAgentEnvironment.make(env: environment)
         let driver = ExternalLightDriver(
             allowLive: live,
             runner: live ? FoundationLightProcessRunner() : nil,
@@ -195,7 +199,8 @@ enum CLI {
             achat: bins.achat,
             replyFloorStore: LightRelay.defaultStoreURL().appendingPathComponent("achat-reply-floors.json"),
             selfHost: .fromEnvironment(environment),
-            nodes: router
+            nodes: router,
+            cliAgents: cliEnv?.driver
         )
         return try LightRelay(
             store: LightRelay.defaultStoreURL(),

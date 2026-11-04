@@ -190,6 +190,7 @@ extension CLI {
         let env = lightEnvironment
         let bins = LightAppBins.fromEnvironment(env)
         let live = env["PHAROS_LIGHT_LIVE"] == "1"
+        let cliEnv = CLIAgentEnvironment.make(env: env)
         return ExternalLightDriver(
             allowLive: live,
             runner: live ? FoundationLightProcessRunner() : nil,
@@ -197,7 +198,8 @@ extension CLI {
             codexSessions: CodexRolloutReader(),
             achat: bins.achat,
             replyFloorStore: LightRelay.defaultStoreURL().appendingPathComponent("achat-reply-floors.json"),
-            selfHost: nil
+            selfHost: nil,
+            cliAgents: cliEnv?.driver
         )
     }
 
@@ -240,14 +242,18 @@ extension CLI {
         return LightCLIResult(exitCode: body["error"] == nil ? 0 : 1, text: text)
     }
 
-    /// needs_human polls (achat `pending`) run only with live app access, for members on this machine.
+    /// needs_human polls (achat `pending` and CLI agents) run only with live app access, for members on this machine.
     private static func attentionPoller(_ env: [String: String]) -> (any HumanAttentionSource)? {
         guard env["PHAROS_LIGHT_LIVE"] == "1", env["PHAROS_LIGHT_ATTENTION_POLL"] != "0" else { return nil }
         let selfHost = LightSelfHost.fromEnvironment(env)
         let label = ProcessInfo.processInfo.hostName.split(separator: ".").first.map(String.init) ?? "local"
-        return AchatPendingAttentionSource(runner: FoundationLightProcessRunner(),
+        let achat = AchatPendingAttentionSource(runner: FoundationLightProcessRunner(),
                                            achat: LightAppBins.fromEnvironment(env).achat,
                                            isLocal: { selfHost.matches($0.host) }, hostLabel: label.lowercased())
+        if let cliEnv = CLIAgentEnvironment.make(env: env) {
+            return CombinedAttentionSource(sources: [achat, cliEnv.attentionSource])
+        }
+        return achat
     }
 
     private static func lightDispatchNoSpool(_ argv: [String]) -> LightCLIResult {

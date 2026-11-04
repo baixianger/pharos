@@ -1,5 +1,69 @@
 import Foundation
 
+public struct LightMemberRuntimeStatus: Codable, Equatable, Sendable {
+    public var tmux: String
+    public var live: String
+    public var activity: String
+    public var detail: String
+
+    public init(tmux: String, live: String, activity: String, detail: String) {
+        self.tmux = tmux
+        self.live = live
+        self.activity = activity
+        self.detail = detail
+    }
+}
+
+public protocol LightMemberAgents: Sendable {
+    func launch(name: String, app: String, cwd: String, host: String, model: String?, tmuxSession: String?,
+                openingMessage: String?, project: String) throws -> LightMember   // returns member with tmux binding + routes
+    func revive(_ member: LightMember) throws -> LightTmuxBinding
+    func status(_ member: LightMember) -> LightMemberRuntimeStatus?   // nil = not a tmux CLI member
+    var notes: [String] { get }
+}
+
+extension LightMemberAgents {
+    public var notes: [String] { [] }
+}
+
+public struct LightMemberListEntry: Codable, Sendable {
+    public var name: String
+    public var host: String
+    public var app: String
+    public var project: String
+    public var sessionID: String
+    public var routes: [LightRoute]
+    public var tmux: LightTmuxBinding?
+    public var runtime: LightMemberRuntimeStatus?
+
+    public init(member: LightMember, runtime: LightMemberRuntimeStatus?) {
+        self.name = member.name
+        self.host = member.host
+        self.app = member.app
+        self.project = member.project
+        self.sessionID = member.sessionID
+        self.routes = member.routes
+        self.tmux = member.tmux
+        self.runtime = runtime
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name, host, app, project, sessionID, routes, tmux, runtime
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(name, forKey: .name)
+        try container.encode(host, forKey: .host)
+        try container.encode(app, forKey: .app)
+        try container.encode(project, forKey: .project)
+        try container.encode(sessionID, forKey: .sessionID)
+        try container.encode(routes, forKey: .routes)
+        try container.encodeIfPresent(tmux, forKey: .tmux)
+        try container.encodeIfPresent(runtime, forKey: .runtime)
+    }
+}
+
 public struct LightCLIResult: Equatable, Sendable {
     public var exitCode: Int32
     public var text: String
@@ -18,7 +82,8 @@ public struct LightCLIResult: Equatable, Sendable {
 public enum LightCommands {
     public static func execute(command: String, arguments: [String], relay: LightRelay,
                                routesForApp: (String) -> [LightRoute],
-                               routeByID: (String) -> LightRoute = LightRoute.named) -> LightCLIResult {
+                               routeByID: (String) -> LightRoute = LightRoute.named,
+                               agents: (any LightMemberAgents)? = nil) -> LightCLIResult {
         let argv = LightArgv.parse(arguments)
         do {
             if ["thread", "wait", "read", "attention"].contains(command),
@@ -32,7 +97,7 @@ public enum LightCommands {
             }
             switch command {
             case "member":
-                return try member(argv, relay: relay, routesForApp: routesForApp, routeByID: routeByID)
+                return try member(argv, relay: relay, routesForApp: routesForApp, routeByID: routeByID, agents: agents)
             case "thread":
                 return try thread(argv, relay: relay)
             case "send":
@@ -61,24 +126,150 @@ public enum LightCommands {
 
     private static func member(_ argv: LightArgv, relay: LightRelay,
                                routesForApp: (String) -> [LightRoute],
-                               routeByID: (String) -> LightRoute) throws -> LightCLIResult {
+                               routeByID: (String) -> LightRoute,
+                               agents: (any LightMemberAgents)? = nil) throws -> LightCLIResult {
         switch argv.positional.first {
         case "list", nil:
             let members = relay.listMembers()
-            if argv.flag("json") { return json(members) }
-            if members.isEmpty { return ok("no members") }
             let moment = Date()
-            let lines = members.map { member in
-                let routes = member.routes.map(\.id).joined(separator: ",")
-                let state = relay.attention(for: member.name)
-                    .map { "needs_human \(LightAttention.age(moment.timeIntervalSince($0.since)))" } ?? "-"
-                return "\(member.name)\t\(member.app)\t\(member.host)\t\(member.project)\t\(member.sessionID)\t\(routes)\t\(state)"
+
+            struct MemberRow {
+                let member: LightMember
+                let tmux: String
+                let live: String
+                let state: String
+                let runtime: LightMemberRuntimeStatus?
             }
-            var out = ["NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES\tSTATE"] + lines
+
+            let rows: [MemberRow] = members.map { member in
+                var binding = member.tmux
+                let tmuxStr = binding?.session ?? "-"
+                let liveStr: String
+                let stateStr: String
+                let runtime: LightMemberRuntimeStatus?
+
+                if binding == nil {
+                    liveStr = "-"
+                    let existingAttention = relay.attention(for: member.name)
+                        .map { "needs_human \(LightAttention.age(moment.timeIntervalSince($0.since)))" }
+                    stateStr = existingAttention ?? "-"
+                    runtime = nil
+                } else if var st = agents?.status(member) {
+                    if st.live == "dead" && binding?.endedAt == nil {
+                        binding?.endedAt = moment
+                        try? relay.updateTmux(member: member.name, binding)
+                        st.live = "ended"
+                        st.detail = "ended"
+                    }
+                    liveStr = st.live
+                    let existingAttention = relay.attention(for: member.name)
+                        .map { "needs_human \(LightAttention.age(moment.timeIntervalSince($0.since)))" }
+                    if let existingAttention {
+                        stateStr = existingAttention
+                    } else if ["idle", "thinking", "needs_human"].contains(st.activity) {
+                        stateStr = st.activity
+                    } else if !st.activity.isEmpty && st.activity != "unknown" && st.activity != "-" {
+                        stateStr = st.activity
+                    } else {
+                        stateStr = "-"
+                    }
+                    runtime = st
+                } else {
+                    if binding?.endedAt != nil {
+                        liveStr = "ended"
+                    } else {
+                        liveStr = "?"
+                    }
+                    let existingAttention = relay.attention(for: member.name)
+                        .map { "needs_human \(LightAttention.age(moment.timeIntervalSince($0.since)))" }
+                    stateStr = existingAttention ?? "-"
+                    runtime = nil
+                }
+
+                return MemberRow(member: member, tmux: tmuxStr, live: liveStr, state: stateStr, runtime: runtime)
+            }
+
+            if argv.flag("json") {
+                let entries = rows.map { row in
+                    LightMemberListEntry(member: row.member, runtime: row.runtime)
+                }
+                return json(entries)
+            }
+
+            if members.isEmpty { return ok("no members") }
+            let lines = rows.map { row in
+                let routes = row.member.routes.map(\.id).joined(separator: ",")
+                return "\(row.member.name)\t\(row.member.app)\t\(row.member.host)\t\(row.member.project)\t\(row.member.sessionID)\t\(routes)\t\(row.tmux)\t\(row.live)\t\(row.state)"
+            }
+            var out = ["NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES\tTMUX\tLIVE\tSTATE"] + lines
             for state in relay.activeAttention() {
                 out.append("needs_human \(state.member): \(state.describe(at: moment))")
             }
             return ok(out.joined(separator: "\n"))
+        case "launch":
+            guard let app = argv.option("app"),
+                  let name = argv.option("name"),
+                  let dir = argv.option("dir") else {
+                return usage("pharos member launch --app codex|agy --name N --dir D [--host H] [--model M] [--tmux SESSION] [--message TEXT] [--project P] [--json]")
+            }
+            guard let agents else {
+                return LightCLIResult(exitCode: 1, text: "error: member launch needs live CLI access (PHAROS_LIGHT_LIVE=1)")
+            }
+            let host = argv.option("host") ?? "local"
+            let project: String = {
+                if let p = argv.option("project"), !p.isEmpty { return p }
+                let last = URL(fileURLWithPath: dir).lastPathComponent
+                return last.isEmpty ? "default" : last
+            }()
+            let model = argv.option("model")
+            let tmuxSession = argv.option("tmux")
+            let message = argv.option("message")
+
+            let validatedName = try LightRelay.validateName(name)
+            _ = try LightRelay.validateProject(project)
+
+            if let _ = relay.member(named: validatedName) {
+                throw LightRelayError.duplicateMember(validatedName)
+            }
+
+            let member = try agents.launch(
+                name: validatedName,
+                app: app,
+                cwd: dir,
+                host: host,
+                model: model,
+                tmuxSession: tmuxSession,
+                openingMessage: message,
+                project: project
+            )
+
+            let registered = try relay.register(member)
+            if argv.flag("json") { return json(registered) }
+            let tmuxName = registered.tmux?.session ?? tmuxSession ?? validatedName
+            return LightCLIResult(
+                exitCode: 0,
+                text: "launched \(registered.name) (app \(registered.app)) in tmux \(tmuxName), session \(registered.sessionID)",
+                notes: agents.notes
+            )
+        case "revive":
+            guard let name = argv.positional.dropFirst().first else {
+                return usage("pharos member revive N [--json]")
+            }
+            guard let agents else {
+                return LightCLIResult(exitCode: 1, text: "error: member revive needs live CLI access (PHAROS_LIGHT_LIVE=1)")
+            }
+            guard let member = relay.member(named: name) else {
+                throw LightRelayError.unknownMember(name)
+            }
+            guard member.tmux != nil else {
+                return LightCLIResult(exitCode: 1, text: "error: member \(name) has no tmux binding")
+            }
+            let newBinding = try agents.revive(member)
+            try relay.updateTmux(member: name, newBinding)
+            var updated = member
+            updated.tmux = newBinding
+            if argv.flag("json") { return json(updated) }
+            return ok("revived \(name) in tmux \(newBinding.session) (resumed \(member.sessionID))")
         case "register" where argv.option("app") == "webhook":
             // A remote assistant reached by HTTPS POST. Its session id is the webhook config name.
             guard let name = argv.option("name") else {
@@ -107,7 +298,7 @@ public enum LightCommands {
             if argv.flag("json") { return json(member) }
             return ok("registered \(member.name)")
         default:
-            return usage("pharos member register|list")
+            return usage("pharos member register|list|launch|revive")
         }
     }
 
@@ -359,8 +550,8 @@ public enum LightCommands {
         (result.hints ?? []).map { "hint: body mentions @\($0); use --cc \($0) to copy them" }
     }
 
-    private static func ok(_ text: String) -> LightCLIResult {
-        LightCLIResult(exitCode: 0, text: text)
+    private static func ok(_ text: String, notes: [String] = []) -> LightCLIResult {
+        LightCLIResult(exitCode: 0, text: text, notes: notes)
     }
 
     private static func usage(_ text: String) -> LightCLIResult {
@@ -525,6 +716,12 @@ extension LightCommands {
       queued ("queued ... needs_human: ...") and Pharos does not read its session.
       `member list` and `thread show` mark it. Pharos never approves or denies: the
       human answers in the agent's own app.
+
+    CLI AGENT MEMBERS (tmux-backed codex / agy)
+      pharos member launch --app codex|agy --name N --dir D [--host H] [--model M] [--tmux SESSION] [--message TEXT] [--project P] [--json]
+      pharos member revive N [--json]
+      Launches or revives a tmux-backed CLI agent member. Replies are read from the daemon
+      (codex) / transcript (agy). needs_human is report-only.
 
     WEBHOOK MEMBERS (remote assistants)
       pharos webhook set NAME --url https://… [--header-name H] --secret-stdin|--secret-file F|--secret-env VAR

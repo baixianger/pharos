@@ -2091,7 +2091,7 @@ public final class LightRelay: @unchecked Sendable {
         return out
     }
 
-    private static func validateName(_ raw: String) throws -> String {
+    static func validateName(_ raw: String) throws -> String {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard value.range(of: #"^[a-z][a-z0-9-]{0,62}$"#, options: .regularExpression) != nil else {
             throw LightRelayError.invalidName(value)
@@ -2099,7 +2099,7 @@ public final class LightRelay: @unchecked Sendable {
         return value
     }
 
-    private static func validateLabel(_ raw: String, failure: (String) -> LightRelayError) throws -> String {
+    static func validateLabel(_ raw: String, failure: (String) -> LightRelayError) throws -> String {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard value.range(of: #"^[a-z][a-z0-9-]{0,62}$"#, options: .regularExpression) != nil else {
             throw failure(value)
@@ -2107,7 +2107,7 @@ public final class LightRelay: @unchecked Sendable {
         return value
     }
 
-    private static func validateProject(_ raw: String) throws -> String {
+    static func validateProject(_ raw: String) throws -> String {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard value.range(of: #"^[a-z0-9][a-z0-9_-]{0,62}$"#, options: .regularExpression) != nil else {
             throw LightRelayError.invalidProject(value)

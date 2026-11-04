@@ -154,7 +154,7 @@ final class LightAttentionTests: XCTestCase {
         XCTAssertEqual(run("attention", ["report", "--state", "needs_human", "--session", "nope"]).text, "no member has session nope")
         XCTAssertTrue(run("attention", ["list"]).text.hasPrefix("needs_human codex-a: Bash: rm -rf build (host mini, session sess-codex, "))
         let members = run("member", ["list"]).text.components(separatedBy: "\n")
-        XCTAssertEqual(members[0], "NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES\tSTATE")
+        XCTAssertEqual(members[0], "NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES\tTMUX\tLIVE\tSTATE")
         XCTAssertTrue(members.contains { $0.hasPrefix("codex-a\t") && $0.contains("\tneeds_human ") })
         XCTAssertTrue(members.contains { $0.hasPrefix("owner\t") && $0.hasSuffix("\t-") })
 
