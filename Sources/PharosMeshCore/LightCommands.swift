@@ -258,12 +258,16 @@ public enum LightCommands {
 
     private static func wait(_ argv: LightArgv, relay: LightRelay) throws -> LightCLIResult {
         guard let id = argv.positional.first else { return usage("pharos wait r_xxx [--timeout 30s]") }
-        let timeout = try argv.duration("timeout") ?? 0
+        let (timeout, capNote) = clampWaitTimeout(try argv.duration("timeout"))
         let result = try relay.wait(replyID: id, timeout: timeout)
-        let notes = result.nextReplyID.map { ["next reply-id \($0) (pharos reply \($0) -- \"...\" to continue)"] } ?? []
+        var notes = result.nextReplyID.map { ["next reply-id \($0) (pharos reply \($0) -- \"...\" to continue)"] } ?? []
+        if let capNote {
+            notes.insert(capNote, at: 0)
+        }
         if argv.flag("json") {
-            let encoded = json(result, ok: result.status == .replied)
-            if result.status == .pending { return LightCLIResult(exitCode: 2, text: encoded.text) }
+            var encoded = json(result, ok: result.status == .replied)
+            encoded.notes = notes
+            if result.status == .pending { encoded.exitCode = 2 }
             return encoded
         }
         switch result.status {
@@ -271,13 +275,13 @@ public enum LightCommands {
             return LightCLIResult(exitCode: 0, text: result.text ?? "", notes: notes)
         case .pending:
             if let state = result.attention {
-                return LightCLIResult(exitCode: 2, text: "pending \(id)\nneeds_human \(state.member): \(state.describe(at: Date()))")
+                return LightCLIResult(exitCode: 2, text: "pending \(id)\nneeds_human \(state.member): \(state.describe(at: Date()))", notes: notes)
             }
-            return LightCLIResult(exitCode: 2, text: "pending \(id)")
+            return LightCLIResult(exitCode: 2, text: "pending \(id)", notes: notes)
         case .expired:
-            return LightCLIResult(exitCode: 1, text: "error: expired reply-id \(id)")
+            return LightCLIResult(exitCode: 1, text: "error: expired reply-id \(id)", notes: notes)
         case .unknown:
-            return LightCLIResult(exitCode: 1, text: "error: unknown reply-id \(id)")
+            return LightCLIResult(exitCode: 1, text: "error: unknown reply-id \(id)", notes: notes)
         }
     }
 
@@ -471,6 +475,16 @@ extension LightCommands {
         try LightArgv.parseDuration(raw)
     }
 
+    public static let defaultWaitTimeout: TimeInterval = 60
+    public static let maxWaitTimeout: TimeInterval = 300
+
+    public static func clampWaitTimeout(_ raw: TimeInterval?) -> (timeout: TimeInterval, note: String?) {
+        guard let raw else { return (defaultWaitTimeout, nil) }
+        if raw <= 0 { return (0, nil) }
+        if raw > maxWaitTimeout { return (maxWaitTimeout, "note: --timeout capped at 300s") }
+        return (raw, nil)
+    }
+
     /// `pharos help chat`: how agents message each other through Pharos.
     public static let chatHelp = """
     pharos help chat — messaging between agents (lightweight tier)
@@ -495,12 +509,12 @@ extension LightCommands {
 
     WAKING THE SENDER
       By default an answer to your ask is only recorded: read it with
-      `pharos wait r_xxx --timeout 5m`, `pharos read r_xxx`, or `pharos thread show T`.
+      `pharos read r_xxx` or `pharos thread show T`.
       --deliver on send (applies to its replies) or on reply wakes the sender's session.
       A reply with --intent ask is always delivered.
 
-    WAIT / READ
-      pharos wait r_xxx [--timeout 5m] [--json]   Answer text; JSON adds nextReplyID.
+    READING
+      pharos read r_xxx [--json]                  Answer text and messages for this reply.
       pharos thread show T [--json]               Intent, rounds, conclusion, every message.
 
     NEEDS HUMAN (an agent waiting on its own approval prompt)
@@ -538,7 +552,7 @@ extension LightCommands {
       as "Pharos node offline".
 
     RECOMMENDED PATTERN
-      Hand Pharos messaging to a subagent: it sends, waits, runs the discussion, and
+      Hand Pharos messaging to a subagent: it sends, runs the discussion, and
       returns only the conclusion to you. Your own context stays small, and you are not
       woken by every turn. (A recommendation, not enforced.)
     """

@@ -8,14 +8,13 @@ description: Message other agents (or a webhook-backed assistant) through Pharos
 Run `pharos help chat` for the built-in version of this page.
 
 ## Recommended: delegate the conversation
-Hand Pharos messaging to a **subagent**. The subagent sends, waits, runs any
+Hand Pharos messaging to a **subagent**. The subagent sends, runs any
 discussion, and returns **only the conclusion** to you. Your context stays small
 and you are not woken by every turn. This is a recommendation, not a rule.
 
 Example brief for the subagent:
-> Using `pharos`, ask `<member>` "<question>" (`--intent ask`), wait up to 10 minutes
-> with `pharos wait <reply-id> --timeout 10m`, and return only their answer in one or
-> two sentences. Do not edit files.
+> Using `pharos`, ask `<member>` "<question>" (`--intent ask --deliver`), and
+> return only their answer in one or two sentences. Do not edit files.
 
 ## Addressing: parameters only
 ```
@@ -56,11 +55,10 @@ answer, do **not** reply unless you need clarification.
   mesh first, SSH as a backup, else queued on the Broker. Output says `via mesh|ssh|queued`.
 
 ## Reading answers
-- `pharos wait r_xxx --timeout 5m` prints the answer (`--json` adds `nextReplyID`).
-- `pharos read r_xxx` / `pharos thread show <thread>` show every message, its intent,
-  and for a discussion its rounds and conclusion.
 - `--deliver` (on `send`, applying to its replies, or on `reply`) wakes the sender's
-  session instead of only recording the answer.
+  session when the answer lands instead of only recording it.
+- `pharos read r_xxx` / `pharos thread show <thread>` show every message, its intent,
+  and for a discussion its rounds and conclusion. Check them later if `--deliver` was not used.
 
 ## needs_human (an agent waiting on its own approval prompt)
 When a member's agent stops on a permission/approval prompt in its own app, Pharos
@@ -69,7 +67,7 @@ until it proceeds or the state expires (20 min for hook reports). It only record
 reports: nobody approves remotely, and there is no approve/deny command; the prompt
 is answered in that agent's own app.
 - `pharos member list` shows a STATE column; `pharos attention list` lists the waits.
-- `pharos thread show` / `pharos wait` print `needs_human NAME: ...`; a send to such a
+- `pharos thread show` / `pharos read` print `needs_human NAME: ...`; a send to such a
   member prints `queued` with `needs_human: ...; queued until it proceeds`.
 - Sources: per-app hook adapters (`achat hook claude|codex|dsh`, installed per project
   with `achat hook install <app> --dir <project>`; async, observe only, no output),

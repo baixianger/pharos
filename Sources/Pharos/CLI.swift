@@ -1014,7 +1014,6 @@ enum CLI {
           send --from NAME --to NAME... [--cc NAME]... [--intent ask|inform|discuss] [--deliver] [--rounds N]
                [--hop-limit N] [--ttl 24h] [--once] -- <text>
           reply r_xxx [--cc NAME]... [--intent answer|ask|inform] [--deliver] [--ttl 24h] [--once] -- <text>
-          wait r_xxx [--timeout 30s] [--json]
           webhook set NAME --url URL [--header-name H] --secret-stdin|--secret-file F|--secret-env VAR
           webhook list [--json] | show NAME | remove NAME   (secrets always shown as ***)
           read --thread ID [--json] | read r_xxx [--json]

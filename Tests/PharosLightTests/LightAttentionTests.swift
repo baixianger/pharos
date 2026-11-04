@@ -140,7 +140,8 @@ final class LightAttentionTests: XCTestCase {
     }
 
     func testCommandsReportListAndMarkMembersAndThreads() throws {
-        let relay = try makeRelay(driver: CountingDriver())
+        let clock = AttentionClock()
+        let relay = try makeRelay(driver: CountingDriver(), now: clock.now, sleep: clock.sleep)
         try registerPair(relay)
         func run(_ command: String, _ args: [String]) -> LightCLIResult {
             LightCommands.execute(command: command, arguments: args, relay: relay, routesForApp: { _ in [] })
@@ -249,9 +250,12 @@ final class LightAttentionTests: XCTestCase {
     }
 
     private func makeRelay(driver: any LightSessionDriver = IdleLightDriver(),
-                           now: (@Sendable () -> Date)? = nil) throws -> LightRelay {
-        if let now { return try LightRelay(store: freshStore(), now: now, driver: driver) }
-        return try LightRelay(store: freshStore(), driver: driver)
+                           now: (@Sendable () -> Date)? = nil,
+                           sleep: (@Sendable (TimeInterval) -> Void)? = nil) throws -> LightRelay {
+        try LightRelay(store: freshStore(),
+                       now: now ?? { Date() },
+                       sleep: sleep ?? { Thread.sleep(forTimeInterval: $0) },
+                       driver: driver)
     }
 
     private func freshStore() -> URL {
@@ -265,6 +269,7 @@ private final class AttentionClock: @unchecked Sendable {
     var current = Date(timeIntervalSince1970: 1_700_000_000)
     func now() -> Date { current }
     func advance(_ interval: TimeInterval) { current = current.addingTimeInterval(interval) }
+    func sleep(_ interval: TimeInterval) { advance(interval) }
 }
 
 private final class CountingDriver: LightSessionDriver, @unchecked Sendable {

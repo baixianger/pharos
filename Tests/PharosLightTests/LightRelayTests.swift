@@ -239,6 +239,86 @@ final class LightRelayTests: XCTestCase {
         XCTAssertEqual(driver.calls.count, callsAfter)
     }
 
+    func testWaitTimeoutDefaultAndClamping() throws {
+        let (defTimeout, defNote) = LightCommands.clampWaitTimeout(nil)
+        XCTAssertEqual(defTimeout, 60)
+        XCTAssertNil(defNote)
+
+        let (zeroTimeout, zeroNote) = LightCommands.clampWaitTimeout(0)
+        XCTAssertEqual(zeroTimeout, 0)
+        XCTAssertNil(zeroNote)
+
+        let (negTimeout, negNote) = LightCommands.clampWaitTimeout(-5)
+        XCTAssertEqual(negTimeout, 0)
+        XCTAssertNil(negNote)
+
+        let (midTimeout, midNote) = LightCommands.clampWaitTimeout(45)
+        XCTAssertEqual(midTimeout, 45)
+        XCTAssertNil(midNote)
+
+        let (maxTimeout, maxNote) = LightCommands.clampWaitTimeout(300)
+        XCTAssertEqual(maxTimeout, 300)
+        XCTAssertNil(maxNote)
+
+        let (clampedTimeout, clampedNote) = LightCommands.clampWaitTimeout(400)
+        XCTAssertEqual(clampedTimeout, 300)
+        XCTAssertEqual(clampedNote, "note: --timeout capped at 300s")
+
+        let clock = ManualClock()
+        let driver = FakeDriver(delivered("app-server"))
+        let relay = try makeRelay(driver: driver, now: clock.now, sleep: clock.sleep)
+        let sent = try sendToCodex(relay, text: "question")
+        let replyID = try XCTUnwrap(sent.deliveries.first?.replyID)
+
+        let routes: (String) -> [LightRoute] = { _ in [] }
+        let clampedRes = LightCommands.execute(command: "wait", arguments: [replyID, "--timeout", "400s"], relay: relay, routesForApp: routes)
+        XCTAssertTrue(clampedRes.notes.contains("note: --timeout capped at 300s"))
+
+        let defaultRes = LightCommands.execute(command: "wait", arguments: [replyID], relay: relay, routesForApp: routes)
+        XCTAssertFalse(defaultRes.notes.contains("note: --timeout capped at 300s"))
+    }
+
+    func testWaitExponentialBackoffBoundsDriverReads() throws {
+        let clock = ManualClock()
+        let driver = FakeDriver(delivered("app-server"))
+        let relay = try makeRelay(
+            driver: driver,
+            now: clock.now,
+            sleep: clock.sleep
+        )
+        let sent = try sendToCodex(relay, text: "question")
+        let replyID = try XCTUnwrap(sent.deliveries.first?.replyID)
+
+        let result = try relay.wait(replyID: replyID, timeout: 30)
+        XCTAssertEqual(result.status, .pending)
+        XCTAssertLessThanOrEqual(driver.readCalls.count, 8)
+        XCTAssertGreaterThan(driver.readCalls.count, 1)
+        XCTAssertEqual(clock.sleeps.reduce(0, +), 30.0, accuracy: 0.001)
+        XCTAssertEqual(clock.sleeps, [0.5, 1.0, 2.0, 4.0, 8.0, 10.0, 4.5])
+    }
+
+    func testWaitTimeoutZeroProbesOnceWithoutSleep() throws {
+        let clock = ManualClock()
+        let driver = FakeDriver(delivered("app-server"))
+        let relay = try makeRelay(
+            driver: driver,
+            now: clock.now,
+            sleep: clock.sleep
+        )
+        let sent = try sendToCodex(relay, text: "question")
+        let replyID = try XCTUnwrap(sent.deliveries.first?.replyID)
+
+        let result = try relay.wait(replyID: replyID, timeout: 0)
+        XCTAssertEqual(result.status, .pending)
+        XCTAssertEqual(driver.readCalls.count, 1, "timeout 0 must probe driver.readReply exactly once")
+        XCTAssertEqual(clock.sleeps.count, 0, "timeout 0 must not sleep")
+    }
+
+    func testChatHelpDoesNotMentionWait() {
+        XCTAssertFalse(LightCommands.chatHelp.contains("pharos wait"))
+        XCTAssertFalse(LightCommands.chatHelp.contains("wait r_xxx"))
+    }
+
     func testWaitReadAndThreadForwardInsteadOfUsingTheLocalLedger() throws {
         let forwarder = CommandForwarder()
         let relay = try makeRelay(forwarder: forwarder)
@@ -434,12 +514,19 @@ final class LightRelayTests: XCTestCase {
 
     private func makeRelay(driver: any LightSessionDriver = IdleLightDriver(),
                            now: (@Sendable () -> Date)? = nil,
+                           sleep: (@Sendable (TimeInterval) -> Void)? = nil,
                            forwarder: (any LightReplyForwarding)? = nil,
-                           webhook: String? = nil) throws -> LightRelay {
-        if let now {
-            return try LightRelay(store: freshStore(), now: now, driver: driver, forwarder: forwarder, webhook: webhook)
-        }
-        return try LightRelay(store: freshStore(), driver: driver, forwarder: forwarder, webhook: webhook)
+                           webhook: String? = nil,
+                           liveness: (any LightNodeLiveness)? = nil) throws -> LightRelay {
+        try LightRelay(
+            store: freshStore(),
+            now: now ?? { Date() },
+            sleep: sleep ?? { Thread.sleep(forTimeInterval: $0) },
+            driver: driver,
+            forwarder: forwarder,
+            webhook: webhook,
+            liveness: liveness
+        )
     }
 
     private func freshStore() -> URL {
@@ -697,8 +784,13 @@ final class LightDriverTests: XCTestCase {
 
 private final class ManualClock: @unchecked Sendable {
     var current = Date(timeIntervalSince1970: 1_700_000_000)
+    var sleeps: [TimeInterval] = []
     func now() -> Date { current }
     func advance(_ interval: TimeInterval) { current = current.addingTimeInterval(interval) }
+    func sleep(_ interval: TimeInterval) {
+        sleeps.append(interval)
+        advance(interval)
+    }
 }
 
 private final class FakeDriver: LightSessionDriver, @unchecked Sendable {
@@ -711,6 +803,7 @@ private final class FakeDriver: LightSessionDriver, @unchecked Sendable {
     var result: LightDriveResult
     var calls: [Call] = []
     var reads: [String: String] = [:]
+    var readCalls: [(member: String, since: Date)] = []
 
     init(_ result: LightDriveResult) { self.result = result }
 
@@ -720,7 +813,7 @@ private final class FakeDriver: LightSessionDriver, @unchecked Sendable {
     }
 
     func readReply(member: LightMember, since: Date) -> String? {
-        _ = since
+        readCalls.append((member: member.name, since: since))
         return reads[member.name]
     }
 }

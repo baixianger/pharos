@@ -80,8 +80,19 @@ extension CLI {
     }
 
     private static func forwardTimeout(command: String, arguments: [String]) -> TimeInterval {
-        if command == "wait", let index = arguments.firstIndex(of: "--timeout"), index + 1 < arguments.count,
-           let seconds = try? LightCommands.duration(arguments[index + 1]) {
+        if command == "wait" {
+            var rawSeconds: TimeInterval?
+            for (index, arg) in arguments.enumerated() {
+                if arg == "--timeout", index + 1 < arguments.count {
+                    rawSeconds = try? LightCommands.duration(arguments[index + 1])
+                    break
+                } else if arg.hasPrefix("--timeout=") {
+                    let value = String(arg.dropFirst("--timeout=".count))
+                    rawSeconds = try? LightCommands.duration(value)
+                    break
+                }
+            }
+            let (seconds, _) = LightCommands.clampWaitTimeout(rawSeconds)
             return seconds + 30
         }
         return command == "session" || command == "project" ? 360 : 240

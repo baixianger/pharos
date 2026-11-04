@@ -872,9 +872,8 @@ public final class LightRelay: @unchecked Sendable {
 
     public func wait(replyID: String, timeout: TimeInterval) throws -> LightWaitResult {
         let start = now()
-        var polls = 0
+        var delay: TimeInterval = 0.5
         while true {
-            polls += 1
             if let logged = try loggedReply(replyID) {
                 return LightWaitResult(replyID: replyID, status: .replied, text: logged, send: nil,
                                        nextReplyID: nextReplyID(after: replyID))
@@ -899,11 +898,14 @@ public final class LightRelay: @unchecked Sendable {
                                            nextReplyID: nextReplyID(after: replyID))
                 }
             }
-            if timeout <= 0 || now().timeIntervalSince(start) >= timeout || polls >= 10_000 {
+            let elapsed = now().timeIntervalSince(start)
+            if timeout <= 0 || elapsed >= timeout {
                 return LightWaitResult(replyID: replyID, status: .pending, text: nil, send: nil,
                                        attention: recipientAttention(replyID))
             }
-            sleep(0.02)
+            let step = min(delay, timeout - elapsed)
+            sleep(step)
+            delay = min(delay * 2, 10.0)
         }
     }
 
