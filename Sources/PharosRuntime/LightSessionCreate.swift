@@ -295,9 +295,6 @@ public struct LightSessionService {
                 selfHost: LightSelfHost = LightSelfHost(names: ["local", "localhost"]),
                 pause: @escaping @Sendable (TimeInterval) -> Void = { _ in },
                 launchPolls: Int = 20, nodes: (any LightNodeRouting)? = nil) {
-        if let nodes, relay.liveness == nil {
-            relay.liveness = nodes
-        }
         self.nodes = nodes
         self.relay = relay
         self.runner = runner

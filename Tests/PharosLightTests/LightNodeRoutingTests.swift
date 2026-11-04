@@ -314,7 +314,7 @@ final class LightNodeRoutingTests: XCTestCase {
 
         // 3. Broker roster/heartbeat says the node is online (fresh heartbeat 5s ago)
         link.nodes = [LightMeshNode(id: "n-air", host: "air", lastSeen: clock.now().addingTimeInterval(-5))]
-        XCTAssertTrue(router.status("air").online)
+        XCTAssertTrue(relay.nodeStatus("air").online)
 
         // 4. Send to that node: must deliver (not be parked as offline)
         let sent = try relay.send(from: "sender", to: ["codex-air"], text: "hello")
@@ -338,7 +338,7 @@ final class LightNodeRoutingTests: XCTestCase {
 
         // Broker roster says node was last seen 80s ago (offline)
         link.nodes = [LightMeshNode(id: "n-air", host: "air", lastSeen: clock.now().addingTimeInterval(-80))]
-        XCTAssertFalse(router.status("air").online)
+        XCTAssertFalse(relay.nodeStatus("air").online)
 
         let sent = try relay.send(from: "sender", to: ["codex-air"], text: "hello")
         let delivery = try XCTUnwrap(sent.deliveries.first)

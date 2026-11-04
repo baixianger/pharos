@@ -201,9 +201,6 @@ public struct LightTick {
     public init(relay: LightRelay, sessions: LightSessionService, router: any LightNodeRouting,
                 harvestWindow: TimeInterval = 30 * 60, harvestLimit: Int = 6,
                 attention: (any HumanAttentionSource)? = nil) {
-        if relay.liveness == nil {
-            relay.liveness = router
-        }
         self.attention = attention
         self.relay = relay
         self.sessions = sessions

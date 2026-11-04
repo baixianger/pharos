@@ -49,10 +49,7 @@ extension LightNodeRouting {
     }
 
     public func status(_ label: String) -> LightNodeStatus {
-        guard let node = directory()?.node(for: label) else {
-            return LightNodeStatus(host: label, online: false, lastSeen: nil)
-        }
-        return LightNodeStatus(host: node.name, online: node.online(at: Date()), lastSeen: node.lastSeen)
+        nodeStatus(label) ?? LightNodeStatus(host: label, online: false, lastSeen: nil)
     }
 
     public func hubName() -> String? { directory()?.hub?.name }
@@ -187,19 +184,6 @@ public final class LightMeshRouter: LightNodeRouting, @unchecked Sendable {
         let value = link.roster().map { LightHostDirectory(nodes: $0, config: hosts) }
         cached = (now(), value)
         return value
-    }
-
-    public func status(_ label: String) -> LightNodeStatus {
-        guard let node = directory()?.node(for: label) else {
-            return LightNodeStatus(host: label, online: false, lastSeen: nil)
-        }
-        return LightNodeStatus(host: node.name, online: node.online(at: now()), lastSeen: node.lastSeen)
-    }
-
-    public func nodeStatus(_ host: String) -> LightNodeStatus? {
-        guard let directory = directory() else { return nil }
-        guard let node = directory.node(for: host) else { return nil }
-        return LightNodeStatus(host: node.name, online: node.online(at: now()), lastSeen: node.lastSeen)
     }
 
     private var offlineDirectory: LightHostDirectory {

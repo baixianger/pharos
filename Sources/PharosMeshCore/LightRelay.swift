@@ -701,7 +701,7 @@ public final class LightRelay: @unchecked Sendable {
     private let forwarder: (any LightReplyForwarding)?
     private let webhook: String?
     private let limits: LightLimits
-    public var liveness: (any LightNodeLiveness)?
+    private let liveness: (any LightNodeLiveness)?
     private let lock = NSLock()
 
     private var members: [String: LightMember] = [:]
@@ -2074,6 +2074,7 @@ public final class LightRelay: @unchecked Sendable {
     }
 
     private func nodeStatusLocked(_ host: String) -> LightNodeStatus {
+        // Router caches the roster for 5s, keeping lock hold time bounded.
         if let liveness, let status = liveness.nodeStatus(host), let seen = status.lastSeen {
             let online = now().timeIntervalSince(seen) < Self.nodeHeartbeatWindow
             if seen > (nodeSeen[host] ?? .distantPast) {
