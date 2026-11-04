@@ -46,6 +46,14 @@ public final class CLIReplyCursorBook: @unchecked Sendable {
         return (cursors[member] ?? []).filter { $0.at >= cutoff }.min { $0.at < $1.at }
     }
 
+    /// The cursor `deliver` recorded for one ask: the daemon client id or the TUI marker.
+    public func find(member: String, replyID: String) -> CLIReplyCursor? {
+        lock.lock()
+        defer { lock.unlock() }
+        if store != nil { cursors = loadLocked() }
+        return (cursors[member] ?? []).last { $0.value == replyID || $0.value == "reply-id=\(replyID)" }
+    }
+
     public func set(member: String, _ cursor: CLIReplyCursor) {
         lock.lock()
         defer { lock.unlock() }
@@ -373,10 +381,12 @@ public struct CLIAgentDriver: Sendable {
         )
     }
 
-    public func readReply(member: LightMember, since: Date) -> String? {
+    public func readReply(member: LightMember, since: Date, replyID: String? = nil) -> String? {
         if member.app.lowercased() == "codex" {
             var clientID: String? = nil
-            let cursor = cursors.match(member: member.name, since: since)
+            // Prefer the cursor of this very ask: a time window can catch a neighbour sent a second earlier.
+            let cursor = replyID.flatMap { cursors.find(member: member.name, replyID: $0) }
+                ?? cursors.match(member: member.name, since: since)
             if let cursor, cursor.kind == "codex-client", !cursor.value.isEmpty {
                 clientID = cursor.value
             }

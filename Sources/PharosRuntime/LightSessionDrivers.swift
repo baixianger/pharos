@@ -443,11 +443,15 @@ public struct ExternalLightDriver: LightSessionDriver {
     }
 
     public func readReply(member: LightMember, since: Date) -> String? {
+        readReply(member: member, since: since, replyID: nil)
+    }
+
+    public func readReply(member: LightMember, since: Date, replyID: String?) -> String? {
         // A webhook member answers with `pharos reply`; there is no session to read.
         if Self.isWebhook(member) { return nil }
         if isRemote(member), let nodes {
             guard allowLive else { return nil }
-            let payload = LightNodeExec.encode(LightNodeHarvest(member: member, since: since))
+            let payload = LightNodeExec.encode(LightNodeHarvest(member: member, since: since, replyID: replyID))
             guard let run = nodes.run(member.host, argv: ["node-harvest", "--payload", payload], timeout: 60),
                   run.status == 0, let object = LightSessionService.extractJSON(run.stdout),
                   let text = object["text"] as? String else { return nil }
@@ -456,7 +460,7 @@ public struct ExternalLightDriver: LightSessionDriver {
         }
         if isRemote(member) { return Self.achatApps.contains(member.app) ? harvest(member) : nil }
         if let cli = cliAgents, CLIAgentDriver.handles(member) {
-            return cli.readReply(member: member, since: since)
+            return cli.readReply(member: member, since: since, replyID: replyID)
         }
         if let route = LightRoutePlanner.select(member: member, operation: .send),
            Self.delegatesToAchat(app: member.app, routeID: route.id) {

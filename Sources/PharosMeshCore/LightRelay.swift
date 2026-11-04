@@ -526,9 +526,15 @@ public protocol LightSessionDriver: Sendable {
     /// Text the session produced after `since`, only when the adapter can tell
     /// new text from older history. Return nil rather than a stale pane.
     func readReply(member: LightMember, since: Date) -> String?
+    /// As above, for the ask carrying `replyID`; lets an adapter tie the answer to that exact send.
+    func readReply(member: LightMember, since: Date, replyID: String?) -> String?
 }
 
 extension LightSessionDriver {
+    public func readReply(member: LightMember, since: Date, replyID: String?) -> String? {
+        readReply(member: member, since: since)
+    }
+
     public func deliver(member: LightMember, envelope: LightEnvelope) -> LightDriveResult {
         deliver(member: member, body: envelope.prompt)
     }
@@ -939,7 +945,7 @@ public final class LightRelay: @unchecked Sendable {
             case .pending:
                 break
             case .readable(let member, let since):
-                if let text = driver.readReply(member: member, since: since)?
+                if let text = driver.readReply(member: member, since: since, replyID: replyID)?
                     .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
                     // A harvested reply goes only to the original sender. It is never copied.
                     let send = try reply(replyID, text: text, harvested: true)

@@ -693,4 +693,17 @@ final class CLIAgentDriverTests: XCTestCase {
         }
         XCTAssertTrue(achatCalls.isEmpty, "tmux-backed member must never invoke achat: \(achatCalls)")
     }
+
+    func testCursorFindPicksThisAskNotTheNeighbourInTheWindow() {
+        let cursors = CLIReplyCursorBook()
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        cursors.set(member: "m", CLIReplyCursor(kind: "codex-marker", value: "reply-id=r_a", at: t0))
+        cursors.set(member: "m", CLIReplyCursor(kind: "codex-marker", value: "reply-id=r_b", at: t0.addingTimeInterval(1)))
+        cursors.set(member: "m", CLIReplyCursor(kind: "codex-client", value: "r_c", at: t0.addingTimeInterval(2)))
+        // The window match would return r_a for an ask issued a second later.
+        XCTAssertEqual(cursors.match(member: "m", since: t0.addingTimeInterval(1))?.value, "reply-id=r_a")
+        XCTAssertEqual(cursors.find(member: "m", replyID: "r_b")?.value, "reply-id=r_b")
+        XCTAssertEqual(cursors.find(member: "m", replyID: "r_c")?.kind, "codex-client")
+        XCTAssertNil(cursors.find(member: "m", replyID: "r_zz"))
+    }
 }

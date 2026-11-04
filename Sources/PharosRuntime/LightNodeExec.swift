@@ -22,9 +22,12 @@ public struct LightNodeDelivery: Codable, Equatable, Sendable {
 public struct LightNodeHarvest: Codable, Equatable, Sendable {
     public var member: LightMember
     public var since: Date
-    public init(member: LightMember, since: Date) {
+    /// The ask being harvested (absent from older hubs).
+    public var replyID: String?
+    public init(member: LightMember, since: Date, replyID: String? = nil) {
         self.member = member
         self.since = since
+        self.replyID = replyID
     }
 }
 
@@ -165,7 +168,7 @@ public enum LightNodeExec {
             guard let request = decode(LightNodeHarvest.self, payload) else {
                 return LightCLIResult(exitCode: 2, text: "error: unreadable harvest payload")
             }
-            let text = driver.readReply(member: request.member, since: request.since)
+            let text = driver.readReply(member: request.member, since: request.since, replyID: request.replyID)
             return json(["ok": true, "text": text ?? NSNull()])
         default:
             return LightCLIResult(exitCode: 2, text: "error: unknown node command \(command)")
