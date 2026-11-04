@@ -376,7 +376,7 @@ public struct ExternalLightDriver: LightSessionDriver {
         if parsed.busy { return nil }
         let key = Self.floorKey(member)
         if let floor = replyFloor.get(key), count > floor {
-            let text = parsed.reply?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let text = Self.stripReplyEcho(parsed.reply?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
             if text.isEmpty { return nil }
             replyFloor.set(key, count)
             return text
@@ -394,6 +394,23 @@ public struct ExternalLightDriver: LightSessionDriver {
     }
 
     private static func floorKey(_ member: LightMember) -> String { "\(member.app):\(member.sessionID)" }
+
+    /// A read-only agent (Cursor ask mode) cannot run `pharos reply` and may end its answer with the
+    /// command it would have run. Pharos already carries the reply, so trailing echo lines are dropped.
+    /// Text that is only the command is kept as is.
+    static func stripReplyEcho(_ text: String) -> String {
+        var lines = text.components(separatedBy: "\n")
+        var dropped = false
+        while let last = lines.last {
+            let line = last.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty || line == "```" || line.range(of: #"^`{0,3}pharos reply r_[A-Za-z0-9]+(\s.*)?$"#, options: .regularExpression) != nil {
+                if !line.isEmpty, line != "```" { dropped = true }
+                lines.removeLast()
+            } else { break }
+        }
+        let kept = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return dropped && !kept.isEmpty ? kept : text
+    }
 
     static func interpretAchatTurn(_ stdout: String) -> (ok: Bool, replies: Int?, repliesBefore: Int?, reply: String?, message: String?, busy: Bool) {
         guard let object = LightSessionService.extractJSON(stdout) else {

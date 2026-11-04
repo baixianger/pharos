@@ -460,6 +460,12 @@ public struct LightSessionService {
         guard let host = argv.option("host"), !host.isEmpty else {
             return Self.usage("pharos session \(verb == .new ? "new" : "workspaces") --host H --app \(app)")
         }
+        // A taken name would fail registration only after the app made a session: refuse first.
+        if verb == .new, !spec.dryRun, explicitName != nil, relay.member(named: spec.name) != nil {
+            let message = "\(LightRelayError.duplicateMember(spec.name).localizedDescription); pick another --name (no session was created)"
+            if argv.flag("json") { return Self.jsonText(["ok": false, "status": "error", "message": message], ok: false) }
+            return LightCLIResult(exitCode: 1, text: "error: \(message)")
+        }
         var forwarded = spec
         forwarded.host = host
         if explicitName == nil {
@@ -1156,7 +1162,8 @@ public struct LightSessionService {
 
     private static func findSessionID(_ object: [String: Any], depth: Int = 0) -> String? {
         if depth > 5 { return nil }
-        for key in ["sessionId", "threadId", "conversation"] {
+        // `chatId`: achat cursor (cursor-agent chat UUID) before it also reported `sessionId`.
+        for key in ["sessionId", "threadId", "conversation", "chatId"] {
             if let value = object[key] as? String, acceptableSession(value) { return value }
         }
         if let session = object["session"] as? String, acceptableSession(session) { return session }

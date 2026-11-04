@@ -731,6 +731,38 @@ final class LightSessionTests: XCTestCase {
         XCTAssertEqual(opened.invocations.last?.argv.last, "hello ag")
     }
 
+    func testSessionNewRefusesATakenNameBeforeCreatingASession() throws {
+        let runner = ScriptedSessionRunner([output(0, #"{"ok":true,"status":"created","sessionId":"sess-2","route":"cli"}"#)])
+        let relay = try makeRelay()
+        _ = try relay.register(LightMember(name: "cursor-a", host: "local", app: "cursor", project: "proj", sessionID: "sess-1",
+                                           routes: LightRouteCatalog.defaults(for: "cursor")))
+        let service = makeService(relay: relay, runner: runner, prober: ScriptProber([]))
+        let result = service.execute(arguments: ["new", "--host", "mini", "--app", "cursor", "--workspace", "proj", "--name", "cursor-a", "--json"])
+        XCTAssertEqual(result.exitCode, 1, result.text)
+        XCTAssertTrue(result.text.contains("no session was created"), result.text)
+        XCTAssertTrue(runner.invocations.isEmpty)
+        XCTAssertEqual(relay.member(named: "cursor-a")?.sessionID, "sess-1")
+    }
+
+    func testReplyEchoOfAReadOnlyAgentIsDropped() {
+        XCTAssertEqual(ExternalLightDriver.stripReplyEcho("PONG Cursor\n\npharos reply r_jcjefn46uyni \"PONG Cursor\""), "PONG Cursor")
+        XCTAssertEqual(ExternalLightDriver.stripReplyEcho("MIXED-OK\n```\npharos reply r_ab12 \"MIXED-OK\"\n```"), "MIXED-OK")
+        XCTAssertEqual(ExternalLightDriver.stripReplyEcho("`pharos reply r_ab12 \"x\"`"), "`pharos reply r_ab12 \"x\"`")
+        XCTAssertEqual(ExternalLightDriver.stripReplyEcho("Run pharos reply r_ab12 later.\nDone"), "Run pharos reply r_ab12 later.\nDone")
+        XCTAssertEqual(ExternalLightDriver.stripReplyEcho("plain"), "plain")
+    }
+
+    func testCursorNewTakesTheChatIdAsTheSession() throws {
+        let runner = ScriptedSessionRunner([
+            output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
+            output(0, #"{"ok":true,"created":true,"route":"cli","chatId":"a7231f78-6f14-4909-b7e3-fcda07becc27","folder":"~/src/pharos"}"#),
+        ])
+        let service = makeService(relay: try makeRelay(), runner: runner, prober: ScriptProber([]))
+        let result = service.execute(arguments: ["new", "--here", "--app", "cursor", "--workspace", "pharos", "--title", "hi"])
+        XCTAssertEqual(result.exitCode, 0, result.text)
+        XCTAssertEqual(json(result.text)?["sessionId"] as? String, "a7231f78-6f14-4909-b7e3-fcda07becc27")
+    }
+
     func testLaunchDryRunReportsPortProbeAndWouldLaunch() throws {
         let runner = ScriptedSessionRunner([
             output(0, #"{"ok":true,"projects":[{"name":"pharos","path":"/src/pharos"}]}"#),
