@@ -123,10 +123,13 @@ public struct LightThread: Codable, Equatable, Sendable, Identifiable {
     public var closed: Bool?
     /// Discuss only: the one-line conclusion recorded after it closed.
     public var conclusion: String?
+    /// Explicit thread roster (order kept). When nil (older threads), participants are computed from the log.
+    public var roster: [String]?
 
     public init(id: String, originator: String, hopLimit: Int, stopped: Bool, createdAt: Date,
                 intent: LightIntent? = nil, deliverReplies: Bool? = nil, rounds: Int? = nil,
-                roundsUsed: Int? = nil, closed: Bool? = nil, conclusion: String? = nil) {
+                roundsUsed: Int? = nil, closed: Bool? = nil, conclusion: String? = nil,
+                roster: [String]? = nil) {
         self.id = id
         self.originator = originator
         self.hopLimit = hopLimit
@@ -138,6 +141,7 @@ public struct LightThread: Codable, Equatable, Sendable, Identifiable {
         self.roundsUsed = roundsUsed
         self.closed = closed
         self.conclusion = conclusion
+        self.roster = roster
     }
 }
 
@@ -219,11 +223,13 @@ public struct LightThreadView: Codable, Equatable, Sendable, Identifiable {
     public var thread: LightThread
     public var participants: [String]
     public var kind: LightThreadKind
+    public var roster: [String]?
 
-    public init(thread: LightThread, participants: [String], kind: LightThreadKind) {
+    public init(thread: LightThread, participants: [String], kind: LightThreadKind, roster: [String]? = nil) {
         self.thread = thread
         self.participants = participants
         self.kind = kind
+        self.roster = roster ?? thread.roster
     }
 }
 
@@ -596,6 +602,8 @@ public enum LightRelayError: Error, Equatable, LocalizedError {
     case forwardFailed(String)
     case corruptStore(String)
     case invalidJob(String)
+    case memberNotInThread(member: String, thread: String)
+    case cannotRemoveLastMember(thread: String)
 
     public var errorDescription: String? {
         switch self {
@@ -619,6 +627,8 @@ public enum LightRelayError: Error, Equatable, LocalizedError {
         case .forwardFailed(let value): "forwarding the reply failed: \(value)"
         case .corruptStore(let value): "light-relay store is unreadable (\(value))"
         case .invalidJob(let value): "invalid request id \(value)"
+        case .memberNotInThread(let member, let thread): "\(member) is not in thread \(thread)"
+        case .cannotRemoveLastMember(let thread): "cannot remove the last member of thread \(thread)"
         }
     }
 }
@@ -850,6 +860,89 @@ public final class LightRelay: @unchecked Sendable {
             guard let thread = threads[threadID] else { throw LightRelayError.unknownThread(threadID) }
             return viewLocked(thread)
         }
+    }
+
+    public func threadMembers(_ id: String) throws -> [String] {
+        try sync {
+            guard let thread = threads[id] else { throw LightRelayError.unknownThread(id) }
+            return thread.roster ?? participantsLocked(thread)
+        }
+    }
+
+    public func addThreadMember(_ id: String, name: String, by actor: String = "pharos") throws {
+        try sync {
+            let memberName = try Self.validateName(name)
+            guard members[memberName] != nil else { throw LightRelayError.unknownMember(memberName) }
+            guard var thread = threads[id] else { throw LightRelayError.unknownThread(id) }
+            var roster = thread.roster ?? participantsLocked(thread)
+            if !roster.contains(memberName) {
+                roster.append(memberName)
+                thread.roster = roster
+                threads[id] = thread
+                let notice = actor == "pharos" ? "\(memberName) added by pharos" : "\(memberName) added by \(actor)"
+                try appendLocked(LightLogEntry(
+                    id: try tokenLocked("m"),
+                    kind: .notice,
+                    threadID: thread.id,
+                    from: actor,
+                    text: notice,
+                    to: memberName,
+                    at: now()
+                ))
+                try persistLocked()
+            }
+        }
+    }
+
+    public func removeThreadMember(_ id: String, name: String, by actor: String = "pharos") throws {
+        try sync {
+            let memberName = try Self.validateName(name)
+            guard var thread = threads[id] else { throw LightRelayError.unknownThread(id) }
+            var roster = thread.roster ?? participantsLocked(thread)
+            guard roster.contains(memberName) else {
+                throw LightRelayError.memberNotInThread(member: memberName, thread: thread.id)
+            }
+            guard roster.count > 1 else {
+                throw LightRelayError.cannotRemoveLastMember(thread: thread.id)
+            }
+            roster.removeAll { $0 == memberName }
+            thread.roster = roster
+            threads[id] = thread
+            let notice = (actor == "pharos" || actor.isEmpty) ? "\(memberName) removed" : "\(memberName) removed by \(actor)"
+            try appendLocked(LightLogEntry(
+                id: try tokenLocked("m"),
+                kind: .notice,
+                threadID: thread.id,
+                from: actor,
+                text: notice,
+                to: memberName,
+                at: now()
+            ))
+            try persistLocked()
+        }
+    }
+
+    public func stopThread(_ threadID: String) throws {
+        try sync {
+            guard var thread = threads[threadID] else { throw LightRelayError.unknownThread(threadID) }
+            thread.stopped = true
+            threads[threadID] = thread
+            try appendLocked(LightLogEntry(
+                id: try tokenLocked("m"), kind: .notice, threadID: thread.id, from: thread.originator,
+                text: "Thread stopped.", at: now()
+            ))
+            try persistLocked()
+        }
+    }
+
+    public func sendToThread(_ threadID: String, from name: String, text: String,
+                             intent: LightIntent = .inform, deliverReplies: Bool = false, rounds: Int? = nil,
+                             ttl: TimeInterval? = nil, once: Bool = false) throws -> LightSendResult {
+        let plan = try sync { () -> SendPlan in
+            try planSendToThreadLocked(threadID: threadID, from: name, text: text, intent: intent,
+                                       deliverReplies: deliverReplies, rounds: rounds, ttl: ttl, once: once)
+        }
+        return try fanout(plan)
     }
 
     public func read(thread threadID: String) throws -> [LightLogEntry] {
@@ -1642,12 +1735,19 @@ public final class LightRelay: @unchecked Sendable {
             guard members[id] != nil else { throw LightRelayError.unknownMember(id) }
             if !copies.contains(id) { copies.append(id) }
         }
+        var roster: [String] = []
+        for name in [sender] + targets + copies {
+            if !roster.contains(name) {
+                roster.append(name)
+            }
+        }
         let discuss = intent == .discuss
         let thread = LightThread(id: try tokenLocked("t"), originator: sender, hopLimit: limit,
                                  stopped: false, createdAt: now(), intent: intent,
                                  deliverReplies: deliverReplies ? true : nil,
                                  rounds: discuss ? (rounds ?? Self.defaultDiscussRounds) : nil,
-                                 roundsUsed: discuss ? 0 : nil)
+                                 roundsUsed: discuss ? 0 : nil,
+                                 roster: roster)
         threads[thread.id] = thread
         logs[thread.id] = []
         let hints = hintsLocked(trimmed, addressed: targets + copies + [sender])
@@ -1670,6 +1770,82 @@ public final class LightRelay: @unchecked Sendable {
         }
         try persistLocked()
         return SendPlan(threadID: thread.id, from: sender, hop: 1, hopLimit: thread.hopLimit, stopped: false,
+                        unresolved: [], notice: nil, targets: prepared, intent: intent,
+                        hints: hints.isEmpty ? nil : hints)
+    }
+
+    private func planSendToThreadLocked(threadID: String, from name: String, text: String, intent: LightIntent,
+                                        deliverReplies: Bool, rounds: Int?, ttl: TimeInterval?, once: Bool) throws -> SendPlan {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw LightRelayError.emptyText }
+        let sender = try Self.validateName(name)
+        guard members[sender] != nil else { throw LightRelayError.unknownMember(sender) }
+        guard var thread = threads[threadID] else { throw LightRelayError.unknownThread(threadID) }
+        if thread.stopped { throw LightRelayError.threadStopped(thread.id) }
+
+        // Materialize roster if nil
+        let roster = thread.roster ?? participantsLocked(thread)
+        if thread.roster == nil {
+            thread.roster = roster
+            threads[thread.id] = thread
+        }
+
+        guard roster.contains(sender) else {
+            throw LightRelayError.memberNotInThread(member: sender, thread: thread.id)
+        }
+
+        let targets = roster.filter { $0 != sender }
+        guard !targets.isEmpty else { throw LightRelayError.noRecipients }
+
+        let lastHop = logs[thread.id]?.compactMap(\.hop).max() ?? 0
+        let nextHop = lastHop + 1
+
+        if nextHop > thread.hopLimit {
+            thread.stopped = true
+            threads[thread.id] = thread
+            let notice = "Hop limit \(thread.hopLimit) reached. Thread stopped. Last message from \(sender): \(trimmed)"
+            try appendLocked(LightLogEntry(
+                id: try tokenLocked("m"), kind: .message, threadID: thread.id, from: sender, text: trimmed,
+                hop: lastHop, at: now(), intent: intent, recipients: targets
+            ))
+            try appendLocked(LightLogEntry(
+                id: try tokenLocked("m"), kind: .notice, threadID: thread.id, from: thread.originator, text: notice,
+                to: thread.originator, at: now()
+            ))
+            var targetsPrepared: [PreparedTarget] = []
+            if thread.originator != sender, let owner = members[thread.originator] {
+                targetsPrepared.append(try prepareTargetLocked(member: owner, from: sender, thread: thread, hop: lastHop,
+                                                               ttl: ttl, once: true, text: notice,
+                                                               spec: TargetSpec(intent: .inform, terminal: true)))
+            }
+            try persistLocked()
+            return SendPlan(threadID: thread.id, from: sender, hop: lastHop, hopLimit: thread.hopLimit,
+                            stopped: true, unresolved: [], notice: notice, targets: targetsPrepared,
+                            intent: intent, closed: thread.closed)
+        }
+
+        let hints = hintsLocked(trimmed, addressed: targets + [sender])
+        try appendLocked(LightLogEntry(
+            id: try tokenLocked("m"), kind: .message, threadID: thread.id, from: sender, text: trimmed,
+            hop: nextHop, at: now(), intent: intent, recipients: targets
+        ))
+
+        let discuss = intent == .discuss || thread.intent == .discuss
+        let round = discuss ? ((thread.roundsUsed ?? 0) + 1) : nil
+        if discuss {
+            thread.roundsUsed = round
+            threads[thread.id] = thread
+        }
+
+        var prepared: [PreparedTarget] = []
+        for target in targets {
+            guard let member = members[target] else { continue }
+            let spec = TargetSpec(intent: intent, deliverReply: deliverReplies, round: round)
+            prepared.append(try prepareTargetLocked(member: member, from: sender, thread: thread, hop: nextHop,
+                                                   ttl: ttl, once: once, text: trimmed, spec: spec))
+        }
+        try persistLocked()
+        return SendPlan(threadID: thread.id, from: sender, hop: nextHop, hopLimit: thread.hopLimit, stopped: false,
                         unresolved: [], notice: nil, targets: prepared, intent: intent,
                         hints: hints.isEmpty ? nil : hints)
     }
@@ -1828,9 +2004,11 @@ public final class LightRelay: @unchecked Sendable {
             ))
             var targets: [PreparedTarget] = []
             if thread.originator != ticket.to, let owner = members[thread.originator] {
-                targets.append(try prepareTargetLocked(member: owner, from: ticket.to, thread: thread, hop: ticket.hop,
-                                                       ttl: ttl, once: true, text: notice,
-                                                       spec: TargetSpec(intent: .inform, terminal: true)))
+                if thread.roster == nil || thread.roster?.contains(thread.originator) == true {
+                    targets.append(try prepareTargetLocked(member: owner, from: ticket.to, thread: thread, hop: ticket.hop,
+                                                           ttl: ttl, once: true, text: notice,
+                                                           spec: TargetSpec(intent: .inform, terminal: true)))
+                }
             }
             try persistLocked()
             return .fanout(SendPlan(threadID: thread.id, from: ticket.to, hop: ticket.hop, hopLimit: thread.hopLimit,
@@ -1852,7 +2030,14 @@ public final class LightRelay: @unchecked Sendable {
         var targets: [PreparedTarget] = []
         var notice: String? = nil
         var closed: Bool? = nil
-        let back = ticket.from != ticket.to ? members[ticket.from] : nil
+        var back: LightMember? = nil
+        if ticket.from != ticket.to, let m = members[ticket.from] {
+            if let roster = thread.roster {
+                if roster.contains(ticket.from) { back = m }
+            } else {
+                back = m
+            }
+        }
         if discussOpen {
             // Each reply in an open discussion is one round. DONE or the cap closes it,
             // and the originator is asked for a one-line conclusion.
@@ -1871,11 +2056,13 @@ public final class LightRelay: @unchecked Sendable {
                     text: notice ?? "", to: thread.originator, at: now()
                 ))
                 if let owner = members[thread.originator] {
-                    let last = done ? "" : " Last message from \(ticket.to): \(text)"
-                    targets.append(try prepareTargetLocked(
-                        member: owner, from: ticket.to, thread: thread, hop: nextHop, ttl: ttl, once: true,
-                        text: "Discussion closed: \(reason).\(last)",
-                        spec: TargetSpec(intent: .inform, conclusion: true, note: reason)))
+                    if thread.roster == nil || thread.roster?.contains(thread.originator) == true {
+                        let last = done ? "" : " Last message from \(ticket.to): \(text)"
+                        targets.append(try prepareTargetLocked(
+                            member: owner, from: ticket.to, thread: thread, hop: nextHop, ttl: ttl, once: true,
+                            text: "Discussion closed: \(reason).\(last)",
+                            spec: TargetSpec(intent: .inform, conclusion: true, note: reason)))
+                    }
                 }
             } else {
                 threads[thread.id] = thread
@@ -1899,6 +2086,7 @@ public final class LightRelay: @unchecked Sendable {
         }
         for name in ccNames where name != ticket.from {
             guard let member = members[name] else { continue }
+            if let roster = thread.roster, !roster.contains(name) { continue }
             targets.append(try prepareTargetLocked(
                 member: member, from: ticket.to, thread: thread, hop: nextHop, ttl: ttl, once: once, text: text,
                 spec: TargetSpec(intent: replyIntent == .discuss ? .inform : replyIntent, copied: true, cc: ccNames)))
@@ -2173,9 +2361,9 @@ public final class LightRelay: @unchecked Sendable {
     }
 
     private func viewLocked(_ thread: LightThread) -> LightThreadView {
-        let people = participantsLocked(thread)
-        let kind: LightThreadKind = people.count >= 3 ? .group : .direct
-        return LightThreadView(thread: thread, participants: people, kind: kind)
+        let people = thread.roster ?? participantsLocked(thread)
+        let kind: LightThreadKind = people.count > 2 ? .group : .direct
+        return LightThreadView(thread: thread, participants: people, kind: kind, roster: thread.roster)
     }
 
     /// Originator, then each sender and each delivery target, first time seen.
