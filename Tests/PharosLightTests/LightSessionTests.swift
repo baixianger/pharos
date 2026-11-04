@@ -13,6 +13,24 @@ final class LightSessionTests: XCTestCase {
         super.tearDown()
     }
 
+    func testAntigravityPortFallsBackToItsDevToolsActivePortAndAchatDefaultConfig() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("pharos-home-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let support = home.appendingPathComponent("Library/Application Support/Antigravity")
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        try "55477\n/devtools/browser/x\n".write(to: support.appendingPathComponent("DevToolsActivePort"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(LightDebugPorts.fromEnvironment(["HOME": home.path]).ag, 55477)
+        XCTAssertEqual(LightDebugPorts.fromEnvironment(["HOME": home.path, "PHAROS_AG_CDP_PORT": "4500"]).ag, 4500)
+        let achat = home.appendingPathComponent(".config/achat")
+        try FileManager.default.createDirectory(at: achat, withIntermediateDirectories: true)
+        try #"{"defaults":{"ag":{"cdpPort":4410},"codex":{"cdpPort":4411}}}"#
+            .write(to: achat.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
+        let configured = LightDebugPorts.fromEnvironment(["HOME": home.path])
+        XCTAssertEqual(configured.ag, 4410)
+        XCTAssertEqual(configured.codex, 4411)
+        XCTAssertNil(LightDebugPorts.fromEnvironment([:]).ag)
+    }
+
     func testDebugPortsComeFromTheEnvironment() {
         let defaults = LightDebugPorts.fromEnvironment([:])
         XCTAssertEqual(defaults.dsh, LightDebugPorts.dshLaunchDefault)

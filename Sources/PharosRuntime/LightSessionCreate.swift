@@ -140,7 +140,7 @@ public struct LightDebugPorts: Equatable, Sendable {
             return fallback
         }
         return LightDebugPorts(dsh: pick("PHAROS_DSH_CDP_PORT", "dsh", dshLaunchDefault),
-                               ag: pick("PHAROS_AG_CDP_PORT", "ag", nil),
+                               ag: pick("PHAROS_AG_CDP_PORT", "ag", agActivePort(env)),
                                codex: pick("PHAROS_CODEX_CDP_PORT", "codex", codexLaunchDefault),
                                cursor: pick("PHAROS_CURSOR_CDP_PORT", "cursor", nil))
     }
@@ -157,8 +157,21 @@ public struct LightDebugPorts: Equatable, Sendable {
         return found
     }
 
+    /// Antigravity writes its per-launch DevTools port here (the port achat finds first).
+    /// Read only when the environment names HOME, so an empty test environment stays hermetic.
+    static func agActivePort(_ env: [String: String]) -> Int? {
+        guard let home = env["HOME"], !home.isEmpty else { return nil }
+        let file = (home as NSString).appendingPathComponent("Library/Application Support/Antigravity/DevToolsActivePort")
+        guard let text = try? String(contentsOfFile: file, encoding: .utf8),
+              let first = text.split(whereSeparator: \.isNewline).first,
+              let port = Int(first.trimmingCharacters(in: .whitespaces)), (1...65535).contains(port) else { return nil }
+        return port
+    }
+
     private static func portsFromConfigFile(_ env: [String: String]) -> [String: Int] {
-        let path = (env["PHAROS_ACHAT_CONFIG"] ?? env["ACHAT_CONFIG"] ?? "")
+        // Same lookup as achat: $ACHAT_CONFIG, else ~/.config/achat/config.json.
+        let fallback = env["HOME"].map { ($0 as NSString).appendingPathComponent(".config/achat/config.json") } ?? ""
+        let path = (env["PHAROS_ACHAT_CONFIG"] ?? env["ACHAT_CONFIG"] ?? fallback)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty, let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [:] }
         return ports(inConfig: text) ?? [:]
