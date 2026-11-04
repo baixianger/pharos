@@ -31,7 +31,7 @@ public struct LightNodeRun: Equatable, Sendable {
     }
 }
 
-public protocol LightNodeRouting: Sendable {
+public protocol LightNodeRouting: LightNodeLiveness, Sendable {
     /// Roster plus aliases; nil when the Broker is not reachable from here.
     func directory() -> LightHostDirectory?
     /// Canonical node name for a `--host` label (alias, node name, id, IP).
@@ -56,6 +56,12 @@ extension LightNodeRouting {
     }
 
     public func hubName() -> String? { directory()?.hub?.name }
+
+    public func nodeStatus(_ host: String) -> LightNodeStatus? {
+        guard let directory = directory() else { return nil }
+        guard let node = directory.node(for: host) else { return nil }
+        return LightNodeStatus(host: node.name, online: node.online(at: Date()), lastSeen: node.lastSeen)
+    }
 }
 
 /// The Broker calls the router needs. A seam so tests run without sockets.
@@ -181,6 +187,19 @@ public final class LightMeshRouter: LightNodeRouting, @unchecked Sendable {
         let value = link.roster().map { LightHostDirectory(nodes: $0, config: hosts) }
         cached = (now(), value)
         return value
+    }
+
+    public func status(_ label: String) -> LightNodeStatus {
+        guard let node = directory()?.node(for: label) else {
+            return LightNodeStatus(host: label, online: false, lastSeen: nil)
+        }
+        return LightNodeStatus(host: node.name, online: node.online(at: now()), lastSeen: node.lastSeen)
+    }
+
+    public func nodeStatus(_ host: String) -> LightNodeStatus? {
+        guard let directory = directory() else { return nil }
+        guard let node = directory.node(for: host) else { return nil }
+        return LightNodeStatus(host: node.name, online: node.online(at: now()), lastSeen: node.lastSeen)
     }
 
     private var offlineDirectory: LightHostDirectory {

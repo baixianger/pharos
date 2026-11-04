@@ -295,6 +295,9 @@ public struct LightSessionService {
                 selfHost: LightSelfHost = LightSelfHost(names: ["local", "localhost"]),
                 pause: @escaping @Sendable (TimeInterval) -> Void = { _ in },
                 launchPolls: Int = 20, nodes: (any LightNodeRouting)? = nil) {
+        if let nodes, relay.liveness == nil {
+            relay.liveness = nodes
+        }
         self.nodes = nodes
         self.relay = relay
         self.runner = runner
@@ -381,7 +384,11 @@ public struct LightSessionService {
     public func drainInbox(limit: Int = 8) -> Int {
         var done = 0
         for node in relay.inboxNodes() {
-            guard done < limit, router.status(node).online else { continue }
+            let status = router.status(node)
+            if let lastSeen = status.lastSeen {
+                relay.noteNodeSeen(node, at: lastSeen)
+            }
+            guard done < limit, status.online else { continue }
             guard let jobs = try? relay.pull(node: node) else { continue }
             for job in jobs.prefix(limit - done) {
                 switch job.kind {

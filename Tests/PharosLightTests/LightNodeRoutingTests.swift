@@ -294,6 +294,87 @@ final class LightNodeRoutingTests: XCTestCase {
         XCTAssertTrue(relay.pendingHarvest(maxAge: 1800, limit: 8).isEmpty)
     }
 
+    func testNodePulledOnceDeliversAfterHeartbeatWindowWhenBrokerRosterShowsItOnline() throws {
+        let clock = StepClock()
+        let driver = SwitchDriver()
+        driver.state = .delivered
+        let link = FakeLink(nodes: [])
+        let router = LightMeshRouter(link: link, hosts: LightHostsConfig(), ssh: nil, now: clock.now)
+        let relay = try LightRelay(store: temp("relay"), now: clock.now, driver: driver, liveness: router)
+
+        _ = try relay.register(LightMember(name: "sender", host: "local", app: "webhook", project: "p", sessionID: "w", routes: []))
+        _ = try relay.register(LightMember(name: "codex-air", host: "air", app: "codex", project: "p", sessionID: "s",
+                                           routes: LightRouteCatalog.defaults(for: "codex")))
+
+        // 1. Node pulled once at T
+        _ = try relay.pull(node: "air")
+
+        // 2. Advance time past the 70s heartbeat window (T + 80s)
+        clock.advance(80)
+
+        // 3. Broker roster/heartbeat says the node is online (fresh heartbeat 5s ago)
+        link.nodes = [LightMeshNode(id: "n-air", host: "air", lastSeen: clock.now().addingTimeInterval(-5))]
+        XCTAssertTrue(router.status("air").online)
+
+        // 4. Send to that node: must deliver (not be parked as offline)
+        let sent = try relay.send(from: "sender", to: ["codex-air"], text: "hello")
+        let delivery = try XCTUnwrap(sent.deliveries.first)
+        XCTAssertEqual(delivery.state, .delivered)
+        XCTAssertEqual(driver.delivered, ["codex-air"])
+        XCTAssertEqual(relay.inboxNodes(), [])
+    }
+
+    func testNodeGenuinelyOfflinePerBrokerRosterIsParked() throws {
+        let clock = StepClock()
+        let driver = SwitchDriver()
+        driver.state = .delivered
+        let link = FakeLink(nodes: [])
+        let router = LightMeshRouter(link: link, hosts: LightHostsConfig(), ssh: nil, now: clock.now)
+        let relay = try LightRelay(store: temp("relay"), now: clock.now, driver: driver, liveness: router)
+
+        _ = try relay.register(LightMember(name: "sender", host: "local", app: "webhook", project: "p", sessionID: "w", routes: []))
+        _ = try relay.register(LightMember(name: "codex-air", host: "air", app: "codex", project: "p", sessionID: "s",
+                                           routes: LightRouteCatalog.defaults(for: "codex")))
+
+        // Broker roster says node was last seen 80s ago (offline)
+        link.nodes = [LightMeshNode(id: "n-air", host: "air", lastSeen: clock.now().addingTimeInterval(-80))]
+        XCTAssertFalse(router.status("air").online)
+
+        let sent = try relay.send(from: "sender", to: ["codex-air"], text: "hello")
+        let delivery = try XCTUnwrap(sent.deliveries.first)
+        XCTAssertEqual(delivery.state, .queued)
+        XCTAssertTrue(delivery.detail.contains("node offline"))
+        XCTAssertEqual(driver.delivered, [])
+        XCTAssertEqual(relay.inboxNodes(), ["air"])
+    }
+
+    func testNodeLivenessFallsBackToPullTimestampWhenNoBrokerRosterAvailable() throws {
+        let clock = StepClock()
+        let driver = SwitchDriver()
+        driver.state = .delivered
+        let link = FakeLink(nodes: nil) // No Broker roster
+        let router = LightMeshRouter(link: link, hosts: LightHostsConfig(), ssh: nil, now: clock.now)
+        let relay = try LightRelay(store: temp("relay"), now: clock.now, driver: driver, liveness: router)
+
+        _ = try relay.register(LightMember(name: "sender", host: "local", app: "webhook", project: "p", sessionID: "w", routes: []))
+        _ = try relay.register(LightMember(name: "codex-air", host: "air", app: "codex", project: "p", sessionID: "s",
+                                           routes: LightRouteCatalog.defaults(for: "codex")))
+
+        // Pulled at T0
+        _ = try relay.pull(node: "air")
+
+        // 10s later: still within heartbeat window -> delivers
+        clock.advance(10)
+        let first = try relay.send(from: "sender", to: ["codex-air"], text: "first")
+        XCTAssertEqual(first.deliveries.first?.state, .delivered)
+
+        // 80s later (> 70s since last pull) -> parked as offline
+        clock.advance(80)
+        let second = try relay.send(from: "sender", to: ["codex-air"], text: "second")
+        XCTAssertEqual(second.deliveries.first?.state, .queued)
+        XCTAssertTrue(second.deliveries.first?.detail.contains("node offline") == true)
+    }
+
     func testFailedDeliveryShowsWhy() throws {
         let driver = SwitchDriver()
         driver.state = .failed

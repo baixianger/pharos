@@ -434,6 +434,11 @@ public struct LightNodeStatus: Equatable, Sendable {
     }
 }
 
+/// Node liveness provider, querying e.g. the Broker roster.
+public protocol LightNodeLiveness: Sendable {
+    func nodeStatus(_ host: String) -> LightNodeStatus?
+}
+
 public struct LightLimits: Equatable, Sendable {
     public var replyTTL: TimeInterval
     public var queueTTL: TimeInterval
@@ -696,6 +701,7 @@ public final class LightRelay: @unchecked Sendable {
     private let forwarder: (any LightReplyForwarding)?
     private let webhook: String?
     private let limits: LightLimits
+    public var liveness: (any LightNodeLiveness)?
     private let lock = NSLock()
 
     private var members: [String: LightMember] = [:]
@@ -718,7 +724,8 @@ public final class LightRelay: @unchecked Sendable {
                 driver: any LightSessionDriver = IdleLightDriver(),
                 forwarder: (any LightReplyForwarding)? = nil,
                 webhook: String? = nil,
-                limits: LightLimits = LightLimits()) throws {
+                limits: LightLimits = LightLimits(),
+                liveness: (any LightNodeLiveness)? = nil) throws {
         self.store = store
         self.now = now
         self.sleep = sleep
@@ -727,6 +734,7 @@ public final class LightRelay: @unchecked Sendable {
         self.forwarder = forwarder
         self.webhook = try LightWebhook.loopback(webhook)
         self.limits = limits
+        self.liveness = liveness
         try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
         chmod(store.path, 0o700)
         try load()
@@ -2066,6 +2074,13 @@ public final class LightRelay: @unchecked Sendable {
     }
 
     private func nodeStatusLocked(_ host: String) -> LightNodeStatus {
+        if let liveness, let status = liveness.nodeStatus(host), let seen = status.lastSeen {
+            let online = now().timeIntervalSince(seen) < Self.nodeHeartbeatWindow
+            if seen > (nodeSeen[host] ?? .distantPast) {
+                nodeSeen[host] = seen
+            }
+            return LightNodeStatus(host: status.host, online: online, lastSeen: seen)
+        }
         guard let seen = nodeSeen[host] else {
             return LightNodeStatus(host: host, online: false, lastSeen: nil)
         }

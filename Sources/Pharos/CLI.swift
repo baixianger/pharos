@@ -186,6 +186,7 @@ enum CLI {
             forwarder = nil
         }
         let live = environment["PHAROS_LIGHT_LIVE"] == "1"
+        let router = lightRouter()
         let driver = ExternalLightDriver(
             allowLive: live,
             runner: live ? FoundationLightProcessRunner() : nil,
@@ -194,13 +195,14 @@ enum CLI {
             achat: bins.achat,
             replyFloorStore: LightRelay.defaultStoreURL().appendingPathComponent("achat-reply-floors.json"),
             selfHost: .fromEnvironment(environment),
-            nodes: lightRouter()
+            nodes: router
         )
         return try LightRelay(
             store: LightRelay.defaultStoreURL(),
             driver: driver,
             forwarder: forwarder,
-            webhook: environment["PHAROS_LIGHT_WEBHOOK"]
+            webhook: environment["PHAROS_LIGHT_WEBHOOK"],
+            liveness: router
         )
     }
 
