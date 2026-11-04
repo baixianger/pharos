@@ -1030,11 +1030,18 @@ public final class LightRelay: @unchecked Sendable {
     /// Same liveness window the Broker uses when it drops a node heartbeat.
     public static let nodeHeartbeatWindow: TimeInterval = 70
 
-    public static func nodeOfflineMessage(lastSeen: Date?) -> String {
-        if let lastSeen {
-            return "Pharos node offline; last-seen \(Int(lastSeen.timeIntervalSince1970))"
+    public static func lastSeenAgo(_ lastSeen: Date, now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(lastSeen)))
+        return "last seen \(seconds)s ago"
+    }
+
+    public static func nodeOfflineMessage(lastSeen: Date?, now: Date) -> String {
+        guard let lastSeen else {
+            return "Pharos node offline; never seen"
         }
-        return "Pharos node offline; last-seen never"
+        let ago = lastSeenAgo(lastSeen, now: now)
+        let iso = ISO8601DateFormatter().string(from: lastSeen)
+        return "Pharos node offline; \(ago) (\(iso))"
     }
 
     /// Nodes that have jobs waiting in their inbox.
@@ -1391,7 +1398,7 @@ public final class LightRelay: @unchecked Sendable {
         if let parked {
             return LightDelivery(to: target.member.name, replyID: target.ticket.replyID, state: .queued,
                                  route: nil, fallback: false, liveVerified: false, header: target.header,
-                                 detail: Self.nodeOfflineMessage(lastSeen: parked.lastSeen), via: "queued")
+                                 detail: Self.nodeOfflineMessage(lastSeen: parked.lastSeen, now: now()), via: "queued")
         }
         let claim = try sync { () -> Claim? in
             if outbox.contains(where: { $0.to == target.member.name }) || inflight.contains(target.member.name) {

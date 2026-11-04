@@ -413,7 +413,7 @@ public struct ExternalLightDriver: LightSessionDriver {
         guard let run = nodes.run(member.host, argv: ["node-deliver", "--payload", payload], timeout: 180) else {
             let status = nodes.status(member.host)
             return LightDriveResult(state: .offline, route: nil, fallback: false, liveVerified: false,
-                                    detail: LightRelay.nodeOfflineMessage(lastSeen: status.lastSeen) + "; queued on the Broker",
+                                    detail: LightRelay.nodeOfflineMessage(lastSeen: status.lastSeen, now: Date()) + "; queued on the Broker",
                                     via: "queued")
         }
         guard let object = LightSessionService.extractJSON(run.stdout),

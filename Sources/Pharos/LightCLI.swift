@@ -134,9 +134,9 @@ extension CLI {
             if rows.isEmpty, roster != nil { print("no Pharos nodes have checked in") }
             for node in directory.roster {
                 let state = node.online(at: moment) ? "online" : "offline"
-                let ago = Int(moment.timeIntervalSince(node.lastSeen))
+                let ago = LightRelay.lastSeenAgo(node.lastSeen, now: moment)
                 let aliases = directory.aliases(of: node.name)
-                print("\(node.name)\t\(state)\tlast seen \(ago)s ago\t\(aliases.isEmpty ? "-" : aliases.joined(separator: ","))\(node.brokerLocal ? "\tbroker" : "")")
+                print("\(node.name)\t\(state)\t\(ago)\t\(aliases.isEmpty ? "-" : aliases.joined(separator: ","))\(node.brokerLocal ? "\tbroker" : "")")
             }
             for (alias, node) in dangling.sorted(by: { $0.key < $1.key }) {
                 print("\(node)\tnot a Pharos node\t-\t\(alias)")

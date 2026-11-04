@@ -658,6 +658,27 @@ final class LightDriverTests: XCTestCase {
         XCTAssertTrue(argv.joined(separator: " ").contains(SSHLightReplyForwarder.shellQuote("hello 'there'")))
     }
 
+    func testNodeOfflineMessageFormatting() {
+        let lastSeen = Date(timeIntervalSince1970: 1_793_793_600) // 2026-11-04T12:00:00Z
+        let now83 = lastSeen.addingTimeInterval(83)
+        XCTAssertEqual(LightRelay.nodeOfflineMessage(lastSeen: lastSeen, now: now83),
+                       "Pharos node offline; last seen 83s ago (2026-11-04T12:00:00Z)")
+
+        XCTAssertEqual(LightRelay.nodeOfflineMessage(lastSeen: nil, now: now83),
+                       "Pharos node offline; never seen")
+
+        let future = lastSeen.addingTimeInterval(10)
+        XCTAssertEqual(LightRelay.nodeOfflineMessage(lastSeen: future, now: lastSeen),
+                       "Pharos node offline; last seen 0s ago (2026-11-04T12:00:10Z)")
+    }
+
+    func testLastSeenAgoHelper() {
+        let t0 = Date(timeIntervalSince1970: 1_793_793_600)
+        XCTAssertEqual(LightRelay.lastSeenAgo(t0, now: t0.addingTimeInterval(83)), "last seen 83s ago")
+        XCTAssertEqual(LightRelay.lastSeenAgo(t0, now: t0), "last seen 0s ago")
+        XCTAssertEqual(LightRelay.lastSeenAgo(t0.addingTimeInterval(10), now: t0), "last seen 0s ago")
+    }
+
     private func assertNoApprovalBypass(_ parts: [String]) {
         let joined = parts.joined(separator: " ").lowercased()
         for banned in ["dangerously", "approve-for-me", "bypass", "requestapproval"] {

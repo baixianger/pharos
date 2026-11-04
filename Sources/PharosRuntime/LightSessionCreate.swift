@@ -576,7 +576,7 @@ public struct LightSessionService {
     }
 
     private func hold(status: LightNodeStatus, spec: SessionSpec, verb: Verb, noQueue: Bool, json: Bool) -> LightCLIResult {
-        let message = LightRelay.nodeOfflineMessage(lastSeen: status.lastSeen)
+        let message = LightRelay.nodeOfflineMessage(lastSeen: status.lastSeen, now: Date())
         if spec.dryRun || noQueue {
             return offlineResult(message: message, requestID: nil, status: status, json: json, queued: false)
         }
@@ -786,7 +786,7 @@ public struct LightSessionService {
     }
 
     private func holdProject(status: LightNodeStatus, spec: ProjectSpec, noQueue: Bool, json: Bool) -> LightCLIResult {
-        let message = LightRelay.nodeOfflineMessage(lastSeen: status.lastSeen)
+        let message = LightRelay.nodeOfflineMessage(lastSeen: status.lastSeen, now: Date())
         if spec.dryRun || noQueue {
             return offlineResult(message: message, requestID: nil, status: status, json: json, queued: false)
         }
