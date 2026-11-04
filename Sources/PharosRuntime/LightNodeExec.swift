@@ -54,16 +54,52 @@ public struct LightNodeLaunchSpec: Codable, Equatable, Sendable {
     }
 }
 
+public struct LightNodeAdoptSpec: Codable, Equatable, Sendable {
+    public var name, app, cwd, sessionID, project, host: String
+    public var model, tmuxSession: String?
+    public var autoRevive: Bool?
+
+    public init(
+        name: String,
+        app: String,
+        cwd: String,
+        sessionID: String,
+        project: String,
+        host: String,
+        model: String? = nil,
+        tmuxSession: String? = nil,
+        autoRevive: Bool? = nil
+    ) {
+        self.name = name
+        self.app = app
+        self.cwd = cwd
+        self.sessionID = sessionID
+        self.project = project
+        self.host = host
+        self.model = model
+        self.tmuxSession = tmuxSession
+        self.autoRevive = autoRevive
+    }
+}
+
 public struct LightNodeAgentRequest: Codable, Equatable, Sendable {
-    public var action: String          // "launch" | "revive" | "stop" | "status"
+    public var action: String          // "launch" | "adopt" | "revive" | "stop" | "status"
     public var member: LightMember?    // revive/stop/status
     public var launch: LightNodeLaunchSpec?   // launch
+    public var adopt: LightNodeAdoptSpec?     // adopt
     public var force: Bool?
 
-    public init(action: String, member: LightMember? = nil, launch: LightNodeLaunchSpec? = nil, force: Bool? = nil) {
+    public init(
+        action: String,
+        member: LightMember? = nil,
+        launch: LightNodeLaunchSpec? = nil,
+        adopt: LightNodeAdoptSpec? = nil,
+        force: Bool? = nil
+    ) {
         self.action = action
         self.member = member
         self.launch = launch
+        self.adopt = adopt
         self.force = force
     }
 }
@@ -97,7 +133,7 @@ public enum LightNodeExec {
     /// Commands a node accepts over the mesh (`light` node command). Nothing else runs.
     public static let allowed: Set<String> = [
         "session", "project", "member", "thread", "send", "reply", "wait", "read", "attention",
-        "node-deliver", "node-harvest", "node-agent",
+        "node-deliver", "node-harvest", "node-agent", "node-inventory", "ls", "agents",
     ]
 
     public static func encode<T: Encodable>(_ value: T) -> String {
@@ -164,6 +200,23 @@ public enum LightNodeExec {
                     tmuxSession: spec.tmuxSession,
                     openingMessage: spec.openingMessage,
                     project: spec.project
+                )
+                member.host = spec.host
+                return encodeLine(LightNodeAgentResponse(ok: true, member: member, notes: agents.notes))
+            case "adopt":
+                guard let spec = request.adopt else {
+                    return encodeLine(LightNodeAgentResponse(ok: false, error: "missing adopt spec"))
+                }
+                var member = try agents.adopt(
+                    name: spec.name,
+                    app: spec.app,
+                    cwd: spec.cwd,
+                    sessionID: spec.sessionID,
+                    host: spec.host,
+                    model: spec.model,
+                    tmuxSession: spec.tmuxSession,
+                    project: spec.project,
+                    autoRevive: spec.autoRevive ?? false
                 )
                 member.host = spec.host
                 return encodeLine(LightNodeAgentResponse(ok: true, member: member, notes: agents.notes))

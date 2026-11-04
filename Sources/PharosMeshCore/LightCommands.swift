@@ -23,6 +23,8 @@ public struct LightMemberAgentsError: Error, LocalizedError, Equatable {
 public protocol LightMemberAgents: Sendable {
     func launch(name: String, app: String, cwd: String, host: String, model: String?, tmuxSession: String?,
                 openingMessage: String?, project: String) throws -> LightMember   // returns member with tmux binding + routes
+    func adopt(name: String, app: String, cwd: String, sessionID: String, host: String, model: String?, tmuxSession: String?,
+               project: String, autoRevive: Bool) throws -> LightMember
     func revive(_ member: LightMember) throws -> LightTmuxBinding
     func stop(_ member: LightMember, force: Bool) throws -> LightTmuxBinding
     func status(_ member: LightMember) -> LightMemberRuntimeStatus?   // nil = not a tmux CLI member
@@ -31,6 +33,10 @@ public protocol LightMemberAgents: Sendable {
 
 extension LightMemberAgents {
     public var notes: [String] { [] }
+    public func adopt(name: String, app: String, cwd: String, sessionID: String, host: String, model: String?, tmuxSession: String?,
+                      project: String, autoRevive: Bool) throws -> LightMember {
+        throw LightMemberAgentsError("member adopt needs live CLI access")
+    }
     public func stop(_ member: LightMember, force: Bool) throws -> LightTmuxBinding {
         throw LightMemberAgentsError("member stop needs live CLI access")
     }
@@ -100,7 +106,8 @@ public enum LightCommands {
                                routesForApp: (String) -> [LightRoute],
                                routeByID: (String) -> LightRoute = LightRoute.named,
                                agents: (any LightMemberAgents)? = nil,
-                               hostOwner: (@Sendable (String) -> String)? = nil) -> LightCLIResult {
+                               hostOwner: (@Sendable (String) -> String)? = nil,
+                               refreshInventory: (@Sendable (_ host: String) -> Void)? = nil) -> LightCLIResult {
         let argv = LightArgv.parse(arguments)
         do {
             if ["thread", "wait", "read", "attention"].contains(command),
@@ -114,7 +121,7 @@ public enum LightCommands {
             }
             switch command {
             case "member":
-                return try member(argv, relay: relay, routesForApp: routesForApp, routeByID: routeByID, agents: agents, hostOwner: hostOwner)
+                return try member(argv, relay: relay, routesForApp: routesForApp, routeByID: routeByID, agents: agents, hostOwner: hostOwner, refreshInventory: refreshInventory)
             case "thread":
                 return try thread(argv, relay: relay)
             case "send":
@@ -145,7 +152,8 @@ public enum LightCommands {
                                routesForApp: (String) -> [LightRoute],
                                routeByID: (String) -> LightRoute,
                                agents: (any LightMemberAgents)? = nil,
-                               hostOwner: (@Sendable (String) -> String)? = nil) throws -> LightCLIResult {
+                               hostOwner: (@Sendable (String) -> String)? = nil,
+                               refreshInventory: (@Sendable (_ host: String) -> Void)? = nil) throws -> LightCLIResult {
         switch argv.positional.first {
         case "list", nil:
             let members = relay.listMembers()
@@ -300,18 +308,32 @@ public enum LightCommands {
             }
             return json(["accepted": accepted])
         case "launch":
+            let host = argv.option("host") ?? "local"
+            var dir = argv.option("dir")
+            if dir == nil || dir!.isEmpty {
+                if let projectOpt = argv.option("project"), !projectOpt.isEmpty {
+                    let wsStore = LightWorkspaceStore(rootDir: relay.storeURL)
+                    let canonical = hostOwner?(host) ?? host
+                    var workspaces = wsStore.workspaces(for: host)
+                    if workspaces.isEmpty && canonical != host {
+                        workspaces = wsStore.workspaces(for: canonical)
+                    }
+                    if let ws = workspaces.first(where: { $0.name.lowercased() == projectOpt.lowercased() }) {
+                        dir = ws.path
+                    }
+                }
+            }
             guard let app = argv.option("app"),
                   let name = argv.option("name"),
-                  let dir = argv.option("dir") else {
-                return usage("pharos member launch --app codex|agy --name N --dir D [--host H] [--model M] [--tmux SESSION] [--message TEXT] [--project P] [--auto-revive] [--json]")
+                  let finalDir = dir, !finalDir.isEmpty else {
+                return usage("pharos member launch --app codex|agy --name N (--dir D | --project P) [--host H] [--model M] [--tmux SESSION] [--message TEXT] [--auto-revive] [--json]")
             }
             guard let agents else {
                 return LightCLIResult(exitCode: 1, text: "error: member launch needs live CLI access (PHAROS_LIGHT_LIVE=1)")
             }
-            let host = argv.option("host") ?? "local"
             let project: String = {
                 if let p = argv.option("project"), !p.isEmpty { return p }
-                let last = URL(fileURLWithPath: dir).lastPathComponent
+                let last = URL(fileURLWithPath: finalDir).lastPathComponent
                 return last.isEmpty ? "default" : last
             }()
             let model = argv.option("model")
@@ -328,7 +350,7 @@ public enum LightCommands {
             var member = try agents.launch(
                 name: validatedName,
                 app: app,
-                cwd: dir,
+                cwd: finalDir,
                 host: host,
                 model: model,
                 tmuxSession: tmuxSession,
@@ -345,6 +367,124 @@ public enum LightCommands {
             return LightCLIResult(
                 exitCode: 0,
                 text: "launched \(registered.name) (app \(registered.app)) in tmux \(tmuxName), session \(registered.sessionID)",
+                notes: agents.notes
+            )
+        case "adopt":
+            guard let name = argv.option("name"), !name.isEmpty else {
+                return usage("pharos member adopt <address|host app id> --name X [--dir D] [--model M] [--tmux S] [--auto-revive] [--project P] [--force] [--json]")
+            }
+            guard let agents else {
+                return LightCLIResult(exitCode: 1, text: "error: member adopt needs live CLI access (PHAROS_LIGHT_LIVE=1)")
+            }
+
+            let validatedName = try LightRelay.validateName(name)
+            if let _ = relay.member(named: validatedName) {
+                throw LightRelayError.duplicateMember(validatedName)
+            }
+
+            let positional = Array(argv.positional.dropFirst())
+            let host: String
+            let app: String
+            let sessionID: String
+            var resolvedEntry: LightSessionEntry? = nil
+            let invStore = LightInventoryStore(rootDir: relay.storeURL)
+
+            if positional.count == 1 {
+                let address = positional[0]
+                let canonical = hostOwner ?? { $0 }
+                var resolved: (host: String, app: String, entry: LightSessionEntry)? = nil
+                do {
+                    resolved = try LightDirectory.resolve(address, inventoryStore: invStore, canonicalHost: canonical)
+                } catch {
+                    let hostPart = address.split(separator: "/").first.map(String.init) ?? ""
+                    let targetHost = canonical(hostPart)
+                    refreshInventory?(targetHost)
+                    resolved = try? LightDirectory.resolve(address, inventoryStore: invStore, canonicalHost: canonical)
+                    if resolved == nil {
+                        throw error
+                    }
+                }
+                guard let res = resolved else {
+                    return LightCLIResult(exitCode: 1, text: "error: failed to resolve address \(address)")
+                }
+                host = res.host
+                app = res.app
+                sessionID = res.entry.id
+                resolvedEntry = res.entry
+            } else if positional.count >= 3 {
+                let rawHost = positional[0]
+                host = (hostOwner != nil) ? hostOwner!(rawHost) : rawHost
+                app = positional[1].lowercased()
+                sessionID = positional[2]
+
+                var inv = invStore.load(node: host)
+                if inv == nil || !inv!.sessions.contains(where: { $0.id == sessionID }) {
+                    refreshInventory?(host)
+                    inv = invStore.load(node: host)
+                }
+                resolvedEntry = inv?.sessions.first(where: { $0.id == sessionID })
+            } else {
+                return usage("pharos member adopt <address|host app id> --name X [--dir D] [--model M] [--tmux S] [--auto-revive] [--project P] [--force] [--json]")
+            }
+
+            guard app == "codex" || app == "agy" else {
+                return LightCLIResult(exitCode: 1, text: "error: adopt supports codex and agy; use pharos member register for \(app)")
+            }
+
+            if let existing = relay.listMembers().first(where: { $0.sessionID == sessionID }) {
+                return LightCLIResult(exitCode: 1, text: "error: member '\(existing.name)' already has session id '\(sessionID)'")
+            }
+
+            var dir = argv.option("dir")
+            if dir == nil || dir!.isEmpty {
+                dir = resolvedEntry?.cwd
+                if (dir == nil || dir!.isEmpty) {
+                    refreshInventory?(host)
+                    let refreshed = invStore.load(node: host)
+                    resolvedEntry = refreshed?.sessions.first(where: { $0.id == sessionID })
+                    dir = resolvedEntry?.cwd
+                }
+            }
+            guard let finalCwd = dir, !finalCwd.isEmpty else {
+                return LightCLIResult(exitCode: 1, text: "error: no cwd known for \(sessionID); pass --dir")
+            }
+
+            let force = argv.flag("force")
+            if app == "codex", !force, let state = resolvedEntry?.state, state == "active" || state == "needs_human" {
+                return LightCLIResult(exitCode: 1, text: "error: session is busy in another client; --force to attach anyway")
+            }
+
+            let project: String
+            if let p = argv.option("project"), !p.isEmpty {
+                project = p
+            } else if let p = resolvedEntry?.project, !p.isEmpty {
+                project = p
+            } else {
+                let last = URL(fileURLWithPath: finalCwd).lastPathComponent
+                project = last.isEmpty ? "default" : last
+            }
+
+            var member = try agents.adopt(
+                name: validatedName,
+                app: app,
+                cwd: finalCwd,
+                sessionID: sessionID,
+                host: host,
+                model: argv.option("model"),
+                tmuxSession: argv.option("tmux"),
+                project: project,
+                autoRevive: argv.flag("auto-revive")
+            )
+            if argv.flag("auto-revive") {
+                member.tmux?.autoRevive = true
+            }
+
+            let registered = try relay.register(member)
+            if argv.flag("json") { return json(registered) }
+            let tmuxName = registered.tmux?.session ?? argv.option("tmux") ?? validatedName
+            return LightCLIResult(
+                exitCode: 0,
+                text: "adopted \(registered.name) (app \(registered.app)) on \(host) in tmux \(tmuxName), session \(registered.sessionID)",
                 notes: agents.notes
             )
         case "stop":

@@ -76,8 +76,6 @@ enum CLI {
                 let yolo: Bool? = p.has("no-yolo") ? false : (p.has("yolo") ? true : nil)
                 let tmux: Bool? = p.has("tmux") ? true : nil
                 return ok(try await PharosCore.launchAgent(project: p.arg(0), agent: p.arg(1), yolo: yolo, tmux: tmux, host: p.opt("host"), source: .cli))
-            case "agents":
-                return ok(RemoteLaunch.listAgents(host: p.opt("host"), filter: p.arg(0)))
             case "agent":
                 return try runAgent(p)
             case "resume":
@@ -134,12 +132,14 @@ enum CLI {
                 return ok(try PharosCore.setFlag(name: p.arg(0), flag: "tmux", value: try boolArg(p.arg(1), label: "on|off")))
             case "mesh":
                 return await runMesh(rest)
-            case "member", "thread", "send", "reply", "wait", "read", "session", "project", "attention":
+            case "member", "thread", "send", "reply", "wait", "read", "session", "project", "attention", "ls", "agents":
                 return finishLight(lightDispatch(command: command, arguments: rest))
             case "node-deliver", "node-harvest":
                 return finishLight(nodeExecute(command: command, arguments: rest))
             case "node-agent":
                 return finishLight(nodeAgentExecute(rest))
+            case "node-inventory":
+                return finishLight(nodeInventoryExecute())
             case "light-tick":
                 return finishLight(lightTick(json: true))
             case "webhook", "webhooks":
@@ -177,13 +177,23 @@ enum CLI {
                 }
                 return router.canonical(label)
             }
+            let relay = try makeLightRelay()
+            let invStore = LightInventoryStore(rootDir: relay.storeURL)
             return LightCommands.execute(
                 command: command,
                 arguments: arguments,
-                relay: try makeLightRelay(),
+                relay: relay,
                 routesForApp: LightRouteCatalog.defaults(for:),
                 agents: cliEnv?.memberAgents,
-                hostOwner: hostOwner
+                hostOwner: hostOwner,
+                refreshInventory: { host in
+                    if let run = router.run(host, argv: ["node-inventory"], timeout: 45), run.status == 0 {
+                        if let data = run.stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+                           let inv = try? LightInventoryStore.jsonDecoder.decode(LightNodeInventory.self, from: data) {
+                            try? invStore.save(node: host, inventory: inv)
+                        }
+                    }
+                }
             )
         } catch {
             return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")
@@ -243,9 +253,17 @@ enum CLI {
 
     static func projectExecute(arguments: [String]) -> LightCLIResult {
         do {
+            let relay = try makeLightRelay()
+            if let wsResult = LightInventoryCommands.executeProjectWorkspaces(
+                arguments: arguments,
+                rootDir: relay.storeURL,
+                canonicalHost: { lightRouter().canonical($0) }
+            ) {
+                return wsResult
+            }
             let environment = ProcessInfo.processInfo.environment
             return LightSessionService(
-                relay: try makeLightRelay(),
+                relay: relay,
                 runner: FoundationLightProcessRunner(),
                 prober: LoopbackDebugProber(),
                 ports: .fromEnvironment(environment),
@@ -952,6 +970,8 @@ enum CLI {
           pharos <command> [args] [--json]
 
         READ
+          ls [host[/app[/project]]] [--all] [--json] [--refresh]   Directory overview, workspaces, and agent sessions
+          agents [--host H] [--app A] [--project P] [--all] [--refresh] [--json]   List host agent sessions from inventory
           list                         List projects (alias: projects)
           groups                       List groups and their counts
           git <project>                Git status for a project
@@ -1025,6 +1045,7 @@ enum CLI {
           See `pharos help chat` for intents, --to/--cc, --deliver, --rounds, and the subagent pattern.
           member register --name N --host H --app codex|claude|dsh|ag|cursor --project P --session S [--route R]...
           member register --name N --app webhook [--webhook CONFIG]      (remote assistant via HTTPS POST)
+          member adopt <address|host app id> --name X [--dir D] [--model M] [--tmux S] [--auto-revive] [--project P] [--force] [--json]
           member list [--json]
           attention list [--json]                  Members waiting on a human (needs_human): what, host, session, age
           attention report --state needs_human|clear --session S [--app A] [--host H] [--what T] [--ttl 20m]
@@ -1041,8 +1062,8 @@ enum CLI {
           session workspaces --host H --app dsh|ag|codex|cursor [--launch] [--no-queue] [--json]
           session pull --node H [--json]
           session ack <request-id> [--result JSON]
-          project list --host H --app dsh|ag|codex|cursor [--dry-run] [--no-queue] [--json]
-          project add --host H --app dsh|ag|codex|cursor --path DIR [--name N] [--dry-run] [--no-queue] [--json]
+          project list --host H [--app dsh|ag|codex|cursor] [--dry-run] [--no-queue] [--json]
+          project add --host H --path DIR [--name N] [--app dsh|ag|codex|cursor] [--dry-run] [--no-queue] [--json]
           A new send mints a thread. A reply inherits that thread from the reply-id and
           goes back only to the sender, plus --cc. `@name` in text is plain text (a hint is
           printed when it names an unaddressed member). An answer is recorded, not delivered,

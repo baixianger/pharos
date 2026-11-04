@@ -131,6 +131,82 @@ public final class CLIMemberAgents: LightMemberAgents, @unchecked Sendable {
         )
     }
 
+    public func adopt(
+        name: String,
+        app: String,
+        cwd: String,
+        sessionID: String,
+        host: String,
+        model: String?,
+        tmuxSession: String?,
+        project: String,
+        autoRevive: Bool
+    ) throws -> LightMember {
+        if !selfHost.matches(host) {
+            guard let nodes else {
+                throw CLIMemberAgentsError("adopt on another host is not supported yet: run it on that machine")
+            }
+
+            let spec = LightNodeAdoptSpec(
+                name: name,
+                app: app,
+                cwd: cwd,
+                sessionID: sessionID,
+                project: project,
+                host: host,
+                model: model,
+                tmuxSession: tmuxSession,
+                autoRevive: autoRevive
+            )
+            let request = LightNodeAgentRequest(action: "adopt", adopt: spec)
+            let b64 = LightNodeExec.encode(request)
+
+            guard let run = nodes.run(host, argv: ["node-agent", "--payload", b64], timeout: 240) else {
+                let status = nodes.status(host)
+                let msg = LightRelay.nodeOfflineMessage(lastSeen: status.lastSeen, now: Date())
+                throw CLIMemberAgentsError("Pharos node \(host) is offline (\(msg))")
+            }
+
+            guard let resp = Self.parseResponse(run.stdout) else {
+                throw CLIMemberAgentsError("invalid response from node \(host)")
+            }
+
+            guard resp.ok else {
+                throw CLIMemberAgentsError(resp.error ?? "remote adopt failed")
+            }
+
+            guard var adopted = resp.member else {
+                throw CLIMemberAgentsError("remote adopt did not return a member")
+            }
+            adopted.host = host
+
+            var notes = resp.notes ?? []
+            notes.append("via \(run.path.rawValue) on \(run.node)")
+            lock.lock()
+            _notes = notes
+            lock.unlock()
+
+            return adopted
+        }
+
+        let adoptReq = CLIAgentAdoptRequest(
+            name: name,
+            app: app,
+            cwd: cwd,
+            sessionID: sessionID,
+            host: host,
+            model: model,
+            tmuxSession: tmuxSession,
+            project: project,
+            autoRevive: autoRevive
+        )
+        let member = try lifecycle.adopt(request: adoptReq)
+        lock.lock()
+        _notes = []
+        lock.unlock()
+        return member
+    }
+
     public func revive(_ member: LightMember) throws -> LightTmuxBinding {
         if !selfHost.matches(member.host) {
             guard let nodes else {

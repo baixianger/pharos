@@ -173,7 +173,7 @@ final class CLIAgentDriverTests: XCTestCase {
         XCTAssertTrue(sendKeys.contains(where: { $0.contains("-l") && $0.contains("echo 3") }))
 
         let cur = cursors.get(member: "cx-3")
-        XCTAssertEqual(cur?.kind, "codex-client")
+        XCTAssertEqual(cur?.kind, "codex-marker")
         XCTAssertEqual(cur?.value, "")
     }
 

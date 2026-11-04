@@ -52,6 +52,8 @@ extension CLI {
         switch command {
         case "session": return sessionExecute(arguments: arguments)
         case "project": return projectExecute(arguments: arguments)
+        case "ls": return lsExecute(arguments: arguments)
+        case "agents": return agentsExecute(arguments: arguments)
         default: return lightExecute(command: command, arguments: arguments)
         }
     }
@@ -224,6 +226,47 @@ extension CLI {
         return LightNodeExec.executeAgent(arguments: arguments, agents: localAgents)
     }
 
+    static func nodeInventoryExecute() -> LightCLIResult {
+        LightInventoryCommands.executeNodeInventory(env: lightEnvironment)
+    }
+
+    static func lsExecute(arguments: [String]) -> LightCLIResult {
+        do {
+            let relay = try makeLightRelay()
+            return LightInventoryCommands.executeLs(
+                arguments: arguments,
+                rootDir: relay.storeURL,
+                router: lightRouter(),
+                members: relay.listMembers(),
+                now: Date()
+            )
+        } catch {
+            return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")
+        }
+    }
+
+    static func agentsExecute(arguments: [String]) -> LightCLIResult {
+        do {
+            let relay = try makeLightRelay()
+            if arguments.first == "node-report" {
+                return LightInventoryCommands.executeNodeReport(
+                    arguments: Array(arguments.dropFirst()),
+                    store: LightInventoryStore(rootDir: relay.storeURL),
+                    canonicalHost: { lightRouter().canonical($0) }
+                )
+            }
+            return LightInventoryCommands.executeAgents(
+                arguments: arguments,
+                rootDir: relay.storeURL,
+                router: lightRouter(),
+                members: relay.listMembers(),
+                now: Date()
+            )
+        } catch {
+            return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")
+        }
+    }
+
     /// One bounded background pass, run by the node every ~20s: drain the reply
     /// spool, and on the Broker machine retry parked jobs and read back answers.
     static func lightTick(json: Bool) -> LightCLIResult {
@@ -274,6 +317,58 @@ extension CLI {
                         }
                     }
                 }
+            }
+
+            // Inventory tick
+            let inventoryStampURL = supervisorStore.deletingLastPathComponent().appendingPathComponent("inventory-stamp.json")
+            struct InventoryStamp: Codable {
+                var lastCheck: Date
+                var lastPush: Date
+                var hash: String
+                var count: Int
+            }
+            let now = Date()
+            var stamp: InventoryStamp?
+            if let stampData = try? Data(contentsOf: inventoryStampURL) {
+                stamp = try? Self.secondsDecoder.decode(InventoryStamp.self, from: stampData)
+            }
+
+            let shouldCollect = stamp == nil || now.timeIntervalSince(stamp!.lastCheck) >= 60
+            if shouldCollect {
+                let collector = SessionInventoryCollector(env: env)
+                let inventory = collector.collect(node: nodeName)
+                body["inventory"] = inventory.sessions.count
+
+                let hashSummary = inventory.sessions.map { "\($0.id):\($0.lastActive?.timeIntervalSince1970 ?? 0)" }.joined(separator: "|")
+                let contentHash = String(hashSummary.hashValue)
+
+                let hashChanged = stamp?.hash != contentHash
+                let pushOlderThan10Min = stamp == nil || now.timeIntervalSince(stamp!.lastPush) >= 600
+                let shouldPush = hashChanged || pushOlderThan10Min
+
+                if shouldPush {
+                    if lightIsHub {
+                        let invStore = LightInventoryStore()
+                        try? invStore.save(node: nodeName, inventory: inventory)
+                    } else {
+                        let router = lightRouter()
+                        if let hub = router.hubName(), let b64 = LightCodec.encode(inventory) {
+                            _ = router.run(hub, argv: ["agents", "node-report", "--node", nodeName, "--payload", b64], timeout: 30)
+                        }
+                    }
+                    let newStamp = InventoryStamp(lastCheck: now, lastPush: now, hash: contentHash, count: inventory.sessions.count)
+                    if let newStampData = try? LightInventoryStore.jsonEncoder.encode(newStamp) {
+                        try? newStampData.write(to: inventoryStampURL)
+                    }
+                } else {
+                    var updatedStamp = stamp!
+                    updatedStamp.lastCheck = now
+                    if let updatedData = try? LightInventoryStore.jsonEncoder.encode(updatedStamp) {
+                        try? updatedData.write(to: inventoryStampURL)
+                    }
+                }
+            } else if let stamp {
+                body["inventory"] = stamp.count
             }
         }
 

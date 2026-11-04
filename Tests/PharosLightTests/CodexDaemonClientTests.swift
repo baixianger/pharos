@@ -36,6 +36,7 @@ final class FakeCodexDaemonServer: @unchecked Sendable {
     private let lock = NSLock()
     private var _receivedPayloads: [String] = []
     var threadStatus: [String: Any]?
+    var customHandler: ((_ method: String, _ params: [String: Any]?, _ reqId: Int?) -> [String: Any]?)? = nil
 
     var receivedPayloads: [String] {
         lock.lock()
@@ -206,6 +207,11 @@ final class FakeCodexDaemonServer: @unchecked Sendable {
                     #endif
                 }
             }
+        }
+
+        if let customHandler, let customResp = customHandler(method, obj["params"] as? [String: Any], reqId) {
+            sendFrame(customResp)
+            return
         }
 
         switch method {

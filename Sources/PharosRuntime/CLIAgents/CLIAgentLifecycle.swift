@@ -41,6 +41,40 @@ public struct CLIAgentLaunchResult: Sendable {
     }
 }
 
+public struct CLIAgentAdoptRequest: Sendable, Equatable {
+    public var name: String
+    public var app: String
+    public var cwd: String
+    public var sessionID: String
+    public var host: String
+    public var model: String?
+    public var tmuxSession: String?
+    public var project: String?
+    public var autoRevive: Bool
+
+    public init(
+        name: String,
+        app: String,
+        cwd: String,
+        sessionID: String,
+        host: String = "local",
+        model: String? = nil,
+        tmuxSession: String? = nil,
+        project: String? = nil,
+        autoRevive: Bool = false
+    ) {
+        self.name = name
+        self.app = app
+        self.cwd = cwd
+        self.sessionID = sessionID
+        self.host = host
+        self.model = model
+        self.tmuxSession = tmuxSession
+        self.project = project
+        self.autoRevive = autoRevive
+    }
+}
+
 public enum CLIAgentLifecycleError: Error, Equatable, LocalizedError {
     case invalid(String)
     case tmux(String)
@@ -339,6 +373,80 @@ public struct CLIAgentLifecycle: Sendable {
         var notes = adopted ? ["adopted existing tmux session \(sessionName)"] : []
         if let rolloutNote { notes.append(rolloutNote) }
         return CLIAgentLaunchResult(sessionID: sessionID, binding: binding, notes: notes)
+    }
+
+    public func adopt(request: CLIAgentAdoptRequest) throws -> LightMember {
+        var isDir: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: request.cwd, isDirectory: &isDir)
+        guard exists && isDir.boolValue else {
+            throw CLIAgentLifecycleError.invalid("cwd does not exist or is not a directory: \(request.cwd)")
+        }
+        let resolvedCwd = URL(fileURLWithPath: request.cwd).resolvingSymlinksInPath().path
+
+        let sessionName = request.tmuxSession ?? TmuxNames.sessionName(forMember: request.name)
+        guard TmuxNames.isValid(sessionName) else {
+            throw CLIAgentLifecycleError.invalid("invalid tmux session name '\(sessionName)'")
+        }
+
+        if tmux.hasSession(sessionName) {
+            throw CLIAgentLifecycleError.invalid("tmux session '\(sessionName)' already exists")
+        }
+
+        guard let descriptor = CLIAgentDescriptor.named(request.app, env: env) else {
+            throw CLIAgentLifecycleError.invalid("unsupported app: \(request.app)")
+        }
+        guard descriptor.app == "codex" || descriptor.app == "agy" else {
+            throw CLIAgentLifecycleError.invalid("adopt supports codex and agy; use pharos member register for \(request.app)")
+        }
+
+        let model: String?
+        if descriptor.app == "agy" {
+            if let reqModel = request.model {
+                model = reqModel
+            } else if !descriptor.modelChain.isEmpty {
+                guard let picked = quota.pick(app: "agy", chain: descriptor.modelChain) else {
+                    let nextReset = quota.earliestReset(app: "agy", chain: descriptor.modelChain)
+                    let dateStr = nextReset != nil ? ISO8601DateFormatter().string(from: nextReset!) : "unknown"
+                    throw CLIAgentLifecycleError.needsHuman("all agy models are over quota until \(dateStr)")
+                }
+                model = picked
+            } else {
+                model = nil
+            }
+        } else {
+            model = request.model
+        }
+
+        let bin = descriptor.resolveBinary(env: env, isExecutable: isExecutable)
+        let argv = descriptor.resumeArgv(bin: bin, sessionID: request.sessionID, model: model)
+        if let err = tmux.newSession(name: sessionName, cwd: resolvedCwd, argv: argv) {
+            throw CLIAgentLifecycleError.tmux(err)
+        }
+
+        try waitUntilReady(name: sessionName, descriptor: descriptor, cwd: resolvedCwd)
+
+        let panePID = tmux.pane(sessionName)?.pid
+        let agentStarted = panePID != nil ? tmux.processStart(pid: panePID!) : nil
+        let binding = LightTmuxBinding(
+            session: sessionName,
+            cwd: resolvedCwd,
+            model: model,
+            agentPID: panePID,
+            agentStarted: agentStarted,
+            launchedAt: now(),
+            endedAt: nil,
+            autoRevive: request.autoRevive
+        )
+        let proj = request.project ?? URL(fileURLWithPath: resolvedCwd).lastPathComponent
+        return LightMember(
+            name: request.name,
+            host: request.host,
+            app: descriptor.app,
+            project: proj,
+            sessionID: request.sessionID,
+            routes: descriptor.routes,
+            tmux: binding
+        )
     }
 
     public func revive(member: LightMember) throws -> LightTmuxBinding {

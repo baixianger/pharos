@@ -730,6 +730,7 @@ public final class LightRelay: @unchecked Sendable {
     }
 
     private let store: URL
+    public var storeURL: URL { store }
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (TimeInterval) -> Void
     private let makeToken: @Sendable (String) -> String
@@ -2191,7 +2192,7 @@ public final class LightRelay: @unchecked Sendable {
         return out
     }
 
-    static func validateName(_ raw: String) throws -> String {
+    public static func validateName(_ raw: String) throws -> String {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard value.range(of: #"^[a-z][a-z0-9-]{0,62}$"#, options: .regularExpression) != nil else {
             throw LightRelayError.invalidName(value)
@@ -2207,7 +2208,7 @@ public final class LightRelay: @unchecked Sendable {
         return value
     }
 
-    static func validateProject(_ raw: String) throws -> String {
+    public static func validateProject(_ raw: String) throws -> String {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard value.range(of: #"^[a-z0-9][a-z0-9_-]{0,62}$"#, options: .regularExpression) != nil else {
             throw LightRelayError.invalidProject(value)
