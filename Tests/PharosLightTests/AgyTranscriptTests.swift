@@ -214,6 +214,29 @@ final class AgyTranscriptTests: XCTestCase {
         XCTAssertEqual(AgyPane.classify(trustPane), .needsHuman(what: "trust folder"))
     }
 
+    func testPaneClassifyUpdatePrompt() {
+        let updatePane = """
+        Update available · 0.162.1 → 0.166.0
+        › 1. Update now (runs `brew upgrade --cask codex`)
+          2. Skip
+          3. Skip until next version
+        """
+        XCTAssertEqual(
+            AgyPane.classify(updatePane),
+            .needsHuman(what: "agy update prompt: choose Skip in tmux session")
+        )
+
+        let upgradePane = """
+        Upgrade available · 1.0 → 2.0
+        1. Upgrade now
+        2. Skip
+        """
+        XCTAssertEqual(
+            AgyPane.classify(upgradePane),
+            .needsHuman(what: "agy update prompt: choose Skip in tmux session")
+        )
+    }
+
     func testPaneClassifyQuota() {
         let quotaPane = """
         > Reply with exactly: hi

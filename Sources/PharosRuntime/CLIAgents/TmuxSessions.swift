@@ -165,6 +165,23 @@ public struct TmuxController: Sendable {
         return (pid: pid, command: command, dead: dead)
     }
 
+    /// `tmux send-keys -t =NAME: -l -- TEXT`
+    public func sendLiteral(_ name: String, _ text: String) -> Bool {
+        let sendArgs = [tmux, "send-keys", "-t", "=\(name):", "-l", "--", text]
+        let sendOut = runner.run(
+            LightInvocation(
+                argv: sendArgs,
+                stdin: "",
+                executable: true,
+                fallback: false,
+                summary: "tmux send-keys literal \(name)",
+                loopback: true
+            ),
+            stdin: ""
+        )
+        return sendOut.status == 0
+    }
+
     /// `tmux send-keys -t =NAME: -l -- TEXT` then separately `tmux send-keys -t =NAME: Enter`
     public func sendText(_ name: String, _ text: String) -> Bool {
         let sendArgs = [tmux, "send-keys", "-t", "=\(name):", "-l", "--", text]

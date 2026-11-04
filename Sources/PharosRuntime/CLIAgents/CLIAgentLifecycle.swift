@@ -97,6 +97,7 @@ public struct CLIAgentLifecycle: Sendable {
     public var isExecutable: @Sendable (String) -> Bool
     public var threadFinder: (@Sendable (_ snapshot: Set<String>, _ targetCwd: String) throws -> String?)?
     public var threadReader: (@Sendable (String) throws -> CodexThreadInfo)?
+    public var rolloutsRoot: URL?
 
     public init(
         tmux: TmuxController,
@@ -111,7 +112,8 @@ public struct CLIAgentLifecycle: Sendable {
         now: @Sendable @escaping () -> Date = Date.init,
         isExecutable: @Sendable @escaping (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
         threadFinder: (@Sendable (_ snapshot: Set<String>, _ targetCwd: String) throws -> String?)? = nil,
-        threadReader: (@Sendable (String) throws -> CodexThreadInfo)? = nil
+        threadReader: (@Sendable (String) throws -> CodexThreadInfo)? = nil,
+        rolloutsRoot: URL? = nil
     ) {
         self.tmux = tmux
         self.runner = runner
@@ -130,6 +132,7 @@ public struct CLIAgentLifecycle: Sendable {
         self.isExecutable = isExecutable
         self.threadFinder = threadFinder
         self.threadReader = threadReader
+        self.rolloutsRoot = rolloutsRoot
     }
 
     public func launch(_ request: CLIAgentLaunchRequest) throws -> CLIAgentLaunchResult {
@@ -188,6 +191,7 @@ public struct CLIAgentLifecycle: Sendable {
             model = request.model
         }
 
+        let launchStart = now()
         if !adopted {
             let bin = descriptor.resolveBinary(env: env, isExecutable: isExecutable)
             let argv = descriptor.launchArgv(bin: bin, model: model)
@@ -199,6 +203,7 @@ public struct CLIAgentLifecycle: Sendable {
         try waitUntilReady(name: sessionName, descriptor: descriptor, cwd: resolvedCwd)
 
         let sessionID: String
+        var rolloutNote: String? = nil
         if descriptor.app == "codex" {
             let discStart = now()
             var foundID: String?
@@ -210,30 +215,40 @@ public struct CLIAgentLifecycle: Sendable {
                     }
                 } else {
                     // The TUI starts the shared daemon itself; its socket can appear a moment after the prompt.
-                    guard let client = daemon(), let current = try? client.loadedThreads() else {
-                        if now().timeIntervalSince(discStart) >= timeout {
-                            throw CLIAgentLifecycleError.needsHuman("codex daemon not available (the TUI normally starts it); check `codex app-server daemon version`")
-                        }
-                        sleep(pollInterval)
-                        continue
-                    }
-                    let candidates = (adopted && snapshot.isEmpty) ? current : current.filter { !snapshot.contains($0) }
-                    var matching: [String] = []
-                    for id in candidates {
-                        if let info = try? client.readThread(id),
-                           let threadCwd = info.cwd {
-                            let resThreadCwd = URL(fileURLWithPath: threadCwd).resolvingSymlinksInPath().path
-                            if resThreadCwd == resolvedCwd && (info.originator?.contains("codex") == true) {
-                                matching.append(id)
+                    if let client = daemon(), let current = try? client.loadedThreads() {
+                        let candidates = (adopted && snapshot.isEmpty) ? current : current.filter { !snapshot.contains($0) }
+                        var matching: [String] = []
+                        for id in candidates {
+                            if let info = try? client.readThread(id),
+                               let threadCwd = info.cwd {
+                                let resThreadCwd = URL(fileURLWithPath: threadCwd).resolvingSymlinksInPath().path
+                                if resThreadCwd == resolvedCwd && (info.originator?.contains("codex") == true) {
+                                    matching.append(id)
+                                }
                             }
                         }
+                        if matching.count == 1 {
+                            foundID = matching[0]
+                            break
+                        } else if matching.count > 1 {
+                            throw CLIAgentLifecycleError.invalid("ambiguous")
+                        }
                     }
-                    if matching.count == 1 {
-                        foundID = matching[0]
+
+                    // Fallback to rollout scanning
+                    let rolloutsDir = rolloutsRoot ?? CodexRolloutReader().root
+                    let scanSince = adopted ? Date.distantPast : launchStart.addingTimeInterval(-2)
+                    if let rolloutID = scanRolloutSessionID(root: rolloutsDir, since: scanSince, cwd: resolvedCwd) {
+                        foundID = rolloutID
+                        rolloutNote = "session id from rollout (this codex TUI is not on the shared daemon)"
                         break
-                    } else if matching.count > 1 {
-                        throw CLIAgentLifecycleError.invalid("ambiguous")
                     }
+
+                    if now().timeIntervalSince(discStart) >= timeout {
+                        throw CLIAgentLifecycleError.needsHuman("codex daemon not available (the TUI normally starts it); check `codex app-server daemon version`")
+                    }
+                    sleep(pollInterval)
+                    continue
                 }
 
                 if now().timeIntervalSince(discStart) >= timeout {
@@ -310,7 +325,8 @@ public struct CLIAgentLifecycle: Sendable {
             launchedAt: now(),
             endedAt: nil
         )
-        let notes = adopted ? ["adopted existing tmux session \(sessionName)"] : []
+        var notes = adopted ? ["adopted existing tmux session \(sessionName)"] : []
+        if let rolloutNote { notes.append(rolloutNote) }
         return CLIAgentLaunchResult(sessionID: sessionID, binding: binding, notes: notes)
     }
 
@@ -395,19 +411,22 @@ public struct CLIAgentLifecycle: Sendable {
         var isNeedsHuman = false
 
         if member.app == "agy" {
-            let capture = tmux.capture(binding.session, lines: 100) ?? ""
+            let capture = tmux.capture(binding.session) ?? ""
             let paneState = AgyPane.classify(capture)
             if paneState == .busy { isBusy = true }
             if case .needsHuman = paneState { isNeedsHuman = true }
         } else if member.app == "codex" {
+            var daemonChecked = false
             if let client = daemon(), let info = try? client.readThread(member.sessionID) {
+                daemonChecked = true
                 if info.status.needsHuman {
                     isNeedsHuman = true
                 } else if info.status.busy {
                     isBusy = true
                 }
-            } else {
-                let capture = tmux.capture(binding.session, lines: 100) ?? ""
+            }
+            if !daemonChecked {
+                let capture = tmux.capture(binding.session) ?? ""
                 let paneState = CodexPane.classify(capture)
                 if paneState == .busy { isBusy = true }
                 if case .needsHuman = paneState { isNeedsHuman = true }
@@ -426,10 +445,13 @@ public struct CLIAgentLifecycle: Sendable {
             sleep(1)
         }
 
-        _ = tmux.sendText(binding.session, descriptor.exitCommand)
+        _ = tmux.sendLiteral(binding.session, descriptor.exitCommand)
+        sleep(0.7)
+        _ = tmux.sendKey(binding.session, "Enter")
 
         let start = now()
         var how = "killed"
+        var retriedEnter = false
         while now().timeIntervalSince(start) < timeout {
             let sessionExists = tmux.hasSession(binding.session)
             if !sessionExists {
@@ -445,6 +467,10 @@ public struct CLIAgentLifecycle: Sendable {
                 }
                 how = "graceful"
                 break
+            }
+            if !retriedEnter && now().timeIntervalSince(start) >= 4.0 {
+                _ = tmux.sendKey(binding.session, "Enter")
+                retriedEnter = true
             }
             sleep(pollInterval)
         }
@@ -485,7 +511,7 @@ public struct CLIAgentLifecycle: Sendable {
         }
 
         if member.app == "agy" {
-            let text = tmux.capture(binding.session, lines: 100) ?? ""
+            let text = tmux.capture(binding.session) ?? ""
             let paneState = AgyPane.classify(text)
             switch paneState {
             case .idle:
@@ -535,19 +561,32 @@ public struct CLIAgentLifecycle: Sendable {
     private func waitUntilReady(name: String, descriptor: CLIAgentDescriptor, cwd: String) throws {
         let start = now()
         while true {
-            let text = tmux.capture(name, lines: 100) ?? ""
+            let text = tmux.capture(name) ?? ""
 
             if descriptor.app == "agy" {
                 let paneState = AgyPane.classify(text)
                 switch paneState {
                 case .idle:
                     return
-                case .needsHuman:
+                case .needsHuman(let what):
+                    if what.contains("update prompt") {
+                        throw CLIAgentLifecycleError.needsHuman("\(descriptor.app) update prompt: attach with `tmux attach -t \(name)`, choose Skip, then run member launch again")
+                    }
                     throw CLIAgentLifecycleError.needsHuman("\(descriptor.app) asks to trust \(cwd): attach with `tmux attach -t \(name)`, answer, then run member launch again")
                 case .busy, .quota, .unknown:
                     break
                 }
             } else if descriptor.app == "codex" {
+                let paneState = CodexPane.classify(text)
+                switch paneState {
+                case .needsHuman(let what):
+                    if what.contains("update prompt") {
+                        throw CLIAgentLifecycleError.needsHuman("\(descriptor.app) update prompt: attach with `tmux attach -t \(name)`, choose Skip, then run member launch again")
+                    }
+                    throw CLIAgentLifecycleError.needsHuman("\(descriptor.app) asks to trust \(cwd): attach with `tmux attach -t \(name)`, answer, then run member launch again")
+                default:
+                    break
+                }
                 if text.contains("Trust this folder?") {
                     throw CLIAgentLifecycleError.needsHuman("\(descriptor.app) asks to trust \(cwd): attach with `tmux attach -t \(name)`, answer, then run member launch again")
                 }
@@ -573,5 +612,54 @@ public struct CLIAgentLifecycle: Sendable {
 
             sleep(pollInterval)
         }
+    }
+
+    private func scanRolloutSessionID(root: URL, since: Date, cwd: String) -> String? {
+        let scanDir: URL
+        let sub = root.appendingPathComponent("sessions", isDirectory: true)
+        if FileManager.default.fileExists(atPath: sub.path) {
+            scanDir = sub
+        } else {
+            scanDir = root
+        }
+        guard let walker = FileManager.default.enumerator(
+            at: scanDir,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        struct Candidate {
+            let id: String
+            let mtime: Date
+        }
+        var candidates: [Candidate] = []
+        let resolvedCwd = URL(fileURLWithPath: cwd).resolvingSymlinksInPath().path
+
+        for case let url as URL in walker {
+            let name = url.lastPathComponent
+            guard !url.pathComponents.contains("archived") && !url.pathComponents.contains("archived_sessions") else { continue }
+            guard name.hasPrefix("rollout-") && name.hasSuffix(".jsonl") else { continue }
+            guard let resourceValues = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
+                  let mtime = resourceValues.contentModificationDate,
+                  mtime >= since else { continue }
+
+            guard let handle = try? FileHandle(forReadingFrom: url) else { continue }
+            defer { try? handle.close() }
+            let chunk = handle.readData(ofLength: 4096)
+            guard let firstLine = String(data: chunk, encoding: .utf8)?.components(separatedBy: "\n").first,
+                  let lineData = firstLine.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  json["type"] as? String == "session_meta",
+                  let payload = json["payload"] as? [String: Any],
+                  let payloadCwd = payload["cwd"] as? String,
+                  let id = payload["id"] as? String else { continue }
+
+            let resPayloadCwd = URL(fileURLWithPath: payloadCwd).resolvingSymlinksInPath().path
+            if resPayloadCwd == resolvedCwd {
+                candidates.append(Candidate(id: id, mtime: mtime))
+            }
+        }
+
+        return candidates.max(by: { $0.mtime < $1.mtime })?.id
     }
 }

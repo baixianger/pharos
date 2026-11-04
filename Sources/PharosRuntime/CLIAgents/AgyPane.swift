@@ -23,6 +23,14 @@ public enum AgyPane {
         guard !lines.isEmpty else { return .unknown }
 
         // 1. needsHuman
+        let hasUpdateAvailable = lines.contains { $0.contains("Update available") || $0.contains("Upgrade available") }
+        let hasNumberedChoice = lines.contains { line in
+            line.contains("1.") || line.contains("2.") || line.contains("› 1.") || line.contains("› 2.")
+        }
+        if hasUpdateAvailable && hasNumberedChoice {
+            return .needsHuman(what: "agy update prompt: choose Skip in tmux session")
+        }
+
         if let permIdx = lines.firstIndex(where: { $0.contains("Requesting permission for:") }) {
             var what = ""
             if permIdx + 1 < lines.count {

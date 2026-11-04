@@ -83,6 +83,9 @@ public enum CodexPaneState: Equatable, Sendable {
 
 public enum CodexPane {
     public static func classify(_ pane: String) -> CodexPaneState {
+        if pane.contains("Update available") && (pane.contains("Update now") || pane.contains("Skip until next version")) {
+            return .needsHuman(what: "codex update prompt: choose Skip in tmux session")
+        }
         if pane.contains("Would you like to run") ||
            pane.contains("Trust this folder?") ||
            pane.contains("Allow command?") ||

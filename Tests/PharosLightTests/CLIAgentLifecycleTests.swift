@@ -61,6 +61,61 @@ private final class TestClock: @unchecked Sendable {
     }
 }
 
+private final class TestFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var val: Bool
+
+    init(_ val: Bool) { self.val = val }
+
+    func set(_ newVal: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        val = newVal
+    }
+
+    var value: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return val
+    }
+}
+
+private final class TestCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var val = 0
+
+    @discardableResult
+    func increment() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        val += 1
+        return val
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return val
+    }
+}
+
+private final class TestCollector<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [T] = []
+
+    func append(_ item: T) {
+        lock.lock()
+        defer { lock.unlock() }
+        items.append(item)
+    }
+
+    var values: [T] {
+        lock.lock()
+        defer { lock.unlock() }
+        return items
+    }
+}
+
 final class CLIAgentLifecycleTests: XCTestCase {
 
     // MARK: - Descriptor Tests
@@ -68,10 +123,10 @@ final class CLIAgentLifecycleTests: XCTestCase {
     func testDescriptorArgvAndPaths() {
         let codex = CLIAgentDescriptor.codex
         XCTAssertEqual(codex.app, "codex")
-        XCTAssertEqual(codex.launchArgv(bin: "/usr/bin/codex", model: nil), ["/usr/bin/codex", "--no-alt-screen"])
-        XCTAssertEqual(codex.launchArgv(bin: "/usr/bin/codex", model: "o3-mini"), ["/usr/bin/codex", "--no-alt-screen", "-m", "o3-mini"])
-        XCTAssertEqual(codex.resumeArgv(bin: "/usr/bin/codex", sessionID: "s-123", model: nil), ["/usr/bin/codex", "resume", "s-123", "--no-alt-screen"])
-        XCTAssertEqual(codex.resumeArgv(bin: "/usr/bin/codex", sessionID: "s-123", model: "o3-mini"), ["/usr/bin/codex", "resume", "s-123", "--no-alt-screen", "-m", "o3-mini"])
+        XCTAssertEqual(codex.launchArgv(bin: "/usr/bin/codex", model: nil), ["/usr/bin/codex", "--no-alt-screen", "-c", "check_for_update_on_startup=false"])
+        XCTAssertEqual(codex.launchArgv(bin: "/usr/bin/codex", model: "o3-mini"), ["/usr/bin/codex", "--no-alt-screen", "-c", "check_for_update_on_startup=false", "-m", "o3-mini"])
+        XCTAssertEqual(codex.resumeArgv(bin: "/usr/bin/codex", sessionID: "s-123", model: nil), ["/usr/bin/codex", "resume", "s-123", "--no-alt-screen", "-c", "check_for_update_on_startup=false"])
+        XCTAssertEqual(codex.resumeArgv(bin: "/usr/bin/codex", sessionID: "s-123", model: "o3-mini"), ["/usr/bin/codex", "resume", "s-123", "--no-alt-screen", "-c", "check_for_update_on_startup=false", "-m", "o3-mini"])
         XCTAssertNil(codex.transcriptPath(sessionID: "s-123", home: "/Users/test"))
         XCTAssertEqual(codex.lockPath(sessionID: "s-123", home: "/Users/test"), "/Users/test/.codex/thread-writer-locks/s-123.lock")
         XCTAssertFalse(codex.openingMessageRequired)
@@ -846,5 +901,387 @@ final class CLIAgentLifecycleTests: XCTestCase {
         XCTAssertNil(newBinding.endedReason, "endedReason is cleared")
         XCTAssertNil(newBinding.endedAt, "endedAt is cleared")
         XCTAssertEqual(newBinding.agentPID, 5555)
+    }
+
+    // MARK: - Update Prompt Tests
+
+    func testCodexPaneClassifyUpdatePrompt() {
+        let p1 = """
+        Update available · 0.162.1 → 0.166.0
+        › 1. Update now (runs `brew upgrade --cask codex`)
+          2. Skip
+        """
+        XCTAssertEqual(CodexPane.classify(p1), .needsHuman(what: "codex update prompt: choose Skip in tmux session"))
+
+        let p2 = """
+        Update available · 0.162.1 → 0.166.0
+        › 1. Skip until next version
+        """
+        XCTAssertEqual(CodexPane.classify(p2), .needsHuman(what: "codex update prompt: choose Skip in tmux session"))
+    }
+
+    func testCodexUpdatePromptThrowsNeedsHumanWithoutKeypress() throws {
+        let runner = FakeLifecycleRunner()
+        let clock = TestClock()
+        let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath().path
+
+        runner.addHandler { argv in
+            if argv.contains("has-session") {
+                return LightProcessOutput(status: 1, stdout: "", stderr: "")
+            }
+            if argv.contains("list-panes") {
+                return LightProcessOutput(status: 0, stdout: "6003\tcodex\t0\n", stderr: "")
+            }
+            if argv.contains("ps") {
+                return LightProcessOutput(status: 0, stdout: "Mon Nov 4 21:00:00 2026\n", stderr: "")
+            }
+            if argv.contains("capture-pane") {
+                return LightProcessOutput(status: 0, stdout: "Update available · 0.162.1 → 0.166.0\n› 1. Update now\n", stderr: "")
+            }
+            return LightProcessOutput(status: 0, stdout: "", stderr: "")
+        }
+
+        let tmux = TmuxController(runner: runner)
+        let lifecycle = CLIAgentLifecycle(
+            tmux: tmux,
+            runner: runner,
+            timeout: 5,
+            pollInterval: 0.01,
+            sleep: { _ in },
+            now: { clock.now() },
+            isExecutable: { _ in true }
+        )
+
+        let req = CLIAgentLaunchRequest(name: "cx-upd", app: "codex", cwd: tmpDir)
+        XCTAssertThrowsError(try lifecycle.launch(req)) { error in
+            guard case CLIAgentLifecycleError.needsHuman(let msg) = error else {
+                return XCTFail("Expected needsHuman error but got \(error)")
+            }
+            XCTAssertTrue(msg.contains("codex update prompt"))
+            XCTAssertTrue(msg.contains("choose Skip"))
+        }
+
+        let sendKeys = runner.recordedArgvs.filter { $0.contains("send-keys") }
+        XCTAssertTrue(sendKeys.isEmpty, "Never press keys to answer update prompts")
+    }
+
+    func testAgyUpdatePromptThrowsNeedsHumanWithoutKeypress() throws {
+        let runner = FakeLifecycleRunner()
+        let clock = TestClock()
+        let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath().path
+
+        runner.addHandler { argv in
+            if argv.contains("has-session") {
+                return LightProcessOutput(status: 1, stdout: "", stderr: "")
+            }
+            if argv.contains("list-panes") {
+                return LightProcessOutput(status: 0, stdout: "6004\tagy\t0\n", stderr: "")
+            }
+            if argv.contains("ps") {
+                return LightProcessOutput(status: 0, stdout: "Mon Nov 4 21:00:00 2026\n", stderr: "")
+            }
+            if argv.contains("capture-pane") {
+                return LightProcessOutput(status: 0, stdout: "Update available · 1.0 → 2.0\n› 1. Update now\n  2. Skip\n", stderr: "")
+            }
+            return LightProcessOutput(status: 0, stdout: "", stderr: "")
+        }
+
+        let tmux = TmuxController(runner: runner)
+        let lifecycle = CLIAgentLifecycle(
+            tmux: tmux,
+            runner: runner,
+            timeout: 5,
+            pollInterval: 0.01,
+            sleep: { _ in },
+            now: { clock.now() },
+            isExecutable: { _ in true }
+        )
+
+        let req = CLIAgentLaunchRequest(name: "agy-upd", app: "agy", cwd: tmpDir)
+        XCTAssertThrowsError(try lifecycle.launch(req)) { error in
+            guard case CLIAgentLifecycleError.needsHuman(let msg) = error else {
+                return XCTFail("Expected needsHuman error but got \(error)")
+            }
+            XCTAssertTrue(msg.contains("agy update prompt"))
+            XCTAssertTrue(msg.contains("choose Skip"))
+        }
+
+        let sendKeys = runner.recordedArgvs.filter { $0.contains("send-keys") }
+        XCTAssertTrue(sendKeys.isEmpty, "Never press keys to answer update prompts")
+    }
+
+    // MARK: - Visible Screen Only (Scrollback Ignored)
+
+    func testVisibleScreenOnlyUsedForReadinessAndScrollbackTrustPromptIgnored() throws {
+        let runner = FakeLifecycleRunner()
+        let clock = TestClock()
+        let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath().path
+
+        runner.addHandler { argv in
+            if argv.contains("has-session") {
+                return LightProcessOutput(status: 0, stdout: "", stderr: "")
+            }
+            if argv.contains("list-panes") {
+                return LightProcessOutput(status: 0, stdout: "7001\tcodex\t0\n", stderr: "")
+            }
+            if argv.contains("ps") {
+                return LightProcessOutput(status: 0, stdout: "Mon Nov 4 21:00:00 2026\n", stderr: "")
+            }
+            if argv.contains("capture-pane") {
+                // If -S is passed (scrollback), return trust prompt; otherwise return idle/ready
+                if argv.contains("-S") {
+                    return LightProcessOutput(status: 0, stdout: "Trust this folder? [y/n]\n", stderr: "")
+                } else {
+                    return LightProcessOutput(status: 0, stdout: "Ask Codex: \n› Ready\n", stderr: "")
+                }
+            }
+            return LightProcessOutput(status: 0, stdout: "", stderr: "")
+        }
+
+        let tmux = TmuxController(runner: runner)
+        let lifecycle = CLIAgentLifecycle(
+            tmux: tmux,
+            runner: runner,
+            daemon: { nil },
+            timeout: 5,
+            pollInterval: 0.01,
+            sleep: { _ in },
+            now: { clock.now() },
+            isExecutable: { _ in true },
+            threadFinder: { _, _ in "cx-discovered-123" }
+        )
+
+        // Launch an adopted session where scrollback contains "Trust this folder?", but visible screen is ready.
+        let req = CLIAgentLaunchRequest(name: "cx-adopt-visible", app: "codex", cwd: tmpDir)
+        let res = try lifecycle.launch(req)
+        XCTAssertEqual(res.sessionID, "cx-discovered-123")
+        XCTAssertTrue(res.notes.contains("adopted existing tmux session pharos-cx-adopt-visible"))
+
+        // Assert all capture-pane invocations in readiness did NOT include "-S"
+        let captureArgvs = runner.recordedArgvs.filter { $0.contains("capture-pane") }
+        for argv in captureArgvs {
+            XCTAssertFalse(argv.contains("-S"), "Readiness must capture visible screen only without -S")
+        }
+    }
+
+    // MARK: - Rollout Session Discovery
+
+    func testCodexSessionIDDiscoveryFallbackFromRollout() throws {
+        let runner = FakeLifecycleRunner()
+        let clock = TestClock()
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let sessionsDir = tempDir.appendingPathComponent("sessions/2026/11/04", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let targetCwd = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath().path
+        let rolloutFile = sessionsDir.appendingPathComponent("rollout-2026-11-04-1000-01a1a81b-5678.jsonl")
+        let meta = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"01a1a81b-rollout-found\",\"cwd\":\"\(targetCwd)\"}}\n"
+        try meta.write(to: rolloutFile, atomically: true, encoding: .utf8)
+
+        runner.addHandler { argv in
+            if argv.contains("has-session") {
+                return LightProcessOutput(status: 1, stdout: "", stderr: "")
+            }
+            if argv.contains("list-panes") {
+                return LightProcessOutput(status: 0, stdout: "8001\tcodex\t0\n", stderr: "")
+            }
+            if argv.contains("ps") {
+                return LightProcessOutput(status: 0, stdout: "Mon Nov 4 21:00:00 2026\n", stderr: "")
+            }
+            if argv.contains("capture-pane") {
+                return LightProcessOutput(status: 0, stdout: "Ask Codex: \n› \n", stderr: "")
+            }
+            return LightProcessOutput(status: 0, stdout: "", stderr: "")
+        }
+
+        let tmux = TmuxController(runner: runner)
+        let lifecycle = CLIAgentLifecycle(
+            tmux: tmux,
+            runner: runner,
+            daemon: { nil }, // No daemon available
+            timeout: 5,
+            pollInterval: 0.01,
+            sleep: { _ in },
+            now: { clock.now() },
+            isExecutable: { _ in true },
+            threadFinder: nil,
+            rolloutsRoot: tempDir
+        )
+
+        let req = CLIAgentLaunchRequest(name: "cx-rollout", app: "codex", cwd: targetCwd)
+        let res = try lifecycle.launch(req)
+        XCTAssertEqual(res.sessionID, "01a1a81b-rollout-found")
+        XCTAssertTrue(res.notes.contains("session id from rollout (this codex TUI is not on the shared daemon)"))
+    }
+
+    func testCodexSessionIDRolloutIgnoresArchivedAndOlderFiles() throws {
+        let runner = FakeLifecycleRunner()
+        let clock = TestClock()
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let sessionsDir = tempDir.appendingPathComponent("sessions/2026/11/04", isDirectory: true)
+        let archivedDir = tempDir.appendingPathComponent("sessions/archived", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: archivedDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let targetCwd = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath().path
+
+        // 1. Archived file (matching cwd) -> should be ignored
+        let archFile = archivedDir.appendingPathComponent("rollout-archived.jsonl")
+        try "{\"type\":\"session_meta\",\"payload\":{\"id\":\"id-archived\",\"cwd\":\"\(targetCwd)\"}}\n"
+            .write(to: archFile, atomically: true, encoding: .utf8)
+
+        // 2. Older file (mtime < launchStart - 2s) -> should be ignored
+        let oldFile = sessionsDir.appendingPathComponent("rollout-old.jsonl")
+        try "{\"type\":\"session_meta\",\"payload\":{\"id\":\"id-old\",\"cwd\":\"\(targetCwd)\"}}\n"
+            .write(to: oldFile, atomically: true, encoding: .utf8)
+        let oldDate = clock.now().addingTimeInterval(-10)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: oldFile.path)
+
+        // 3. Different cwd -> should be ignored
+        let wrongCwdFile = sessionsDir.appendingPathComponent("rollout-wrong-cwd.jsonl")
+        try "{\"type\":\"session_meta\",\"payload\":{\"id\":\"id-wrong\",\"cwd\":\"/some/other/path\"}}\n"
+            .write(to: wrongCwdFile, atomically: true, encoding: .utf8)
+
+        // 4. Valid newest matching file -> must be picked
+        let validFile = sessionsDir.appendingPathComponent("rollout-valid.jsonl")
+        try "{\"type\":\"session_meta\",\"payload\":{\"id\":\"id-valid-newest\",\"cwd\":\"\(targetCwd)\"}}\n"
+            .write(to: validFile, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: clock.now()], ofItemAtPath: validFile.path)
+
+        runner.addHandler { argv in
+            if argv.contains("has-session") {
+                return LightProcessOutput(status: 1, stdout: "", stderr: "")
+            }
+            if argv.contains("list-panes") {
+                return LightProcessOutput(status: 0, stdout: "8002\tcodex\t0\n", stderr: "")
+            }
+            if argv.contains("ps") {
+                return LightProcessOutput(status: 0, stdout: "Mon Nov 4 21:00:00 2026\n", stderr: "")
+            }
+            if argv.contains("capture-pane") {
+                return LightProcessOutput(status: 0, stdout: "Ask Codex: \n› \n", stderr: "")
+            }
+            return LightProcessOutput(status: 0, stdout: "", stderr: "")
+        }
+
+        let tmux = TmuxController(runner: runner)
+        let lifecycle = CLIAgentLifecycle(
+            tmux: tmux,
+            runner: runner,
+            daemon: { nil },
+            timeout: 5,
+            pollInterval: 0.01,
+            sleep: { _ in },
+            now: { clock.now() },
+            isExecutable: { _ in true },
+            threadFinder: nil,
+            rolloutsRoot: tempDir
+        )
+
+        let req = CLIAgentLaunchRequest(name: "cx-rollout-filter", app: "codex", cwd: targetCwd)
+        let res = try lifecycle.launch(req)
+        XCTAssertEqual(res.sessionID, "id-valid-newest")
+    }
+
+    // MARK: - Stop Exit Command & Enter Retry
+
+    func testStopExitCommandSendsLiteralThenPauseThenEnter() throws {
+        let runner = FakeLifecycleRunner()
+        let sessionAlive = TestFlag(true)
+        let sleeps = TestCollector<TimeInterval>()
+
+        runner.addHandler { argv in
+            if argv.contains("has-session") {
+                return LightProcessOutput(status: sessionAlive.value ? 0 : 1, stdout: "", stderr: "")
+            }
+            if argv.contains("capture-pane") {
+                return LightProcessOutput(status: 0, stdout: "› ready\n", stderr: "")
+            }
+            if argv.contains("send-keys") && argv.contains("Enter") {
+                sessionAlive.set(false)
+                return LightProcessOutput(status: 0, stdout: "", stderr: "")
+            }
+            return nil
+        }
+
+        let tmux = TmuxController(runner: runner)
+        let clock = TestClock()
+        let lifecycle = CLIAgentLifecycle(
+            tmux: tmux,
+            runner: runner,
+            daemon: { nil },
+            sleep: { sleeps.append($0) },
+            now: clock.now
+        )
+
+        let member = LightMember(
+            name: "cx-stop-cmd", host: "local", app: "codex", project: "p", sessionID: "s-1", routes: [],
+            tmux: LightTmuxBinding(session: "pharos-cx-stop-cmd", cwd: "/tmp", launchedAt: Date())
+        )
+
+        let res = try lifecycle.stop(member: member, force: false)
+        XCTAssertEqual(res.how, "graceful")
+
+        // Invocations: first sendLiteral ("/quit"), then sendKey ("Enter")
+        let sendKeysArgvs = runner.recordedArgvs.filter { $0.contains("send-keys") }
+        XCTAssertGreaterThanOrEqual(sendKeysArgvs.count, 2)
+        XCTAssertTrue(sendKeysArgvs[0].contains("-l") && sendKeysArgvs[0].contains("/quit"))
+        XCTAssertTrue(sendKeysArgvs[1].contains("Enter"))
+        // Check sleep(0.7) occurred before Enter
+        XCTAssertTrue(sleeps.values.contains(0.7), "Must sleep 0.7s between /quit and Enter")
+    }
+
+    func testStopRetriesEnterAfterFourSeconds() throws {
+        let runner = FakeLifecycleRunner()
+        let clock = TestClock()
+        let sessionAlive = TestFlag(true)
+        let enterCount = TestCounter()
+
+        runner.addHandler { argv in
+            if argv.contains("has-session") {
+                return LightProcessOutput(status: sessionAlive.value ? 0 : 1, stdout: "", stderr: "")
+            }
+            if argv.contains("list-panes") {
+                return LightProcessOutput(status: 0, stdout: "9001\tcodex\t0\n", stderr: "")
+            }
+            if argv.contains("ps") {
+                return LightProcessOutput(status: 0, stdout: "Mon Nov 4 21:00:00 2026\n", stderr: "")
+            }
+            if argv.contains("capture-pane") {
+                return LightProcessOutput(status: 0, stdout: "› ready\n", stderr: "")
+            }
+            if argv.contains("send-keys") && argv.contains("Enter") {
+                let cnt = enterCount.increment()
+                if cnt >= 2 {
+                    // Die on second Enter (the 4s retry)
+                    sessionAlive.set(false)
+                }
+                return LightProcessOutput(status: 0, stdout: "", stderr: "")
+            }
+            return nil
+        }
+
+        let tmux = TmuxController(runner: runner)
+        let lifecycle = CLIAgentLifecycle(
+            tmux: tmux,
+            runner: runner,
+            daemon: { nil },
+            pollInterval: 0.1,
+            sleep: { secs in
+                clock.advance(secs)
+            },
+            now: clock.now
+        )
+
+        let member = LightMember(
+            name: "cx-stop-retry", host: "local", app: "codex", project: "p", sessionID: "s-2", routes: [],
+            tmux: LightTmuxBinding(session: "pharos-cx-stop-retry", cwd: "/tmp", agentPID: 9001, agentStarted: "Mon Nov 4 21:00:00 2026", launchedAt: Date())
+        )
+
+        let res = try lifecycle.stop(member: member, force: false, timeout: 10)
+        XCTAssertEqual(res.how, "graceful")
+        XCTAssertEqual(enterCount.count, 2, "Must retry Enter once when still alive after 4s")
     }
 }

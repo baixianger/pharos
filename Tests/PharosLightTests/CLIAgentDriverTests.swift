@@ -211,6 +211,47 @@ final class CLIAgentDriverTests: XCTestCase {
         XCTAssertTrue(sendKeys.isEmpty, "Busy agent must never receive keypresses")
     }
 
+    func testCodexUpdatePromptReturnsBusyAndNoSendKeys() {
+        let runner = FakeDriverRunner()
+        runner.addHandler { argv in
+            if argv.contains("has-session") {
+                return LightProcessOutput(status: 0, stdout: "", stderr: "")
+            }
+            if argv.contains("list-panes") {
+                return LightProcessOutput(status: 0, stdout: "1004\tcodex\t0\n", stderr: "")
+            }
+            if argv.contains("ps") {
+                return LightProcessOutput(status: 0, stdout: "Mon Nov 4 21:00:00 2026\n", stderr: "")
+            }
+            if argv.contains("capture-pane") {
+                let pane = """
+                Update available · 0.162.1 → 0.166.0
+                › 1. Update now (runs `brew upgrade --cask codex`)
+                  2. Skip
+                  3. Skip until next version
+                """
+                return LightProcessOutput(status: 0, stdout: pane, stderr: "")
+            }
+            return nil
+        }
+
+        let tmux = TmuxController(runner: runner)
+        let driver = CLIAgentDriver(tmux: tmux, daemon: { nil }, sleep: { _ in })
+
+        let member = LightMember(
+            name: "cx-upd", host: "local", app: "codex", project: "p", sessionID: "01a1a81b-test", routes: [],
+            tmux: LightTmuxBinding(session: "pharos-cx-upd", cwd: "/tmp", model: nil, agentPID: 1004, agentStarted: "Mon Nov 4 21:00:00 2026", launchedAt: Date(), endedAt: nil)
+        )
+
+        let res = driver.deliver(member: member, text: "echo 4", replyID: nil)
+        XCTAssertEqual(res.state, .busy)
+        XCTAssertEqual(res.route, "tui")
+        XCTAssertEqual(res.detail, "needs_human: codex update prompt: choose Skip in tmux session")
+
+        let sendKeys = runner.recordedArgvs.filter { $0.contains("send-keys") }
+        XCTAssertTrue(sendKeys.isEmpty, "Update prompt must never receive keypresses")
+    }
+
     func testCodexReadReplyViaTurnsByClientID() throws {
         let sockPath = "/tmp/pcx-\(UUID().uuidString.prefix(8)).sock"
         let server = FakeCodexDaemonServer(path: sockPath)
@@ -326,6 +367,46 @@ final class CLIAgentDriverTests: XCTestCase {
 
         let sendKeys = runner.recordedArgvs.filter { $0.contains("send-keys") }
         XCTAssertTrue(sendKeys.isEmpty, "Never send keys on permission prompt")
+    }
+
+    func testAgyUpdatePromptReturnsBusyAndNoSendKeys() {
+        let runner = FakeDriverRunner()
+        runner.addHandler { argv in
+            if argv.contains("has-session") {
+                return LightProcessOutput(status: 0, stdout: "", stderr: "")
+            }
+            if argv.contains("list-panes") {
+                return LightProcessOutput(status: 0, stdout: "2002\tagy\t0\n", stderr: "")
+            }
+            if argv.contains("ps") {
+                return LightProcessOutput(status: 0, stdout: "Mon Nov 4 21:00:00 2026\n", stderr: "")
+            }
+            if argv.contains("capture-pane") {
+                let pane = """
+                Update available · 0.162.1 → 0.166.0
+                › 1. Update now
+                  2. Skip
+                """
+                return LightProcessOutput(status: 0, stdout: pane, stderr: "")
+            }
+            return nil
+        }
+
+        let tmux = TmuxController(runner: runner)
+        let driver = CLIAgentDriver(tmux: tmux, sleep: { _ in })
+
+        let member = LightMember(
+            name: "agy-upd", host: "local", app: "agy", project: "p", sessionID: "agy-sess-upd", routes: [],
+            tmux: LightTmuxBinding(session: "pharos-agy-upd", cwd: "/tmp", model: "gemini-2.5-pro", agentPID: 2002, agentStarted: "Mon Nov 4 21:00:00 2026", launchedAt: Date(), endedAt: nil)
+        )
+
+        let res = driver.deliver(member: member, text: "do next", replyID: nil)
+        XCTAssertEqual(res.state, .busy)
+        XCTAssertEqual(res.route, "tui")
+        XCTAssertTrue(res.detail.contains("needs_human: agy update prompt: choose Skip in tmux session"))
+
+        let sendKeys = runner.recordedArgvs.filter { $0.contains("send-keys") }
+        XCTAssertTrue(sendKeys.isEmpty, "Never send keys on update prompt")
     }
 
     func testAgyQuotaAppearsAfterSendReturnsDeferredAndMarksQuota() {
