@@ -609,22 +609,130 @@ final class AchatReplyFloor: @unchecked Sendable {
     }
 }
 
+private final class DataCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ chunk: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        data.append(chunk)
+    }
+
+    func retrieve() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
+    }
+}
+
 /// Reads `~/.codex/sessions/**/rollout-*-<session>.jsonl` (read-only).
 public struct CodexRolloutReader: Sendable {
     public var root: URL
+    public var decompress: @Sendable (URL) -> Data?
 
-    public init(root: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions", isDirectory: true)) {
+    public init(
+        root: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions", isDirectory: true),
+        decompress: @escaping @Sendable (URL) -> Data? = { Self.decompressZstd(fileURL: $0) }
+    ) {
         self.root = root
+        self.decompress = decompress
+    }
+
+    public static func decompressZstd(fileURL: URL) -> Data? {
+        let env = ProcessInfo.processInfo.environment
+        let zstdBin: String
+        let zstdArgs: [String]
+
+        if let envBin = env["PHAROS_ZSTD_BIN"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !envBin.isEmpty {
+            zstdBin = envBin
+            zstdArgs = ["-dc", "--no-progress", fileURL.path]
+        } else if FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/zstd") {
+            zstdBin = "/opt/homebrew/bin/zstd"
+            zstdArgs = ["-dc", "--no-progress", fileURL.path]
+        } else if FileManager.default.isExecutableFile(atPath: "/usr/local/bin/zstd") {
+            zstdBin = "/usr/local/bin/zstd"
+            zstdArgs = ["-dc", "--no-progress", fileURL.path]
+        } else if FileManager.default.isExecutableFile(atPath: "/usr/bin/zstd") {
+            zstdBin = "/usr/bin/zstd"
+            zstdArgs = ["-dc", "--no-progress", fileURL.path]
+        } else {
+            zstdBin = "/usr/bin/env"
+            zstdArgs = ["zstd", "-dc", "--no-progress", fileURL.path]
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: zstdBin)
+        process.arguments = zstdArgs
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        let collector = DataCollector()
+
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if !chunk.isEmpty {
+                collector.append(chunk)
+            }
+        }
+
+        do {
+            try process.run()
+        } catch {
+            pipe.fileHandleForReading.readabilityHandler = nil
+            return nil
+        }
+
+        let start = Date()
+        while process.isRunning {
+            if Date().timeIntervalSince(start) > 20.0 {
+                process.terminate()
+                pipe.fileHandleForReading.readabilityHandler = nil
+                return nil
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        pipe.fileHandleForReading.readabilityHandler = nil
+        let remaining = pipe.fileHandleForReading.readDataToEndOfFile()
+        collector.append(remaining)
+
+        guard process.terminationStatus == 0 else {
+            return nil
+        }
+        return collector.retrieve()
     }
 
     public func rollout(sessionID: String) -> URL? {
-        guard !sessionID.isEmpty, !sessionID.contains("/"),
-              let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return nil }
-        let suffix = "-\(sessionID).jsonl"
-        for case let url as URL in walker where url.lastPathComponent.hasPrefix("rollout-") && url.lastPathComponent.hasSuffix(suffix) {
-            return url
+        guard !sessionID.isEmpty, !sessionID.contains("/") else { return nil }
+        let jsonlSuffix = "-\(sessionID).jsonl"
+        let zstSuffix = "-\(sessionID).jsonl.zst"
+
+        let searchDirs: [URL] = [
+            root,
+            root.deletingLastPathComponent().appendingPathComponent("archived_sessions", isDirectory: true)
+        ]
+
+        var zstCandidate: URL? = nil
+
+        for dir in searchDirs {
+            guard let walker = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil) else {
+                continue
+            }
+            for case let url as URL in walker {
+                let name = url.lastPathComponent
+                guard name.hasPrefix("rollout-") else { continue }
+                if name.hasSuffix(jsonlSuffix) {
+                    return url
+                } else if name.hasSuffix(zstSuffix) && zstCandidate == nil {
+                    zstCandidate = url
+                }
+            }
         }
-        return nil
+        return zstCandidate
     }
 
     public func cwd(sessionID: String) -> String? {
@@ -652,8 +760,20 @@ public struct CodexRolloutReader: Sendable {
     }
 
     private func records(sessionID: String) -> [[String: Any]] {
-        guard let url = rollout(sessionID: sessionID),
-              let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        guard let url = rollout(sessionID: sessionID) else { return [] }
+        let text: String
+        if url.pathExtension == "zst" {
+            guard let data = decompress(url),
+                  let decompressedText = String(data: data, encoding: .utf8) else {
+                return []
+            }
+            text = decompressedText
+        } else {
+            guard let plainText = try? String(contentsOf: url, encoding: .utf8) else {
+                return []
+            }
+            text = plainText
+        }
         return text.split(separator: "\n").compactMap { line in
             guard let data = line.data(using: .utf8) else { return nil }
             return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
