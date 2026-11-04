@@ -548,6 +548,40 @@ final class LightDriverTests: XCTestCase {
         XCTAssertNil(driver.readReply(member: ag, since: Date()))
     }
 
+    func testAchatReplyFloorSurvivesANewProcess() throws {
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pharos-floor-\(UUID().uuidString)/achat-reply-floors.json")
+        defer { try? FileManager.default.removeItem(at: store.deletingLastPathComponent()) }
+        let ag = member("ag-mini", app: "ag", session: "c-1", routes: [])
+        // `pharos send`: the floor is the count before the send.
+        let sender = ExternalLightDriver(allowLive: true, runner: ScriptedRunner([
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"replies":2,"reply":"old"}"#, stderr: ""),
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"sent":true,"repliesBefore":2,"route":"desktop"}"#, stderr: ""),
+        ]), achat: "/tmp/achat", replyFloorStore: store)
+        XCTAssertEqual(sender.deliver(member: ag, body: "hello").state, .delivered)
+        // `pharos wait` in another process: the reply already landed before its first read.
+        let waiter = ExternalLightDriver(allowLive: true, runner: ScriptedRunner([
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"replies":3,"reply":"PONG"}"#, stderr: ""),
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"replies":3,"reply":"PONG"}"#, stderr: ""),
+        ]), achat: "/tmp/achat", replyFloorStore: store)
+        XCTAssertEqual(waiter.readReply(member: ag, since: Date()), "PONG")
+        XCTAssertNil(waiter.readReply(member: ag, since: Date()))
+    }
+
+    func testAchatHarvestWaitsWhileTheTurnIsStillRunning() {
+        let runner = ScriptedRunner([
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"replies":2,"reply":"old"}"#, stderr: ""),
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"sent":true,"repliesBefore":2,"route":"desktop"}"#, stderr: ""),
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"busy":true,"replies":3,"reply":"PON"}"#, stderr: ""),
+            LightProcessOutput(status: 0, stdout: #"{"ok":true,"busy":false,"replies":3,"reply":"PONG done"}"#, stderr: ""),
+        ])
+        let driver = ExternalLightDriver(allowLive: true, runner: runner, achat: "/tmp/achat")
+        let ag = member("ag-mini", app: "ag", session: "c-1", routes: [])
+        XCTAssertEqual(driver.deliver(member: ag, body: "hello").state, .delivered)
+        XCTAssertNil(driver.readReply(member: ag, since: Date()))
+        XCTAssertEqual(driver.readReply(member: ag, since: Date()), "PONG done")
+    }
+
     func testForwardedReadKeepsTheBrokerExitCode() {
         let runner = ScriptedRunner([LightProcessOutput(status: 2, stdout: "pending r_x\n", stderr: "")])
         let forwarder = SSHLightReplyForwarder(destination: "broker-ssh", runner: runner)

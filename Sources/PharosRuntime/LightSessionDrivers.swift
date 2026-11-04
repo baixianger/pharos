@@ -253,13 +253,13 @@ public struct ExternalLightDriver: LightSessionDriver {
     let replyFloor: AchatReplyFloor
 
     public init(allowLive: Bool = false, runner: (any LightProcessRunning)? = nil, binaries: LightBinaries = .names,
-                codexSessions: CodexRolloutReader? = nil, achat: String = "achat") {
+                codexSessions: CodexRolloutReader? = nil, achat: String = "achat", replyFloorStore: URL? = nil) {
         self.allowLive = allowLive
         self.runner = runner
         self.binaries = binaries
         self.codexSessions = codexSessions
         self.achat = achat
-        self.replyFloor = AchatReplyFloor()
+        self.replyFloor = AchatReplyFloor(store: replyFloorStore)
     }
 
     /// Desktop, IPC, and web (and Cursor's headless CLI) are achat's routes.
@@ -343,11 +343,11 @@ public struct ExternalLightDriver: LightSessionDriver {
     private func achatSend(member: LightMember, body: String) -> (ok: Bool, detail: String) {
         guard let runner else { return (false, "no runner") }
         let key = Self.floorKey(member)
-        if replyFloor.get(key) == nil {
-            let prior = runner.run(Self.readInvocation(bin: achat, member: member), stdin: "")
-            if prior.status == 0, let count = Self.interpretAchatTurn(prior.stdout).replies {
-                replyFloor.set(key, count)
-            }
+        // Always re-read: a floor persisted by an earlier process may be below replies
+        // that arrived since, and a send without `repliesBefore` would then harvest stale text.
+        let prior = runner.run(Self.readInvocation(bin: achat, member: member), stdin: "")
+        if prior.status == 0, let count = Self.interpretAchatTurn(prior.stdout).replies {
+            replyFloor.set(key, count)
         }
         let invocation = LightInvocation(
             argv: Self.achatSendArgv(bin: achat, app: member.app, session: member.sessionID, text: body),
@@ -372,6 +372,8 @@ public struct ExternalLightDriver: LightSessionDriver {
         guard output.status == 0 else { return nil }
         let parsed = Self.interpretAchatTurn(output.stdout)
         guard parsed.ok, let count = parsed.replies else { return nil }
+        // A turn still streaming has a partial last reply. Harvest it once the session is idle.
+        if parsed.busy { return nil }
         let key = Self.floorKey(member)
         if let floor = replyFloor.get(key), count > floor {
             let text = parsed.reply?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -393,9 +395,9 @@ public struct ExternalLightDriver: LightSessionDriver {
 
     private static func floorKey(_ member: LightMember) -> String { "\(member.app):\(member.sessionID)" }
 
-    static func interpretAchatTurn(_ stdout: String) -> (ok: Bool, replies: Int?, repliesBefore: Int?, reply: String?, message: String?) {
+    static func interpretAchatTurn(_ stdout: String) -> (ok: Bool, replies: Int?, repliesBefore: Int?, reply: String?, message: String?, busy: Bool) {
         guard let object = LightSessionService.extractJSON(stdout) else {
-            return (false, nil, nil, nil, nil)
+            return (false, nil, nil, nil, nil, false)
         }
         var message: String?
         if let error = object["error"] as? [String: Any] {
@@ -404,7 +406,7 @@ public struct ExternalLightDriver: LightSessionDriver {
         if message == nil, let text = object["message"] as? String, !text.isEmpty { message = text }
         let ok = object["error"] == nil && (object["ok"] as? Bool) != false
         let reply = (object["reply"] as? String) ?? ((object["wait"] as? [String: Any])?["reply"] as? String)
-        return (ok, intValue(object["replies"]), intValue(object["repliesBefore"]), reply, message)
+        return (ok, intValue(object["replies"]), intValue(object["repliesBefore"]), reply, message, (object["busy"] as? Bool) == true)
     }
 
     private static func intValue(_ value: Any?) -> Int? {
@@ -420,21 +422,43 @@ public struct ExternalLightDriver: LightSessionDriver {
 
 /// Reply counts observed through achat. `read` has no timestamps, so a higher
 /// count than the pre-send floor is the new reply. Shared by reference so a
-/// later `readReply` sees what `deliver` recorded.
+/// later `readReply` sees what `deliver` recorded. With a store file the floor
+/// also survives the process: `pharos send` records it, a later `pharos wait`
+/// (a new process) harvests against it.
 final class AchatReplyFloor: @unchecked Sendable {
     private let lock = NSLock()
     private var counts: [String: Int] = [:]
+    private let store: URL?
+
+    init(store: URL? = nil) {
+        self.store = store
+    }
 
     func get(_ key: String) -> Int? {
         lock.lock()
         defer { lock.unlock() }
+        if store != nil { counts = load() }
         return counts[key]
     }
 
     func set(_ key: String, _ value: Int) {
         lock.lock()
         defer { lock.unlock() }
+        if store != nil { counts = load() }
         counts[key] = value
+        save()
+    }
+
+    private func load() -> [String: Int] {
+        guard let store, let data = try? Data(contentsOf: store),
+              let object = try? JSONDecoder().decode([String: Int].self, from: data) else { return counts }
+        return object
+    }
+
+    private func save() {
+        guard let store, let data = try? JSONEncoder().encode(counts) else { return }
+        try? FileManager.default.createDirectory(at: store.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: store, options: .atomic)
     }
 }
 

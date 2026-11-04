@@ -183,7 +183,8 @@ enum CLI {
             runner: live ? FoundationLightProcessRunner() : nil,
             binaries: .fromEnvironment(environment),
             codexSessions: CodexRolloutReader(),
-            achat: bins.achat
+            achat: bins.achat,
+            replyFloorStore: LightRelay.defaultStoreURL().appendingPathComponent("achat-reply-floors.json")
         )
         return try LightRelay(
             store: LightRelay.defaultStoreURL(),
