@@ -1,10 +1,11 @@
 import Foundation
 import PharosMeshCore
 
-// Session creation stays outside the messaging rules. The Broker decides whether
-// the target Pharos node is online, forwards the request over the existing SSH
-// route, or leaves it in that node's inbox. The target process is the only one
-// that probes, launches, or calls achat. A miss never runs achat on the caller.
+// Session creation stays outside the messaging rules. The target Pharos node
+// runs the request for its own machine: over the Pharos mesh first, over SSH as
+// the backup when the node is not on the mesh, else the request waits in that
+// node's inbox on the Broker. The target process is the only one that probes,
+// launches, or calls achat. A miss never runs achat on the caller.
 
 public enum LightAppProbe: Equatable, Sendable {
     case ready
@@ -286,12 +287,15 @@ public struct LightSessionService {
     public var selfHost: LightSelfHost
     public var pause: @Sendable (TimeInterval) -> Void
     public var launchPolls: Int
+    /// Mesh-first node routing. Nil: no Broker, so SSH backup then queue.
+    public var nodes: (any LightNodeRouting)?
 
     public init(relay: LightRelay, runner: any LightProcessRunning, prober: any LightAppProbing,
                 ports: LightDebugPorts, apps: LightAppBins,
                 selfHost: LightSelfHost = LightSelfHost(names: ["local", "localhost"]),
                 pause: @escaping @Sendable (TimeInterval) -> Void = { _ in },
-                launchPolls: Int = 20) {
+                launchPolls: Int = 20, nodes: (any LightNodeRouting)? = nil) {
+        self.nodes = nodes
         self.relay = relay
         self.runner = runner
         self.prober = prober
@@ -312,6 +316,13 @@ public struct LightSessionService {
         if app == "codex" || app == "ag" { return defaultFirstMessage }
         return nil
     }
+
+    var router: any LightNodeRouting {
+        nodes ?? LightMeshRouter(link: NoBrokerLink(), ssh: LightSSHRoute(runner: runner, remotePharos: apps.remotePharosShell))
+    }
+
+    /// How long a forwarded `session` / `project` request may run on the target node.
+    static let remoteTimeout: TimeInterval = 300
 
     public func execute(arguments: [String]) -> LightCLIResult {
         let argv = SessionArgv.parse(arguments)
@@ -351,15 +362,61 @@ public struct LightSessionService {
             let outcome = op == "list" ? listHere(spec) : addHere(spec)
             return renderProject(outcome, host: spec.host, json: true)
         }
-        guard let host = argv.option("host"), !host.isEmpty else {
+        guard let label = argv.option("host"), !label.isEmpty else {
             return Self.usage("pharos project \(op) --host H --app \(app)")
         }
+        let host = selfHost.matches(label) ? label : router.canonical(label)
         spec.host = host
-        if selfHost.matches(host) {
+        if selfHost.matches(label) || selfHost.matches(host) {
             let outcome = op == "list" ? listHere(spec) : addHere(spec)
             return renderProject(outcome, host: host, json: argv.flag("json"))
         }
         return forwardProject(spec, noQueue: argv.flag("no-queue"), json: argv.flag("json"))
+    }
+
+    /// Retry inbox jobs whose node is back on the mesh (hub tick). A parked message is
+    /// delivered by that node; a parked session or project request runs there and its
+    /// result is applied as `session ack --result` would. Returns jobs finished.
+    @discardableResult
+    public func drainInbox(limit: Int = 8) -> Int {
+        var done = 0
+        for node in relay.inboxNodes() {
+            guard done < limit, router.status(node).online else { continue }
+            guard let jobs = try? relay.pull(node: node) else { continue }
+            for job in jobs.prefix(limit - done) {
+                switch job.kind {
+                case "deliver":
+                    if let result = relay.redeliverParked(job), result.state == .delivered || result.state == .deferred {
+                        done += 1
+                    }
+                case "session-new", "session-workspaces":
+                    guard let spec = SessionSpec.from(payload: job.payload) else { _ = relay.ack(job: job.id); continue }
+                    let argv = remoteArgv(verb: job.kind == "session-new" ? .new : .workspaces, spec: spec)
+                    if let run = router.run(node, argv: argv, timeout: Self.remoteTimeout),
+                       Self.extractJSON(run.stdout) != nil {
+                        _ = complete(id: job.id, result: run.stdout)
+                        done += 1
+                    }
+                case "project-add", "project-list":
+                    guard let data = job.payload.data(using: .utf8),
+                          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let op = object["op"] as? String, let app = object["app"] as? String else {
+                        _ = relay.ack(job: job.id); continue
+                    }
+                    let spec = ProjectSpec(op: op, app: app, host: node, path: object["path"] as? String ?? "",
+                                           name: object["name"] as? String ?? "",
+                                           dryRun: (object["dryRun"] as? Bool) == true)
+                    if let run = router.run(node, argv: projectArgv(spec), timeout: Self.remoteTimeout),
+                       let result = Self.extractJSON(run.stdout), result["ok"] is Bool {
+                        _ = relay.ack(job: job.id)
+                        done += 1
+                    }
+                default:
+                    continue
+                }
+            }
+        }
+        return done
     }
 
     /// Apply a pulled job's result. A second completion of the same id is ignored.
@@ -457,9 +514,11 @@ public struct LightSessionService {
         if argv.flag("here") {
             return performHere(spec, verb: verb, json: true)
         }
-        guard let host = argv.option("host"), !host.isEmpty else {
+        guard let label = argv.option("host"), !label.isEmpty else {
             return Self.usage("pharos session \(verb == .new ? "new" : "workspaces") --host H --app \(app)")
         }
+        let isSelf = selfHost.matches(label)
+        let host = isSelf ? label : router.canonical(label)
         // A taken name would fail registration only after the app made a session: refuse first.
         if verb == .new, !spec.dryRun, explicitName != nil, relay.member(named: spec.name) != nil {
             let message = "\(LightRelayError.duplicateMember(spec.name).localizedDescription); pick another --name (no session was created)"
@@ -469,42 +528,47 @@ public struct LightSessionService {
         var forwarded = spec
         forwarded.host = host
         if explicitName == nil {
-            forwarded.name = Self.defaultMemberName(app: app, host: host, workspace: target.name.isEmpty ? "workspace" : target.name)
+            forwarded.name = Self.defaultMemberName(app: app, host: label, workspace: target.name.isEmpty ? "workspace" : target.name)
         }
-        if selfHost.matches(host) {
+        if isSelf || selfHost.matches(host) {
             return finishLocal(performHere(forwarded, verb: verb, json: true), spec: forwarded, json: argv.flag("json"))
         }
         return forwardOrQueue(verb: verb, spec: forwarded, noQueue: argv.flag("no-queue"), json: argv.flag("json"))
     }
 
+    /// Mesh first, SSH backup, then the node's inbox (unless `--no-queue` / `--dry-run`).
     private func forwardOrQueue(verb: Verb, spec: SessionSpec, noQueue: Bool, json: Bool) -> LightCLIResult {
-        let status = reachable(spec.host)
-        if !status.online {
-            return hold(status: status, spec: spec, verb: verb, noQueue: noQueue, json: json)
+        if let run = router.run(spec.host, argv: remoteArgv(verb: verb, spec: spec), timeout: Self.remoteTimeout) {
+            if let object = Self.extractJSON(run.stdout), let here = Self.hereResult(object) {
+                return finishRemote(here, spec: spec, json: json, via: run.path.rawValue)
+            }
+            if run.status == 124 {
+                return stillRunning(run, json: json)
+            }
         }
-        let output = ssh(spec.host, command: remoteCommand(verb: verb, spec: spec),
-                         summary: "forward pharos session to the target node")
-        if let object = Self.extractJSON(output.stdout), let here = Self.hereResult(object) {
-            return finishRemote(here, spec: spec, json: json)
-        }
-        return hold(status: relay.nodeStatus(spec.host), spec: spec, verb: verb, noQueue: noQueue, json: json)
+        return hold(status: offlineStatus(spec.host), spec: spec, verb: verb, noQueue: noQueue, json: json)
     }
 
-    /// A recent heartbeat means the node is up. Otherwise `pharos --version` over
-    /// the existing SSH route is the presence check. There is no heartbeat daemon.
-    private func reachable(_ host: String) -> LightNodeStatus {
-        let status = relay.nodeStatus(host)
-        if status.online { return status }
-        let probe = ssh(host, command: "\(apps.remotePharosShell) --version", summary: "probe pharos on the target node", timeout: 5)
-        if probe.status == 0 {
-            return LightNodeStatus(host: host, online: true, lastSeen: status.lastSeen)
+    /// Last-seen for the offline message: the Broker roster, else the relay's own record.
+    private func offlineStatus(_ host: String) -> LightNodeStatus {
+        let status = router.status(host)
+        if status.lastSeen != nil { return LightNodeStatus(host: host, online: false, lastSeen: status.lastSeen) }
+        let local = relay.nodeStatus(host)
+        return LightNodeStatus(host: host, online: false, lastSeen: local.lastSeen)
+    }
+
+    private func stillRunning(_ run: LightNodeRun, json: Bool) -> LightCLIResult {
+        let message = run.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        if json {
+            return Self.jsonText(["ok": true, "status": "running", "node": run.node, "via": run.path.rawValue,
+                                  "message": message], ok: true)
         }
-        return status
+        return LightCLIResult(exitCode: 0, text: "\(message)\nvia \(run.path.rawValue)")
     }
 
     private func finishLocal(_ result: LightCLIResult, spec: SessionSpec, json: Bool) -> LightCLIResult {
         guard let object = Self.extractJSON(result.text), let here = Self.hereResult(object) else { return result }
-        return finishRemote(here, spec: spec, json: json)
+        return finishRemote(here, spec: spec, json: json, via: "local")
     }
 
     private func hold(status: LightNodeStatus, spec: SessionSpec, verb: Verb, noQueue: Bool, json: Bool) -> LightCLIResult {
@@ -521,12 +585,12 @@ public struct LightSessionService {
         }
     }
 
-    private func finishRemote(_ here: HereBody, spec: SessionSpec, json: Bool) -> LightCLIResult {
+    private func finishRemote(_ here: HereBody, spec: SessionSpec, json: Bool, via: String) -> LightCLIResult {
         if !here.ok {
             let message = here.message ?? "session failed"
             let status = here.status == "needs_user_action" ? "needs_user_action" : "error"
-            if json { return Self.jsonText(["ok": false, "status": status, "message": message], ok: false) }
-            return LightCLIResult(exitCode: 1, text: "error: \(message)")
+            if json { return Self.jsonText(["ok": false, "status": status, "message": message, "via": via], ok: false) }
+            return LightCLIResult(exitCode: 1, text: "error: \(message)\nvia \(via)")
         }
         if !spec.dryRun, !here.dryRun, spec.workspace.isEmpty == false, here.sessionId != nil, here.status != "listed" {
             guard let sessionID = here.sessionId else {
@@ -537,32 +601,32 @@ public struct LightSessionService {
                 if json {
                     return Self.jsonText([
                         "ok": true, "status": "created", "name": member.name, "sessionId": sessionID,
-                        "route": here.route ?? "", "node": spec.host,
+                        "route": here.route ?? "", "node": spec.host, "via": via,
                     ], ok: true)
                 }
-                return LightCLIResult(exitCode: 0, text: "registered \(member.name)\nsession \(sessionID)\nroute \(here.route ?? "-")")
+                return LightCLIResult(exitCode: 0, text: "registered \(member.name)\nsession \(sessionID)\nroute \(here.route ?? "-")\nvia \(via)")
             } catch {
                 return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")
             }
         }
         if here.status == "listed" || !here.projects.isEmpty && here.sessionId == nil && !here.dryRun && spec.workspace.isEmpty {
-            return formatProjects(here.projects, json: json)
+            return formatProjects(here.projects, json: json, via: via)
         }
         if spec.dryRun || here.dryRun {
             if json {
                 var body: [String: Any] = [
                     "ok": true, "status": "dry-run", "route": here.route ?? "", "node": spec.host,
-                    "projects": here.projects,
+                    "projects": here.projects, "via": via,
                 ]
                 Self.mergeLaunch(&body, here)
                 return Self.jsonText(body, ok: true)
             }
-            var lines = ["dry-run", "route \(here.route ?? "-")"]
+            var lines = ["dry-run", "route \(here.route ?? "-")", "via \(via)"]
             lines.append(contentsOf: Self.launchLines(here))
             if !here.projects.isEmpty { lines.append(here.projects.joined(separator: "\n")) }
             return LightCLIResult(exitCode: 0, text: lines.joined(separator: "\n"))
         }
-        return formatProjects(here.projects, json: json)
+        return formatProjects(here.projects, json: json, via: via)
     }
 
     private func performHere(_ spec: SessionSpec, verb: Verb, json: Bool) -> LightCLIResult {
@@ -693,13 +757,6 @@ public struct LightSessionService {
         return LightCLIResult(exitCode: 0, text: "acked \(id)")
     }
 
-    private func ssh(_ host: String, command: String, summary: String, timeout: Int = 6) -> LightProcessOutput {
-        runner.run(LightInvocation(
-            argv: ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=\(timeout)", "--", host, command],
-            stdin: "", executable: true, fallback: false, summary: summary, loopback: false
-        ), stdin: "")
-    }
-
     private func runAchat(_ argv: [String], summary: String) -> LightProcessOutput {
         runner.run(LightInvocation(
             argv: argv, stdin: "", executable: true, fallback: false, summary: summary, loopback: true
@@ -715,15 +772,13 @@ public struct LightSessionService {
     }
 
     private func forwardProject(_ spec: ProjectSpec, noQueue: Bool, json: Bool) -> LightCLIResult {
-        let status = reachable(spec.host)
-        if !status.online {
-            return holdProject(status: status, spec: spec, noQueue: noQueue, json: json)
+        if let run = router.run(spec.host, argv: projectArgv(spec), timeout: Self.remoteTimeout) {
+            if let object = Self.extractJSON(run.stdout), object["status"] is String || object["ok"] is Bool {
+                return presentProject(object, spec: spec, json: json, via: run.path.rawValue)
+            }
+            if run.status == 124 { return stillRunning(run, json: json) }
         }
-        let output = ssh(spec.host, command: projectCommand(spec), summary: "forward pharos project to the target node")
-        if let object = Self.extractJSON(output.stdout), object["status"] is String || object["ok"] is Bool {
-            return presentProject(object, spec: spec, json: json)
-        }
-        return holdProject(status: relay.nodeStatus(spec.host), spec: spec, noQueue: noQueue, json: json)
+        return holdProject(status: offlineStatus(spec.host), spec: spec, noQueue: noQueue, json: json)
     }
 
     private func holdProject(status: LightNodeStatus, spec: ProjectSpec, noQueue: Bool, json: Bool) -> LightCLIResult {
@@ -740,13 +795,13 @@ public struct LightSessionService {
         }
     }
 
-    private func projectCommand(_ spec: ProjectSpec) -> String {
+    func projectArgv(_ spec: ProjectSpec) -> [String] {
         var args = ["project", spec.op, "--here", "--app", spec.app]
         if spec.op == "add" { args += ["--path", spec.path] }
         if !spec.name.isEmpty { args += ["--name", spec.name] }
         if spec.dryRun { args.append("--dry-run") }
         args.append("--json")
-        return ([apps.remotePharosShell] + args.map(Self.shellQuote)).joined(separator: " ")
+        return args
     }
 
     private func listHere(_ spec: ProjectSpec) -> ProjectOutcome {
@@ -852,11 +907,18 @@ public struct LightSessionService {
         return .success(parsed.rows)
     }
 
-    private func renderProject(_ outcome: ProjectOutcome, host: String, json: Bool) -> LightCLIResult {
+    private func renderProject(_ outcome: ProjectOutcome, host: String, json: Bool, via: String? = nil) -> LightCLIResult {
+        let result = renderProjectBody(outcome, host: host, json: json, via: via)
+        guard let via, !json else { return result }
+        return LightCLIResult(exitCode: result.exitCode, text: result.text + "\nvia \(via)", notes: result.notes)
+    }
+
+    private func renderProjectBody(_ outcome: ProjectOutcome, host: String, json: Bool, via: String?) -> LightCLIResult {
         if json {
             var body: [String: Any] = [
                 "ok": outcome.ok, "status": outcome.status, "app": outcome.app, "addable": outcome.addable, "dryRun": outcome.dryRun,
             ]
+            if let via { body["via"] = via }
             if !host.isEmpty { body["node"] = host }
             if !outcome.path.isEmpty { body["path"] = outcome.path }
             if !outcome.name.isEmpty { body["name"] = outcome.name }
@@ -902,7 +964,7 @@ public struct LightSessionService {
         }
     }
 
-    private func presentProject(_ object: [String: Any], spec: ProjectSpec, json: Bool) -> LightCLIResult {
+    private func presentProject(_ object: [String: Any], spec: ProjectSpec, json: Bool, via: String) -> LightCLIResult {
         let parsed = Self.interpretProject(object)
         let status = object["status"] as? String ?? parsed.status
         let outcome = ProjectOutcome(
@@ -917,7 +979,7 @@ public struct LightSessionService {
         var shown = outcome
         if status == "needs_user_action" || status == "error" || status == "node offline" { shown.ok = false }
         if status == "added" || status == "already" || status == "listed" || status == "dry-run" || status == "queued" { shown.ok = true }
-        return renderProject(shown, host: spec.host, json: json)
+        return renderProject(shown, host: spec.host, json: json, via: via)
     }
 
     private func register(_ spec: SessionSpec, sessionID: String) throws -> LightMember {
@@ -928,7 +990,7 @@ public struct LightSessionService {
         ))
     }
 
-    private func remoteCommand(verb: Verb, spec: SessionSpec) -> String {
+    private func remoteArgv(verb: Verb, spec: SessionSpec) -> [String] {
         var args = ["session", verb == .new ? "new" : "workspaces", "--here", "--app", spec.app]
         if verb == .new { args += ["--workspace", spec.workspace] }
         if let title = spec.title, !title.isEmpty { args += ["--title", title] }
@@ -938,7 +1000,7 @@ public struct LightSessionService {
         if spec.dryRun { args.append("--dry-run") }
         if spec.launch { args.append("--launch") }
         args.append("--json")
-        return ([apps.remotePharosShell] + args.map(Self.shellQuote)).joined(separator: " ")
+        return args
     }
 
     private func hereFailure(_ message: String, spec: SessionSpec, json: Bool) -> LightCLIResult {
@@ -954,6 +1016,7 @@ public struct LightSessionService {
             var body: [String: Any] = [
                 "ok": queued, "status": queued ? "queued" : "node offline", "node": status.host, "message": message,
             ]
+            if queued { body["via"] = "queued" }
             if let requestID { body["requestId"] = requestID }
             if let seen = status.lastSeen {
                 body["lastSeen"] = Int(seen.timeIntervalSince1970)
@@ -963,14 +1026,19 @@ public struct LightSessionService {
             return Self.jsonText(body, ok: queued)
         }
         if let requestID {
-            return LightCLIResult(exitCode: 0, text: "queued \(requestID)\n\(message)")
+            return LightCLIResult(exitCode: 0, text: "queued \(requestID)\n\(message)\nvia queued")
         }
         return LightCLIResult(exitCode: 1, text: "error: \(message)")
     }
 
-    private func formatProjects(_ names: [String], json: Bool) -> LightCLIResult {
-        if json { return Self.jsonText(["ok": true, "status": "listed", "projects": names], ok: true) }
-        return LightCLIResult(exitCode: 0, text: names.isEmpty ? "no workspaces" : names.joined(separator: "\n"))
+    private func formatProjects(_ names: [String], json: Bool, via: String? = nil) -> LightCLIResult {
+        if json {
+            var body: [String: Any] = ["ok": true, "status": "listed", "projects": names]
+            if let via { body["via"] = via }
+            return Self.jsonText(body, ok: true)
+        }
+        let text = names.isEmpty ? "no workspaces" : names.joined(separator: "\n")
+        return LightCLIResult(exitCode: 0, text: via.map { text + "\nvia \($0)" } ?? text)
     }
 
     private static func jsonText(_ body: [String: Any], ok: Bool) -> LightCLIResult {

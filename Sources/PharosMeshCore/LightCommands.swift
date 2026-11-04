@@ -276,7 +276,8 @@ public enum LightCommands {
             let route = delivery.route ?? "-"
             let verified = delivery.liveVerified ? "verified" : "unverified"
             let fallback = delivery.fallback ? " fallback" : ""
-            lines.append("\(delivery.state.rawValue)\t\(delivery.to)\t\(delivery.replyID)\t\(route)\t\(verified)\(fallback)")
+            let via = delivery.via.map { "\tvia \($0)" } ?? ""
+            lines.append("\(delivery.state.rawValue)\t\(delivery.to)\t\(delivery.replyID)\t\(route)\t\(verified)\(fallback)\(via)")
             if delivery.detail.contains("node offline") { lines.append(delivery.detail) }
         }
         if !result.unresolved.isEmpty {
@@ -400,6 +401,11 @@ private struct LightArgv {
 }
 
 extension LightCommands {
+    /// `30s`, `5m`, `2h`, `1d`, or plain seconds.
+    public static func duration(_ raw: String) throws -> TimeInterval {
+        try LightArgv.parseDuration(raw)
+    }
+
     /// `pharos help chat`: how agents message each other through Pharos.
     public static let chatHelp = """
     pharos help chat — messaging between agents (lightweight tier)
@@ -437,8 +443,25 @@ extension LightCommands {
       pharos member register --name BOT --app webhook [--webhook NAME]
       Delivery is an HTTPS POST of {replyId, threadId, from, to, cc, intent, text, hop,
       hopLimit, expectsReply, replyCommand, prompt} with the secret in header H.
-      The bot answers with `pharos reply r_xxx -- "<text>"` (e.g. over SSH). Pharos does
+      The bot answers with `pharos reply r_xxx -- "<text>"` (from any Pharos node). Pharos does
       not read replies back from a webhook member.
+
+    ANSWERING (you received a message with a reply-id)
+      Answer with `pharos reply r_xxx -- "<text>"`. It hands the answer to this
+      machine's Pharos node (directly, over the mesh, or through a spool file when a
+      sandbox blocks the rest). If your shell cannot run it at all (read-only or ask
+      mode), just answer in your own chat; Pharos reads it back from your session.
+      After answering with `pharos reply`, say NOTHING about it in your own chat UI
+      (not "replied", not "sent", not a summary) unless someone asks you.
+
+    MACHINES (Pharos nodes)
+      pharos host list [--json]          Nodes on the mesh: name, online/offline, last seen, aliases.
+      pharos host alias NODE SHORT [--ssh DEST]   Your own short name for a node (any --host).
+      pharos host unalias SHORT
+      Another machine's sessions are driven only by that machine's Pharos node: over the
+      Pharos mesh first, over SSH as a backup, else queued on the Broker for that node.
+      Results say which (via mesh|ssh|queued). A node that cannot be reached is reported
+      as "Pharos node offline".
 
     RECOMMENDED PATTERN
       Hand Pharos messaging to a subagent: it sends, waits, runs the discussion, and

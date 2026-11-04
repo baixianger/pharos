@@ -270,9 +270,12 @@ public struct LightDelivery: Codable, Equatable, Sendable {
     public var liveVerified: Bool
     public var header: String
     public var detail: String
+    /// `mesh`, `ssh`, `queued` (waiting in the node's inbox), or nil (this machine).
+    public var via: String?
 
     public init(to: String, replyID: String, state: LightDeliveryState, route: String?, fallback: Bool,
-                liveVerified: Bool, header: String, detail: String) {
+                liveVerified: Bool, header: String, detail: String, via: String? = nil) {
+        self.via = via
         self.to = to
         self.replyID = replyID
         self.state = state
@@ -437,6 +440,8 @@ public struct LightDriveResult: Equatable, Sendable {
         case busy
         case deferred
         case failed
+        /// The member's Pharos node is not on the mesh and SSH did not reach it: park in its inbox.
+        case offline
     }
 
     public var state: State
@@ -446,13 +451,16 @@ public struct LightDriveResult: Equatable, Sendable {
     /// The shipped external adapter leaves this false: live app sends are not certified.
     public var liveVerified: Bool
     public var detail: String
+    /// How the delivery reached the member's node: `mesh`, `ssh`, or nil (this machine).
+    public var via: String?
 
-    public init(state: State, route: String?, fallback: Bool, liveVerified: Bool, detail: String) {
+    public init(state: State, route: String?, fallback: Bool, liveVerified: Bool, detail: String, via: String? = nil) {
         self.state = state
         self.route = route
         self.fallback = fallback
         self.liveVerified = liveVerified
         self.detail = detail
+        self.via = via
     }
 }
 
@@ -644,6 +652,21 @@ public enum LightWebhookIntake {
 
 /// Broker-owned directory, thread log, reply-id ledger, and single-writer outbox.
 public final class LightRelay: @unchecked Sendable {
+    /// True when this process may create files in the store (false inside a sandbox
+    /// that blocks it). Probes with a real create, which the sandbox decides.
+    public static func storeIsWritable(_ store: URL) -> Bool {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: store.path) {
+            guard (try? fm.createDirectory(at: store, withIntermediateDirectories: true)) != nil else { return false }
+        }
+        let probe = store.appendingPathComponent(".probe-\(getpid())-\(UInt32.random(in: 0...UInt32.max))")
+        let fd = open(probe.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { return false }
+        close(fd)
+        unlink(probe.path)
+        return true
+    }
+
     public static func defaultStoreURL() -> URL {
         if let override = ProcessInfo.processInfo.environment["PHAROS_LIGHT_RELAY"], !override.isEmpty {
             return URL(fileURLWithPath: override, isDirectory: true)
@@ -693,6 +716,7 @@ public final class LightRelay: @unchecked Sendable {
         try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
         chmod(store.path, 0o700)
         try load()
+        stamp = stateStamp()
     }
 
     // MARK: Directory
@@ -879,9 +903,69 @@ public final class LightRelay: @unchecked Sendable {
 
     public static func nodeOfflineMessage(lastSeen: Date?) -> String {
         if let lastSeen {
-            return "node offline; last-seen \(Int(lastSeen.timeIntervalSince1970))"
+            return "Pharos node offline; last-seen \(Int(lastSeen.timeIntervalSince1970))"
         }
-        return "node offline; last-seen never"
+        return "Pharos node offline; last-seen never"
+    }
+
+    /// Nodes that have jobs waiting in their inbox.
+    public func inboxNodes() -> [String] {
+        sync { Array(Set(inbox.map(\.node))).sorted() }
+    }
+
+    /// Record a node heartbeat seen elsewhere (the Broker roster) without pulling.
+    public func noteNodeSeen(_ host: String, at moment: Date) {
+        sync {
+            guard let name = try? Self.validateLabel(host, failure: LightRelayError.invalidHost) else { return }
+            if let seen = nodeSeen[name], seen >= moment { return }
+            nodeSeen[name] = moment
+            try? persistLocked()
+        }
+    }
+
+    /// Open asks Pharos may still read from a session: not answered, not expired,
+    /// harvestable, issued within `maxAge`. Newest first, at most `limit`.
+    public func pendingHarvest(maxAge: TimeInterval, limit: Int) -> [String] {
+        sync {
+            let moment = now()
+            let open = ledger.values.filter { ticket in
+                guard !ticket.consumed, ticket.harvest != false, ticket.expiresAt > moment,
+                      moment.timeIntervalSince(ticket.issuedAt) <= maxAge, members[ticket.to] != nil else { return false }
+                let answered = logs[ticket.threadID]?.contains { $0.kind == .message && $0.replyTo == ticket.replyID } ?? false
+                return !answered
+            }
+            return open.sorted { $0.issuedAt > $1.issuedAt }.prefix(max(0, limit)).map(\.replyID)
+        }
+    }
+
+    /// Deliver one parked `deliver` job (its node is back) and ack it when the session took it.
+    @discardableResult
+    public func redeliverParked(_ job: LightNodeJob) -> LightDriveResult? {
+        let target: (LightMember, LightEnvelope, String, Int)? = sync {
+            guard job.kind == "deliver", let ticket = ledger[job.id], let member = members[ticket.to] else { return nil }
+            let header = logs[ticket.threadID]?.last { $0.kind == .delivery && $0.replyID == job.id }?.header ?? ""
+            let envelope = LightEnvelope(replyId: ticket.replyID, threadId: ticket.threadID, from: ticket.from, to: ticket.to,
+                                         cc: [], intent: (ticket.intent ?? .ask).rawValue, text: job.payload,
+                                         hop: ticket.hop, hopLimit: threads[ticket.threadID]?.hopLimit ?? ticket.hop,
+                                         expectsReply: ticket.harvest != false,
+                                         replyCommand: "pharos reply \(ticket.replyID) -- \"...\"", prompt: job.payload)
+            return (member, envelope, header, ticket.hop)
+        }
+        guard let target else {
+            if !sync({ ledger[job.id] != nil }) { _ = ack(job: job.id) }
+            return nil
+        }
+        let (member, envelope, header, hop) = target
+        let result = driver.deliver(member: member, envelope: envelope)
+        guard result.state == .delivered || result.state == .deferred else { return result }
+        sync {
+            try? appendDeliveryLocked(threadID: envelope.threadId, to: member.name, replyID: job.id,
+                                      state: Self.deliveryState(result.state), route: result.route,
+                                      fallback: result.fallback, liveVerified: result.liveVerified,
+                                      header: header, hop: hop)
+        }
+        _ = ack(job: job.id)
+        return result
     }
 
     public func nodeStatus(_ host: String) -> LightNodeStatus {
@@ -1153,7 +1237,7 @@ public final class LightRelay: @unchecked Sendable {
         if let parked {
             return LightDelivery(to: target.member.name, replyID: target.ticket.replyID, state: .queued,
                                  route: nil, fallback: false, liveVerified: false, header: target.header,
-                                 detail: Self.nodeOfflineMessage(lastSeen: parked.lastSeen))
+                                 detail: Self.nodeOfflineMessage(lastSeen: parked.lastSeen), via: "queued")
         }
         let claim = try sync { () -> Claim? in
             if outbox.contains(where: { $0.to == target.member.name }) || inflight.contains(target.member.name) {
@@ -1175,6 +1259,18 @@ public final class LightRelay: @unchecked Sendable {
                 try enqueueLocked(target, routeNote: result.route)
                 return queuedDelivery(target, detail: result.detail)
             }
+            if result.state == .offline {
+                // Mesh and SSH both missed the member's node: wait in its inbox on the Broker.
+                _ = try enqueueNodeJobLocked(id: target.ticket.replyID, node: target.member.host,
+                                             kind: "deliver", payload: target.body)
+                try appendDeliveryLocked(threadID: target.ticket.threadID, to: target.member.name,
+                                         replyID: target.ticket.replyID, state: .queued, route: nil,
+                                         fallback: false, liveVerified: false, header: target.header,
+                                         hop: target.ticket.hop)
+                var queued = queuedDelivery(target, detail: result.detail)
+                queued.via = "queued"
+                return queued
+            }
             let state = Self.deliveryState(result.state)
             try appendDeliveryLocked(threadID: target.ticket.threadID, to: target.member.name,
                                      replyID: target.ticket.replyID, state: state, route: result.route,
@@ -1182,7 +1278,7 @@ public final class LightRelay: @unchecked Sendable {
                                      header: target.header, hop: target.ticket.hop)
             return LightDelivery(to: target.member.name, replyID: target.ticket.replyID, state: state,
                                  route: result.route, fallback: result.fallback, liveVerified: result.liveVerified,
-                                 header: target.header, detail: result.detail)
+                                 header: target.header, detail: result.detail, via: result.via)
         }
     }
 
@@ -1199,7 +1295,7 @@ public final class LightRelay: @unchecked Sendable {
                 return LightDelivery(to: delivery.to, replyID: delivery.replyID, state: state, route: latest.route,
                                      fallback: latest.fallback ?? delivery.fallback,
                                      liveVerified: latest.liveVerified ?? false, header: delivery.header,
-                                     detail: delivery.detail)
+                                     detail: delivery.detail, via: delivery.via)
             }
         }
     }
@@ -1552,6 +1648,12 @@ public final class LightRelay: @unchecked Sendable {
             blocked.insert(claim.item.to)
             return false
         }
+        if result.state == .offline, let member = members[claim.item.to] {
+            _ = try? enqueueNodeJobLocked(id: claim.item.replyID, node: member.host, kind: "deliver",
+                                          payload: claim.item.body)
+            blocked.insert(claim.item.to)
+            return false
+        }
         let state = Self.deliveryState(result.state)
         try? appendDeliveryLocked(threadID: claim.item.threadID, to: claim.item.to, replyID: claim.item.replyID,
                                  state: state, route: result.route, fallback: result.fallback,
@@ -1621,7 +1723,7 @@ public final class LightRelay: @unchecked Sendable {
         var lines = [tag]
         if spec.terminal || spec.record { return tag }
         let command = "`pharos reply \(replyID) \"...\"`"
-        let harvest = "Pharos reads this session if you cannot run that command."
+        let harvest = "Pharos reads this session if you cannot run that command. After answering with pharos reply, say nothing about it in your own chat (not even that you replied) unless someone asks."
         if spec.conclusion {
             lines.append("The discussion is closed (\(spec.note ?? "ended")). Reply with a one-line conclusion: \(command). It is recorded in the thread, not sent to anyone. \(harvest)")
         } else if spec.copied {
@@ -1691,16 +1793,53 @@ public final class LightRelay: @unchecked Sendable {
         throw LightRelayError.corruptStore("token generator")
     }
 
+    /// One writer at a time across processes too: a CLI send, the node's background
+    /// poller and a forwarded reply share this store. Under the file lock the state is
+    /// reloaded when another process changed it, so no update is lost to a stale snapshot.
     private func sync<T>(_ body: () throws -> T) rethrows -> T {
         lock.lock()
         defer { lock.unlock() }
+        let fd = open(store.appendingPathComponent(".lock").path, O_RDWR | O_CREAT, 0o600)
+        if fd >= 0 { _ = flock(fd, LOCK_EX) }
+        defer {
+            stamp = stateStamp()
+            if fd >= 0 { _ = flock(fd, LOCK_UN); close(fd) }
+        }
+        let current = stateStamp()
+        if current != stamp { try? reloadLocked() }
         return try body()
+    }
+
+    private struct StateStamp: Equatable {
+        var modified: Double
+        var size: Int64
+        var inode: UInt64
+    }
+
+    private var stamp: StateStamp?
+
+    private func stateStamp() -> StateStamp? {
+        var info = stat()
+        guard stat(stateURL.path, &info) == 0 else { return nil }
+        #if canImport(Darwin)
+        let modified = Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9
+        #else
+        let modified = Double(info.st_mtim.tv_sec) + Double(info.st_mtim.tv_nsec) / 1e9
+        #endif
+        return StateStamp(modified: modified, size: Int64(info.st_size), inode: UInt64(info.st_ino))
+    }
+
+    private func reloadLocked() throws {
+        guard FileManager.default.fileExists(atPath: stateURL.path) else { return }
+        logs = [:]
+        try load()
     }
 
     private static func deliveryState(_ state: LightDriveResult.State) -> LightDeliveryState {
         switch state {
         case .delivered: .delivered
         case .busy: .queued
+        case .offline: .queued
         case .deferred: .deferred
         case .failed: .failed
         }

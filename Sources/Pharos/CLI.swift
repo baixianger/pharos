@@ -47,7 +47,9 @@ enum CLI {
         // The CLI is a first-class front door and cannot rely on the SwiftUI
         // app having run first. Activate the saved device route before any
         // command can fall back to an islanded local UDS broker.
-        if command != "runtime" {
+        // An explicit PHAROS_MESH_TCP (a chosen mesh, e.g. a test mesh) wins over the saved route.
+        let explicitMesh = !(ProcessInfo.processInfo.environment["PHAROS_MESH_TCP"] ?? "").isEmpty
+        if command != "runtime", !explicitMesh {
             _ = try? PharosRuntimeCoordinator().activateSavedRoute()
         }
 
@@ -120,6 +122,7 @@ enum CLI {
                 }
                 return ok(try PharosCore.setLocalPath(project: p.arg(0), path: p.arg(1), clear: p.has("clear")))
             case "host":
+                if let code = hostExecute(rest, json: p.has("json")) { return code }
                 return emit(PharosCore.hostInfo(), json: p.has("json"))
             case "search":
                 return emit(try PharosCore.search(p.positional.joined(separator: " ")), json: p.has("json"))
@@ -131,14 +134,14 @@ enum CLI {
                 return ok(try PharosCore.setFlag(name: p.arg(0), flag: "tmux", value: try boolArg(p.arg(1), label: "on|off")))
             case "mesh":
                 return await runMesh(rest)
-            case "member", "thread", "send", "reply", "wait", "read":
-                return finishLight(lightExecute(command: command, arguments: rest))
+            case "member", "thread", "send", "reply", "wait", "read", "session", "project":
+                return finishLight(lightDispatch(command: command, arguments: rest))
+            case "node-deliver", "node-harvest":
+                return finishLight(nodeExecute(command: command, arguments: rest))
+            case "light-tick":
+                return finishLight(lightTick(json: true))
             case "webhook", "webhooks":
                 return finishLight(LightWebhookCommands.execute(arguments: rest, store: LightWebhookStore()))
-            case "session":
-                return finishLight(sessionExecute(arguments: rest))
-            case "project":
-                return finishLight(projectExecute(arguments: rest))
             case "runtime":
                 return runRuntime(rest)
             case "skill", "skills":
@@ -158,7 +161,7 @@ enum CLI {
 
     // MARK: Sub-dispatchers
 
-    private static func lightExecute(command: String, arguments: [String]) -> LightCLIResult {
+    static func lightExecute(command: String, arguments: [String]) -> LightCLIResult {
         do {
             return LightCommands.execute(
                 command: command,
@@ -171,7 +174,7 @@ enum CLI {
         }
     }
 
-    private static func makeLightRelay() throws -> LightRelay {
+    static func makeLightRelay() throws -> LightRelay {
         let environment = ProcessInfo.processInfo.environment
         let bins = LightAppBins.fromEnvironment(environment)
         let forwarder: (any LightReplyForwarding)?
@@ -190,7 +193,8 @@ enum CLI {
             codexSessions: CodexRolloutReader(),
             achat: bins.achat,
             replyFloorStore: LightRelay.defaultStoreURL().appendingPathComponent("achat-reply-floors.json"),
-            selfHost: .fromEnvironment(environment)
+            selfHost: .fromEnvironment(environment),
+            nodes: lightRouter()
         )
         return try LightRelay(
             store: LightRelay.defaultStoreURL(),
@@ -200,7 +204,7 @@ enum CLI {
         )
     }
 
-    private static func sessionExecute(arguments: [String]) -> LightCLIResult {
+    static func sessionExecute(arguments: [String]) -> LightCLIResult {
         do {
             let environment = ProcessInfo.processInfo.environment
             return LightSessionService(
@@ -209,14 +213,15 @@ enum CLI {
                 prober: LoopbackDebugProber(),
                 ports: .fromEnvironment(environment),
                 apps: .fromEnvironment(environment),
-                selfHost: .fromEnvironment(environment)
+                selfHost: .fromEnvironment(environment),
+                nodes: lightRouter()
             ).execute(arguments: arguments)
         } catch {
             return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")
         }
     }
 
-    private static func projectExecute(arguments: [String]) -> LightCLIResult {
+    static func projectExecute(arguments: [String]) -> LightCLIResult {
         do {
             let environment = ProcessInfo.processInfo.environment
             return LightSessionService(
@@ -225,14 +230,15 @@ enum CLI {
                 prober: LoopbackDebugProber(),
                 ports: .fromEnvironment(environment),
                 apps: .fromEnvironment(environment),
-                selfHost: .fromEnvironment(environment)
+                selfHost: .fromEnvironment(environment),
+                nodes: lightRouter()
             ).executeProject(arguments: arguments)
         } catch {
             return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")
         }
     }
 
-    private static func finishLight(_ result: LightCLIResult) -> Int32 {
+    static func finishLight(_ result: LightCLIResult) -> Int32 {
         if !result.text.isEmpty { print(result.text) }
         for note in result.notes { FileHandle.standardError.write(Data((note + "\n").utf8)) }
         return result.exitCode
@@ -825,7 +831,7 @@ enum CLI {
         return 0
     }
 
-    private static func fail(_ message: String) -> Int32 {
+    static func fail(_ message: String) -> Int32 {
         FileHandle.standardError.write(Data("error: \(message)\n".utf8))
         return 1
     }
@@ -910,7 +916,7 @@ enum CLI {
 
     private static var version: String { "0.11.1" }
 
-    private static func prettyJSON(_ obj: Any) -> String {
+    static func prettyJSON(_ obj: Any) -> String {
         guard
             let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
             let str = String(data: data, encoding: .utf8)
@@ -983,6 +989,9 @@ enum CLI {
 
         MULTI-MACHINE (Broker-owned project data; paths stay on each Host)
           host                         Show this machine's host key
+          host list [--json]           Pharos nodes on the mesh: name, online/offline, last seen, aliases
+          host alias <node> <short> [--ssh DEST]   Your short name for a node (usable as any --host)
+          host unalias <short>         Remove an alias (aliases live in ~/.config/pharos/hosts.json)
           path <project>               Show THIS Host's local folder
           path <project> <path>        Set THIS machine's local folder for a project
           path <project> --clear       Forget this machine's local folder
@@ -1021,18 +1030,23 @@ enum CLI {
           Tokens after `--` are the message, including a token that looks like a flag
           (`--json`). They are not read as options.
           `session new` and `project list|add` run on the target Pharos node. `--host local`
-          (or this machine's hostname / PHAROS_SELF_HOST) runs here. A node with no
-          recent heartbeat is still used when `ssh pharos --version` succeeds; only a
-          failed probe is queued (72h) unless `--no-queue`. There is no heartbeat daemon.
+          (or this machine's hostname / an alias / PHAROS_SELF_HOST) runs here. Another
+          machine is reached Pharos node to Pharos node over the mesh, SSH is the backup,
+          else the request waits in that node's inbox on the Broker (72h) unless `--no-queue`.
+          Output says `via mesh|ssh|queued`; an unreachable node is "Pharos node offline".
+          Members on other machines get messages through their own node the same way.
           `session new` adds a missing project unless `--no-add-project`.
           Codex and Antigravity get a first message when `--title` is omitted.
           `--launch` is the only way a node starts an app, and the only command that
           needs a debug port (env override, else achat config, else dsh 9301 / codex 9302).
           `--launch --dry-run` reports the port, the probe, and whether it would launch.
           Debug ports and the achat binary come from the environment, not the repo.
-          Set PHAROS_LIGHT_SSH_HOST to an existing SSH alias to forward `reply`,
-          `wait`, `read`, and `thread list|show` from a non-Broker host.
-          Forwarded commands run `pharos` on the target;
+          On a machine that is not the Broker's, messaging commands are forwarded to the
+          Broker's node over the mesh (SSH backup: PHAROS_LIGHT_SSH_HOST or `host alias --ssh`).
+          `pharos reply` from a sandbox that blocks the store and sockets is written to a spool
+          (PHAROS_LIGHT_SPOOL, /private/tmp/pharos-spool-UID, or $TMPDIR/pharos-spool) and the
+          local node delivers it. The node also reads back answers from read-only sessions.
+          SSH backup commands run `pharos` on the target;
           set PHAROS_LIGHT_REMOTE_PHAROS (e.g. ~/.local/bin/pharos) when it is not
           on the target's non-interactive SSH PATH. Set PHAROS_LIGHT_WEBHOOK only to a loopback URL.
           PHAROS_LIGHT_LIVE=1 runs headless codex/claude and tmux, and delegates

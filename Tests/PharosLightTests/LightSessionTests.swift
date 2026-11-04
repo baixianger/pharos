@@ -249,8 +249,8 @@ final class LightSessionTests: XCTestCase {
         XCTAssertEqual(runner.invocations.count, 1)
         let probe = try XCTUnwrap(runner.invocations.first?.argv)
         XCTAssertEqual(probe.first, "ssh")
-        XCTAssertTrue(probe.contains("ConnectTimeout=5"))
-        XCTAssertEqual(probe.last, "pharos --version")
+        XCTAssertTrue(probe.contains("ConnectTimeout=6"))
+        XCTAssertTrue(probe.last?.hasPrefix("PHAROS_LIGHT_DIRECT=1 pharos 'session' 'new' '--here'") == true)
         XCTAssertTrue(try relay.pull(node: "mini").isEmpty)
     }
 
@@ -415,8 +415,8 @@ final class LightSessionTests: XCTestCase {
         XCTAssertTrue(stopped.text.contains("node offline"))
         XCTAssertFalse(stopped.text.contains("queued"))
         XCTAssertEqual(quiet.invocations.count, 1)
-        XCTAssertEqual(quiet.invocations.first?.argv.last, "pharos --version")
-        XCTAssertTrue(quiet.invocations.first?.argv.contains("ConnectTimeout=5") == true)
+        XCTAssertTrue(quiet.invocations.first?.argv.last?.hasPrefix("PHAROS_LIGHT_DIRECT=1 pharos 'project' 'add' '--here'") == true)
+        XCTAssertTrue(quiet.invocations.first?.argv.contains("ConnectTimeout=6") == true)
     }
 
     func testSessionNewFailsWhenTheProjectIsNotRegistered() throws {
@@ -537,10 +537,9 @@ final class LightSessionTests: XCTestCase {
         XCTAssertFalse(aliasRunner.invocations.contains { $0.argv.first == "ssh" })
     }
 
-    func testVersionProbeTreatsAReachableNodeAsOnline() throws {
+    func testSSHBackupRunsTheRequestOnTheTargetNode() throws {
         let created = #"{"ok":true,"status":"created","sessionId":"sess-live","route":"web","dryRun":false,"projects":[]}"#
         let runner = ScriptedSessionRunner([
-            output(0, "pharos 0.11.1\n"),
             output(0, created),
         ])
         let relay = try makeRelay()
@@ -551,13 +550,11 @@ final class LightSessionTests: XCTestCase {
         XCTAssertTrue(result.text.contains("session sess-live"))
         XCTAssertFalse(result.text.contains("queued"))
         XCTAssertFalse(result.text.contains("last-seen never"))
+        XCTAssertTrue(result.text.contains("via ssh"), result.text)
         XCTAssertNil(relay.nodeStatus("mini").lastSeen)
-        XCTAssertEqual(runner.invocations.count, 2)
-        let probe = runner.invocations[0].argv
-        XCTAssertEqual(Array(probe.prefix(6)), ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--"])
-        XCTAssertEqual(probe.last, "pharos --version")
-        let command = runner.invocations[1].argv
-        XCTAssertTrue(command.contains("ConnectTimeout=6"))
+        XCTAssertEqual(runner.invocations.count, 1)
+        let command = runner.invocations[0].argv
+        XCTAssertEqual(Array(command.prefix(6)), ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "--"])
         XCTAssertTrue(command.last?.contains("'--here'") == true)
         XCTAssertFalse(runner.invocations.contains { $0.argv.contains("achat") })
 
@@ -571,7 +568,8 @@ final class LightSessionTests: XCTestCase {
         XCTAssertFalse(queued.text.lowercased().contains("unreachable"))
         XCTAssertFalse(queued.text.contains("Connection refused"))
         XCTAssertEqual(down.invocations.count, 1)
-        XCTAssertEqual(down.invocations.first?.argv.last, "pharos --version")
+        XCTAssertTrue(down.invocations.first?.argv.last?.contains("'session' 'new'") == true)
+        XCTAssertTrue(queued.text.contains("via queued"), queued.text)
     }
 
     func testSessionNewWithoutLaunchDoesNotNeedADebugPort() throws {
@@ -647,14 +645,13 @@ final class LightSessionTests: XCTestCase {
         XCTAssertEqual(bins.remotePharosShell, #""$HOME"/'.local/bin/pharos'"#)
         XCTAssertEqual(LightAppBins.remoteExecutableShell("/opt/x y/pharos"), "'/opt/x y/pharos'")
         let runner = ScriptedSessionRunner([
-            output(0, "pharos 0.11.1"),
             output(0, #"{"ok":true,"status":"listed","app":"codex","projects":[]}"#),
         ])
         var service = makeService(relay: try makeRelay(), runner: runner, prober: ScriptProber([]))
         service.apps = LightAppBins(achat: "/tmp/achat", remotePharos: "~/.local/bin/pharos")
         _ = service.executeProject(arguments: ["list", "--host", "mini", "--app", "codex", "--json"])
-        XCTAssertEqual(runner.invocations.first?.argv.last, #""$HOME"/'.local/bin/pharos' --version"#)
-        XCTAssertTrue(runner.invocations.last?.argv.last?.hasPrefix(#""$HOME"/'.local/bin/pharos' 'project' 'list'"#) == true)
+        XCTAssertEqual(runner.invocations.count, 1)
+        XCTAssertTrue(runner.invocations.last?.argv.last?.hasPrefix(#"PHAROS_LIGHT_DIRECT=1 "$HOME"/'.local/bin/pharos' 'project' 'list'"#) == true)
     }
 
     func testHeadlessCodexPrefersTheDesktopBundledCLI() {

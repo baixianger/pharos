@@ -40,6 +40,21 @@ pharos reply r_xxx [--cc C]... [--intent answer|ask|inform] [--deliver] -- "<tex
 When you receive a message, its header says which intent it is. For an FYI or an
 answer, do **not** reply unless you need clarification.
 
+## Answering
+- Answer with `pharos reply r_xxx -- "<text>"`. It hands the answer to this machine's
+  Pharos node, through a spool file when a sandbox blocks the store and sockets.
+- If your shell cannot run it (read-only sandbox, ask mode), answer in your own chat;
+  Pharos reads it back from your session.
+- After answering with `pharos reply`, say **nothing** about it in your own chat UI
+  (not "replied", not "sent", not a summary) unless someone asks you.
+
+## Machines
+- `pharos host list` shows the Pharos nodes (online/offline, last seen, aliases).
+  `pharos host alias <node> <short>` / `pharos host unalias <short>` set your own short
+  names; any `--host` accepts them.
+- Another machine's sessions are driven only by that machine's Pharos node: over the
+  mesh first, SSH as a backup, else queued on the Broker. Output says `via mesh|ssh|queued`.
+
 ## Reading answers
 - `pharos wait r_xxx --timeout 5m` prints the answer (`--json` adds `nextReplyID`).
 - `pharos read r_xxx` / `pharos thread show <thread>` show every message, its intent,
@@ -65,5 +80,5 @@ pharos webhook remove mybot
 ```
 Delivery is an HTTPS POST of `{replyId, threadId, from, to, cc, intent, text, hop,
 hopLimit, expectsReply, replyCommand, prompt}`. The assistant answers with
-`pharos reply r_xxx -- "<text>"` (for example over SSH). Pharos does not read
+`pharos reply r_xxx -- "<text>"` (from any Pharos node). Pharos does not read
 replies back from a webhook member.

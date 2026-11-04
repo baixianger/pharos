@@ -262,16 +262,20 @@ public struct ExternalLightDriver: LightSessionDriver {
     public var webhooks: LightWebhookStore
     public var webhookPoster: any LightWebhookPosting
     /// Names that mean this machine. A member on any other host is reached only through
-    /// `achat --host <member.host>` (achat runs there over SSH); local headless codex, tmux,
-    /// and the local Codex rollout never stand in for another machine. Nil keeps every host local.
+    /// that host's Pharos node (`nodes`: mesh, then SSH; legacy: `achat --host`); local
+    /// headless codex, tmux, and the local Codex rollout never stand in for another machine.
+    /// Nil keeps every host local.
     public var selfHost: LightSelfHost?
+    /// Node routing for members on other machines. Nil falls back to `achat --host` over SSH.
+    public var nodes: (any LightNodeRouting)?
 
     public init(allowLive: Bool = false, runner: (any LightProcessRunning)? = nil, binaries: LightBinaries = .names,
                 codexSessions: CodexRolloutReader? = nil, achat: String = "achat", replyFloorStore: URL? = nil,
                 webhooks: LightWebhookStore = LightWebhookStore(),
                 webhookPoster: any LightWebhookPosting = URLSessionWebhookPoster(),
-                selfHost: LightSelfHost? = nil) {
+                selfHost: LightSelfHost? = nil, nodes: (any LightNodeRouting)? = nil) {
         self.selfHost = selfHost
+        self.nodes = nodes
         self.webhooks = webhooks
         self.webhookPoster = webhookPoster
         self.allowLive = allowLive
@@ -290,9 +294,17 @@ public struct ExternalLightDriver: LightSessionDriver {
         return app == "cursor" && routeID == "cursor-agent"
     }
 
-    public static func achatSendArgv(bin: String, app: String, session: String, text: String, host: String = "local") -> [String] {
-        [bin, app, "send", "--host", host, "--json", "--session", session, "--no-webhook", text]
+    public static func achatSendArgv(bin: String, app: String, session: String, text: String, host: String = "local",
+                                     detach: Bool = false) -> [String] {
+        var argv = [bin, app, "send", "--host", host, "--json", "--session", session, "--no-webhook"]
+        // dsh web runs the turn in a Host achat keeps alive: return once the prompt is in
+        // (the Host stops itself after the turn); Pharos harvests the answer later.
+        if detach { argv += ["--detach", "--timeout", "8"] }
+        return argv + [text]
     }
+
+    /// Apps whose `achat send` would otherwise hold the caller for the whole turn.
+    static let detachedSendApps: Set<String> = ["dsh"]
 
     public static func achatReadArgv(bin: String, app: String, session: String, host: String = "local") -> [String] {
         [bin, app, "read", "--host", host, "--json", "--session", session, "--open"]
@@ -314,6 +326,9 @@ public struct ExternalLightDriver: LightSessionDriver {
     }
 
     public func deliver(member: LightMember, envelope: LightEnvelope) -> LightDriveResult {
+        if !Self.isWebhook(member), allowLive, isRemote(member), let nodes {
+            return deliverThroughNode(member: member, envelope: envelope, nodes: nodes)
+        }
         guard Self.isWebhook(member) else { return deliver(member: member, body: envelope.prompt) }
         guard allowLive else {
             return LightDriveResult(state: .deferred, route: "webhook", fallback: false, liveVerified: false,
@@ -339,8 +354,13 @@ public struct ExternalLightDriver: LightSessionDriver {
             return LightDriveResult(state: .deferred, route: route.id, fallback: route.fallback || planned.fallback,
                                     liveVerified: false, detail: "unverified live; \(planned.summary)")
         }
+        if isRemote(member), let nodes {
+            let envelope = LightEnvelope(replyId: "", threadId: "", from: "", to: member.name, cc: [], intent: "inform",
+                                         text: body, hop: 0, hopLimit: 0, expectsReply: false, replyCommand: nil, prompt: body)
+            return deliverThroughNode(member: member, envelope: envelope, nodes: nodes)
+        }
         if isRemote(member) {
-            // Another machine: only achat over SSH can reach the session there.
+            // Legacy (no node routing): achat over SSH reaches the session there.
             guard Self.achatApps.contains(member.app) else {
                 return LightDriveResult(state: .failed, route: nil, fallback: false, liveVerified: false,
                                         detail: "\(member.app) on \(member.host) is not reachable from this node")
@@ -386,9 +406,41 @@ public struct ExternalLightDriver: LightSessionDriver {
                                 detail: notes.joined(separator: "; "))
     }
 
+    /// The member's own node delivers (it controls only its machine's apps). Mesh, then SSH;
+    /// neither: `.offline`, and the relay parks the message in that node's inbox.
+    func deliverThroughNode(member: LightMember, envelope: LightEnvelope, nodes: any LightNodeRouting) -> LightDriveResult {
+        let payload = LightNodeExec.encode(LightNodeDelivery(member: member, envelope: envelope))
+        guard let run = nodes.run(member.host, argv: ["node-deliver", "--payload", payload], timeout: 180) else {
+            let status = nodes.status(member.host)
+            return LightDriveResult(state: .offline, route: nil, fallback: false, liveVerified: false,
+                                    detail: LightRelay.nodeOfflineMessage(lastSeen: status.lastSeen) + "; queued on the Broker",
+                                    via: "queued")
+        }
+        guard let object = LightSessionService.extractJSON(run.stdout),
+              let raw = object["state"] as? String, let state = LightDriveResult.State(rawValue: raw) else {
+            let detail = run.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return LightDriveResult(state: run.status == 124 ? .delivered : .failed, route: nil, fallback: false,
+                                    liveVerified: false,
+                                    detail: detail.isEmpty ? "Pharos node \(run.node) exit \(run.status)" : detail,
+                                    via: run.path.rawValue)
+        }
+        return LightDriveResult(state: state, route: object["route"] as? String,
+                                fallback: (object["fallback"] as? Bool) == true, liveVerified: false,
+                                detail: (object["detail"] as? String) ?? "", via: run.path.rawValue)
+    }
+
     public func readReply(member: LightMember, since: Date) -> String? {
         // A webhook member answers with `pharos reply`; there is no session to read.
         if Self.isWebhook(member) { return nil }
+        if isRemote(member), let nodes {
+            guard allowLive else { return nil }
+            let payload = LightNodeExec.encode(LightNodeHarvest(member: member, since: since))
+            guard let run = nodes.run(member.host, argv: ["node-harvest", "--payload", payload], timeout: 60),
+                  run.status == 0, let object = LightSessionService.extractJSON(run.stdout),
+                  let text = object["text"] as? String else { return nil }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
         if isRemote(member) { return Self.achatApps.contains(member.app) ? harvest(member) : nil }
         if let route = LightRoutePlanner.select(member: member, operation: .send),
            Self.delegatesToAchat(app: member.app, routeID: route.id) {
@@ -414,7 +466,7 @@ public struct ExternalLightDriver: LightSessionDriver {
         }
         let invocation = LightInvocation(
             argv: Self.achatSendArgv(bin: achat, app: member.app, session: member.sessionID, text: body,
-                                     host: achatHost(member)),
+                                     host: achatHost(member), detach: Self.detachedSendApps.contains(member.app)),
             stdin: "", executable: true, fallback: false,
             summary: "achat \(member.app) send", loopback: true
         )

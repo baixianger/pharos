@@ -73,6 +73,7 @@ enum MeshNode {
     ) {
         heartbeat(buildID: buildID, healthy: &state.heartbeatHealthy)
         drainNodeCommands(missingProbeCounts: &state.missingProbeCounts)
+        scheduleLightTick()
         if Date() >= state.nextReconcile {
             reconcileMembers(missingProbeCounts: &state.missingProbeCounts)
             state.nextReconcile = Date().addingTimeInterval(20)
@@ -149,6 +150,8 @@ enum MeshNode {
                 executeStopCommand(command)
             case .agentRPC:
                 executeAgentRPCCommand(command)
+            case .light:
+                executeLightCommand(command)
             }
         }
     }
@@ -472,7 +475,7 @@ enum MeshNode {
         return resolved.hasPrefix("/") && FileManager.default.isExecutableFile(atPath: resolved) ? resolved : nil
     }
 
-    private static func update(_ command: MeshNodeCommand, state: MeshNodeCommandState,
+    static func update(_ command: MeshNodeCommand, state: MeshNodeCommandState,
                                result: String, retryAt: Double? = nil) {
         var request = MeshRequest(cmd: "node-command-update", state: state.rawValue,
                                   payload: result, nodeID: nodeID, commandID: command.id)
@@ -698,7 +701,7 @@ enum MeshNode {
                              output: String(decoding: data, as: UTF8.self))
     }
 
-    private static func log(_ message: String) {
+    static func log(_ message: String) {
         FileHandle.standardError.write(Data("pharos node: \(message)\n".utf8))
     }
 }
