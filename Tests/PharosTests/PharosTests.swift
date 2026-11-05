@@ -2961,6 +2961,15 @@ final class MeshDeliveryTests: XCTestCase {
 
 
 final class RemoteLaunchTmuxIdentityTests: XCTestCase {
+    func testRemotePathPrefersManagedInstallsOverUserLocalSymlinks() {
+        let command = RemoteLaunch.preferredPathExport
+        let managed = try! XCTUnwrap(command.range(of: "/opt/homebrew/bin"))
+        let userLocal = try! XCTUnwrap(command.range(of: "$HOME/.local/bin"))
+
+        XCTAssertLessThan(managed.lowerBound, userLocal.lowerBound)
+        XCTAssertTrue(command.hasPrefix("export PATH="))
+    }
+
     func testRemoteAgentPrefersManagedCLIOverStaleUserLocalSymlink() {
         let command = RemoteLaunch.preferredPathExport
         let managed = try! XCTUnwrap(command.range(of: "/opt/homebrew/bin"))

@@ -92,14 +92,14 @@ This document records the architectural reconciliation between Pharos Milestone 
 ## 3. Test Coverage & Verification
 
 - **Preserved Test Suites**:
-  - `PharosTests`: 49 test suites passed, 1 skipped (`PHAROS_CODEX_INTEGRATION_TEST=1`), 0 failures.
-  - `PharosLightTests`: 15 test suites, 254 unit tests passed, 0 failures.
-  - `PharosMeshCoreTests`: 11 test suites passed, 0 failures.
-  - `PharosMeshProtocolTests`: passed, 0 failures.
-  - `PharosMeshIrohTests`: passed, 0 failures.
-  - `PharosMeshIdentityTests`: passed, 0 failures.
-  - **Total**: All 6 test targets passing 100% green.
-- **Deleted / Disabled Tests**: None. Zero tests deleted or disabled.
+  - `PharosTests`: 254 tests passed (across 49 test suites), 1 skipped (`PHAROS_CODEX_INTEGRATION_TEST=1`), 0 failures. Restored `testRemotePathPrefersManagedInstallsOverUserLocalSymlinks` from `baf17dc`.
+  - `PharosLightTests`: 254 tests passed (across 15 test suites), 0 failures.
+  - `PharosMeshCoreTests`: 126 tests passed (across 11 test suites), 0 failures.
+  - `PharosMeshProtocolTests`: 26 tests passed, 0 failures.
+  - `PharosMeshIrohTests`: 13 tests passed, 0 failures.
+  - `PharosMeshIdentityTests`: 17 tests passed, 0 failures.
+  - **Total**: 690 passed, 1 skipped, 0 failures across all 6 test targets (100% green).
+- **Deleted / Disabled Tests**: None. All 486 tests from `baf17dc` (main) verified present and passing against HEAD across `Tests/` and `ios/`. Zero tests deleted or disabled.
 
 ---
 
