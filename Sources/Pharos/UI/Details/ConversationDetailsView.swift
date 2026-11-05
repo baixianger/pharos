@@ -24,10 +24,15 @@ public struct ConversationDetailsView: View {
     public var currentMode: String
     public var workspacePath: String
 
+    // Avatar Customization State
+    @State private var selectedShape: AvatarShape = .blob
+    @State private var selectedColor: AvatarPaletteColor = .blue
+
     public let onModelChange: (String) -> Void
     public let onModeToggle: () -> Void
     public let onStop: () -> Void
     public let onRevive: () -> Void
+    public let onAvatarChange: (AvatarShape, AvatarPaletteColor) -> Void
 
     public init(
         isOverlay: Bool = false,
@@ -41,7 +46,8 @@ public struct ConversationDetailsView: View {
         onModelChange: @escaping (String) -> Void = { _ in },
         onModeToggle: @escaping () -> Void = {},
         onStop: @escaping () -> Void = {},
-        onRevive: @escaping () -> Void = {}
+        onRevive: @escaping () -> Void = {},
+        onAvatarChange: @escaping (AvatarShape, AvatarPaletteColor) -> Void = { _, _ in }
     ) {
         self.isOverlay = isOverlay
         self.onClose = onClose
@@ -55,6 +61,7 @@ public struct ConversationDetailsView: View {
         self.onModeToggle = onModeToggle
         self.onStop = onStop
         self.onRevive = onRevive
+        self.onAvatarChange = onAvatarChange
     }
 
     public var body: some View {
@@ -114,6 +121,66 @@ public struct ConversationDetailsView: View {
 
     private var detailsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
+            // Avatar Identity & Customizer Card
+            VStack(spacing: 12) {
+                Text("AVATAR IDENTITY")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 14) {
+                    PharosAvatarView(
+                        seed: memberName,
+                        customShape: selectedShape,
+                        customColor: selectedColor,
+                        status: .working,
+                        size: 56,
+                        showRing: true
+                    )
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(memberName)
+                            .font(.system(size: 13, weight: .bold))
+
+                        Picker("Shape", selection: $selectedShape) {
+                            ForEach(AvatarShape.allCases) { shape in
+                                Text(shape.displayName).tag(shape)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .onChange(of: selectedShape) { _, newShape in
+                            onAvatarChange(newShape, selectedColor)
+                        }
+                    }
+                }
+
+                // Color Swatches
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(AvatarPaletteColor.allCases.filter { $0 != .black }) { color in
+                            Button(action: {
+                                selectedColor = color
+                                onAvatarChange(selectedShape, color)
+                            }) {
+                                Circle()
+                                    .fill(color.color(isDark: false))
+                                    .frame(width: 18, height: 18)
+                                    .overlay(
+                                        Circle()
+                                            .stroke(Color.primary, lineWidth: selectedColor == color ? 2 : 0)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .help(color.rawValue.capitalized)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .padding(12)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+
             // Metadata Card
             VStack(alignment: .leading, spacing: 8) {
                 Text("METADATA")

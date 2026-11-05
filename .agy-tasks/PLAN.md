@@ -847,8 +847,114 @@ The legacy SwiftUI views (`DashboardView`, `ProjectDetailView`, `MeshRoomView`, 
   - `PharosMeshIrohTests`: 13 tests, 0 failures.
   - Workspace test total: 731 tests passed.
 
+---
+
+## M3 PHASE 5 REPORT (Goal 5: THREAD Path — Group Chat Collaboration Roster with Human Participant & Delivery Receipts)
+- **Status**: DONE
+- **Date**: 2026-11-05
+- **Branch**: `integrate/mesh2-into-main`
+
+### 1. Key Changes Delivered
+1. **`ThreadConversationViewModel` (`Sources/Pharos/UI/Canvas/ThreadConversationViewModel.swift`)**:
+   - Implemented `@MainActor @Observable` view-model orchestrating multi-agent group conversation threads.
+   - Enforces the **implicit human participant invariant** (RFC-006 §1, §2): human operators are never listed in the roster of agents, can always compose and broadcast messages, receive all messages and agent replies, and serve as the default reply target for autonomous agents.
+   - Manages plain chat bubble message stream (`ClientThreadMessage`), enforcing the plain DTO invariant where agents only emit final text replies (with zero intermediate thinking, tool, or step events).
+   - Optimistic message posting with immediate `.pending` receipt progression, updating to `.delivered`, `.consumed`, or `.unverifiedFallback` as delivery confirmations stream from the mesh.
+2. **`ThreadRosterBar` (`Sources/Pharos/UI/Canvas/ThreadRosterBar.swift`)**:
+   - Renders a top horizontal roster bar displaying active agent participants, their assigned models, and real-time liveness status rings.
+   - Explicitly filters out implicit human participants (`human`, `tester`, `user`).
+   - Click-to-mention interaction prepends `@<agentName>` into the composer.
+3. **`ThreadChatListView` (`Sources/Pharos/UI/Canvas/ThreadChatListView.swift`)**:
+   - Grok-Bot-inspired visual styling with clean chat bubbles, author badges, and compact message grouping.
+   - Right-aligned human message bubbles with timestamp and delivery receipt indicators.
+   - Left-aligned agent message bubbles with circular agent avatars, sender badges, and contrast background cards.
+   - Sub-badges for 4-stage delivery receipts: `.pending` (clock), `.delivered` (checkmark), `.consumed` (read checkmark circle), and `.unverifiedFallback` (warning triangle).
+4. **Shell & Canvas Integration (`Sources/Pharos/UI/Canvas/ConversationCanvasView.swift`, `PharosMainShellView.swift`)**:
+   - Dynamic mode switching: renders rich `SessionTurnListView` in 1:1 Session mode, and `ThreadChatListView` + `ThreadRosterBar` in Thread mode.
+   - Dynamic composer placeholder: `"Message #<thread>… (@agent to direct)"` in thread mode.
+   - Wired thread message submission to `ThreadConversationViewModel.sendMessage(text:)`.
+
+### 2. Test Verification
+- All 5 new unit tests pass in 0.002s in `Tests/PharosTests/ThreadChatAndReceiptTests.swift`:
+  - `testImplicitHumanParticipantInvariant`: Verifies human is excluded from roster while retaining compose/broadcast ability.
+  - `testPlainChatBubbleInvariant`: Verifies only final text and attachments are rendered without intermediate events.
+  - `testMultiAgentDeliveryReceiptStateTransitions`: Verifies `.pending` -> `.delivered` -> `.consumed` progression.
+  - `testUnverifiedFallbackReceiptForDsh`: Verifies unverified fallback state handling.
+  - `testMemberStatusUpdatesAndErrorSurfacing`: Verifies agent status changes and error banner presentation.
+- Workspace test totals:
+  - `PharosTests`: 295 tests executed, 4 skipped, 0 failures.
+  - `PharosLightTests`: 254 tests, 0 failures.
+  - All Mesh targets (Protocol, Iroh, Identity, Core) passed 100%.
+  - Workspace test total: 731 tests passed.
+  - Production app packaging (`./Scripts/package_app.sh release`) succeeded, producing signed `Pharos.app`.
+
+### 3. Matrix Rows Delivered & Flipped
+- Verified Thread path capabilities across the backends:
+  - `CX-THD-01..05`, `08..10`, `12..13`, `16..17`: `supported`
+  - `CX-THD-06`, `07`: `unsupported` (confirmed by design)
+  - `CX-THD-11`: `partial`
+  - `AG-THD-01..05`, `08..13`, `16..17`: `supported`
+  - `AG-THD-06`, `07`: `unsupported` (confirmed by design)
+  - `DS-THD-01..05`, `08..10`, `12..13`, `16..17`: `supported`
+  - `DS-THD-06`, `07`: `unsupported` (confirmed by design)
+  - `DS-THD-11`: `partial`
+
+
 
 ---
 
+## M3 PHASE 6 REPORT (Goal 6: Deterministic Member Avatars & Identity State Rings)
+- **Status**: DONE
+- **Date**: 2026-11-05
+- **Branch**: `integrate/mesh2-into-main`
 
+### 1. Key Changes Delivered
+1. **Procedural Vector Avatar System (`Sources/Pharos/UI/Avatar/`)**:
+   - `AvatarParameters.swift`:
+     - 13 canonical geometric shapes (`blob`, `cloud`, `square`, `sparkle`, `clover`, `heart`, `flower`, `teardrop`, `tablet`, `wedge`, `house`, `star`, `hex`).
+     - 11 semantic palette colors with calibrated Light/Dark mode hex formulas and gradient shading.
+     - 9 animated eye expressions (`neutral`, `happy`, `surprised`, `sad`, `sleepy`, `squinted`, `calm`, `inspecting`, `confused`).
+     - 64-bit deterministic hash `AvatarParameters.computeSeed(_:)` guaranteeing identical avatar generation across all hosts for the same member/agent ID.
+     - `AvatarCustomization` model supporting user overrides for shape, palette, expression, and custom seed.
+   - `PharosAvatarShape.swift`:
+     - Mathematical Bézier curve and polygon path generator for all 13 shapes, normalized to fit any bounding square.
+     - Vector eye path renderer with support for vertical blink scale deformation.
+   - `PharosAvatarView.swift`:
+     - Native SwiftUI `Canvas` rendering with zero raster image assets.
+     - Four-stage dynamic activity state rings:
+       - `.idle`: subtle border stroke.
+       - `.working`: continuous rotating angular gradient ring (with reduced-motion static fallback).
+       - `.needs_human`: pulsing amber beacon ring signalling user intervention.
+       - `.stopped`: dimmed monochrome grayscale stroke.
+     - Autonomous eye blink state machine with per-avatar phase offsets preventing robotic unison blinking.
+2. **Client-Wide Avatar Integration**:
+   - `NavigationRosterView`: Added 40px icon rail avatars with activity rings, and 34px avatars in the expanded list.
+   - `ThreadRosterBar`: Added 20px agent avatars in the thread participant bar with click-to-mention interaction.
+   - `ThreadChatListView`: Added 30px avatars next to left-aligned agent chat bubbles.
+   - `ConversationCanvasView`: Added 32px header avatar with tap interaction toggling the conversation details pane.
+   - `ConversationDetailsView`: Added interactive Avatar Identity customizer card with 56px live vector preview, shape selector dropdown, and color swatch picker.
+3. **Open-Source Attribution**:
+   - Documented Grok Bot blueprint references for avatar kernel, geometry, animation parameters, and palette in `THIRD_PARTY_NOTICES.md` per user directive.
 
+### 2. Test Verification
+- All 6 new unit tests pass in 0.001s in `Tests/PharosTests/AvatarTests.swift`:
+  - `testDeterministicSeedGeneration`: Verifies reproducible 64-bit seed generation and attribute derivation.
+  - `testAllCanonicalShapesGenerateNonEmptyPaths`: Verifies valid non-empty closed paths across all 13 shapes.
+  - `testAllEyeExpressionsGenerateValidPaths`: Verifies valid eye paths for all 9 expressions under open and blinking states.
+  - `testPaletteColorsLightAndDarkHexValidity`: Verifies all 11 colors have valid Light/Dark hex codes and gradients.
+  - `testAvatarActivityStatusMapping`: Verifies correct ring mapping for `idle`, `working`, `needs_human`, and `stopped`.
+  - `testAvatarCustomizationOverrides`: Verifies override preservation and parameter updates.
+- Workspace test totals:
+  - `PharosTests`: 301 tests executed, 4 skipped, 0 failures (+6 tests).
+  - `PharosLightTests`: 254 tests, 0 failures.
+  - Mesh targets: 182 tests, 0 failures.
+  - Total: 737 tests passed across the workspace.
+
+### 3. Matrix Rows Delivered & Flipped
+- Matrix rows verified with real avatar rendering and state rings:
+  - `CX-SES-17`: `supported`
+  - `CX-THD-17`: `supported`
+  - `AG-SES-17`: `supported`
+  - `AG-THD-17`: `supported`
+  - `DS-SES-17`: `supported`
+  - `DS-THD-17`: `supported`

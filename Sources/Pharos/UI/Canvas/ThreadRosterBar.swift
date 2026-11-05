@@ -39,26 +39,13 @@ public struct ThreadRosterBar: View {
                             onMentionAgent(member.name)
                         }) {
                             HStack(spacing: 5) {
-                                // Agent Avatar Circle
-                                ZStack(alignment: .bottomTrailing) {
-                                    Circle()
-                                        .fill(agentColor(for: member.agent).opacity(0.18))
-                                        .frame(width: 20, height: 20)
-                                        .overlay(
-                                            Text(member.name.prefix(1).uppercased())
-                                                .font(.system(size: 10, weight: .bold))
-                                                .foregroundStyle(agentColor(for: member.agent))
-                                        )
-
-                                    // Status Dot
-                                    Circle()
-                                        .fill(statusColor(for: member.status))
-                                        .frame(width: 6, height: 6)
-                                        .overlay(
-                                            Circle()
-                                                .stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1)
-                                        )
-                                }
+                                // Agent Avatar View
+                                PharosAvatarView(
+                                    seed: member.avatarSeed ?? member.name,
+                                    status: avatarStatus(from: member.status),
+                                    size: 20,
+                                    showRing: false
+                                )
 
                                 Text("@\(member.name)")
                                     .font(.system(size: 11, weight: .medium))
@@ -105,6 +92,15 @@ public struct ThreadRosterBar: View {
         case "needs_human", "attention": return .orange
         case "stopped", "offline": return .secondary
         default: return .blue
+        }
+    }
+
+    private func avatarStatus(from status: String) -> AvatarActivityStatus {
+        switch status.lowercased() {
+        case "working", "busy": return .working
+        case "needs_human", "attention": return .needsHuman
+        case "stopped", "offline": return .stopped
+        default: return .idle
         }
     }
 }

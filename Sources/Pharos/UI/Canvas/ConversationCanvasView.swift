@@ -173,15 +173,17 @@ public struct ConversationCanvasView: View {
 
     private var canvasHeader: some View {
         HStack(spacing: 10) {
-            // Avatar
-            Circle()
-                .fill(Color.accentColor.opacity(0.15))
-                .frame(width: 32, height: 32)
-                .overlay(
-                    Text(title.prefix(1).uppercased())
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(Color.accentColor)
-                )
+            // Header Avatar (Clicking opens details inspector per Grok Bot design)
+            PharosAvatarView(
+                seed: title,
+                status: isTurnInProgress ? .working : .idle,
+                size: 32,
+                showRing: true
+            )
+            .onTapGesture {
+                onToggleDetails()
+            }
+            .help("Click to toggle details inspector")
 
             // Title & Badges
             VStack(alignment: .leading, spacing: 2) {

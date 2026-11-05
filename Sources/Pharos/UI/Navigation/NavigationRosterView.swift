@@ -209,20 +209,18 @@ public struct NavigationRosterView: View {
 
     private func compactRow(title: String, subtitle: String, status: String, isSelected: Bool) -> some View {
         ZStack(alignment: .bottomTrailing) {
-            Circle()
-                .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06))
-                .frame(width: 44, height: 44)
-                .overlay(
-                    Text(title.prefix(1).uppercased())
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
-                )
+            PharosAvatarView(
+                seed: title,
+                status: avatarStatus(from: status),
+                size: 40,
+                showRing: isSelected
+            )
 
             // Status indicator dot
             Circle()
                 .fill(statusColor(for: status))
-                .frame(width: 10, height: 10)
-                .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 2))
+                .frame(width: 9, height: 9)
+                .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
         }
         .frame(height: PharosDesignTokens.Layout.sidebarRowHeight)
         .help("\(title) • \(subtitle)")
@@ -231,13 +229,12 @@ public struct NavigationRosterView: View {
     private func expandedSessionRow(_ session: ClientSessionSummary, isSelected: Bool) -> some View {
         HStack(spacing: 10) {
             ZStack(alignment: .bottomTrailing) {
-                Circle()
-                    .fill(Color.primary.opacity(0.06))
-                    .frame(width: 36, height: 36)
-                    .overlay(
-                        Text(session.title.prefix(1).uppercased())
-                            .font(.system(size: 13, weight: .bold))
-                    )
+                PharosAvatarView(
+                    seed: session.title,
+                    status: avatarStatus(from: session.status.rawValue),
+                    size: 34,
+                    showRing: isSelected
+                )
 
                 Circle()
                     .fill(statusColor(for: session.status.rawValue))
@@ -279,13 +276,12 @@ public struct NavigationRosterView: View {
 
     private func expandedThreadRow(_ thread: ClientThreadSummary, isSelected: Bool) -> some View {
         HStack(spacing: 10) {
-            Circle()
-                .fill(Color.primary.opacity(0.06))
-                .frame(width: 36, height: 36)
-                .overlay(
-                    Image(systemName: "number")
-                        .font(.system(size: 13, weight: .bold))
-                )
+            PharosAvatarView(
+                seed: thread.title,
+                status: .idle,
+                size: 34,
+                showRing: isSelected
+            )
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
@@ -307,6 +303,15 @@ public struct NavigationRosterView: View {
             : Color.clear
         )
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func avatarStatus(from str: String) -> AvatarActivityStatus {
+        switch str.lowercased() {
+        case "working", "busy", "active": return .working
+        case "needs_human", "waiting", "waiting_approval": return .needsHuman
+        case "stopped", "dead", "cancelled": return .stopped
+        default: return .idle
+        }
     }
 
     private func expandedProjectRow(_ project: ClientProjectSummary, isSelected: Bool) -> some View {

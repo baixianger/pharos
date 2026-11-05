@@ -90,14 +90,12 @@ public struct ThreadChatListView: View {
     private func agentChatBubble(_ message: ClientThreadMessage) -> some View {
         HStack(alignment: .top, spacing: 10) {
             // Agent Avatar
-            Circle()
-                .fill(agentColor(for: message.senderName).opacity(0.18))
-                .frame(width: 30, height: 30)
-                .overlay(
-                    Text(message.senderName.prefix(1).uppercased())
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(agentColor(for: message.senderName))
-                )
+            PharosAvatarView(
+                seed: message.senderAvatarSeed ?? message.senderName,
+                status: .idle,
+                size: 30,
+                showRing: false
+            )
 
             VStack(alignment: .leading, spacing: 4) {
                 // Sender Name Header
