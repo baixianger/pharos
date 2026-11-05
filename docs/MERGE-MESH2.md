@@ -92,14 +92,17 @@ This document records the architectural reconciliation between Pharos Milestone 
 ## 3. Test Coverage & Verification
 
 - **Preserved Test Suites**:
-  - `PharosTests`: 254 tests passed (across 49 test suites), 1 skipped (`PHAROS_CODEX_INTEGRATION_TEST=1`), 0 failures. Restored `testRemotePathPrefersManagedInstallsOverUserLocalSymlinks` from `baf17dc`.
+  - `PharosTests`: 255 tests passed (across 50 test suites), 1 skipped (`PHAROS_CODEX_INTEGRATION_TEST=1`), 0 failures. Restored `testRemotePathPrefersManagedInstallsOverUserLocalSymlinks` from `baf17dc` and `testToDiscriminatesDirectedFromBroadcast` from `344be8c`.
   - `PharosLightTests`: 254 tests passed (across 15 test suites), 0 failures.
   - `PharosMeshCoreTests`: 126 tests passed (across 11 test suites), 0 failures.
   - `PharosMeshProtocolTests`: 26 tests passed, 0 failures.
   - `PharosMeshIrohTests`: 13 tests passed, 0 failures.
   - `PharosMeshIdentityTests`: 17 tests passed, 0 failures.
-  - **Total**: 690 passed, 1 skipped, 0 failures across all 6 test targets (100% green).
-- **Deleted / Disabled Tests**: None. All 486 tests from `baf17dc` (main) verified present and passing against HEAD across `Tests/` and `ios/`. Zero tests deleted or disabled.
+  - **Total**: 691 passed, 1 skipped, 0 failures across all 6 test targets (100% green).
+- **Dual-Parent Parity Verification**: Complete AST / symbol comparison of every `func test*` across `Tests/` and `ios/`:
+  - Compared against `baf17dc` (main, 486 tests): **0 missing** (100% preserved).
+  - Compared against `344be8c` (origin/feat/distributed-iroh, 402 tests): **0 missing** (100% preserved).
+  - Current codebase test count: **695 total test functions** (exact superset of both parents). Zero tests deleted or disabled.
 
 ---
 
