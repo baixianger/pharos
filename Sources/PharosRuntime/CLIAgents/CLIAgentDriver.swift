@@ -437,11 +437,13 @@ public struct CLIAgentAttentionSource: HumanAttentionSource {
     public var driver: CLIAgentDriver
     public var isLocal: @Sendable (LightMember) -> Bool
     public var hostLabel: String
+    public var watchFile: URL?
 
-    public init(driver: CLIAgentDriver, isLocal: @escaping @Sendable (LightMember) -> Bool, hostLabel: String = "local") {
+    public init(driver: CLIAgentDriver, isLocal: @escaping @Sendable (LightMember) -> Bool, hostLabel: String = "local", watchFile: URL? = nil) {
         self.driver = driver
         self.isLocal = isLocal
         self.hostLabel = hostLabel
+        self.watchFile = watchFile
     }
 
     public func poll(members: [LightMember]) -> [LightAttentionReport] {
@@ -452,7 +454,34 @@ public struct CLIAgentAttentionSource: HumanAttentionSource {
             guard live.agentAlive else { continue }
 
             if member.app.lowercased() == "codex" {
-                if let client = driver.daemon() {
+                if let watchFile, let state = CodexWatchFile.read(watchFile), let thread = state.threads[member.sessionID] {
+                    let hasPending = !thread.pending.isEmpty
+                    let isWaiting = thread.flags.contains("waitingOnApproval") || thread.flags.contains("waitingOnUserInput")
+                    if hasPending || isWaiting {
+                        let what = thread.pending.first?.summary ?? (thread.flags.contains("waitingOnUserInput") ? "waiting on user input" : (thread.flags.isEmpty ? "waiting on approval" : thread.flags.joined(separator: ", ")))
+                        reports.append(
+                            LightAttentionReport(
+                                state: .needsHuman,
+                                what: what,
+                                sessionID: member.sessionID,
+                                app: member.app,
+                                host: hostLabel,
+                                source: "daemon"
+                            )
+                        )
+                    } else {
+                        reports.append(
+                            LightAttentionReport(
+                                state: .clear,
+                                what: "",
+                                sessionID: member.sessionID,
+                                app: member.app,
+                                host: hostLabel,
+                                source: "daemon"
+                            )
+                        )
+                    }
+                } else if let client = driver.daemon() {
                     if let info = try? client.readThread(member.sessionID) {
                         if info.status.needsHuman {
                             var what = "waiting on approval"

@@ -1000,15 +1000,19 @@ public enum LightCommands {
             }
         }
         var lines: [String] = []
+        var seenLines = Set<String>()
         for key in order {
             guard let group = groups[key], !group.isEmpty else { continue }
             if let filterMembers {
                 let anyPresent = group.contains { filterMembers.contains($0.member) }
                 if !anyPresent { continue }
             }
-            let memberNames = group.map(\.member).sorted().joined(separator: ",")
+            let memberNames = Array(Set(group.map(\.member))).sorted().joined(separator: ",")
             let oldest = group.min { $0.since < $1.since } ?? group[0]
-            lines.append("needs_human \(memberNames): \(oldest.describe(at: moment))")
+            let line = "needs_human \(memberNames): \(oldest.describe(at: moment))"
+            if seenLines.insert(line).inserted {
+                lines.append(line)
+            }
         }
         return lines
     }

@@ -132,6 +132,7 @@ public struct CLIAgentLifecycle: Sendable {
     public var threadFinder: (@Sendable (_ snapshot: Set<String>, _ targetCwd: String) throws -> String?)?
     public var threadReader: (@Sendable (String) throws -> CodexThreadInfo)?
     public var rolloutsRoot: URL?
+    public var watchFile: URL?
 
     public init(
         tmux: TmuxController,
@@ -147,7 +148,8 @@ public struct CLIAgentLifecycle: Sendable {
         isExecutable: @Sendable @escaping (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
         threadFinder: (@Sendable (_ snapshot: Set<String>, _ targetCwd: String) throws -> String?)? = nil,
         threadReader: (@Sendable (String) throws -> CodexThreadInfo)? = nil,
-        rolloutsRoot: URL? = nil
+        rolloutsRoot: URL? = nil,
+        watchFile: URL? = nil
     ) {
         self.tmux = tmux
         self.runner = runner
@@ -167,6 +169,7 @@ public struct CLIAgentLifecycle: Sendable {
         self.threadFinder = threadFinder
         self.threadReader = threadReader
         self.rolloutsRoot = rolloutsRoot
+        self.watchFile = watchFile
     }
 
     public func launch(_ request: CLIAgentLaunchRequest) throws -> CLIAgentLaunchResult {
@@ -645,6 +648,27 @@ public struct CLIAgentLifecycle: Sendable {
                 return CLIAgentStatus(tmux: binding.session, live: live.label, activity: .unknown, detail: "unknown")
             }
         } else if member.app == "codex" {
+            if let watchFile, let state = CodexWatchFile.read(watchFile, now: now()), let thread = state.threads[member.sessionID] {
+                let hasPending = !thread.pending.isEmpty
+                let isWaiting = thread.flags.contains("waitingOnApproval") || thread.flags.contains("waitingOnUserInput")
+                if hasPending || isWaiting {
+                    let detail = thread.pending.first?.summary ?? (thread.flags.contains("waitingOnUserInput") ? "waiting on user input" : (thread.flags.isEmpty ? "waiting on approval" : thread.flags.joined(separator: ", ")))
+                    return CLIAgentStatus(tmux: binding.session, live: live.label, activity: .needsHuman, detail: detail)
+                }
+                switch thread.status {
+                case "idle":
+                    return CLIAgentStatus(tmux: binding.session, live: live.label, activity: .idle, detail: "idle")
+                case "active":
+                    let detail = thread.flags.isEmpty ? "thinking" : thread.flags.joined(separator: ", ")
+                    return CLIAgentStatus(tmux: binding.session, live: live.label, activity: .thinking, detail: detail)
+                case "notLoaded":
+                    return codexPaneStatus(binding: binding, live: live.label, why: "notLoaded")
+                case "systemError":
+                    return CLIAgentStatus(tmux: binding.session, live: live.label, activity: .unknown, detail: "systemError")
+                default:
+                    return CLIAgentStatus(tmux: binding.session, live: live.label, activity: .idle, detail: "idle")
+                }
+            }
             let info: CodexThreadInfo?
             if let reader = threadReader {
                 info = try? reader(member.sessionID)

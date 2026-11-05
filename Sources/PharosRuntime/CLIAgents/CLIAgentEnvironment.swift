@@ -10,6 +10,7 @@ public struct CLIAgentEnvironment: Sendable {
     public var memberAgents: CLIMemberAgents
     public var driver: CLIAgentDriver
     public var attentionSource: CLIAgentAttentionSource
+    public var watchFile: URL?
 
     public init(
         tmux: TmuxController,
@@ -19,7 +20,8 @@ public struct CLIAgentEnvironment: Sendable {
         lifecycle: CLIAgentLifecycle,
         memberAgents: CLIMemberAgents,
         driver: CLIAgentDriver,
-        attentionSource: CLIAgentAttentionSource
+        attentionSource: CLIAgentAttentionSource,
+        watchFile: URL? = nil
     ) {
         self.tmux = tmux
         self.quota = quota
@@ -29,6 +31,7 @@ public struct CLIAgentEnvironment: Sendable {
         self.memberAgents = memberAgents
         self.driver = driver
         self.attentionSource = attentionSource
+        self.watchFile = watchFile
     }
 
     public static func resolveTmuxBin(env: [String: String]) -> String {
@@ -57,12 +60,15 @@ public struct CLIAgentEnvironment: Sendable {
             return FileManager.default.fileExists(atPath: socket) ? CodexDaemonClient(socketPath: socket) : nil
         }
 
+        let watchFile = CodexWatchFile.defaultURL(env: env)
+
         let lifecycle = CLIAgentLifecycle(
             tmux: tmux,
             runner: runner,
             env: env,
             daemon: daemonClosure,
-            quota: quota
+            quota: quota,
+            watchFile: watchFile
         )
 
         let selfHost = LightSelfHost.fromEnvironment(env)
@@ -80,7 +86,8 @@ public struct CLIAgentEnvironment: Sendable {
         let attentionSource = CLIAgentAttentionSource(
             driver: driver,
             isLocal: { selfHost.matches($0.host) },
-            hostLabel: hostLabel
+            hostLabel: hostLabel,
+            watchFile: watchFile
         )
 
         return CLIAgentEnvironment(
@@ -91,7 +98,8 @@ public struct CLIAgentEnvironment: Sendable {
             lifecycle: lifecycle,
             memberAgents: memberAgents,
             driver: driver,
-            attentionSource: attentionSource
+            attentionSource: attentionSource,
+            watchFile: watchFile
         )
     }
 }

@@ -1,7 +1,7 @@
 import Foundation
 import PharosMeshCore
 
-public enum CLIAgentActivity: String, Codable, Sendable {
+public enum CLIAgentActivity: String, Codable, Sendable, Equatable {
     case idle
     case thinking
     case needsHuman = "needs_human"

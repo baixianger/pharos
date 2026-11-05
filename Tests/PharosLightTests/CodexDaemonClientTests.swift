@@ -109,83 +109,150 @@ final class FakeCodexDaemonServer: @unchecked Sendable {
         }
     }
 
-    private func runServer() {
-        var clientAddr = sockaddr_un()
-        var clientLen = socklen_t(MemoryLayout<sockaddr_un>.size)
-        let cFd = withUnsafeMutablePointer(to: &clientAddr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+    func pushFrame(_ json: [String: Any]) {
+        lock.lock()
+        let cFd = self.clientFd
+        lock.unlock()
+        guard cFd >= 0 else { return }
+        if let d = try? JSONSerialization.data(withJSONObject: json) {
+            let frame = WebSocketFrame.encode(opcode: 0x1, payload: d, fin: true, masked: false)
+            _ = frame.withUnsafeBytes {
                 #if canImport(Darwin)
-                Darwin.accept(serverFd, $0, &clientLen)
+                Darwin.send(cFd, $0.baseAddress!, frame.count, 0)
                 #else
-                Glibc.accept(serverFd, $0, &clientLen)
+                Glibc.send(cFd, $0.baseAddress!, frame.count, Int32(MSG_NOSIGNAL))
                 #endif
             }
         }
-        guard cFd >= 0 else { return }
-        self.clientFd = cFd
+    }
 
-        var tv = timeval(tv_sec: 4, tv_usec: 0)
-        setsockopt(cFd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(cFd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-
-        // Read HTTP Upgrade
-        var headerBuf = Data()
-        var buf = [UInt8](repeating: 0, count: 1024)
-        while isRunning.value {
+    func closeClient() {
+        lock.lock()
+        let cFd = self.clientFd
+        self.clientFd = -1
+        lock.unlock()
+        if cFd >= 0 {
             #if canImport(Darwin)
-            let n = Darwin.read(cFd, &buf, buf.count)
+            Darwin.close(cFd)
             #else
-            let n = Glibc.read(cFd, &buf, buf.count)
-            #endif
-            if n <= 0 { break }
-            headerBuf.append(buf, count: n)
-            if headerBuf.range(of: Data("\r\n\r\n".utf8)) != nil {
-                break
-            }
-        }
-
-        // Reply HTTP 101 Switching Protocols
-        let resp101 = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
-        _ = resp101.utf8CString.withUnsafeBufferPointer {
-            #if canImport(Darwin)
-            Darwin.send(cFd, $0.baseAddress!, resp101.utf8.count, 0)
-            #else
-            Glibc.send(cFd, $0.baseAddress!, resp101.utf8.count, Int32(MSG_NOSIGNAL))
+            Glibc.close(cFd)
             #endif
         }
+    }
 
-        // Frame receive loop
-        var inBuffer = Data()
+    private func runServer() {
         while isRunning.value {
-            if let frame = WebSocketFrame.decode(inBuffer) {
-                inBuffer.removeSubrange(0..<frame.consumed)
-                if frame.opcode == 0x1 {
-                    if let text = String(data: frame.payload, encoding: .utf8) {
-                        lock.lock()
-                        _receivedPayloads.append(text)
-                        lock.unlock()
-                        handleClientMessage(text, clientFd: cFd)
-                    }
-                } else if frame.opcode == 0x8 {
-                    break
+            var clientAddr = sockaddr_un()
+            var clientLen = socklen_t(MemoryLayout<sockaddr_un>.size)
+            let cFd = withUnsafeMutablePointer(to: &clientAddr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    #if canImport(Darwin)
+                    Darwin.accept(serverFd, $0, &clientLen)
+                    #else
+                    Glibc.accept(serverFd, $0, &clientLen)
+                    #endif
                 }
-                continue
             }
-
-            var pfd = pollfd(fd: cFd, events: Int16(POLLIN), revents: 0)
-            let pollRet = poll(&pfd, 1, 1000)
-            if pollRet <= 0 {
+            guard cFd >= 0 else {
                 if !isRunning.value { break }
                 continue
             }
+            lock.lock()
+            self.clientFd = cFd
+            lock.unlock()
 
-            #if canImport(Darwin)
-            let n = Darwin.read(cFd, &buf, buf.count)
-            #else
-            let n = Glibc.read(cFd, &buf, buf.count)
-            #endif
-            if n <= 0 { break }
-            inBuffer.append(buf, count: n)
+            var tv = timeval(tv_sec: 4, tv_usec: 0)
+            setsockopt(cFd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+            setsockopt(cFd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+            // Read HTTP Upgrade
+            var headerBuf = Data()
+            var buf = [UInt8](repeating: 0, count: 1024)
+            var upgradeSuccess = false
+            while isRunning.value {
+                #if canImport(Darwin)
+                let n = Darwin.read(cFd, &buf, buf.count)
+                #else
+                let n = Glibc.read(cFd, &buf, buf.count)
+                #endif
+                if n <= 0 { break }
+                headerBuf.append(buf, count: n)
+                if headerBuf.range(of: Data("\r\n\r\n".utf8)) != nil {
+                    upgradeSuccess = true
+                    break
+                }
+            }
+
+            if !upgradeSuccess {
+                #if canImport(Darwin)
+                Darwin.close(cFd)
+                #else
+                Glibc.close(cFd)
+                #endif
+                lock.lock()
+                if self.clientFd == cFd { self.clientFd = -1 }
+                lock.unlock()
+                continue
+            }
+
+            // Reply HTTP 101 Switching Protocols
+            let resp101 = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+            _ = resp101.utf8CString.withUnsafeBufferPointer {
+                #if canImport(Darwin)
+                Darwin.send(cFd, $0.baseAddress!, resp101.utf8.count, 0)
+                #else
+                Glibc.send(cFd, $0.baseAddress!, resp101.utf8.count, Int32(MSG_NOSIGNAL))
+                #endif
+            }
+
+            // Frame receive loop
+            var inBuffer = Data()
+            while isRunning.value {
+                if let frame = WebSocketFrame.decode(inBuffer) {
+                    inBuffer.removeSubrange(0..<frame.consumed)
+                    if frame.opcode == 0x1 {
+                        if let text = String(data: frame.payload, encoding: .utf8) {
+                            lock.lock()
+                            _receivedPayloads.append(text)
+                            lock.unlock()
+                            handleClientMessage(text, clientFd: cFd)
+                        }
+                    } else if frame.opcode == 0x8 {
+                        break
+                    }
+                    continue
+                }
+
+                var pfd = pollfd(fd: cFd, events: Int16(POLLIN), revents: 0)
+                let pollRet = poll(&pfd, 1, 200)
+                if pollRet <= 0 {
+                    if !isRunning.value { break }
+                    lock.lock()
+                    let stillOurClient = (self.clientFd == cFd)
+                    lock.unlock()
+                    if !stillOurClient { break }
+                    continue
+                }
+
+                #if canImport(Darwin)
+                let n = Darwin.read(cFd, &buf, buf.count)
+                #else
+                let n = Glibc.read(cFd, &buf, buf.count)
+                #endif
+                if n <= 0 { break }
+                inBuffer.append(buf, count: n)
+            }
+
+            lock.lock()
+            if self.clientFd == cFd {
+                #if canImport(Darwin)
+                Darwin.close(cFd)
+                #else
+                Glibc.close(cFd)
+                #endif
+                self.clientFd = -1
+            }
+            lock.unlock()
         }
     }
 

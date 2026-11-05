@@ -111,6 +111,12 @@ public final class WebSocketUDSConnection: @unchecked Sendable {
     private var readBuffer = Data()
     private var fragmentedPayload = Data()
 
+    public var isOpen: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return fd >= 0
+    }
+
     public init(socketPath: String, timeout: TimeInterval = 5) throws {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else {

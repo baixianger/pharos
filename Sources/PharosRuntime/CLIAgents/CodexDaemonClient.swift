@@ -251,6 +251,82 @@ public final class CodexDaemonClient: @unchecked Sendable {
         throw CodexDaemonError.timeout
     }
 
+    public func waitForEvents(timeout: TimeInterval) throws -> [[String: Any]] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        try connectLocked()
+        guard let connection = self.conn else {
+            throw CodexDaemonError.unavailable("connection not available")
+        }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        var newMessages: [[String: Any]] = []
+
+        while Date() < deadline {
+            guard let text = try connection.receiveText(deadline: deadline) else {
+                if !connection.isOpen {
+                    throw CodexDaemonError.unavailable("connection closed by server")
+                }
+                break // timeout
+            }
+            guard let data = text.data(using: .utf8),
+                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                continue
+            }
+
+            // Server request: has both method and id -> NEVER answer! Only record.
+            if let method = obj["method"] as? String, let idVal = obj["id"] {
+                let idStr = String(describing: idVal)
+                let params = obj["params"] as? [String: Any]
+                let threadId = params?["threadId"] as? String
+                let summary = (params?["command"] as? String) ?? (params?["reason"] as? String) ?? method
+                _observedServerRequests.append(
+                    CodexServerRequest(id: idStr, method: method, threadId: threadId, summary: summary)
+                )
+                newMessages.append(obj)
+            } else if let _ = obj["method"] as? String {
+                // Notification: has method, no id
+                _notifications.append(obj)
+                if _notifications.count > 200 {
+                    _notifications.removeFirst(_notifications.count - 200)
+                }
+                newMessages.append(obj)
+            } else {
+                newMessages.append(obj)
+            }
+
+            // If we have received messages, drain any immediately pending frames
+            while let moreText = try connection.receiveText(deadline: Date().addingTimeInterval(0.01)) {
+                guard let moreData = moreText.data(using: .utf8),
+                      let moreObj = (try? JSONSerialization.jsonObject(with: moreData)) as? [String: Any] else {
+                    continue
+                }
+                if let method = moreObj["method"] as? String, let idVal = moreObj["id"] {
+                    let idStr = String(describing: idVal)
+                    let params = moreObj["params"] as? [String: Any]
+                    let threadId = params?["threadId"] as? String
+                    let summary = (params?["command"] as? String) ?? (params?["reason"] as? String) ?? method
+                    _observedServerRequests.append(
+                        CodexServerRequest(id: idStr, method: method, threadId: threadId, summary: summary)
+                    )
+                } else if let _ = moreObj["method"] as? String {
+                    _notifications.append(moreObj)
+                    if _notifications.count > 200 {
+                        _notifications.removeFirst(_notifications.count - 200)
+                    }
+                }
+                newMessages.append(moreObj)
+            }
+
+            if !newMessages.isEmpty {
+                return newMessages
+            }
+        }
+
+        return newMessages
+    }
+
     public func loadedThreads() throws -> [String] {
         let res = try call("thread/loaded/list", [:])
         return (res["data"] as? [String]) ?? []

@@ -31,9 +31,20 @@ enum MeshNode {
         } else {
             log("agent runtime unavailable; pharos-meshd service is not ready")
         }
+        var codexWatcher: CodexDaemonWatcher? = nil
+        let env = ProcessInfo.processInfo.environment
+        if env["PHAROS_CODEX_WATCH"] != "0" {
+            let watchFile = CodexWatchFile.defaultURL(env: env)
+            let socketPath = CodexDaemonClient.socketPath(env: env)
+            let watcher = CodexDaemonWatcher(socketPath: socketPath, outputURL: watchFile)
+            watcher.start()
+            codexWatcher = watcher
+            log("codex watcher started")
+        }
         let shutdown = MeshNodeShutdownLatch()
         let signalSources = installSignalHandlers(shutdown: shutdown)
         defer {
+            codexWatcher?.stop()
             signalSources.forEach { $0.cancel() }
             runtimeLock.release()
             log("stopped")
