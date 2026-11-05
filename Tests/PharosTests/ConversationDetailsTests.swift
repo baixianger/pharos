@@ -66,6 +66,12 @@ final class ConversationDetailsTests: XCTestCase {
 
     @MainActor
     func testLiveTerminalViewModelBufferManagement() {
+        // Honest empty/disconnected state when no stream attached
+        let emptyVm = LiveTerminalViewModel(tmuxSession: "pharos:empty-pane")
+        XCTAssertEqual(emptyVm.lines.count, 0)
+        XCTAssertFalse(emptyVm.isStreaming)
+
+        // Attached stream with initial text
         let vm = LiveTerminalViewModel(
             tmuxSession: "pharos:test-pane",
             initialText: "Initial line\n"

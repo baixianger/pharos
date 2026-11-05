@@ -20,13 +20,9 @@ public final class LiveTerminalViewModel {
         initialText: String? = nil
     ) {
         self.tmuxSession = tmuxSession
+        self.isStreaming = (initialText != nil)
         if let initialText = initialText {
             appendOutput(initialText)
-        } else {
-            // Seed with realistic tmux pane header
-            appendOutput("\u{001B}[1;36m[tmux]\u{001B}[0m attached to session \u{001B}[1;32m\(tmuxSession)\u{001B}[0m (window 0, pane 0)\n")
-            appendOutput("\u{001B}[2m$ pharos agent peek --follow --uds ~/.codex/app-server-control/app-server-control.sock\u{001B}[0m\n")
-            appendOutput("\u{001B}[32m✔ UDS connection established\u{001B}[0m • streaming live ANSI buffer...\n")
         }
     }
 
@@ -127,19 +123,34 @@ public struct LiveTerminalView: View {
 
     private var terminalToolbar: some View {
         HStack(spacing: 10) {
-            // Live / Paused Status Indicator
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(viewModel.isStreaming ? Color.green : Color.orange)
-                    .frame(width: 7, height: 7)
-                Text(viewModel.isStreaming ? "LIVE" : "PAUSED")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundStyle(viewModel.isStreaming ? Color.green : Color.orange)
+            // Live / Paused / Disconnected Status Indicator
+            if viewModel.lines.isEmpty {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(Color.secondary)
+                        .frame(width: 7, height: 7)
+                    Text("DISCONNECTED")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Color.white.opacity(0.06))
+                .clipShape(Capsule())
+            } else {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(viewModel.isStreaming ? Color.green : Color.orange)
+                        .frame(width: 7, height: 7)
+                    Text(viewModel.isStreaming ? "LIVE" : "PAUSED")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(viewModel.isStreaming ? Color.green : Color.orange)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Color.white.opacity(0.06))
+                .clipShape(Capsule())
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(Color.white.opacity(0.06))
-            .clipShape(Capsule())
 
             // Session & Dimension Info
             Text("\(viewModel.tmuxSession) • \(viewModel.terminalDimensions)")
@@ -191,28 +202,47 @@ public struct LiveTerminalView: View {
     // MARK: - Canvas
 
     private var terminalCanvas: some View {
-        ScrollViewReader { proxy in
-            ScrollView([.horizontal, .vertical]) {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(viewModel.lines) { line in
-                        terminalLineView(line)
-                    }
+        Group {
+            if viewModel.lines.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 26))
+                        .foregroundStyle(Color.white.opacity(0.2))
+                    Text("No Terminal Stream Attached")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.6))
+                    Text("Session '\(viewModel.tmuxSession)' has no active tmux pipe attached.")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Color.white.opacity(0.35))
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 380)
+                .padding(20)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView([.horizontal, .vertical]) {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(viewModel.lines) { line in
+                                terminalLineView(line)
+                            }
 
-                    // Bottom anchor for auto-scroll
-                    Color.clear
-                        .frame(height: 1)
-                        .id("terminalBottom")
+                            // Bottom anchor for auto-scroll
+                            Color.clear
+                                .frame(height: 1)
+                                .id("terminalBottom")
+                        }
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .onChange(of: viewModel.lines.count) { _, _ in
+                        if viewModel.autoScroll && viewModel.isStreaming {
+                            proxy.scrollTo("terminalBottom", anchor: .bottom)
+                        }
+                    }
                 }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .onChange(of: viewModel.lines.count) { _, _ in
-                if viewModel.autoScroll && viewModel.isStreaming {
-                    proxy.scrollTo("terminalBottom", anchor: .bottom)
-                }
+                .frame(minHeight: 220, maxHeight: 380)
             }
         }
-        .frame(minHeight: 220, maxHeight: 380)
     }
 
     private func terminalLineView(_ line: AnsiTerminalLine) -> some View {

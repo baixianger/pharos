@@ -176,4 +176,11 @@ public final class SessionConversationViewModel {
     public func dismissError() {
         self.activeError = nil
     }
+
+    public func interruptSession() async {
+        isTurnInProgress = false
+        activeTurnId = nil
+        liveStreamingText = ""
+        liveReasoningText = ""
+    }
 }

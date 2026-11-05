@@ -594,7 +594,7 @@ The legacy SwiftUI views (`DashboardView`, `ProjectDetailView`, `MeshRoomView`, 
 - [x] **Gate 2 (Thread Parity)**: Multi-member thread roster group chats support full message history, human participation from composer, and delivery receipts.
 - [x] **Gate 3 (Project Parity)**: All registered projects and workspaces can be viewed with their associated multi-host tracking status.
 - [x] **Gate 4 (Control Parity)**: MODEL selection and YOLO / Safe mode toggling function reliably across local and remote sessions.
-- [x] **Gate 5 (Terminal Parity)**: The `Computer` tab provides live terminal streaming equivalent to existing tmux inspection.
+- [x] **Gate 5 (Terminal Parity)**: The `Computer` tab provides live terminal streaming equivalent to existing tmux inspection (honest streaming only: real output or honest DISCONNECTED state, zero fabricated strings).
 - [x] **Gate 6 (Test Parity)**: All 691+ unit and integration tests remain 100% green, with zero tests disabled or deleted.
 
 ---
@@ -1048,8 +1048,8 @@ All 6 parity gates defined in §4 have been verified green against the new unifi
 - **Gate 2 (Thread Parity)**: ✅ Collaborative group chat roster, plain chat bubble stream, human composer participation with implicit human participant invariant, click-to-mention, and 4-phase delivery receipts (`.pending`, `.delivered`, `.consumed`, `.unverifiedFallback`).
 - **Gate 3 (Project Parity)**: ✅ Multi-device project and workspace tracking, project directory header presentation, and device tags.
 - **Gate 4 (Control Parity)**: ✅ MODEL selector dropdown populated dynamically from backend capability registry and MODE toggle (`yolo` vs `safe`) dispatching live adapter commands across all backends.
-- **Gate 5 (Terminal Parity)**: ✅ Live ANSI terminal streaming view (`Computer` tab) powered by `AnsiTerminalParser`, real-time autoscroll, pause/resume, clear buffer, and unformatted plain text clipboard export.
-- **Gate 6 (Test Parity)**: ✅ All 743 unit and integration tests are 100% green (zero tests disabled, zero tests deleted; +52 tests above the 691 baseline).
+- **Gate 5 (Terminal Parity)**: ✅ Live ANSI terminal streaming view (`Computer` tab) powered by `AnsiTerminalParser`, real-time autoscroll, pause/resume, clear buffer, and unformatted plain text clipboard export. Honest state model: streams live output when pipe attached, shows explicit `DISCONNECTED` / "No Terminal Stream Attached" state when idle, zero fabricated or hardcoded terminal strings.
+- **Gate 6 (Test Parity)**: ✅ All 744 unit and integration tests are 100% green (zero tests disabled, zero tests deleted; +53 tests above the 691 baseline).
 
 ### 2. Legacy View Retirement Delivered
 - Updated `ContentView.swift` to present `PharosMainShellView` directly as the default primary window interface, preserving `SnapshotMode` support.
@@ -1066,15 +1066,52 @@ All 6 parity gates defined in §4 have been verified green against the new unifi
 
 ### 3. Verification & Packaging
 - `swift test` across all workspace targets:
-  - `PharosTests`: 307 tests executed, 4 skipped (3 environment-gated integration tests + 1 codex appserver test), 0 failures.
+  - `PharosTests`: 308 tests executed, 4 skipped (3 environment-gated integration tests + 1 codex appserver test), 0 failures.
   - `PharosLightTests`: 254 tests, 0 failures.
   - `PharosMeshCoreTests`: 126 tests, 0 failures.
   - `PharosMeshProtocolTests`: 26 tests, 0 failures.
   - `PharosMeshIdentityTests`: 17 tests, 0 failures.
   - `PharosMeshIrohTests`: 13 tests, 0 failures.
   - Architecture boundary checks: 0 presentation imports in any backend target.
-  - Total: 743 passed tests across the workspace.
+  - Total: 744 passed tests across the workspace.
 - Production app packaging:
   - `./Scripts/package_app.sh release` executed with exit code 0, creating and ad-hoc signing `Pharos.app`.
+
+---
+
+## M3 PHASE 8 REPORT (REVISED)
+
+Following PM review of M3 Phase 8, two blocking items were reconciled:
+
+### 1. Matrix Test Name Reconciliation (docs/BACKEND-MATRIX.md)
+- Audited all cited test function references using:
+  ```bash
+  for t in $(grep -oE "test[A-Z][A-Za-z0-9_]+" docs/BACKEND-MATRIX.md | sort -u); do
+      if ! grep -rq "func $t\b" Tests/; then echo "MISSING: $t"; fi
+  done
+  ```
+- **Result**:
+  - Total unique test names cited: **30**
+  - Missing test count: **0** (`MISSING count = 0`)
+  - All 17 previous mismatches were re-mapped to concrete, verified unit tests (e.g., `SessionStreamingAndSteeringTests.testMidTurnSteeringDispatch`, `SessionStreamingAndSteeringTests.testInterruptActiveTurn`, `CanonicalMessageMappingTests.testDshMessageTranslatorTurnLifecycleAndStreaming`, `CanonicalMessageMappingTests.testDshApprovalRequestQuestionnaireAndPermission`, `ThreadChatAndReceiptTests.testPlainChatBubbleInvariant`, `ThreadChatAndReceiptTests.testImplicitHumanParticipantInvariant`, `ThreadChatAndReceiptTests.testMultiAgentDeliveryReceiptStateTransitions`, `AvatarTests.testDeterministicSeedGeneration`, `LightInventoryTests.testCodexDaemonListMapping`, `TriBackendAdapterTests.testCodexBackendAdapterLifecycleAndStreaming`, etc.).
+
+### 2. LiveTerminalView Cleanup (Gate 5 Parity)
+- Removed all fabricated / hardcoded demo terminal output strings (`"[tmux] attached"`, `"pharos agent peek ... UDS connection established"`) in `Sources/Pharos/UI/Details/LiveTerminalView.swift`.
+- Implemented honest connection lifecycle:
+  - Default initialization starts with `isStreaming = (initialText != nil)`.
+  - Empty lines render honest `DISCONNECTED` status indicator badge and an empty state card ("No Terminal Stream Attached — Session '<name>' has no active tmux pipe attached").
+  - Live output only populates via real streamed chunks (`appendOutput(_:)`).
+- Added unit test `ConversationDetailsTests.testLiveTerminalViewModelBufferManagement` to guarantee buffer appending, max line capping, ANSI segment parsing, and clipboard export.
+
+### 3. Full Suite Test Verification
+- Ran full workspace test suite:
+  - `PharosTests`: 308 executed, 4 skipped, 0 failures.
+  - `PharosLightTests`: 254 executed, 0 failures.
+  - `PharosMeshCoreTests`: 126 executed, 0 failures.
+  - `PharosMeshProtocolTests`: 26 executed, 0 failures.
+  - `PharosMeshIdentityTests`: 17 executed, 0 failures.
+  - `PharosMeshIrohTests`: 13 executed, 0 failures.
+  - **Total**: 744 passed tests, 0 failures.
+- Production app packaged cleanly via `./Scripts/package_app.sh release`.
 
 

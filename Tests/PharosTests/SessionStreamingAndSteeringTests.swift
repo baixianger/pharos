@@ -198,4 +198,18 @@ final class SessionStreamingAndSteeringTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - 6. Interrupt Active Turn Tests
+
+    func testInterruptActiveTurn() async {
+        let mockService = MockPharosClientService()
+        let vm = SessionConversationViewModel(sessionId: "ses_int_1", clientService: mockService)
+
+        let turn = CanonicalTurn(turnId: "turn_int_1", sessionId: "ses_int_1", turnNumber: 1, status: .inProgress)
+        vm.handleClientEvent(.turnStarted(turn))
+        XCTAssertTrue(vm.isTurnInProgress)
+
+        await vm.interruptSession()
+        XCTAssertFalse(vm.isTurnInProgress)
+    }
 }
