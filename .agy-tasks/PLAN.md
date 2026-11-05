@@ -131,6 +131,28 @@ Milestone 3 transforms Pharos from a CLI-driven session launcher into a **unifie
   - **agy**: `agy acp` (stdio JSON-RPC) as the primary path. Because it is a stdio child process, the headless Pharos backend daemon holds and supervises it, keeping it independent of SwiftUI client restarts. The tmux TUI stays as the external fallback.
 - **Scope Exclusion**: Headless modes (`dsh --profile headless`, `agy print stream-json`) are explicitly **OUT of M3** and deferred to future milestones.
 
+#### Architectural Principle: Two Completely Distinct Paths (Session vs Thread) (Added 2026-11-05 13:36 User Decision)
+- **SESSION (1:1 Direct Agent Chat)**:
+  - The human operator chats 1:1 with one agent session in the unified UI.
+  - Traffic routes directly through that backend's central long-running service:
+    - **Codex**: Shared daemon WebSocket (`app-server-control.sock`). No tmux needed.
+    - **dsh**: Persistent `dsh web --no-open` Host port in tmux (`127.0.0.1:<fixed>`), token kept in memory only.
+    - **agy**: `agy acp` (stdio JSON-RPC) held by headless Pharos backend daemon (tmux TUI fallback).
+  - Core requirements: Live token-level streaming output, mid-turn steering (`turn/steer`, ACP prompt), in-UI approval prompts/resolutions, and dynamic model switching.
+- **THREAD (Group Collaboration Roster)**:
+  - A group chat containing multiple agents plus the human participant.
+  - Messages route through the Pharos broker/mesh durable mailbox; delivered to each member; on completion, final replies are captured and posted back into the thread.
+  - Delivery mechanisms per member:
+    - **dsh**: `dsh-plugin-pharos` in-process delivery loop (`delivery.poll` -> `agent.followup()` -> `delivery.ack`). Strictly used for Threads; never used for Sessions.
+    - **Codex**: Durable mailbox delivers via daemon connection with `turn/start` into member's own thread; on `turn/completed`, posts final reply to thread plus delivery receipt.
+    - **agy**: Durable mailbox delivers over ACP connection into member's session; on completion, posts final reply + receipt (tmux keystroke + transcript read-back as fallback).
+  - Core requirements: Reliable delivery, 4-stage delivery receipts, sender avatars, human composer posting. (Token-level streaming is NOT required in Threads).
+- **History Isolation & Separation of Concerns**:
+  - The same agent can have an active 1:1 session AND simultaneously participate in multiple threads.
+  - Message histories are strictly separated with zero cross-contamination. Modeled as distinct resources in `PharosClientKit`: `ClientSessionMessage` vs `ClientThreadMessage`.
+- **Cross-Machine Routing Invariant**:
+  - Always send to that host's Pharos node over mesh/broker, which calls the backend locally. Never open vendor sockets across machines.
+
 ```mermaid
 flowchart TD
     subgraph UI ["SwiftUI Client Target (PharosUI / PharosApp)"]
@@ -199,21 +221,23 @@ public enum DeliveryGuarantee: String, Sendable, Codable {
 }
 ```
 
-#### Detailed Backend Mechanics Comparison
+#### Authoritative Per-Backend Handling Matrix (Added 2026-11-05 13:36 User Decisions)
 
-| Dimension | Codex (`codex-cli 0.166.0`) | Antigravity (`agy 1.5.1`) | DeepSeek Harness (`dsh 0.2.1-rc.5`) |
+| Dimension | Codex (`codex-cli 0.166.0`) | DeepSeek Harness (`dsh 0.2.1-rc.5`) | Antigravity (`agy 1.5.1`) |
 |---|---|---|---|
-| **Member Type** | `codex` | `agy` | `dsh` (first-class member type) |
-| **Hosting Model** | Self-managed shared daemon (`~/.codex/app-server-control/app-server-control.sock`). **No tmux needed**. | Stdio child process held by **headless Pharos daemon** (independent of UI restarts). | Pharos-managed `dsh web --no-open` in **tmux session** + in-process Cordis plugin. |
-| **Primary Channel** | Shared Daemon WebSocket-over-UDS (`app-server-control.sock`). Never touch `ipc.sock`. Explicit approval owner. | `agy acp` (ACP 1.5.0 stdio JSON-RPC). | **UI Chat**: HTTP/WS port of `dsh web` (in-memory token, `/api/session/*`, `session/follow` on `/api/remote.mux`).<br>**Threads**: `dsh-plugin-pharos` delivery loop. **[TBD: pending rea-dshweb]** |
-| **Message Injection** | `turn/start` (idle) or `turn/steer` (active turn mid-stream) | `session/prompt` (supports mid-turn steering) | **UI Chat**: `POST /api/session/prompt` (queue/steer).<br>**Threads**: `delivery.poll` -> `agent.followup()`. |
-| **Reply Read-Back** | Real-time `item/agentMessage/delta`, `item/completed`, `turn/completed`. Backfill via `thread/turns/list`. | Real-time `session/update` chunks and `session/prompt` stopReason | **UI Chat**: `session/follow` WS stream.<br>**Threads**: plugin `session/event` (`turn/start`, `assistant/message`, `turn/end`). |
-| **Delivery Receipts** | RPC response + `turn/started` server notification | ACP `session/prompt` ACK + stopReason result | **UI Chat**: `requestId` + follow stream.<br>**Threads**: 4-phase `delivery.ack` (`accepted` -> `injected` -> `consumed` -> `completed`). |
-| **Status / `needs_human`** | In-memory `waitingOnApproval` via `thread/status/changed`; single-lease `ApprovalBroker` | ACP `session/request_permission` forwards to UI; TUI footer check (`? for shortcuts`) | In-process listener on `approval/asked` / `approval/decided` -> reports `needs_human`; answers via web API. |
-| **Model Switching** | Unsupported in live TUI; graceful restart fallback (`/quit` -> await exit -> `codex resume -m <model>`) | In-session hot swap via ACP `session/set_config_option` reading dynamic `configOptions` | Web `session/control` (`selectModel`) or ACP `set_config_option`; logged in `model/selection`. |
-| **Session Discovery** | `thread/loaded/list` for active threads + SQLite `state_5.sqlite` (`preview <> ''`) | SQLite `conversation_summaries.db` + non-blocking `flock` on `presence/<id>.lock` | Projection cache `~/.dsh/storages/session_projcache/sessions/*.json` or web `session/list`. |
-| **Attached / Fallback** | Standalone rollout reading + tmux `send-keys` | Read-only Attached (tail `transcript.jsonl` + presence lock); tmux `send-keys` fallback | Read-only projection cache; tmux `send-keys` fallback.<br>*(Headless `--profile headless` is OUT of M3)*. |
-| **Known Pitfalls** | Must use WebSocket frames (not raw JSONL); empty threads fail immediate resume; no notification replay | Lock files linger after crash; TUI stdin cannot be attached.<br>*(Headless print mode is OUT of M3)*. | Single-writer lock `session.lock`; zstd logs cannot be tailed; web token not on disk (kept in memory). |
+| **Member Type** | `codex` | `dsh` (first-class member type) | `agy` |
+| **Hosting Model** | Self-managed shared daemon (`~/.codex/app-server-control/app-server-control.sock`). **No tmux needed**. | Persistent `dsh web --no-open` Host running in **tmux session** (`127.0.0.1:<port>`). In-memory token only. | Stdio child process held by **headless Pharos daemon** (independent of UI restarts). Tmux TUI fallback. |
+| **SESSION: Primary Connection** | WebSocket-over-UDS to shared daemon. Never touch `ipc.sock`. Explicit approval owner. | HTTP/WS port of `dsh web` host in tmux. Token in memory only (never logged). **[TBD pending rea-dshweb]** | `agy acp` (ACP 1.5.0 stdio JSON-RPC) held by backend daemon. |
+| **SESSION: Injection & Steering** | `turn/start` (idle turn), `turn/steer` (mid-turn append/steering). | `POST /api/session/prompt` (queue/steer via web API). | `session/prompt` (supports mid-turn steering/appending). |
+| **SESSION: Reply Streaming** | Real-time `item/agentMessage/delta`, `item/completed`, `turn/completed`. Backfill via `thread/turns/list` on reconnect. | `session/follow` on `/api/remote.mux` real-time WebSocket stream. | Real-time `session/update` chunks and `session/prompt` stopReason. |
+| **SESSION: Approvals (`needs_human`)** | In-memory `waitingOnApproval` via `thread/status/changed`; Pharos answers approvals (`ApprovalBroker` single lease). | Approvals / user questions answered via web API (`userQuestions/answer`). | ACP `session/request_permission` forwards to UI; user decision sent back. |
+| **SESSION: Model Switching** | Graceful restart fallback (`/quit` -> wait -> `codex resume -m <model>`). | Web API `session/control` (`selectModel`); audit trail in `model/selection`. | In-session hot swap via ACP `session/set_config_option` from dynamic `configOptions`. |
+| **THREAD: Delivery Primitive** | Mailbox delivers via same daemon connection with `turn/start` into member's own thread. | `dsh-plugin-pharos` in-process delivery loop (`delivery.poll` -> `agent.followup()` -> `delivery.ack`). | Mailbox delivers over same ACP connection into member's session (or tmux keystroke fallback). |
+| **THREAD: Reply & Receipts** | On `turn/completed`, captures final turn reply, posts back to thread plus delivery receipt. | Plugin emits `session/event` (`turn/end`), completes `delivery.ack`, posts reply back to thread + receipt. | On completion, captures final reply, posts back to thread plus delivery receipt. |
+| **THREAD: Token Streaming** | **Not required**. Delivers completed final message to thread. | **Not required**. Delivers completed final message to thread. | **Not required**. Delivers completed final message to thread. |
+| **Cross-Machine Routing** | Always dispatch to target host's Pharos node over mesh/broker; node calls daemon locally. | Always dispatch to target host's Pharos node over mesh/broker; node calls web API locally. | Always dispatch to target host's Pharos node over mesh/broker; node calls ACP locally. |
+| **History Isolation** | Strict isolation between 1:1 daemon session and thread roster messages. Zero cross-contamination. | Strict isolation between `dsh web` 1:1 session and `dsh-plugin-pharos` thread roster messages. | Strict isolation between 1:1 ACP session and thread roster messages. Zero cross-contamination. |
+| **Scope Exclusions** | CLI standalone mode without daemon deferred. | Headless `--profile headless` is **OUT of M3**. | Headless `print stream-json` is **OUT of M3**. |
 
 ---
 
@@ -246,7 +270,8 @@ flowchart TD
     - `ClientSessionSummary`: id, host, memberName, agentType (`codex` | `agy` | `dsh`), workspacePath, activeModel, activeMode (`yolo` | `safe`), activityState (`idle` | `busy` | `needs_human` | `stopped`), avatarSeed, unreadCount, updatedAt.
     - `ClientThreadSummary`: threadId, title, participantNames, unreadCount, lastMessagePreview, lastMessageAt.
     - `ClientProjectSummary`: projectId, name, path, trackedHosts (`mini`, `air`), activeSessionCount.
-    - `ClientMessage`: id, threadId, senderName, senderType (`human` | `agent`), avatarSeed, content, timestamp, status (`pending` | `sent` | `delivered` | `failed`), toolCalls: `[ClientToolCall]`.
+    - **`ClientSessionMessage` (1:1 Session Direct Chat)**: id, sessionId, senderType (`human` | `agent`), content, timestamp, streamingState (`streaming` | `completed` | `failed`), toolCalls: `[ClientToolCall]`, pendingApproval: `ClientApprovalRequest?`.
+    - **`ClientThreadMessage` (Thread Roster Group Chat)**: id, threadId, senderName, senderType (`human` | `agent`), avatarSeed, content, timestamp, status (`pending` | `delivered` | `consumed` | `unverifiedFallback`), receipts: `[ClientDeliveryReceipt]`.
     - `ClientMemberDetail`: host, agentType, workspacePath, sessionId, model, mode, tmuxSessionName, liveness, capabilities: `BackendCapabilities`.
     - `ClientAvatarInfo`: seed, customColorHex, customImageUrl, stateRing (`idle` | `working` | `needs_human` | `stopped`).
     - `ClientAttentionItem`: memberName, threadId, reason, toolName, promptText, requestedAt.
@@ -256,17 +281,24 @@ flowchart TD
         func fetchSessions() async throws -> [ClientSessionSummary]
         func fetchThreads() async throws -> [ClientThreadSummary]
         func fetchProjects() async throws -> [ClientProjectSummary]
-        func fetchMessages(threadId: String) async throws -> [ClientMessage]
+        func fetchSessionMessages(sessionId: String) async throws -> [ClientSessionMessage]
+        func fetchThreadMessages(threadId: String) async throws -> [ClientThreadMessage]
         func fetchMemberDetail(name: String) async throws -> ClientMemberDetail
         
-        func sendDirectMessage(sessionId: String, text: String) async throws -> ClientMessage
-        func sendThreadMessage(threadId: String, text: String) async throws -> ClientMessage
+        // 1:1 Session actions (live streaming, steering, approvals)
+        func sendSessionMessage(sessionId: String, text: String) async throws -> ClientSessionMessage
+        func steerSession(sessionId: String, text: String) async throws
+        func resolveSessionApproval(sessionId: String, approvalId: String, decision: String) async throws
+        
+        // Thread Roster actions (reliable delivery, fanout, receipts)
+        func sendThreadMessage(threadId: String, text: String) async throws -> ClientThreadMessage
+        
+        // Member administration
         func setMemberMode(name: String, mode: String) async throws
         func setMemberModel(name: String, model: String) async throws
         func setMemberAvatar(name: String, avatar: ClientAvatarInfo) async throws
         func stopMember(name: String) async throws
         func reviveMember(name: String) async throws
-        func resolveAttention(name: String, decision: String) async throws
         
         func events() -> AsyncStream<PharosClientEvent>
     }
@@ -345,65 +377,86 @@ flowchart TD
 
 ---
 
-### Goal 4: Unified Direct Agent Chat & Transcript Bubble Readback (Sessions Tab)
-**Rank**: 4 (Core Agent Control)  
-**Value**: Unifies all coding agents across all hosts into a single interactive interface where the human can directly prompt, steer, and monitor any active session.
+### Goal 4: SESSION Path — 1:1 Direct Agent Chat, Live Token Streaming & Mid-Turn Steering (Sessions Tab)
+**Rank**: 4 (Core Agent Control & 1:1 Interactivity)  
+**Value**: Unifies all coding agents across all hosts into a single interactive 1:1 interface where the human directly prompts, steers mid-turn, and resolves approval requests in real time.
 
-- **Scope**:
+- **Design**:
   - **Left Pane — `Sessions` Tab**:
-    - Global inventory list displaying all live agent sessions across all hosts (`machine/agent/workspace/session`), excluding archived sessions.
-    - Rows display: 36px deterministic member avatar, session title / workspace name, agent type badge (`codex` | `agy` | `dsh`), host badge (`mini` | `air`), 1-line latest message preview, and state indicator (`idle`, `working`, `needs_human`, `stopped`).
-    - Filter bar: filter by host, agent type, or search query.
-  - **Middle Pane — Direct Chat View**:
-    - Selecting a session loads its full conversation history.
-    - Human composer at bottom: multi-line expandable text input with syntax highlight, file drop support, and Send button (`Enter` to send, `Shift+Enter` for newline).
-    - Direct injection: Typing in composer routes directly into the target member adapter:
-      - `codex`: via shared daemon WebSocket `turn/start` / `turn/steer` (`app-server-control.sock`).
-      - `agy`: via daemon-held `agy acp` `session/prompt` (supports mid-turn steering).
-      - `dsh`: via Pharos-owned `dsh web` HTTP/WS `/api/session/*` using in-memory launch token [TBD: pending `rea-dshweb`].
-    - Live Read-Back & Bubble Stream:
-      - Streaming tokens render live in real-time chat bubbles (`item/agentMessage/delta`, `session/update`, `session/follow`).
-      - Structured tool execution cards (file read, command execution, edit diffs) with expandable details.
-      - Actionable `needs_human` approval cards: "Allow once", "Allow always", "Reject" with immediate RPC callback resolution.
+    - Global inventory list displaying all active agent sessions across all hosts (`machine/agent/workspace/session`), excluding archived sessions.
+    - Displays: 36px deterministic member avatar, session title / workspace name, agent badge (`codex` | `agy` | `dsh`), host badge (`mini` | `air`), latest message preview, and activity badge (`idle`, `working`, `needs_human`, `stopped`).
+  - **Middle Pane — 1:1 Conversation Canvas**:
+    - Selecting a session loads its dedicated 1:1 conversation history (`ClientSessionMessage`).
+    - Human composer at bottom: multi-line expandable input with syntax highlight, file drop, and Send button (`Enter` to send, `Shift+Enter` for newline).
+  - **Central Service Routing & Injection**:
+    - `Codex`: Routes directly to shared daemon via WebSocket-over-UDS (`app-server-control.sock`). Injects via `turn/start` (idle) or `turn/steer` (mid-turn). Reconnect backfill via `thread/turns/list`. Pharos acts as explicit approval owner.
+    - `dsh`: Routes to persistent `dsh web --no-open` Host running in tmux (`127.0.0.1:<port>`). Injects via `POST /api/session/prompt` (queue/steer); subscribes to live token stream via `session/follow` on `/api/remote.mux`; handles approvals and model selection via web API. Launch token kept in memory only. **[TBD details pending rea-dshweb]**
+    - `agy`: Routes to `agy acp` (stdio JSON-RPC) long-running child held by headless Pharos backend daemon. Injects via `session/prompt` (supports mid-turn append/steering); receives streaming chunks via `session/update`; forwards interactive approvals via `session/request_permission`; switches models dynamically via `session/set_config_option`. Tmux TUI fallback.
+  - **Live Token Streaming & Approval Dialogs**:
+    - Real-time token deltas render live in streaming chat bubbles (`item/agentMessage/delta`, `session/update`, `session/follow`).
+    - Actionable `needs_human` approval cards: "Allow once", "Allow always", "Reject" with immediate RPC callback resolution.
+  - **History Isolation Invariant**:
+    - 1:1 session messages are stored and rendered exclusively as `ClientSessionMessage`. They never appear in thread rosters and are never polluted by group thread deliveries.
+  - **Cross-Machine Routing Invariant**:
+    - Messages to remote hosts (e.g. Air) are dispatched over broker/mesh to that host's Pharos node, which interacts with the vendor service locally. Never open vendor sockets across machines.
 - **Acceptance Criteria**:
-  - *Unit*: Parser unit tests converting raw adapter event streams (WebSocket notifications, ACP chunks, web follow events) into strongly-typed `ClientMessage` bubbles and tool cards.
+  - *Unit*:
+    - Streaming token delta aggregation tests converting raw adapter notifications into `ClientSessionMessage` bubbles.
+    - Mid-turn steering command tests (`turn/steer` payload generation, ACP prompt mid-turn append).
+    - Approval request and response resolution roundtrip tests.
+    - Reconnect backfill test reconciling missing turns via `thread/turns/list`.
+    - History isolation assertion: verifying 1:1 session message store has zero thread roster messages.
   - *Live (mini)*:
-    1. Select local `codex` session: send prompt from composer; observe live streaming bubble response.
-    2. Select local `agy` session: send prompt; verify live bubble response.
-    3. Trigger a tool requiring approval in `agy` / `codex`; verify approval card renders in chat bubble; click "Allow"; verify session proceeds.
-  - *Cross-host (mini <-> Air)*: Select a remote `agy` session on Air from the mini UI; type message; verify message routes over mesh, triggers execution on Air, and streams reply bubbles back to mini UI.
+    1. Select local `codex` session: send prompt; verify live token streaming; submit second prompt while turn is running to verify mid-turn steering; verify approval dialog resolution.
+    2. Select local `agy` session: send prompt; verify live token streaming; submit mid-turn steer; verify approval resolution.
+    3. Select local `dsh` session: send prompt; verify web API follow stream; verify launch token remains volatile in memory only (never written to disk or logs).
+  - *Cross-host (mini <-> Air)*: Select remote agent session on Air from mini UI; type message; verify message dispatches to Air's Pharos node, executes locally on Air, and streams live tokens back to mini UI.
 - **Risks & Mitigations**:
   - *Risk*: TUI ANSI escape codes or control characters corrupting chat bubbles.
   - *Mitigation*: Robust ANSI strip and sanitize filter in presentation layer; preferred use of structured JSON streams over terminal capture.
 
 ---
 
-### Goal 5: Thread Roster Group Chat with Human Participant & Multi-Hop Delivery
-**Rank**: 5 (Multi-Agent Collaboration)  
-**Value**: Enables seamless collaboration between multiple coding agents and the human operator within shared multi-member task threads.
+### Goal 5: THREAD Path — Group Chat Collaboration Roster with Human Participant & Delivery Receipts (Threads Tab)
+**Rank**: 5 (Multi-Agent Collaboration & Coordination)  
+**Value**: Enables seamless multi-agent collaborative workflows within shared task threads, allowing the human operator to participate as a first-class peer.
 
 - **Scope**:
   - **Left Pane — `Threads` Tab**:
     - Lists active group threads and direct member rosters with unread badges, participant avatar clusters, and last updated timestamps.
   - **Middle Pane — Group Chat Canvas**:
-    - Displays messages with distinct sender avatars, names, role tags, and delivery timestamps.
+    - Displays messages with distinct sender avatars, names, role tags, delivery timestamps, and delivery receipt indicators.
     - Human operator is a first-class roster participant (`tester` / `human`).
     - Composer allows the human to post into the thread; message dispatches to all other roster participants using Pharos light messaging delivery rules.
-    - Agent-to-agent message exchange:
-      - `dsh` members participate in Threads strictly via `dsh-plugin-pharos` (`delivery.poll` -> `agent.followup()` -> `delivery.ack`), ensuring the inter-agent collaboration path remains decoupled from the UI direct chat path.
-      - `codex` members receive thread deliveries via daemon queue/steer.
-      - `agy` members receive deliveries via ACP `session/prompt` (or TUI keystroke fallback).
+  - **Durable Mailbox Routing & Delivery Primitives**:
+    - Messages route through Pharos broker/mesh durable mailbox. Delivered to each roster member; final replies captured and posted back into the thread.
+    - Delivery mechanisms per member:
+      - `Codex`: Durable mailbox delivers via daemon connection with `turn/start` into member's own thread; on `turn/completed`, final turn reply is posted back to thread plus delivery receipt.
+      - `dsh`: Exclusively via `dsh-plugin-pharos` in-process delivery loop (`delivery.poll` -> `agent.followup()` -> `delivery.ack`). Strictly used for Threads; never used for 1:1 Sessions.
+      - `agy`: Durable mailbox delivers over ACP connection into member's session; on completion, final reply is posted back plus receipt. Tmux keystroke + transcript read-back as fallback.
   - **Delivery Receipts & Status Indicators**:
-    - Each message bubble displays delivery receipt status:
-      - `pending` (in-flight)
+    - 4-stage delivery receipt lifecycle displayed per message bubble:
+      - `pending` (in-flight in mailbox)
       - `delivered` (acknowledged by recipient member adapter)
       - `seen` / `consumed` (injected into agent context)
       - `unverified fallback` (tmux keystroke fallback)
-    - Tool to copy thread context or export conversation transcript.
+  - **Streaming Requirement**:
+    - **Token-level streaming is NOT required in Threads**. Only final completed messages are posted to the thread upon turn completion.
+  - **History Isolation Invariant**:
+    - Thread messages are modeled and persisted exclusively as `ClientThreadMessage`. Never cross-contaminate 1:1 session history.
+  - **Cross-Machine Routing Invariant**:
+    - Thread deliveries to remote host members dispatch over broker/mesh to remote Pharos node, which executes locally. Never open vendor sockets across machines.
 - **Acceptance Criteria**:
-  - *Unit*: Roster participant derivation tests, delivery fanout tests, receipt aggregation state machine tests.
-  - *Live (mini)*: Create thread `t_collab_test` containing local `codex` member, local `agy` member, and human. Human posts instruction from composer; verify both agents receive message, execute tasks, and post replies back into the thread with verified delivery receipts.
-  - *Cross-host (mini <-> Air)*: Thread containing mini `codex` member, Air `agy` member, and human. Human posts from mini UI; verify Air member receives message over mesh and responds back to the thread.
+  - *Unit*:
+    - Roster participant derivation and durable mailbox fanout tests.
+    - 4-stage delivery receipt state machine tests (`pending` -> `delivered` -> `consumed`).
+    - Final turn reply extraction tests without token streaming.
+    - Cross-contamination assertion: verify thread messages never enter `ClientSessionMessage` store.
+  - *Live (mini)*:
+    - Create thread `t_collab_test` containing local `codex` member, local `agy` member, local `dsh` member, and human composer.
+    - Human posts message into thread; verify all 3 agents receive message via their respective delivery primitives; verify final replies appear in thread with verified receipts.
+  - *Cross-host (mini <-> Air)*:
+    - Thread spanning mini `codex` member, Air `agy` member, and human composer. Human posts from mini UI; remote Air agy receives message via Air Pharos node, executes, and posts final reply + receipt back to the thread.
 - **Risks & Mitigations**:
   - *Risk*: Infinite reply loops between autonomous agents.
   - *Mitigation*: Enforce hop limit (`maxHops: 8`), sender suppression, and human turn-taking controls.
