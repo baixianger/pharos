@@ -1,0 +1,38 @@
+name: Publish app page
+on:
+  push:
+    branches: [app-page]
+concurrency: app-page-publish
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      APP: pharos
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorize push to brainstorm
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.IMPAI_DEPLOY_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Sync site/ into impai.me (main, then website)
+        run: |
+          set -euo pipefail
+          git config --global user.name "app-page publisher"
+          git config --global user.email "baixianger@gmail.com"
+          MSG="apps/$APP: publish from $GITHUB_REPOSITORY@${GITHUB_SHA::7}"
+          EX=(--exclude README.md --exclude publish.sh --exclude screenshot-generator
+              --exclude screenshots --exclude appstore-metadata.md --exclude .DS_Store)
+          publish () { # $1 = brainstorm branch, $2 = dest dir on that branch
+            git clone -q --depth 1 -b "$1" git@github.com:baixianger/brainstorm.git "bs-$1"
+            mkdir -p "bs-$1/$2"
+            rsync -a --delete "${EX[@]}" site/ "bs-$1/$2/"
+            git -C "bs-$1" add -A
+            git -C "bs-$1" diff --cached --quiet && { echo "$1: no changes"; return 0; }
+            git -C "bs-$1" commit -qm "$MSG"
+            git -C "bs-$1" push -q
+            echo "$1: published"
+          }
+          publish main "home-page/public/apps/$APP"
+          publish website "public/apps/$APP"

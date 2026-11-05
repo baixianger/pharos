@@ -5,6 +5,29 @@ Maps Pharos versions to git history. Newest at top.
 
 ---
 
+## v0.11.1 — 2026-07-21
+
+**Local-first distributed Mesh.** macOS, iOS, and Linux now keep signed local
+replicas and synchronize over identity-addressed Iroh connections. There is no
+global Broker writer; offline project, issue, room, message, and attachment
+changes converge deterministically after reconnect.
+
+**Recoverable trust management.** Pairing is signed, expiring, and single-use;
+re-pairing the same cryptographic identity refreshes routing without weakening
+collision checks. Trusted-device removal now advances an atomic signed
+membership epoch on macOS, iOS, and the shared CLI. Offline surviving devices
+receive the same transition on reconnect, while omitted keys retain no current
+RPC authority. Key rotation uses pair-new, verify-sync, then revoke-old.
+
+**Cross-platform proof.** The same schema and protocol compile for macOS, iOS,
+and Linux. SwiftPM has 299 passing tests and the iOS simulator suite has 26.
+CI builds and tests macOS and iOS, builds the pinned Rust Iroh library and Linux
+CLI, installs the resulting Debian package, and runs a migration cutover,
+rollback, and re-cutover drill. The legacy TCP Broker remains an explicit
+rollback path only.
+
+---
+
 ## v0.8.0 — 2026-07-16
 
 **One durable data authority.** The Mesh Broker now owns projects, issues,

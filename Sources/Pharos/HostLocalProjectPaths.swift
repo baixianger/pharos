@@ -49,6 +49,14 @@ enum HostLocalProjectPaths {
 
     static func path(for projectID: UUID) -> String? { load()[projectID.uuidString] }
 
+    static func set(_ path: String?, for projectID: UUID) {
+        var paths = load()
+        let value = path?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let value, !value.isEmpty { paths[projectID.uuidString] = value }
+        else { paths.removeValue(forKey: projectID.uuidString) }
+        save(paths)
+    }
+
     private static func load() -> [String: String] {
         guard let data = PharosPrefs.shared.data(forKey: key),
               let value = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }

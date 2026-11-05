@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 CONF=${1:-release}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -89,7 +91,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleURLTypes</key>
     <array>
       <dict>
-        <key>CFBundleURLName</key><string>Pharos Broker Pairing</string>
+        <key>CFBundleURLName</key><string>Pharos Mesh Invitation</string>
         <key>CFBundleURLSchemes</key><array><string>pharos</string></array>
       </dict>
     </array>
@@ -106,10 +108,22 @@ PLIST
 build_product_path() {
   local name="$1"
   local arch="$2"
-  case "$arch" in
-    arm64|x86_64) echo ".build/${arch}-apple-macosx/$CONF/$name" ;;
-    *) echo ".build/$CONF/$name" ;;
-  esac
+  local conf_cap="Debug"
+  [[ "$CONF" == "release" ]] && conf_cap="Release"
+  if [[ -f ".build/${arch}-apple-macosx/$CONF/$name" ]]; then
+    echo ".build/${arch}-apple-macosx/$CONF/$name"
+  elif [[ -f ".build/$CONF/$name" ]]; then
+    echo ".build/$CONF/$name"
+  elif [[ -f ".build/out/Products/$conf_cap/$name" ]]; then
+    echo ".build/out/Products/$conf_cap/$name"
+  elif [[ -f ".build/out/Products/$CONF/$name" ]]; then
+    echo ".build/out/Products/$CONF/$name"
+  else
+    case "$arch" in
+      arm64|x86_64) echo ".build/${arch}-apple-macosx/$CONF/$name" ;;
+      *) echo ".build/$CONF/$name" ;;
+    esac
+  fi
 }
 
 verify_binary_arches() {

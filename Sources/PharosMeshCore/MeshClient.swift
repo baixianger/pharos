@@ -1,5 +1,6 @@
 import Foundation
 import Crypto
+import PharosMeshProtocol
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -45,6 +46,15 @@ public enum MeshRegistryError: LocalizedError, Equatable {
 /// (like tmux), sends one request, and returns the response. `wait` blocks here
 /// because the daemon holds the response open until a message arrives.
 public enum MeshClient {
+    /// Phase 1 defaults to the existing socket path. An explicit Iroh choice
+    /// returns a clear unsupported error until the Phase 2 adapter is linked.
+    nonisolated(unsafe) public static var transportPreference: MeshTransportPreference = .legacy
+
+    /// Product shells can hard-disable the legacy local Broker. This is a
+    /// defense-in-depth boundary: an overlooked legacy read may fail closed,
+    /// but it cannot silently recreate a daemon or Unix socket after cutover.
+    nonisolated(unsafe) public static var allowsLocalDaemonAutoSpawn = true
+
     /// GUI-set remote broker endpoint ("ip:port"), resolved from the peer SSH
     /// host (see MeshRemote). When set, the app dials that broker instead of a
     /// local one and never auto-spawns a daemon. The `PHAROS_MESH_TCP` env var
@@ -96,6 +106,7 @@ public enum MeshClient {
 
     public static func ensureDaemon() {
         if let fd = connectUDS() { close(fd); return }
+        guard allowsLocalDaemonAutoSpawn else { return }
         // Resolve symlinks so a `chat`-symlink invocation spawns the daemon as the
         // REAL binary (argv0 "Pharos", not "chat" — else its args get re-prefixed).
         let exe = (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath()
@@ -129,23 +140,24 @@ public enum MeshClient {
     @discardableResult
     public static func sendIfUp(_ req: MeshRequest) -> MeshResponse? {
         if activeRemote != nil { return send(req) }
-        guard let fd = connectUDS() else { return nil }
-        defer { close(fd) }
-        return roundTrip(fd, req)
+        do {
+            let frame = try exchangeFrame(req, using: .unixSocket(path: MeshPaths.socketPath))
+            return try decodeResponse(frame.header)
+        } catch LegacySocketMeshTransportError.cannotConnect {
+            return nil
+        } catch {
+            return .fail(error.localizedDescription)
+        }
     }
 
     public static func send(_ req: MeshRequest) -> MeshResponse {
         // Remote broker (TCP): never auto-spawn a local daemon — just dial it.
         if let ep = activeRemote {
-            guard let fd = connect() else { return .fail("cannot reach remote mesh broker at \(ep)") }
-            defer { close(fd) }
-            return roundTrip(fd, req)
+            return exchange(req, using: .tcp(endpoint: ep))
         }
         if let e = MeshPaths.socketPathOverflow { return .fail(e) }
         ensureDaemon()
-        guard let fd = connectUDS() else { return .fail("cannot reach mesh daemon") }
-        defer { close(fd) }
-        return roundTrip(fd, req)
+        return exchange(req, using: .unixSocket(path: MeshPaths.socketPath))
     }
 
     /// Broker-driven change feed. The first call with a nil cursor establishes
@@ -155,13 +167,11 @@ public enum MeshClient {
     public static func events(after cursor: UInt64?, timeoutMs: Int = 25_000) -> MeshResponse {
         let request = MeshRequest(cmd: "events", timeoutMs: timeoutMs, cursor: cursor)
         guard activeRemote != nil else { return send(request) }
-        guard let fd = connect() else { return .fail("cannot reach remote mesh broker") }
-        defer { close(fd) }
         // The broker deliberately holds this request open. Give it a small
         // grace period beyond the requested long-poll deadline, but never an
         // unbounded read if the connection becomes half-open.
-        meshSetSocketTimeouts(fd, seconds: Double(timeoutMs) / 1_000 + 2)
-        return roundTrip(fd, request)
+        return exchange(request, using: .tcp(endpoint: activeRemote!),
+                        timeoutMilliseconds: timeoutMs + 2_000)
     }
 
     /// Send directly to a specific TCP broker, bypassing the environment and
@@ -169,11 +179,8 @@ public enum MeshClient {
     /// edited instead of accidentally reporting the previously saved broker.
     public static func send(_ req: MeshRequest, to endpoint: String,
                             timeoutSec: Double = 3) -> MeshResponse {
-        guard let fd = meshTCPConnect(endpoint, timeoutSec: timeoutSec) else {
-            return .fail("cannot reach mesh broker at \(endpoint)")
-        }
-        defer { close(fd) }
-        return roundTrip(fd, req)
+        exchange(req, using: .tcp(endpoint: endpoint, connectTimeoutSeconds: timeoutSec),
+                 timeoutMilliseconds: Int(timeoutSec * 1_000))
     }
 
     public static func uploadAttachment(fileAt url: URL, mimeType: String? = nil,
@@ -181,7 +188,7 @@ public enum MeshClient {
         let data: Data
         do { data = try Data(contentsOf: url, options: .mappedIfSafe) }
         catch { throw MeshClientError.file("Cannot read attachment: \(error.localizedDescription)") }
-        guard !data.isEmpty, data.count <= 25 * 1024 * 1024 else {
+        guard !data.isEmpty, data.count <= DistributedMeshProtocol.maximumBlobBytes else {
             throw MeshClientError.file("Attachments must be between 1 byte and 25 MiB.")
         }
         let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
@@ -189,15 +196,9 @@ public enum MeshClient {
                                       name: name ?? url.lastPathComponent,
                                       mimeType: mimeType ?? inferredMIMEType(for: url),
                                       byteSize: data.count, sha256: sha)
-        guard let fd = connectionForRequest() else { throw MeshClientError.cannotConnect }
-        defer { close(fd) }
         let request = MeshRequest(cmd: "attachment-put", attachment: metadata)
-        guard let header = try? JSONEncoder().encode(request) else {
-            throw MeshClientError.invalidResponse("Cannot encode attachment request.")
-        }
-        meshWriteAll(fd, header)
-        meshWriteRaw(fd, data)
-        let response = try readResponse(fd)
+        let result = try exchangeFrame(request, body: data)
+        let response = try decodeResponse(result.header)
         guard response.ok, let stored = response.attachment else {
             throw MeshClientError.invalidResponse(response.error ?? "Attachment upload failed.")
         }
@@ -232,18 +233,13 @@ public enum MeshClient {
 
     @discardableResult
     public static func downloadAttachment(id: String, to destination: URL) throws -> URL {
-        guard let fd = connectionForRequest() else { throw MeshClientError.cannotConnect }
-        defer { close(fd) }
         let request = MeshRequest(cmd: "attachment-get", attachmentID: id)
-        guard let header = try? JSONEncoder().encode(request) else {
-            throw MeshClientError.invalidResponse("Cannot encode attachment request.")
-        }
-        meshWriteAll(fd, header)
-        let response = try readResponse(fd)
+        let result = try exchangeFrame(request)
+        let response = try decodeResponse(result.header)
         guard response.ok, let attachment = response.attachment else {
             throw MeshClientError.invalidResponse(response.error ?? "Attachment download failed.")
         }
-        guard let bytes = meshReadExactly(fd, count: attachment.byteSize) else {
+        guard let bytes = result.body, bytes.count == attachment.byteSize else {
             throw MeshClientError.invalidResponse("Attachment download ended early.")
         }
         let sha = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
@@ -260,15 +256,8 @@ public enum MeshClient {
         }
     }
 
-    private static func connectionForRequest() -> Int32? {
-        if activeRemote != nil { return connect() }
-        ensureDaemon()
-        return connectUDS()
-    }
-
-    private static func readResponse(_ fd: Int32) throws -> MeshResponse {
-        guard let line = meshReadLine(fd), let data = line.data(using: .utf8),
-              let response = try? JSONDecoder().decode(MeshResponse.self, from: data) else {
+    private static func decodeResponse(_ data: Data) throws -> MeshResponse {
+        guard let response = try? JSONDecoder().decode(MeshResponse.self, from: data) else {
             throw MeshClientError.invalidResponse("The Mesh broker returned an invalid response.")
         }
         return response
@@ -288,17 +277,40 @@ public enum MeshClient {
         }
     }
 
-    /// One request → one response over an already-connected fd (UDS or TCP).
-    private static func roundTrip(_ fd: Int32, _ req: MeshRequest) -> MeshResponse {
+    private static func exchange(_ req: MeshRequest,
+                                 using endpoint: LegacySocketMeshTransport.Endpoint,
+                                 timeoutMilliseconds: Int = 5_000) -> MeshResponse {
+        do {
+            return try decodeResponse(exchangeFrame(req, using: endpoint,
+                                                    timeoutMilliseconds: timeoutMilliseconds).header)
+        } catch {
+            return .fail(error.localizedDescription)
+        }
+    }
+
+    private static func exchangeFrame(_ req: MeshRequest, body: Data? = nil,
+                                      using endpoint: LegacySocketMeshTransport.Endpoint? = nil,
+                                      timeoutMilliseconds: Int = 5_000) throws -> MeshTransportResponse {
         var request = req
         if request.authToken == nil { request.authToken = MeshPaths.controlToken }
-        guard let data = try? JSONEncoder().encode(request) else { return .fail("encode failed") }
-        meshWriteAll(fd, data)
-        guard let line = meshReadLine(fd),
-              let rdata = line.data(using: .utf8),
-              let resp = try? JSONDecoder().decode(MeshResponse.self, from: rdata) else {
-            return .fail("no/invalid response")
+        let header: Data
+        do { header = try JSONEncoder().encode(request) }
+        catch { throw MeshClientError.invalidResponse("Cannot encode Mesh request.") }
+
+        _ = try transportPreference.resolved(irohAvailable: false)
+
+        let selectedEndpoint: LegacySocketMeshTransport.Endpoint
+        if let endpoint {
+            selectedEndpoint = endpoint
+        } else if let remote = activeRemote {
+            selectedEndpoint = .tcp(endpoint: remote)
+        } else {
+            if let overflow = MeshPaths.socketPathOverflow { throw MeshClientError.file(overflow) }
+            ensureDaemon()
+            selectedEndpoint = .unixSocket(path: MeshPaths.socketPath)
         }
-        return resp
+        let transport = LegacySocketMeshTransport(endpoint: selectedEndpoint)
+        return try transport.exchangeBlocking(.init(header: header, body: body,
+                                                    timeoutMilliseconds: timeoutMilliseconds))
     }
 }

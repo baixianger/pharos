@@ -8,8 +8,8 @@ import SwiftUI
 private nonisolated(unsafe) var launchCountedThisProcess = false
 
 enum ContentRouteState {
-    /// A late child reload must not resurrect Chat after its parent route was
-    /// cleared by navigation.
+    /// Child room views load asynchronously. Once their parent route is nil,
+    /// a late child write is stale and must not reopen Chat Rooms.
     static func applyingRoomWrite(current: String?, next: String) -> String? {
         current == nil ? nil : next
     }
@@ -117,6 +117,8 @@ struct ContentView: View {
         } else if openRoom != nil {
             MeshRoomView(room: Binding(
                 get: { openRoom ?? "" },
+                // An async room reload may finish after the user navigates to
+                // Dashboard. Never let that stale child write resurrect chat.
                 set: { nextRoom in
                     openRoom = ContentRouteState.applyingRoomWrite(
                         current: openRoom, next: nextRoom

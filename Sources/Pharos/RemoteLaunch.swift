@@ -24,10 +24,16 @@ enum RemoteLaunch {
     }
 
     private static let sshOpts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
-    /// Prefer managed/system installs over stale user-local symlinks. A stale
-    /// Pharos.app can otherwise launch an older helper/schema on the peer.
+/// Non-interactive SSH shells miss homebrew/user bins (tmux, claude live there).
+    /// Prefer managed/system app installs over user-local symlinks. A previous
+    /// Pharos.app can otherwise survive in ~/Applications while /Applications
+    /// is upgraded, splitting an agent onto an obsolete mesh/store schema.
     static let preferredPathExport =
         #"export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH""#
+    /// Choose a reachable agent socket, not merely the first filesystem match.
+    /// ssh-add exits 0 with keys, 1 for a reachable empty agent, and 2 when the
+    /// socket is unusable.
+    static let validatedSSHAgentExport = #"for px_sock in "$SSH_AUTH_SOCK" $(find /var/run /private/tmp -maxdepth 2 -name Listeners -user "$(whoami)" 2>/dev/null); do [ -S "$px_sock" ] || continue; SSH_AUTH_SOCK="$px_sock" ssh-add -l >/dev/null 2>&1; px_rc=$?; if [ "$px_rc" -eq 0 ] || [ "$px_rc" -eq 1 ]; then export SSH_AUTH_SOCK="$px_sock"; break; fi; done; unset px_sock px_rc"#
     private static let pathShim = preferredPathExport
 
     /// Single-quote wrap for the remote shell (safe under zsh/bash, any content).
@@ -68,6 +74,26 @@ enum RemoteLaunch {
             if probe.ok { return candidate }
         }
         return nil
+    }
+
+    /// The portable mesh helper is bundled beside the GUI executable and is
+    /// not guaranteed to have its own PATH symlink on macOS.
+    static func remoteMeshHelperCandidates(home: String) -> [String] {
+        [
+            "/Applications/Pharos.app/Contents/Helpers/pharos-mesh",
+            "\(home)/Applications/Pharos.app/Contents/Helpers/pharos-mesh",
+            "/opt/homebrew/bin/pharos-mesh",
+            "/usr/local/bin/pharos-mesh",
+            "\(home)/.local/bin/pharos-mesh",
+        ]
+    }
+
+    private static func remoteMeshHelperExecutable(
+        host: String, home: String
+    ) -> String? {
+        remoteMeshHelperCandidates(home: home).first { candidate in
+            ssh(host, "test -x \(sq(candidate))").ok
+        }
     }
 
     private static func tmux(_ host: String, _ args: [String]) -> Shell.Result {
@@ -207,7 +233,7 @@ enum RemoteLaunch {
         if os == "Darwin" {
             notes.append(keychainReady(host: host))
             // SSH keys: point the session at the GUI launchd agent socket if any.
-            sendLine(host, name, #"export SSH_AUTH_SOCK="$(find /var/run /private/tmp -maxdepth 2 -name Listeners -user "$(whoami)" 2>/dev/null | head -1)""#)
+            sendLine(host, name, validatedSSHAgentExport)
             pause(0.8)
         }
 
@@ -256,7 +282,7 @@ enum RemoteLaunch {
     /// Blocking; callers run it off-main.
     static func spawnMeshAgent(room: String, nick: String, kind: AgentKind, host: String,
                                workDir: MeshSpawn.WorkDir = .scratch,
-                               onProgress: @escaping (MeshSpawn.Progress) -> Void) {
+                               onProgress: @escaping (MeshSpawn.Progress) -> Void) async {
         func fail(_ detail: String) {
             onProgress(.init(phase: .failed, detail: detail))
         }
@@ -285,6 +311,9 @@ enum RemoteLaunch {
             fail("\(kind.label) is missing or couldn't start on \(host)")
             return
         }
+        let meshHelper = PharosMeshRuntimeMode.usesDistributedMesh
+            ? remoteMeshHelperExecutable(host: host, home: home)
+            : nil
         // Resolve the working directory on the remote host. `.project` maps to
         // the remote's OWN registered checkout path, so a name means the same
         // project regardless of which Mac each machine keeps it on.
@@ -319,6 +348,7 @@ enum RemoteLaunch {
         }
 
         let name = MeshSpawn.sessionName(room: room, nick: nick)
+        let memberID = UUID().uuidString.lowercased()
         _ = tmux(host, ["kill-session", "-t", "=\(name)"]) // clear a stale spawn
         guard tmux(host, ["new-session", "-d", "-s", name, "-c", dir,
                           "-x", "200", "-y", "50"]).ok else {
@@ -336,19 +366,25 @@ enum RemoteLaunch {
         var keychainNote = ""
         if os == "Darwin" {
             keychainNote = keychainReady(host: host)
-            // tmux retains the environment from its first session; establish
-            // the same helper precedence inside the new pane as in SSH probes.
+            // tmux servers retain the environment from their first session,
+            // which can predate the current app installation. Set the CLI
+            // precedence inside the new pane as well as for SSH probes.
             sendLine(host, name, preferredPathExport)
             pause(0.4)
-            sendLine(host, name,
-                     #"export SSH_AUTH_SOCK="$(find /var/run /private/tmp -maxdepth 2 -name Listeners -user "$(whoami)" 2>/dev/null | head -1)""#)
+            sendLine(host, name, validatedSSHAgentExport)
             pause(0.8)
         }
 
         onProgress(.init(phase: .booting,
                          detail: "starting \(kind.rawValue) on \(host)…"
                              + (keychainNote.isEmpty ? "" : "  \(keychainNote)")))
-        sendLine(host, name, MeshSpawn.launchCommand(kind, executable: executable))
+        sendLine(
+            host, name,
+            MeshSpawn.launchCommand(
+                kind, executable: executable,
+                environment: ["PHAROS_MESH_SESSION": memberID]
+            )
+        )
 
         let ready: Bool
         if kind == .claude {
@@ -362,11 +398,42 @@ enum RemoteLaunch {
         }
 
         onProgress(.init(phase: .joining, detail: "asking it on \(host) to join \(room)…"))
-        sendLine(host, name, MeshSpawn.joinBrief(room: room, nick: nick, kind: kind, session: name))
+        sendLine(
+            host, name,
+            MeshSpawn.joinBrief(
+                room: room, nick: nick, kind: kind, session: name,
+                includeClaim: PharosMeshRuntimeMode.usesDistributedMesh
+            )
+        )
+        // Match local spawn: Codex may draw the composer before MCP startup
+        // accepts Enter, leaving the brief unsubmitted without this retry.
+        pause(2)
+        _ = tmux(host, ["send-keys", "-t", name, "Enter"])
 
         for _ in 0..<25 {
             pause(2)
-            if MeshSpawn.didJoin(room: room, nick: nick) {
+            if let member = await MeshSpawn.joinedMember(
+                room: room, nick: nick, memberID: memberID
+            ) {
+                if PharosMeshRuntimeMode.usesDistributedMesh {
+                    guard let meshHelper else {
+                        fail("the current Pharos mesh helper is missing on \(host)")
+                        return
+                    }
+                    let registration = ssh(
+                        host,
+                        "\(sq(meshHelper)) distributed host-resource-replace " +
+                            "--resource \(sq(member.id)) --tmux-session \(sq(name)) " +
+                            "--actions \(sq("presence,poke,stop")) >/dev/null"
+                    )
+                    guard registration.ok else {
+                        fail(
+                            "joined \(room), but Host control registration failed on \(host): " +
+                                registration.err.trimmingCharacters(in: .whitespacesAndNewlines)
+                        )
+                        return
+                    }
+                }
                 onProgress(.init(phase: .joined, detail: "joined \(room) from \(host)"))
                 return
             }

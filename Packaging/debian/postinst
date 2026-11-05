@@ -1,10 +1,22 @@
 #!/bin/sh
 set -e
 
+if ! getent passwd pharos-mesh >/dev/null 2>&1; then
+    adduser --system --group --home /var/lib/pharos-mesh \
+        --no-create-home pharos-mesh >/dev/null
+fi
+install -d -m 0750 -o pharos-mesh -g pharos-mesh /var/lib/pharos-mesh
+
+if command -v ldconfig >/dev/null 2>&1; then
+    ldconfig
+fi
+
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload || true
-    systemctl enable pharos-mesh.service >/dev/null 2>&1 || true
-    systemctl restart pharos-mesh.service >/dev/null 2>&1 || true
+    # Never let an upgrade silently restart the retired Broker or create an
+    # unrelated trust group. The operator pairs or initializes this identity,
+    # then explicitly enables the distributed replica service.
+    systemctl disable --now pharos-mesh.service >/dev/null 2>&1 || true
 fi
 
 exit 0

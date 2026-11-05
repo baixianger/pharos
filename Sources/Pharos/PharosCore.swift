@@ -32,7 +32,10 @@ enum PharosCore {
             return URL(fileURLWithPath: override)
         }
         DataLocation.migrateLegacyCacheIfNeeded()
-        return DataLocation.current.appendingPathComponent("projects.json")
+        return DataLocation.current.appendingPathComponent(
+            PharosMeshRuntimeMode.usesDistributedMesh
+                ? "distributed-project-cache.json" : "projects.json"
+        )
     }
 
     // MARK: Registry IO
@@ -42,7 +45,8 @@ enum PharosCore {
     static func loadStore() -> StoreData {
         let usesTestOverride = ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] != nil
         let data: Data?
-        if !usesTestOverride, let snapshot = try? MeshClient.fetchRegistry() {
+        if !usesTestOverride, !PharosMeshRuntimeMode.usesDistributedMesh,
+           let snapshot = try? MeshClient.fetchRegistry() {
             loadedRegistryRevision = snapshot.revision
             PharosPrefs.shared.set(snapshot.revision, forKey: "pharos.registryRevision")
             let remote = Data(snapshot.payload.utf8)
@@ -81,7 +85,8 @@ enum PharosCore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(out) {
             try? data.write(to: registryURL, options: .atomic)
-            guard ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] == nil else { return }
+            guard ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] == nil,
+                  !PharosMeshRuntimeMode.usesDistributedMesh else { return }
             do {
                 if loadedRegistryRevision == nil {
                     loadedRegistryRevision = try MeshClient.fetchRegistry().revision
