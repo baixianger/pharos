@@ -1781,7 +1781,7 @@ public final class LightRelay: @unchecked Sendable {
         let sender = try Self.validateName(name)
         guard members[sender] != nil else { throw LightRelayError.unknownMember(sender) }
         guard var thread = threads[threadID] else { throw LightRelayError.unknownThread(threadID) }
-        if thread.stopped { throw LightRelayError.threadStopped(thread.id) }
+        if thread.stopped || thread.closed == true { throw LightRelayError.threadStopped(thread.id) }
 
         // Materialize roster if nil
         let roster = thread.roster ?? participantsLocked(thread)
@@ -2084,9 +2084,19 @@ public final class LightRelay: @unchecked Sendable {
                                      cc: ccNames)))
             }
         }
+        if var roster = thread.roster {
+            var changed = false
+            for name in ccNames where !roster.contains(name) && members[name] != nil {
+                roster.append(name)
+                changed = true
+            }
+            if changed {
+                thread.roster = roster
+                threads[thread.id] = thread
+            }
+        }
         for name in ccNames where name != ticket.from {
             guard let member = members[name] else { continue }
-            if let roster = thread.roster, !roster.contains(name) { continue }
             targets.append(try prepareTargetLocked(
                 member: member, from: ticket.to, thread: thread, hop: nextHop, ttl: ttl, once: once, text: text,
                 spec: TargetSpec(intent: replyIntent == .discuss ? .inform : replyIntent, copied: true, cc: ccNames)))
@@ -2378,9 +2388,14 @@ public final class LightRelay: @unchecked Sendable {
         add(thread.originator)
         for entry in logs[thread.id] ?? [] {
             switch entry.kind {
-            case .message: add(entry.from)
-            case .delivery: add(entry.to)
-            case .notice: break
+            case .message:
+                add(entry.from)
+                entry.recipients?.forEach(add)
+                entry.cc?.forEach(add)
+            case .delivery:
+                add(entry.to)
+            case .notice:
+                break
             }
         }
         return out

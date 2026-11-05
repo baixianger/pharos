@@ -478,7 +478,7 @@ final class LightRelayTests: XCTestCase {
         } ?? ""
         let listed = run("thread", ["list"])
         XCTAssertTrue(listed.text.contains(threadID))
-        XCTAssertTrue(listed.text.contains("direct"))
+        XCTAssertTrue(listed.text.contains("dm"))
         XCTAssertTrue(listed.text.contains("owner,codex-mini-pharos"))
         let shown = run("thread", ["show", threadID])
         XCTAssertTrue(shown.text.contains("kind direct"))

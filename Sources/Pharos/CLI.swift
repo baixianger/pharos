@@ -1050,7 +1050,7 @@ enum CLI {
           attention list [--json]                  Members waiting on a human (needs_human): what, host, session, age
           attention report --state needs_human|clear --session S [--app A] [--host H] [--what T] [--ttl 20m]
                                        (fed by per-app hooks and polls; Pharos never approves or denies)
-          send --from NAME --to NAME... [--cc NAME]... [--intent ask|inform|discuss] [--deliver] [--rounds N]
+          send [--thread T] --from NAME [--to NAME...] [--cc NAME]... [--intent ask|inform|discuss] [--deliver] [--rounds N]
                [--hop-limit N] [--ttl 24h] [--once] -- <text>
           reply r_xxx [--cc NAME]... [--intent answer|ask|inform] [--deliver] [--ttl 24h] [--once] -- <text>
           webhook set NAME --url URL [--header-name H] --secret-stdin|--secret-file F|--secret-env VAR
@@ -1058,6 +1058,10 @@ enum CLI {
           read --thread ID [--json] | read r_xxx [--json]
           thread list [--json]
           thread show <id> [--json]
+          thread <id> member list [--json]
+          thread <id> member add <member|address> [--name X] [--from Y]
+          thread <id> member remove <member> [--from Y]
+          thread stop <id>
           session new --host H --app dsh|ag|codex|cursor --workspace PROJECT|DIR [--path DIR] [--title T] [--name N] [--launch] [--dry-run] [--no-add-project] [--no-queue] [--json]
           session workspaces --host H --app dsh|ag|codex|cursor [--launch] [--no-queue] [--json]
           session pull --node H [--json]

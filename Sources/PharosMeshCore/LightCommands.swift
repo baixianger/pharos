@@ -123,7 +123,7 @@ public enum LightCommands {
             case "member":
                 return try member(argv, relay: relay, routesForApp: routesForApp, routeByID: routeByID, agents: agents, hostOwner: hostOwner, refreshInventory: refreshInventory)
             case "thread":
-                return try thread(argv, relay: relay)
+                return try thread(argv, relay: relay, agents: agents, hostOwner: hostOwner, refreshInventory: refreshInventory)
             case "send":
                 return try send(argv, relay: relay)
             case "reply":
@@ -595,53 +595,354 @@ public enum LightCommands {
         }
     }
 
-    private static func thread(_ argv: LightArgv, relay: LightRelay) throws -> LightCLIResult {
-        switch argv.positional.first {
-        case "list":
+    private static func resolveAndAdoptAddress(
+        address: String,
+        explicitName: String?,
+        argv: LightArgv,
+        relay: LightRelay,
+        agents: (any LightMemberAgents)?,
+        hostOwner: (@Sendable (String) -> String)?,
+        refreshInventory: (@Sendable (_ host: String) -> Void)?
+    ) throws -> LightMember {
+        let invStore = LightInventoryStore(rootDir: relay.storeURL)
+        let canonical = hostOwner ?? { $0 }
+        var resolved: (host: String, app: String, entry: LightSessionEntry)? = nil
+        do {
+            resolved = try LightDirectory.resolve(address, inventoryStore: invStore, canonicalHost: canonical)
+        } catch {
+            let hostPart = address.split(separator: "/").first.map(String.init) ?? ""
+            let targetHost = canonical(hostPart)
+            refreshInventory?(targetHost)
+            resolved = try? LightDirectory.resolve(address, inventoryStore: invStore, canonicalHost: canonical)
+            if resolved == nil {
+                throw error
+            }
+        }
+        guard let res = resolved else {
+            throw LightMemberAgentsError("failed to resolve address \(address)")
+        }
+        let host = res.host
+        let app = res.app
+        let sessionID = res.entry.id
+        var resolvedEntry: LightSessionEntry? = res.entry
+
+        if let existing = relay.listMembers().first(where: { $0.sessionID == sessionID }) {
+            return existing
+        }
+
+        guard let agents else {
+            throw LightMemberAgentsError("member adopt needs live CLI access (PHAROS_LIGHT_LIVE=1)")
+        }
+
+        guard app == "codex" || app == "agy" else {
+            throw LightMemberAgentsError("adopt supports codex and agy; use pharos member register for \(app)")
+        }
+
+        let chosenName: String
+        if let explicitName, !explicitName.isEmpty {
+            let validated = try LightRelay.validateName(explicitName)
+            if relay.member(named: validated) != nil {
+                throw LightRelayError.duplicateMember(validated)
+            }
+            chosenName = validated
+        } else {
+            let prefix = String(sessionID.prefix(6))
+            let base = "\(app)-\(prefix)"
+            var candidate = base
+            var suffix = 2
+            while relay.member(named: candidate) != nil {
+                candidate = "\(base)-\(suffix)"
+                suffix += 1
+            }
+            chosenName = candidate
+        }
+
+        var dir = argv.option("dir")
+        if dir == nil || dir!.isEmpty {
+            dir = resolvedEntry?.cwd
+            if dir == nil || dir!.isEmpty {
+                refreshInventory?(host)
+                let refreshed = invStore.load(node: host)
+                resolvedEntry = refreshed?.sessions.first(where: { $0.id == sessionID })
+                dir = resolvedEntry?.cwd
+            }
+        }
+        guard let finalCwd = dir, !finalCwd.isEmpty else {
+            throw LightMemberAgentsError("no cwd known for \(sessionID); pass --dir")
+        }
+
+        let force = argv.flag("force")
+        if app == "codex", !force, let state = resolvedEntry?.state, state == "active" || state == "needs_human" {
+            throw LightMemberAgentsError("session is busy in another client; --force to attach anyway")
+        }
+
+        let project: String
+        if let p = argv.option("project"), !p.isEmpty {
+            project = p
+        } else if let p = resolvedEntry?.project, !p.isEmpty {
+            project = p
+        } else {
+            let last = URL(fileURLWithPath: finalCwd).lastPathComponent
+            project = last.isEmpty ? "default" : last
+        }
+
+        var member = try agents.adopt(
+            name: chosenName,
+            app: app,
+            cwd: finalCwd,
+            sessionID: sessionID,
+            host: host,
+            model: argv.option("model"),
+            tmuxSession: argv.option("tmux"),
+            project: project,
+            autoRevive: argv.flag("auto-revive")
+        )
+        if argv.flag("auto-revive") {
+            member.tmux?.autoRevive = true
+        }
+
+        let registered = try relay.register(member)
+        return registered
+    }
+
+    private static func showThread(_ id: String, argv: LightArgv, relay: LightRelay) throws -> LightCLIResult {
+        let view = try relay.show(thread: id)
+        if argv.flag("json") {
+            let messages = try relay.read(thread: id)
+            return json(LightThreadShow(thread: view.thread, participants: view.participants, kind: view.kind,
+                                        roster: view.thread.roster ?? view.participants, messages: messages))
+        }
+        let flag = view.thread.stopped ? "stopped" : "open"
+        let people = (view.thread.roster ?? view.participants).joined(separator: ",")
+        let head = [
+            "thread \(view.thread.id)",
+            "kind \(view.kind.rawValue)",
+            "state \(flag)",
+            "originator \(view.thread.originator)",
+            "hop-limit \(view.thread.hopLimit)",
+            "participants \(people)",
+            "intent \((view.thread.intent ?? .ask).rawValue)",
+        ] + discussLines(view.thread) + attentionLines(view.participants, relay: relay)
+        let entries = try relay.read(thread: id)
+        let body = formatLog(entries)
+        return ok((head + (body.isEmpty ? [] : [body])).joined(separator: "\n"))
+    }
+
+    private static func listThreadMembers(_ id: String, argv: LightArgv, relay: LightRelay) throws -> LightCLIResult {
+        let memberNames = try relay.threadMembers(id)
+        if argv.flag("json") {
+            let list = memberNames.map { name -> [String: String] in
+                let m = relay.member(named: name)
+                return ["name": name, "app": m?.app ?? "", "host": m?.host ?? ""]
+            }
+            return json(list)
+        }
+        if memberNames.isEmpty { return ok("no members") }
+        let lines = memberNames.map { name -> String in
+            let m = relay.member(named: name)
+            let app = m?.app ?? "-"
+            let host = m?.host ?? "-"
+            return "\(name)\t\(app)/\(host)"
+        }
+        return ok(lines.joined(separator: "\n"))
+    }
+
+    private static func addThreadMember(
+        id: String,
+        target: String,
+        argv: LightArgv,
+        relay: LightRelay,
+        agents: (any LightMemberAgents)?,
+        hostOwner: (@Sendable (String) -> String)?,
+        refreshInventory: (@Sendable (_ host: String) -> Void)?
+    ) throws -> LightCLIResult {
+        let actor = argv.option("from") ?? "pharos"
+        let memberName: String
+        if target.contains("/") {
+            let member = try resolveAndAdoptAddress(
+                address: target,
+                explicitName: argv.option("name"),
+                argv: argv,
+                relay: relay,
+                agents: agents,
+                hostOwner: hostOwner,
+                refreshInventory: refreshInventory
+            )
+            memberName = member.name
+        } else {
+            memberName = target
+        }
+        try relay.addThreadMember(id, name: memberName, by: actor)
+        if argv.flag("json") { return json(["thread": id, "member": memberName]) }
+        return ok("added \(memberName) to \(id)")
+    }
+
+    private static func removeThreadMember(
+        id: String,
+        target: String,
+        argv: LightArgv,
+        relay: LightRelay
+    ) throws -> LightCLIResult {
+        let actor = argv.option("from") ?? "pharos"
+        try relay.removeThreadMember(id, name: target, by: actor)
+        if argv.flag("json") { return json(["thread": id, "member": target]) }
+        return ok("removed \(target) from \(id)")
+    }
+
+    private static func thread(_ argv: LightArgv, relay: LightRelay,
+                               agents: (any LightMemberAgents)? = nil,
+                               hostOwner: (@Sendable (String) -> String)? = nil,
+                               refreshInventory: (@Sendable (_ host: String) -> Void)? = nil) throws -> LightCLIResult {
+        let pos = argv.positional
+        guard let first = pos.first else {
+            return usage("pharos thread list|show <id> | pharos thread <id> member list|add|remove | pharos thread stop <id>")
+        }
+
+        if first == "list" {
             let threads = relay.listThreads()
             if argv.flag("json") { return json(threads) }
             if threads.isEmpty { return ok("no threads") }
             let lines = threads.map { view in
                 let flag = view.thread.stopped ? "stopped" : "open"
-                let people = view.participants.joined(separator: ",")
-                return "\(view.thread.id)\t\(flag)\t\(view.thread.hopLimit)\t\(view.kind.rawValue)\t\(people)"
+                let kindStr = view.kind == .direct ? "dm" : "group"
+                let membersStr = (view.thread.roster ?? view.participants).joined(separator: ",")
+                return "\(view.thread.id)\t\(flag)\t\(kindStr)\t\(membersStr)\t\(view.thread.hopLimit)"
             }
-            return ok((["THREAD\tSTATE\tHOP-LIMIT\tKIND\tPARTICIPANTS"] + lines).joined(separator: "\n"))
-        case "show":
-            guard let id = argv.positional.dropFirst().first else {
+            return ok((["THREAD\tSTATE\tKIND\tMEMBERS\tHOP-LIMIT"] + lines).joined(separator: "\n"))
+        }
+
+        if first == "show" {
+            guard let id = pos.dropFirst().first else {
                 return usage("pharos thread show <id>")
             }
-            let view = try relay.show(thread: id)
-            if argv.flag("json") {
-                let messages = try relay.read(thread: id)
-                return json(LightThreadShow(thread: view.thread, participants: view.participants, kind: view.kind, messages: messages))
+            return try showThread(id, argv: argv, relay: relay)
+        }
+
+        if first == "stop" {
+            guard let id = pos.dropFirst().first else {
+                return usage("pharos thread stop <id>")
             }
-            let flag = view.thread.stopped ? "stopped" : "open"
-            let people = view.participants.joined(separator: ",")
-            let head = [
-                "thread \(view.thread.id)",
-                "kind \(view.kind.rawValue)",
-                "state \(flag)",
-                "originator \(view.thread.originator)",
-                "hop-limit \(view.thread.hopLimit)",
-                "participants \(people)",
-                "intent \((view.thread.intent ?? .ask).rawValue)",
-            ] + discussLines(view.thread) + attentionLines(view.participants, relay: relay)
-            let entries = try relay.read(thread: id)
-            let body = formatLog(entries)
-            return ok((head + (body.isEmpty ? [] : [body])).joined(separator: "\n"))
-        case "new", "add":
+            try relay.stopThread(id)
+            struct ThreadStopped: Codable {
+                let thread: String
+                let stopped: Bool
+            }
+            if argv.flag("json") { return json(ThreadStopped(thread: id, stopped: true)) }
+            return ok("stopped thread \(id)")
+        }
+
+        if first == "new" || first == "add" {
             return usage("threads are not created or joined explicitly. pharos send starts one. pharos thread list|show <id>")
+        }
+
+        // Positional can start with member: pharos thread member list|add|remove <id> ...
+        if first == "member" {
+            let sub = pos.dropFirst().first
+            switch sub {
+            case "list", nil:
+                guard let id = pos.dropFirst(2).first else {
+                    return usage("pharos thread member list <id>")
+                }
+                return try listThreadMembers(id, argv: argv, relay: relay)
+            case "add":
+                guard pos.count >= 4 else {
+                    return usage("pharos thread member add <id> <member|address> [--name X] [--from Y]")
+                }
+                let id = pos[2]
+                let target = pos[3]
+                return try addThreadMember(id: id, target: target, argv: argv, relay: relay,
+                                           agents: agents, hostOwner: hostOwner, refreshInventory: refreshInventory)
+            case "remove":
+                guard pos.count >= 4 else {
+                    return usage("pharos thread member remove <id> <member> [--from Y]")
+                }
+                let id = pos[2]
+                let target = pos[3]
+                return try removeThreadMember(id: id, target: target, argv: argv, relay: relay)
+            default:
+                return usage("pharos thread member list|add|remove <id>")
+            }
+        }
+
+        // Otherwise first is thread ID: pharos thread <id> [show|stop|member ...]
+        let id = first
+        if pos.count == 1 {
+            // pharos thread <id> -> show
+            return try showThread(id, argv: argv, relay: relay)
+        }
+
+        let second = pos[1]
+        switch second {
+        case "show":
+            return try showThread(id, argv: argv, relay: relay)
+        case "stop":
+            try relay.stopThread(id)
+            struct ThreadStopped: Codable {
+                let thread: String
+                let stopped: Bool
+            }
+            if argv.flag("json") { return json(ThreadStopped(thread: id, stopped: true)) }
+            return ok("stopped thread \(id)")
+        case "member":
+            let sub = pos.dropFirst(2).first ?? "list"
+            switch sub {
+            case "list":
+                return try listThreadMembers(id, argv: argv, relay: relay)
+            case "add":
+                guard let target = pos.dropFirst(3).first else {
+                    return usage("pharos thread <id> member add <member|address> [--name X] [--from Y]")
+                }
+                return try addThreadMember(id: id, target: target, argv: argv, relay: relay,
+                                           agents: agents, hostOwner: hostOwner, refreshInventory: refreshInventory)
+            case "remove":
+                guard let target = pos.dropFirst(3).first else {
+                    return usage("pharos thread <id> member remove <member> [--from Y]")
+                }
+                return try removeThreadMember(id: id, target: target, argv: argv, relay: relay)
+            default:
+                return usage("pharos thread <id> member list|add|remove")
+            }
         default:
-            return usage("pharos thread list|show <id>")
+            return usage("pharos thread list|show <id> | pharos thread <id> member list|add|remove | pharos thread stop <id>")
         }
     }
 
-    static let sendUsage = "pharos send --from NAME --to NAME... [--cc NAME]... [--intent ask|inform|discuss] [--deliver] [--rounds N] [--hop-limit N] -- <text>"
+    static let sendUsage = "pharos send [--thread T] --from NAME [--to NAME...] [--cc NAME]... [--intent ask|inform|discuss] [--deliver] [--rounds N] [--hop-limit N] -- <text>"
     static let replyUsage = "pharos reply r_xxx [--cc NAME]... [--intent answer|ask|inform] [--deliver] -- <text>"
 
     private static func send(_ argv: LightArgv, relay: LightRelay) throws -> LightCLIResult {
         guard let from = argv.option("from") else { return usage(sendUsage) }
+
+        if let threadID = argv.option("thread") {
+            if !argv.multi("to").isEmpty {
+                return LightCLIResult(exitCode: 1, text: "error: --to cannot be used with --thread")
+            }
+            let text = (argv.positional + argv.forcedText).joined(separator: " ")
+            guard !text.isEmpty else { return usage(sendUsage) }
+            let intent: LightIntent
+            if let raw = argv.option("intent") {
+                guard let parsed = LightIntent.parse(raw) else {
+                    return usage("unknown intent \(raw); use ask|inform|answer|discuss")
+                }
+                intent = parsed
+            } else {
+                intent = .inform
+            }
+            let rounds = try argv.int("rounds")
+            if rounds != nil, intent != .discuss { return usage("--rounds applies only to --intent discuss") }
+            let result = try relay.sendToThread(
+                threadID,
+                from: from,
+                text: text,
+                intent: intent,
+                deliverReplies: argv.flag("deliver"),
+                rounds: rounds,
+                ttl: try argv.duration("ttl"),
+                once: argv.flag("once")
+            )
+            return render(result, json: argv.flag("json"))
+        }
+
         // Recipients come only from parameters: --to, --cc, and leading member names (same as --to).
         var recipients = argv.multi("to")
         var words = argv.positional
@@ -897,6 +1198,7 @@ private struct LightThreadShow: Codable {
     var thread: LightThread
     var participants: [String]
     var kind: LightThreadKind
+    var roster: [String]?
     var messages: [LightLogEntry]
 }
 
