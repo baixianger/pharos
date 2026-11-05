@@ -182,3 +182,63 @@ Each entry: CLI + version, symptom, repro, impact on Pharos, workaround (if any)
 - **Impact on Pharos**: Readiness checks and activity classification risk false positives during turns.
 - **Workaround**: `AgyPane.classify` checks for the active footer string `? for shortcuts` (which is only rendered when the CLI is idle and listening for interactive user input) while checking for `esc to cancel` to detect active busy state.
 - **Upstream status**: By design in TUI renderer.
+
+---
+
+### ChatGPT.app: Private stdio app-server (not attachable)
+- **CLI + version**: `codex-cli 0.166.0` / ChatGPT.app `26.1029.61003` (Framework `156.0.8078.79`)
+- **Symptom**: Attempting to attach to an active Codex session inside ChatGPT.app finds no listening socket or port; `lsof` shows app-server runs as a private stdio subprocess (`codex app-server --listen stdio://`) with pipes directly to ChatGPT.app.
+- **Repro**: Inspect running processes and file descriptors for ChatGPT.app and child app-server processes.
+- **Impact on Pharos**: Pharos cannot attach to or drive interactive ChatGPT.app desktop sessions directly.
+- **Workaround**: Pharos communicates exclusively with the shared background daemon (`~/.codex/app-server-control/app-server-control.sock`), which is decoupled from ChatGPT.app.
+- **Upstream status**: By design in desktop application container.
+
+---
+
+### Codex: `thread/list` filters empty threads without preview
+- **CLI + version**: `codex-cli 0.166.0`
+- **Symptom**: Immediately after calling `thread/start`, querying `thread/list` returns an empty array `data: []`, causing UI to assume thread creation failed.
+- **Repro**: Call `thread/start`; immediately query `thread/list`.
+- **Impact on Pharos**: Newly created sessions disappear from the session list until the user sends an opening turn.
+- **Workaround**: Populate the local session inventory optimistically using the ID returned by `thread/start`; query `thread/loaded/list` for loaded in-memory threads; refresh `thread/list` only after the first message turn finishes.
+- **Upstream status**: Database schema index requirement (`state_5.sqlite` index filters `preview <> ''`).
+
+---
+
+### Codex: `thread/shellCommand` runs unsandboxed without approvals
+- **CLI + version**: `codex-cli 0.166.0`
+- **Symptom**: `thread/shellCommand` executes commands with full user permissions, bypassing thread sandbox restrictions and approval policies.
+- **Repro**: Call `thread/shellCommand` with a destructive or privileged command on a sandboxed thread; command runs without triggering approval requests.
+- **Impact on Pharos**: If used as a general execution bridge, it violates security constraints.
+- **Workaround**: Never use `thread/shellCommand` for automated agent execution or chat interaction; route all user prompts through `turn/start`.
+- **Upstream status**: By design for explicit human terminal commands.
+
+---
+
+### Codex: `ipc.sock` is private desktop IPC, not app-server
+- **CLI + version**: `codex-cli 0.166.0`
+- **Symptom**: Connecting to `~/.codex/ipc/ipc.sock` and sending JSON-RPC `initialize` or `thread/list` results in connection failure or immediate hang.
+- **Repro**: Send JSON-RPC payload over `~/.codex/ipc/ipc.sock`.
+- **Impact on Pharos**: Mistaking `ipc.sock` for the app-server control socket causes adapter failures.
+- **Workaround**: Always connect to `~/.codex/app-server-control/app-server-control.sock`. Never send traffic to `ipc.sock`.
+- **Upstream status**: Private desktop IPC framing protocol.
+
+---
+
+### Codex: Multi-process writer lock collision on same `CODEX_HOME`
+- **CLI + version**: `codex-cli 0.166.0`
+- **Symptom**: Attempting to resume or run turns on an active thread from two separate app-server processes sharing the same `CODEX_HOME` fails with `already has an active writer` (`WriterLockCoordinator` conflict).
+- **Repro**: Spawn two separate `codex app-server` instances; attempt to access the same thread.
+- **Impact on Pharos**: Pharos must not spawn per-session app-servers.
+- **Workaround**: All Pharos adapters multiplex across the single shared daemon process (`~/.codex/app-server-control/app-server-control.sock`) via `thread/resume`.
+- **Upstream status**: By design for storage consistency.
+
+---
+
+### DeepSeek Harness: `pollIntervalMs: 0` disables proactive idle followup
+- **CLI + version**: `dsh 0.2.1-rc.5` + `dsh-plugin-pharos 0.2.0`
+- **Symptom**: When configured with `pollIntervalMs: 0`, `dsh-plugin-pharos` does not proactively invoke `agent.followup()`, delaying incoming thread deliveries until the user initiates the next turn.
+- **Repro**: Send a thread delivery to an idle dsh member when `pollIntervalMs: 0`; member does not wake up.
+- **Impact on Pharos**: Multi-agent thread collaboration hangs on idle dsh sessions.
+- **Workaround**: Use the RFC-003 Agent Runtime socket delivery loop (`delivery.poll` -> `agent.followup()` -> `delivery.ack`) to proactively wake the container on incoming thread mail.
+- **Upstream status**: Configuration default in web profile.

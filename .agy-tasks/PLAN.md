@@ -262,7 +262,8 @@ flowchart TD
 
 ### Goal 1: Strict UI / Backend Isolation & Versioned Client API (`PharosClientKit`)
 **Rank**: 1 (Architectural Foundation)  
-**Value**: Prevents UI regressions, eliminates cross-layer spaghetti, enables independent headless daemon execution, and provides 100% deterministic mocking for client UI tests.
+**Value**: Prevents UI regressions, eliminates cross-layer spaghetti, enables independent headless daemon execution, and provides 100% deterministic mocking for client UI tests.  
+**Matrix Rows Delivered**: Foundational API contract underpinning all rows in [`docs/BACKEND-MATRIX.md`](file:///Users/baixianger/personal/pharos/docs/BACKEND-MATRIX.md) (`CX-SES-01..17`, `CX-THD-01..17`, `AG-SES-01..17`, `AG-THD-01..17`, `DS-SES-01..17`, `DS-THD-01..17`). Specifically establishes `ClientSessionMessage` for 1:1 Session rows (`*-SES-*`) and `ClientThreadMessage` for Thread roster rows (`*-THD-*`).
 
 - **Scope**:
   - Define separate SPM library target `PharosClientKit` in `Package.swift`.
@@ -314,6 +315,7 @@ flowchart TD
   - *Unit*: 100% test coverage for all DTO serialization roundtrips. `ArchitectureBoundaryTests` passes and rejects artificial cross-boundary imports.
   - *Live (mini)*: Standalone CLI daemon starts; `RealPharosClientService` executes queries and receives streaming events over UDS.
   - *Cross-host (mini <-> Air)*: Client queries on Air route over mesh transport to mini daemon, returning identical DTO snapshots.
+  - *Matrix Verification*: Validates foundational schema and serialization for all 102 rows in [`docs/BACKEND-MATRIX.md`](file:///Users/baixianger/personal/pharos/docs/BACKEND-MATRIX.md).
 - **Risks & Mitigations**:
   - *Risk*: Transcript serialization latency on massive sessions.
   - *Mitigation*: Stream incremental `ClientMessageDelta` events; fetch paginated history on demand rather than full session transcripts on startup.
@@ -322,7 +324,11 @@ flowchart TD
 
 ### Goal 2: Tri-Backend Adapters (`CodexAdapter`, `AgyAdapter`, `DshAdapter`) & Capability Registry
 **Rank**: 2 (Core Engine & Protocols)  
-**Value**: Solves CLI fragmentation by providing dedicated, robust driver implementations adhering to real-world protocol mechanics uncovered in reverse-engineering.
+**Value**: Solves CLI fragmentation by providing dedicated, robust driver implementations adhering to real-world protocol mechanics uncovered in reverse-engineering.  
+**Matrix Rows Delivered**:
+- **Codex**: `CX-SES-01` (discover), `CX-SES-02` (status), `CX-SES-03` (create), `CX-SES-04` (resume), `CX-SES-05` (send), `CX-SES-06` (steer), `CX-SES-07` (streaming), `CX-SES-08` (readback), `CX-SES-09` (interrupt), `CX-SES-10` (approvals), `CX-SES-11` (model), `CX-SES-12` (yolo), `CX-SES-13` (receipts), `CX-SES-14` (backfill), `CX-SES-16` (project-cwd).
+- **Antigravity**: `AG-SES-01` (discover), `AG-SES-02` (status), `AG-SES-03` (create), `AG-SES-04` (resume), `AG-SES-05` (send), `AG-SES-06` (steer), `AG-SES-07` (streaming), `AG-SES-08` (readback), `AG-SES-09` (interrupt), `AG-SES-10` (approvals), `AG-SES-11` (model), `AG-SES-12` (yolo), `AG-SES-13` (receipts), `AG-SES-14` (backfill), `AG-SES-16` (project-cwd).
+- **DSH**: `DS-SES-01` (discover), `DS-SES-02..13` (TBD pending `rea-dshweb`), `DS-SES-14` (backfill), `DS-SES-16` (workspace), and `DS-THD-05`, `DS-THD-08`, `DS-THD-10`, `DS-THD-13` (in-process plugin loop).
 
 - **Scope**:
   - Refactor backend runtime into unified adapter subsystem under `Sources/PharosRuntime/Adapters/`:
@@ -343,6 +349,7 @@ flowchart TD
     3. `dsh` member driven via Pharos-owned `dsh web --no-open` in tmux + `dsh-plugin-pharos`.
     Verify `pharos member list` displays all 3 with accurate `MODEL`, `MODE`, and liveness.
   - *Cross-host (mini <-> Air)*: Issue `pharos member mode <name> safe|yolo` and `pharos send` across all 3 member types distributed between mini and Air.
+  - *Matrix Verification*: Flips the listed Codex and Antigravity adapter rows in [`docs/BACKEND-MATRIX.md`](file:///Users/baixianger/personal/pharos/docs/BACKEND-MATRIX.md) from `untested` to `supported` with test evidence.
 - **Risks & Mitigations**:
   - *Risk*: `dsh` web host launch token leakage.
   - *Mitigation*: Capture token from stdout stream directly into volatile memory; never log, serialize, or persist to disk.
@@ -351,7 +358,8 @@ flowchart TD
 
 ### Goal 3: Native SwiftUI 3-Pane Desktop Client Shell (Grok Bot Design Language)
 **Rank**: 3 (Primary User Interface)  
-**Value**: Replaces obsolete legacy views with an ultra-clean, modern, highly responsive native macOS desktop client modelled on the Grok Bot reference geometry.
+**Value**: Replaces obsolete legacy views with an ultra-clean, modern, highly responsive native macOS desktop client modelled on the Grok Bot reference geometry.  
+**Matrix Rows Delivered**: Core presentation shell and 3-pane responsive container hosting all 102 matrix rows across Sessions, Threads, and Projects in [`docs/BACKEND-MATRIX.md`](file:///Users/baixianger/personal/pharos/docs/BACKEND-MATRIX.md).
 
 - **Scope**:
   - Create new macOS client app target (`PharosApp` / `PharosUI`).
@@ -371,6 +379,7 @@ flowchart TD
   - *Unit*: Window geometry tests verifying minimum clamping (512x520), sidebar width boundaries (240–400px), and exact rail collapse breakpoint calculation (`expandedWidth + 424`).
   - *Live (mini)*: Launch `Pharos.app`; verify 3 panes render cleanly; resize window continuously from 1440px down to 512px; verify left pane collapses smoothly into 88px icon rail; toggle between dark and light modes.
   - *Cross-host*: Client on Air displays identical layout geometry and styling.
+  - *Matrix Verification*: Provides verified rendering frame for all Session (`*-SES-*`) and Thread (`*-THD-*`) views.
 - **Risks & Mitigations**:
   - *Risk*: Standard SwiftUI `NavigationSplitView` does not support custom 88px icon rail collapsing.
   - *Mitigation*: Implement custom layout container utilizing `GeometryReader` and explicit width preference keys.
@@ -379,7 +388,11 @@ flowchart TD
 
 ### Goal 4: SESSION Path — 1:1 Direct Agent Chat, Live Token Streaming & Mid-Turn Steering (Sessions Tab)
 **Rank**: 4 (Core Agent Control & 1:1 Interactivity)  
-**Value**: Unifies all coding agents across all hosts into a single interactive 1:1 interface where the human directly prompts, steers mid-turn, and resolves approval requests in real time.
+**Value**: Unifies all coding agents across all hosts into a single interactive 1:1 interface where the human directly prompts, steers mid-turn, and resolves approval requests in real time.  
+**Matrix Rows Delivered**:
+- **Codex**: `CX-SES-01` (discover), `CX-SES-02` (status), `CX-SES-05` (send), `CX-SES-06` (steer), `CX-SES-07` (streaming), `CX-SES-08` (readback), `CX-SES-09` (interrupt), `CX-SES-10` (approvals), `CX-SES-13` (receipts), `CX-SES-14` (backfill), `CX-SES-15` (cross-machine).
+- **Antigravity**: `AG-SES-01` (discover), `AG-SES-02` (status), `AG-SES-05` (send), `AG-SES-06` (steer), `AG-SES-07` (streaming), `AG-SES-08` (readback), `AG-SES-09` (interrupt), `AG-SES-10` (approvals), `AG-SES-13` (receipts), `AG-SES-14` (backfill), `AG-SES-15` (cross-machine).
+- **DSH**: `DS-SES-01` (discover), `DS-SES-02..10` (TBD pending `rea-dshweb`), `DS-SES-13` (receipts), `DS-SES-14` (backfill), `DS-SES-15` (cross-machine).
 
 - **Design**:
   - **Left Pane — `Sessions` Tab**:
@@ -411,6 +424,7 @@ flowchart TD
     2. Select local `agy` session: send prompt; verify live token streaming; submit mid-turn steer; verify approval resolution.
     3. Select local `dsh` session: send prompt; verify web API follow stream; verify launch token remains volatile in memory only (never written to disk or logs).
   - *Cross-host (mini <-> Air)*: Select remote agent session on Air from mini UI; type message; verify message dispatches to Air's Pharos node, executes locally on Air, and streams live tokens back to mini UI.
+  - *Matrix Verification*: Flips rows `CX-SES-05..10`, `AG-SES-05..10`, and `DS-SES-05..10` from `untested`/`TBD` to `supported` with live streaming logs.
 - **Risks & Mitigations**:
   - *Risk*: TUI ANSI escape codes or control characters corrupting chat bubbles.
   - *Mitigation*: Robust ANSI strip and sanitize filter in presentation layer; preferred use of structured JSON streams over terminal capture.
@@ -419,7 +433,11 @@ flowchart TD
 
 ### Goal 5: THREAD Path — Group Chat Collaboration Roster with Human Participant & Delivery Receipts (Threads Tab)
 **Rank**: 5 (Multi-Agent Collaboration & Coordination)  
-**Value**: Enables seamless multi-agent collaborative workflows within shared task threads, allowing the human operator to participate as a first-class peer.
+**Value**: Enables seamless multi-agent collaborative workflows within shared task threads, allowing the human operator to participate as a first-class peer.  
+**Matrix Rows Delivered**:
+- **Codex**: `CX-THD-01` (discover), `CX-THD-02` (status), `CX-THD-03` (create), `CX-THD-04` (resume), `CX-THD-05` (send), `CX-THD-08` (readback), `CX-THD-09` (interrupt), `CX-THD-10` (approvals), `CX-THD-11` (model), `CX-THD-12` (mode), `CX-THD-13` (receipts), `CX-THD-14` (backfill), `CX-THD-15` (cross-machine), `CX-THD-16` (project-cwd), `CX-THD-17` (avatars). (Confirms `CX-THD-06` and `CX-THD-07` are unsupported by design).
+- **Antigravity**: `AG-THD-01` (discover), `AG-THD-02` (status), `AG-THD-03` (create), `AG-THD-04` (resume), `AG-THD-05` (send), `AG-THD-08` (readback), `AG-THD-09` (interrupt), `AG-THD-10` (approvals), `AG-THD-11` (model), `AG-THD-12` (mode), `AG-THD-13` (receipts), `AG-THD-14` (backfill), `AG-THD-15` (cross-machine), `AG-THD-16` (project-cwd), `AG-THD-17` (avatars). (Confirms `AG-THD-06` and `AG-THD-07` are unsupported by design).
+- **DSH**: `DS-THD-01` (discover), `DS-THD-02` (status), `DS-THD-03` (create), `DS-THD-04` (resume), `DS-THD-05` (send via plugin), `DS-THD-08` (readback via plugin), `DS-THD-09` (interrupt), `DS-THD-10` (approvals), `DS-THD-11` (model), `DS-THD-12` (mode), `DS-THD-13` (receipts 4-phase ack), `DS-THD-14` (backfill), `DS-THD-15` (cross-machine), `DS-THD-16` (workspace), `DS-THD-17` (avatars). (Confirms `DS-THD-06` and `DS-THD-07` are unsupported by design).
 
 - **Scope**:
   - **Left Pane — `Threads` Tab**:
@@ -457,6 +475,7 @@ flowchart TD
     - Human posts message into thread; verify all 3 agents receive message via their respective delivery primitives; verify final replies appear in thread with verified receipts.
   - *Cross-host (mini <-> Air)*:
     - Thread spanning mini `codex` member, Air `agy` member, and human composer. Human posts from mini UI; remote Air agy receives message via Air Pharos node, executes, and posts final reply + receipt back to the thread.
+  - *Matrix Verification*: Flips rows `*-THD-05`, `*-THD-08`, and `*-THD-13` to `supported` across all 3 backends with multi-agent delivery evidence.
 - **Risks & Mitigations**:
   - *Risk*: Infinite reply loops between autonomous agents.
   - *Mitigation*: Enforce hop limit (`maxHops: 8`), sender suppression, and human turn-taking controls.
@@ -465,7 +484,8 @@ flowchart TD
 
 ### Goal 6: Deterministic Member Avatars & Cross-Host Mesh Sync
 **Rank**: 6 (Identity & Aesthetics)  
-**Value**: Gives every agent session an instantly recognizable, stable visual identity across devices, with live status feedback and user customization.
+**Value**: Gives every agent session an instantly recognizable, stable visual identity across devices, with live status feedback and user customization.  
+**Matrix Rows Delivered**: `CX-SES-17`, `CX-THD-17`, `AG-SES-17`, `AG-THD-17`, `DS-SES-17`, `DS-THD-17`.
 
 - **Scope**:
   - **Deterministic Generation**:
@@ -484,6 +504,7 @@ flowchart TD
   - *Unit*: Deterministic seed math tests (same seed produces identical canvas path definitions); avatar serialization roundtrips.
   - *Live (mini)*: Launch member; observe deterministic avatar; edit avatar tint in details pane; verify UI updates instantly.
   - *Cross-host (mini <-> Air)*: Change member avatar on mini; verify Air UI and `pharos member list` reflect the updated avatar within 1 second.
+  - *Matrix Verification*: Flips row 17 (`*-SES-17`, `*-THD-17`) to `supported` across all 3 backends.
 - **Risks & Mitigations**:
   - *Risk*: High CPU usage from rendering multiple animated canvases simultaneously.
   - *Mitigation*: Cache rendered frames as static raster bitmaps when members are in `idle` or `stopped` states; animate only active/pulsing members.
@@ -492,7 +513,8 @@ flowchart TD
 
 ### Goal 7: Conversation Details Pane (Inspector, MODEL/MODE Controls, Library, Live Terminal View)
 **Rank**: 7 (Diagnostics & Deep Inspection)  
-**Value**: Provides complete administrative control, artifact navigation, and real-time terminal oversight for any agent session without leaving the client.
+**Value**: Provides complete administrative control, artifact navigation, and real-time terminal oversight for any agent session without leaving the client.  
+**Matrix Rows Delivered**: `CX-SES-11`, `CX-SES-12`, `AG-SES-11`, `AG-SES-12`, `DS-SES-11`, `DS-SES-12`, `CX-SES-16`, `AG-SES-16`, `DS-SES-16`.
 
 - **Scope**:
   - Right pane (280–320px) featuring 3 sub-tabs:
@@ -515,6 +537,7 @@ flowchart TD
     3. Switch to Computer tab; observe terminal streaming output during command execution.
     4. Click `Stop Member` -> verify process terminates -> click `Revive Member` -> verify session resumes.
   - *Cross-host (mini <-> Air)*: Select remote member running on Air; toggle mode; verify Air host executes command and updates state over mesh.
+  - *Matrix Verification*: Flips rows 11 (`*-SES-11`), 12 (`*-SES-12`), and 16 (`*-SES-16`) to `supported` across all backends.
 - **Risks & Mitigations**:
   - *Risk*: High frequency terminal capture causing UI main thread stutter.
   - *Mitigation*: Process terminal ANSI parsing on background actor; publish throttled snapshot updates to the main thread.
