@@ -93,3 +93,20 @@ extension JSONValue: Codable {
         }
     }
 }
+
+extension JSONValue: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .string(let s): return s
+        case .number(let n):
+            if n.rounded() == n && !n.isInfinite && !n.isNaN { return "\(Int(n))" }
+            return "\(n)"
+        case .bool(let b): return "\(b)"
+        case .null: return "null"
+        case .array(let arr): return "[\(arr.map(\.description).joined(separator: ", "))]"
+        case .object(let obj):
+            let entries = obj.map { "\"\($0.key)\": \($0.value.description)" }.joined(separator: ", ")
+            return "{\(entries)}"
+        }
+    }
+}

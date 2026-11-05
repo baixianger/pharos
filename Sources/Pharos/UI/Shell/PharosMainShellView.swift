@@ -21,6 +21,9 @@ public struct PharosMainShellView: View {
     @State private var threads: [ClientThreadSummary] = []
     @State private var projects: [ClientProjectSummary] = []
 
+    // 1:1 Direct Agent Session View Model
+    @State private var sessionViewModel: SessionConversationViewModel?
+
     // Active session metadata & composer state
     @State private var composerText: String = ""
     @State private var isSteeringMode: Bool = false
@@ -82,6 +85,15 @@ public struct PharosMainShellView: View {
             .onChange(of: proxy.size) { _, newSize in
                 layoutState.windowWidth = newSize.width
                 layoutState.windowHeight = newSize.height
+            }
+            .onChange(of: selectedSessionId) { _, newId in
+                if let id = newId {
+                    let vm = SessionConversationViewModel(sessionId: id, clientService: clientService)
+                    self.sessionViewModel = vm
+                    Task { await vm.loadHistory() }
+                } else {
+                    self.sessionViewModel = nil
+                }
             }
         }
         .frame(
@@ -154,7 +166,18 @@ public struct PharosMainShellView: View {
             onSendMessage: { message in
                 handleSendMessage(message)
             },
-            turnCount: 0
+            turns: sessionViewModel?.turns ?? [],
+            activeApproval: sessionViewModel?.activeApproval,
+            activeError: sessionViewModel?.activeError,
+            liveStreamingText: sessionViewModel?.liveStreamingText ?? "",
+            liveReasoningText: sessionViewModel?.liveReasoningText ?? "",
+            isTurnInProgress: sessionViewModel?.isTurnInProgress ?? false,
+            onResolveApproval: { decision in
+                Task { await sessionViewModel?.resolveApproval(decision: decision) }
+            },
+            onDismissError: {
+                sessionViewModel?.dismissError()
+            }
         )
     }
 
@@ -244,12 +267,8 @@ public struct PharosMainShellView: View {
 
     private func handleSendMessage(_ message: String) {
         Task {
-            if selectedTab == .sessions, let sId = selectedSessionId {
-                if isSteeringMode {
-                    try? await clientService.steerSession(sessionId: sId, text: message)
-                } else {
-                    _ = try? await clientService.sendSessionMessage(sessionId: sId, text: message)
-                }
+            if selectedTab == .sessions {
+                await sessionViewModel?.sendPrompt(text: message, isSteer: isSteeringMode)
             } else if selectedTab == .threads, let tId = selectedThreadId {
                 _ = try? await clientService.sendThreadMessage(threadId: tId, text: message)
             }

@@ -16,8 +16,15 @@ public struct ConversationCanvasView: View {
     public let onToggleSteering: () -> Void
     public let onSendMessage: (String) -> Void
 
-    // Optional turn or thread message counts for display
-    public var turnCount: Int = 0
+    // 1:1 Session Turn History & Streaming state
+    public var turns: [CanonicalTurn] = []
+    public var activeApproval: CanonicalApprovalRequest?
+    public var activeError: PharosClientError?
+    public var liveStreamingText: String = ""
+    public var liveReasoningText: String = ""
+    public var isTurnInProgress: Bool = false
+    public let onResolveApproval: (ApprovalDecision) -> Void
+    public let onDismissError: () -> Void
 
     public init(
         title: String,
@@ -31,7 +38,14 @@ public struct ConversationCanvasView: View {
         isSteeringMode: Bool = false,
         onToggleSteering: @escaping () -> Void = {},
         onSendMessage: @escaping (String) -> Void = { _ in },
-        turnCount: Int = 0
+        turns: [CanonicalTurn] = [],
+        activeApproval: CanonicalApprovalRequest? = nil,
+        activeError: PharosClientError? = nil,
+        liveStreamingText: String = "",
+        liveReasoningText: String = "",
+        isTurnInProgress: Bool = false,
+        onResolveApproval: @escaping (ApprovalDecision) -> Void = { _ in },
+        onDismissError: @escaping () -> Void = {}
     ) {
         self.title = title
         self.subtitle = subtitle
@@ -44,7 +58,14 @@ public struct ConversationCanvasView: View {
         self.isSteeringMode = isSteeringMode
         self.onToggleSteering = onToggleSteering
         self.onSendMessage = onSendMessage
-        self.turnCount = turnCount
+        self.turns = turns
+        self.activeApproval = activeApproval
+        self.activeError = activeError
+        self.liveStreamingText = liveStreamingText
+        self.liveReasoningText = liveReasoningText
+        self.isTurnInProgress = isTurnInProgress
+        self.onResolveApproval = onResolveApproval
+        self.onDismissError = onDismissError
     }
 
     public var body: some View {
@@ -56,22 +77,30 @@ public struct ConversationCanvasView: View {
                 .overlay(Color.primary.opacity(0.08))
 
             // Message Scroll Canvas
-            ScrollView {
-                VStack(spacing: 16) {
-                    if turnCount == 0 {
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    if turns.isEmpty && liveStreamingText.isEmpty && liveReasoningText.isEmpty && activeApproval == nil {
                         emptyState
                     } else {
-                        // Demo/Live turn placeholder
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Active conversation with \(title)")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.top, 16)
+                        SessionTurnListView(
+                            turns: turns,
+                            activeApproval: activeApproval,
+                            activeError: activeError,
+                            liveStreamingText: liveStreamingText,
+                            liveReasoningText: liveReasoningText,
+                            isTurnInProgress: isTurnInProgress,
+                            onResolveApproval: onResolveApproval,
+                            onDismissError: onDismissError
+                        )
+                        .id("bottom_anchor")
                     }
                 }
-                .frame(maxWidth: .infinity)
+                .onChange(of: liveStreamingText) { _, _ in
+                    scrollProxy.scrollTo("bottom_anchor", anchor: .bottom)
+                }
+                .onChange(of: turns.count) { _, _ in
+                    scrollProxy.scrollTo("bottom_anchor", anchor: .bottom)
+                }
             }
 
             Divider()
@@ -80,7 +109,7 @@ public struct ConversationCanvasView: View {
             // Expandable Bottom Composer
             PharosComposerView(
                 text: $composerText,
-                placeholder: "Message \(title)…",
+                placeholder: isSteeringMode ? "Steer \(title) mid-turn…" : "Message \(title)…",
                 isSteeringMode: isSteeringMode,
                 onToggleSteering: onToggleSteering,
                 onSend: onSendMessage
@@ -168,7 +197,7 @@ public struct ConversationCanvasView: View {
             Text("Ready to start")
                 .font(.system(size: 15, weight: .semibold))
 
-            Text("Type a message below to begin interacting with \(title).")
+            Text("Type a prompt below to interact directly with \(title).")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

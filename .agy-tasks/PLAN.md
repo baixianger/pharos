@@ -778,5 +778,55 @@ The legacy SwiftUI views (`DashboardView`, `ProjectDetailView`, `MeshRoomView`, 
   - `*-SES-01` .. `*-SES-18` (1:1 Session canvas, header, composer, and inspector shell)
   - `*-THD-01` .. `*-THD-18` (Thread roster and group chat canvas shell)
 
+---
+
+## M3 PHASE 4 REPORT (Goal 4: SESSION Path — 1:1 Direct Agent Chat, Live Token Streaming & Mid-Turn Steering)
+- **Status**: DONE
+- **Date**: 2026-11-05
+- **Branch**: `integrate/mesh2-into-main`
+
+### 1. Key Changes Delivered
+1. **`SessionConversationViewModel` (`Sources/Pharos/UI/Canvas/SessionConversationViewModel.swift`)**:
+   - Implemented `@MainActor @Observable` view-model orchestrating 1:1 direct agent chat.
+   - Coalesces live incoming streaming deltas (`textDelta`, `reasoningDelta`, `toolCallDelta`, `terminalOutputDelta`) into typewriter buffers.
+   - Dispatches optimistic user turns immediately upon submission and coordinates backend turn updates.
+   - Supports mid-turn steering (`clientService.steerSession`) while turn is in-flight without dropping context.
+   - Manages interactive approval requests with RFC-006 §3 decision submission.
+   - Surfacing of `PharosClientError.backendUnreachable` errors directly in UI without swallowing or dropping pending context.
+   - Enforces session history isolation: 1:1 session turn histories are completely decoupled from Thread group roster messages.
+2. **Interactive Approval Waterfall (`Sources/Pharos/UI/Canvas/ApprovalDialogCardView.swift`)**:
+   - Card view presenting tool permissions (tool name, parameters, explanation) with `Allow Once`, `Always Allow`, and `Deny` actions.
+   - Supports structured questionnaires with radio option selection and freeform answers.
+3. **Turn-Based Stream Renderer (`Sources/Pharos/UI/Canvas/SessionTurnListView.swift`)**:
+   - Full turn renderer displaying user and assistant message blocks.
+   - Collapsible thinking/reasoning blocks (`CanonicalReasoningBlock`).
+   - Rich tool call cards displaying parameters, status pills, and expandable stdout/stderr outputs.
+   - Live streaming assistant bubble with typing indicator and auto-scrolling to bottom anchor.
+4. **Canvas Integration (`Sources/Pharos/UI/Canvas/ConversationCanvasView.swift`, `PharosMainShellView.swift`)**:
+   - Connected `SessionConversationViewModel` dynamically to `selectedSessionId` in main shell.
+   - Bound composer submit button to regular turn send or mid-turn steer depending on `isTurnInProgress`.
+   - Wired backend error banners to top of canvas.
+
+### 2. Test Verification
+- All 5 new unit tests pass in 0.002s in `Tests/PharosTests/SessionStreamingAndSteeringTests.swift`:
+  - `testStreamingDeltaCoalescing`: Verifies text and reasoning delta accumulation and clean turn completion.
+  - `testMidTurnSteeringDispatch`: Verifies sending steering prompt while turn is in progress.
+  - `testInteractiveApprovalWaterfall`: Verifies tool permission waterfall event handling and decision resolution.
+  - `testDaemonUnreachableSurfacesError`: Verifies backend unreachable errors are surfaced without message dropping.
+  - `testHistoryIsolationInvariant`: Verifies zero thread roster messages leak into session turns.
+- Workspace test totals:
+  - `PharosTests`: 287 tests executed, 1 skipped, 0 failures (+5 tests).
+  - `PharosLightTests`: 254 tests, 0 failures.
+  - All Mesh targets (Protocol, Iroh, Identity, Core) passed 100%.
+  - Production app packaging (`./Scripts/package_app.sh release`) succeeded, producing signed `Pharos.app`.
+
+### 3. Matrix Rows Delivered & Flipped
+- Implemented and verified the Session path capabilities across the backends:
+  - `CX-SES-01` .. `CX-SES-18` (Codex session live streaming, steering, and daemon recovery)
+  - `AG-SES-01` .. `AG-SES-17` (Agy ACP live streaming, reasoning blocks, and approvals)
+  - `DS-SES-01` .. `DS-SES-17` (Dsh web Host live streaming and turn cards)
+
+---
+
 
 
