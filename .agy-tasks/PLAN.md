@@ -276,11 +276,13 @@ flowchart TD
     - **Remediation 4 (VIO-08, VIO-09)**: Move CLI entry points (`CLI.swift`, `LightCLI.swift`, `DistributedRegistryCLI.swift`) out of GUI target into headless target `PharosMesh`.
     - **Remediation 5**: Expand `ArchitectureBoundaryTests` to automatically assert 0 occurrences of `SwiftUI`/`AppKit` across all 11 backend directories and verify clean target separation.
   - **Pharos Canonical Message & Event Model** (Specified in [`docs/MESSAGE-MODEL.md`](file:///Users/baixianger/personal/pharos/docs/MESSAGE-MODEL.md)):
-    - Define unified `CanonicalTurn`, `CanonicalStep`, and typed `CanonicalBlock` (`userText`, `assistantText`, `reasoning`, `toolCall`, `toolResult`, `terminalCommand`, `filePatch`, `attachment`).
+    - **Scope Separation**: The Rich Canonical Message Model applies **EXCLUSIVELY to SESSIONS (1:1 direct chat)**.
+    - SESSIONS: Define unified `CanonicalTurn`, `CanonicalStep`, and typed `CanonicalBlock` (`userText`, `assistantText`, `reasoning`, `toolCall`, `toolResult`, `terminalCommand`, `filePatch`, `attachment`).
     - **Lossless Invariant**: `rawVendorPayload: [String: JSONValue]?` preserved on every turn, step, block, and approval object.
-    - Define `CanonicalStreamingDelta` (`textDelta`, `reasoningDelta`, `toolCallDelta`, `terminalOutputDelta`) for real-time typing animation.
+    - Define `CanonicalStreamingDelta` (`textDelta`, `reasoningDelta`, `toolCallDelta`, `terminalOutputDelta`) for real-time typing animation in 1:1 sessions.
     - Define `CanonicalApprovalRequest` supporting tool permissions and structured `CanonicalQuestionnaire` waterfalls (`intent: "plan-review"`).
     - Composite stable identifiers `(sessionId, turnId, stepId, blockId)` ensuring idempotency across reconnects.
+    - **THREADS (Group Chat Roster)**: Use dedicated, lightweight `ClientThreadMessage` DTO (plain chat bubbles: sender ID, name, avatar seed, text, timestamp, delivery receipts, optional attachments). Agents post **only final committed text replies**; no intermediate thinking, tools, or step events in threads.
   - **Client Summaries & Protocol**:
     - `ClientSessionSummary`, `ClientThreadSummary`, `ClientProjectSummary`, `ClientMemberDetail`, `ClientAvatarInfo`.
     - Protocol `PharosClientService`:
@@ -469,8 +471,15 @@ flowchart TD
 - **Scope**:
   - **Left Pane — `Threads` Tab**:
     - Lists active group threads and direct member rosters with unread badges, participant avatar clusters, and last updated timestamps.
-  - **Middle Pane — Group Chat Canvas**:
-    - Displays messages with distinct sender avatars, names, role tags, delivery timestamps, and delivery receipt indicators.
+  - **Middle Pane — Group Chat Canvas & Grok-Bot-Inspired Visual Style**:
+    - Displays messages as **plain chat bubbles** using dedicated `ClientThreadMessage` DTO (sender ID, name, avatar seed, text, timestamp, delivery receipts, optional attachments).
+    - **No Intermediate Agent Events**: In Threads, agents do NOT output thinking, tool calls, or steps; only the final committed text reply is posted to the thread upon turn completion.
+    - **Visual Styling (Grok Bot 0.78.5 Reference Geometry & Dynamics)**:
+      - Bubble geometry: Clamped to `min(80%, 560px, 100% - 82px)`; 12px horizontal, 7px vertical padding; 22px line height.
+      - Corner radius: 18px continuous base radius; consecutive messages from the same sender contract adjacent corner radius to 6px.
+      - Alignment: User/human messages right-aligned; agent messages left-aligned with 36px deterministic Canvas avatar.
+      - Expandable sheet composer: Compact 44px height (22px radius); expands on multiline input (scrollHeight ≥ 39px) to 18px radius with 0.5px hairline border; 300ms linear spring animation.
+      - Strict IP adherence: Layout and interaction ergonomics only. 100% Pharos-original Swift views, system fonts, and semantic tokens (`pharosChrome`, `pharosElevated`, `pharosInkPrimary`, `pharosAccent`). Zero copied assets, fonts, or SVGs.
     - Human operator is a first-class roster participant (`tester` / `human`).
     - Composer allows the human to post into the thread; message dispatches to all other roster participants using Pharos light messaging delivery rules.
   - **Durable Mailbox Routing & Delivery Primitives**:

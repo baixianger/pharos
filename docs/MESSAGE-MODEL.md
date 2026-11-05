@@ -19,10 +19,9 @@ Rather than forcing the client UI to handle three separate protocol dialects, Ph
 ### Core Architectural Invariants:
 1. **Lossless Translation with `rawVendorPayload`**: No backend metadata is ever silently dropped. Every canonical message, step, tool call, and approval preserves `rawVendorPayload: [String: JSONValue]` containing the unadulterated wire payload.
 2. **Dual-Phase Streaming (Deltas vs Committed Blocks)**: Live interactive turns stream ephemeral token deltas (`textDelta`, `reasoningDelta`, `toolCallDelta`) into active chat bubbles. Upon turn completion, the adapter commits authoritative, durable blocks.
-3. **Session vs Thread Semantic Sharing**: Direct 1:1 agent sessions and multi-agent collaborative threads use the **same structural message block vocabulary**, but diverge cleanly in delivery mode:
-   - **Session (1:1)**: Emits real-time typing deltas, supports mid-turn steering (`steer`), interactive approval modals, and dynamic model hot-swapping.
-   - **Thread (Roster)**: Transmits only completed durable messages via the Pharos Mesh Mailbox, accompanied by explicit 4-stage delivery receipts (`accepted` -> `injected` -> `consumed` -> `completed`).
-4. **Stable Composite Identifiers for Reconnect & Replay**: Because some backends (Codex, agy) lack global sequence numbers, the canonical model establishes composite keys: `(sessionId, turnId, stepId, blockId)` and optional monotonic sequence `seq` to ensure idempotent deduplication and gap reconciliation.
+3. **Strict Scope Separation (Sessions vs Threads)**: Per user decision (15:00), the **Canonical Rich Message Model applies EXCLUSIVELY to SESSIONS (1:1 direct chat)**. SESSIONS require granular turns, steps, thinking/reasoning blocks, tool execution cards, streaming deltas, and approval waterfalls. In contrast, **THREADS (Group Chat Roster)** use a **separate, lightweight, plain chat bubble DTO** (`ClientThreadMessage`). In Threads, agents do NOT emit thinking, tool, or step events; they return only their final plain text reply over the mesh mailbox.
+4. **Stable Composite Identifiers for Reconnect & Replay**: Because some backends (Codex, agy) lack global sequence numbers, the session model establishes composite keys: `(sessionId, turnId, stepId, blockId)` and optional monotonic sequence `seq` to ensure idempotent deduplication and gap reconciliation.
+5. **Thread Visual Presentation (Grok Bot Reference)**: Thread chat views adopt the refined bubble and composer geometry from Grok Bot UI research (`2026-11-05_ui-design.md`) as layout and interaction ideas, while adhering strictly to public-repo IP boundaries (100% Pharos-original Swift code, tokens, and Canvas rendering).
 
 ---
 
@@ -282,6 +281,78 @@ public struct CanonicalQuestionOption: Sendable, Codable, Equatable {
     public let description: String?
 }
 ```
+
+### 4.2 Thread Message DTO (`ClientThreadMessage`)
+
+Threads represent multi-agent collaborative task rosters where agents and the human operator converse over the durable Pharos Mesh Mailbox.
+
+Per user directive (Added 15:00), **Threads do NOT use the rich hierarchical block model**. In Threads:
+- Agents emit **only their final committed plain text reply** upon turn completion.
+- There are **no intermediate thinking/reasoning blocks, no tool execution steps, and no token-level streaming deltas**.
+- Messages are represented by a clean, lightweight DTO:
+
+```swift
+// MARK: - Thread Message DTO (Plain Chat Bubbles)
+
+public struct ClientThreadMessage: Identifiable, Sendable, Codable, Equatable {
+    public let id: String                     // e.g. "thmsg-01..."
+    public let threadId: String               // e.g. "th-collab-01"
+    public let senderId: String               // memberID or "human"
+    public let senderName: String             // e.g. "Pai", "Codex-1", "DSH-Mini"
+    public let senderType: SenderType         // .human, .agent
+    public let avatarSeed: UInt64             // deterministic avatar seed
+    public let text: String                   // final completed message text
+    public let timestamp: Date
+    public var status: ThreadMessageStatus    // pending, delivered, consumed, completed
+    public var receipts: [ClientDeliveryReceipt]
+    public var attachments: [ThreadAttachment]?
+}
+
+public enum SenderType: String, Sendable, Codable, Equatable {
+    case human
+    case agent
+}
+
+public struct ClientDeliveryReceipt: Sendable, Codable, Equatable {
+    public let recipientMemberName: String
+    public let stage: ReceiptStage            // accepted, injected, consumed, completed
+    public let updatedAt: Date
+}
+
+public enum ReceiptStage: String, Sendable, Codable, Equatable {
+    case accepted
+    case injected
+    case consumed
+    case completed
+}
+
+public struct ThreadAttachment: Sendable, Codable, Equatable {
+    public let id: String
+    public let name: String
+    public let urlString: String
+}
+```
+
+### 4.3 Thread Chat Window Visual Styling (Grok Bot Reference)
+
+The visual design and interaction ergonomics of the Thread chat window are informed by the Grok Bot 0.78.5 UI reverse-engineering research (`~/brainstorm/collections/design/grok-bot/2026-11-05_ui-design.md`):
+
+1. **Bubble Geometry & Alignment**:
+   - **Clamping**: Max bubble width is clamped to `min(80%, 560px, 100% - 82px)` to prevent uncomfortably wide text lines on broad displays.
+   - **Padding**: 12px horizontal, 7px vertical; 22px line height.
+   - **Corner Radius**: 18px continuous base radius.
+   - **Consecutive Message Collapse**: Consecutive messages from the same sender collapse the adjacent corner radius to 6px, creating natural visual message groupings.
+   - **Alignment & Avatars**: User/human messages align to the right; agent messages align to the left, preceded by a 36px deterministic Canvas avatar.
+   - **Bubble Surface**: Subtle background fill with 0.5px hairline stroke (Light: 6% neutral fill; Dark: 4% neutral fill).
+2. **Expandable Sheet Composer**:
+   - Compact height: 44px with 22px corner radius.
+   - Expanded state: animates smoothly to 18px corner radius when multiline input is entered (scrollHeight ≥ 39px).
+   - Bottom action bar: 46px reserved height housing file attachment, mode toggle, and Send button.
+   - Spring dynamics: 300ms linear spring animation for smooth height and radius transitions.
+3. **Public Repository IP Boundary**:
+   - Layout and interaction ergonomics are adopted purely as architectural and UX guidance.
+   - **100% Pharos-original implementation**: Native SwiftUI views, Pharos Canvas avatar generation, system fonts (`-apple-system`), and Pharos semantic design tokens (`pharosChrome`, `pharosElevated`, `pharosSidebar`, `pharosInkPrimary`, `pharosAccent`).
+   - Zero third-party SVGs, fonts, or copyrighted token assets.
 
 ---
 

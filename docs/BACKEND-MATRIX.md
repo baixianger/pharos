@@ -215,7 +215,11 @@ Every pitfall uncovered in the three research archives is indexed below and mapp
 
 ## 5. Message Model Translation & Semantic Loss Matrix
 
-The table below specifies how each backend's wire objects translate into the Pharos Canonical Message Model (`docs/MESSAGE-MODEL.md`), detailing fidelity, semantic loss, unmapped gaps, and preservation mechanisms.
+> [!NOTE]
+> Per user decision (Added 2026-11-05 15:00), the Rich Canonical Message Model (`CanonicalTurn`, `CanonicalStep`, `CanonicalBlock`) applies **EXCLUSIVELY to SESSIONS (1:1 direct chat)**.
+> In **THREADS (Group Chat Roster)**, messages route directly over the mesh mailbox as plain chat bubbles (`ClientThreadMessage`); agents return only their final committed text with zero intermediate thinking, tool, or step events.
+
+The table below specifies how each backend's wire objects translate into the Pharos Canonical Session Message Model (`docs/MESSAGE-MODEL.md`), detailing fidelity, semantic loss, unmapped gaps, and preservation mechanisms.
 
 | Backend & Version | Wire Entity | Canonical Target Entity | Translation Mechanism | Fidelity | Loss / Unmapped Gaps | Workaround & Preservation |
 |---|---|---|---|---|---|---|
