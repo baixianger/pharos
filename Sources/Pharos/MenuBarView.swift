@@ -1,4 +1,5 @@
 import SwiftUI
+import PharosMeshCore
 
 /// Content of the Pharos menu-bar extra (`.menu` style). Mirrors the iOS tab
 /// layout: the first group is four expandable submenus for the workspace

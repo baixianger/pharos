@@ -3,6 +3,7 @@ import XCTest
 
 final class ArchitectureBoundaryTests: XCTestCase {
     private let backendDirectories = [
+        "Sources/PharosClientKit",
         "Sources/PharosMeshProtocol",
         "Sources/PharosMeshIdentity",
         "Sources/PharosMeshIroh",

@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import PharosMeshCore
 
 /// In-window chat-room pane: the conversation, with a room-switcher dropdown in
 /// the title row (rename/delete live in the `…` menu beside it). Reads the

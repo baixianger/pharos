@@ -637,9 +637,51 @@ The legacy SwiftUI views (`DashboardView`, `ProjectDetailView`, `MeshRoomView`, 
 
 ---
 
-## STOP — Awaiting PM Review & Confirmation
+## M3 PHASE 1 REPORT (Goal 1: PharosClientKit & Architecture Boundary)
+- **Status**: DONE
+- **Date**: 2026-11-05
+- **Branch**: `integrate/mesh2-into-main`
 
-Phase 0 (PR #2 integration) is complete and verified with 100% green tests (691 passed across all 6 targets).  
-The M3 proposal above incorporates all reverse-engineering research on `agy`, `codex`, and `dsh`, establishing an isolated, versioned client API and a modern desktop client modelled on Grok Bot.
+### 1. Key Changes Delivered
+1. **Target `PharosClientKit` Introduced in `Package.swift`**:
+   - Presentation-facing Swift library target depending exclusively on `Foundation`.
+   - Exported as library product `PharosClientKit`.
+   - Wired into `Pharos` app target and `PharosTests` test target.
+2. **Canonical Message & Event Model Implemented (`Sources/PharosClientKit/`)**:
+   - `JSONValue`: Recursive `Sendable`, `Codable`, `Equatable` representation for unmapped vendor payloads (`rawVendorPayload`).
+   - `CanonicalTurn`, `CanonicalStep`, `CanonicalBlock`: Structured hierarchical presentation model for 1:1 Sessions.
+   - `CanonicalStreamingDelta` & `DeltaType`: Incremental token/reasoning/tool stream model designed for backend coalescing (RFC-006 §4).
+   - `CanonicalApprovalRequest` & `ApprovalDecision`: Modal approval waterfalls (`needs_human`) and questionnaire forms.
+   - `ClientThreadMessage` & `DeliveryReceiptState`: Plain chat bubble DTO for multi-agent Threads (zero intermediate tool/thinking events; human as implicit participant).
+   - `ClientSessionSummary`, `ClientThreadSummary`, `ClientProjectSummary`, `ClientMemberDetail`, `ClientAvatarInfo`.
+   - `PharosClientEvent`: Unified asynchronous event stream.
+   - `PharosClientService` protocol and `MockPharosClientService`.
+3. **Architecture Audit Remediation (VIO-01 Resolved)**:
+   - Deleted `Sources/Pharos/MeshCoreExports.swift` (`@_exported import PharosMeshCore`).
+   - Added explicit scoped imports to legacy views (`DashboardView`, `MeshRoomView`, etc.) until replaced in Goal 3/4/5.
+   - Expanded `Tests/PharosTests/ArchitectureBoundaryTests.swift` to scan `Sources/PharosClientKit` alongside all 11 backend targets, asserting 0 imports of `SwiftUI`, `AppKit`, or `Cocoa`. (Passed in 0.202s).
+4. **Daemon Unreachable / Restart Error Handling (GOAL.md 16:18)**:
+   - Defined `PharosClientError.backendUnreachable(backend:reason:)`.
+   - Added matrix rows `CX-SES-18` and `CX-THD-18` in `docs/BACKEND-MATRIX.md`.
+   - Added automated test `testDaemonUnreachableSurfacesExplicitErrorAndNeverSilentlyDrops` in `PharosClientKitTests`.
+5. **Documentation**:
+   - Authored `docs/CLIENT-API.md` documenting the client service and canonical schemas.
 
-**Implementation of Milestone 3 will not begin until the PM reviews and approves this proposal.**
+### 2. Test Verification
+- `swift test` 100% green across all targets:
+  - `PharosTests`: 263 tests executed, 1 skipped, 0 failures (+8 new unit tests in `PharosClientKitTests`).
+  - `PharosLightTests`: 254 tests, 0 failures.
+  - `PharosMeshCoreTests`: 126 tests, 0 failures.
+  - `PharosMeshProtocolTests`: 26 tests, 0 failures.
+  - `PharosMeshIrohTests`: 13 tests, 0 failures.
+  - `PharosMeshIdentityTests`: 17 tests, 0 failures.
+  - Total: 699 passed tests across the workspace.
+
+### 3. Matrix Rows Delivered & Flipped
+- Foundational API contract underpinning all rows in `docs/BACKEND-MATRIX.md`:
+  - `CX-SES-18` (Codex daemon recovery) -> `supported` (verified by `PharosClientKitTests.testDaemonUnreachableSurfacesExplicitErrorAndNeverSilentlyDrops`).
+  - All `*-SES-*` and `*-THD-*` data DTO schemas formalised in `PharosClientKit`.
+
+### 4. Directives Noted for Subsequent Goals
+- Per GOAL.md 16:20 & 16:21: Grok Bot mockup and avatar source are open source; for Goal 3 (Client Shell) and Goal 6 (Avatars), port the mockup and avatar assets faithfully, adding `THIRD_PARTY_NOTICES.md`.
+

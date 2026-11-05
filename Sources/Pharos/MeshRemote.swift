@@ -1,4 +1,5 @@
 import Foundation
+import PharosMeshCore
 #if canImport(Darwin)
 import Darwin
 #endif

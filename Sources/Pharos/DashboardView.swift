@@ -1,4 +1,5 @@
 import PharosMeshControl
+import PharosMeshCore
 import SwiftUI
 
 /// One entry in the activity feed: an issue (by last update) or a project-log update.

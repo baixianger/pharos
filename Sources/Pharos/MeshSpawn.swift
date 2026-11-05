@@ -1,4 +1,5 @@
 import Foundation
+import PharosMeshCore
 
 /// Spawn a coding agent (Claude or Codex) into a tmux session and drive it to
 /// JOIN a mesh chat room, then confirm it actually joined — the passive-join

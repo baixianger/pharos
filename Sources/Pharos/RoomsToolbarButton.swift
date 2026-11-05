@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import PharosMeshCore
 
 /// Toolbar chat-room switcher/manager. Replaces the in-view room tab strip: one
 /// button in the window toolbar opens a popover to switch the current tab's

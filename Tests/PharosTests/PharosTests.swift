@@ -1,6 +1,8 @@
 import XCTest
 import AppKit
 import Darwin
+import PharosMeshCore
+import PharosRuntime
 @testable import Pharos
 
 // MARK: - SessionsService.encodeClaudePath

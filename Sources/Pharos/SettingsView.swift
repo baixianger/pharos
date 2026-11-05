@@ -1,4 +1,5 @@
 import AppKit
+import PharosMeshCore
 import PharosRuntime
 import SwiftUI
 

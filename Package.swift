@@ -17,6 +17,10 @@ let packageTargets: [Target] = {
             path: "Sources/PharosMeshProtocol"
         ),
         .target(
+            name: "PharosClientKit",
+            path: "Sources/PharosClientKit"
+        ),
+        .target(
             name: "PharosMeshIroh",
             dependencies: [
                 "PharosMeshProtocol",
@@ -139,6 +143,7 @@ let packageTargets: [Target] = {
         .executableTarget(
             name: "Pharos",
             dependencies: [
+                "PharosClientKit",
                 "PharosMeshCore",
                 "PharosRuntime",
                 "PharosMeshLifecycle",
@@ -163,6 +168,7 @@ let packageTargets: [Target] = {
             name: "PharosTests",
             dependencies: [
                 "Pharos",
+                "PharosClientKit",
                 "PharosMeshCore",
                 "PharosAgentCore",
                 "PharosRuntime",
@@ -180,6 +186,7 @@ let packageTargets: [Target] = {
 let packageProducts: [Product] = {
     var products: [Product] = [
         .executable(name: "pharos-mesh", targets: ["PharosMesh"]),
+        .library(name: "PharosClientKit", targets: ["PharosClientKit"]),
         .library(name: "PharosMeshProtocol", targets: ["PharosMeshProtocol"]),
         .library(name: "PharosMeshIdentity", targets: ["PharosMeshIdentity"]),
         .library(name: "PharosMeshIroh", targets: ["PharosMeshIroh"]),

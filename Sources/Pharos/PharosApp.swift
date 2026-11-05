@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import PharosRuntime
+import PharosMeshCore
 
 /// Real entry point. Two front doors share one binary:
 ///   • a CLI subcommand   → the `pharos` CLI (e.g. `Pharos list`, `Pharos launch …`)
