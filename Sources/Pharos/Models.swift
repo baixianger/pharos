@@ -1,4 +1,5 @@
 import Foundation
+import PharosMeshProtocol
 
 /// A custom command button the user attaches to a project.
 struct Playbook: Identifiable, Codable, Hashable {
@@ -217,14 +218,18 @@ struct Milestone: Identifiable, Codable, Hashable {
     var createdAt: Date = Date()
 }
 
-/// Metadata for an image or file attached to an issue. The UUID addresses the
-/// Broker blob; clients may cache the bytes locally.
-struct IssueAttachment: Identifiable, Codable, Hashable {
+/// Metadata for an image or file attached to an issue. New attachments bind to
+/// immutable distributed blob metadata; clients cache verified bytes locally.
+struct IssueAttachment: Identifiable, Codable, Hashable, Sendable {
     var id: UUID = UUID()
     var storedName: String     // filename on disk within the issue's attachment dir
     var originalName: String   // display name shown in the UI
     var isImage: Bool
     var byteSize: Int
+    /// Signed immutable metadata for the content-addressed distributed blob.
+    /// Older local/Broker attachments decode with nil and remain readable on
+    /// the machine that owns their cached bytes.
+    var meshAttachment: MeshAttachment? = nil
     var addedAt: Date = Date()
 }
 

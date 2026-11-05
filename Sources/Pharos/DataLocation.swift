@@ -87,8 +87,8 @@ enum DataLocation {
 
 }
 
-/// Device cache for issue attachment bytes. The Broker is authoritative; this
-/// directory keeps already-opened files available offline.
+/// Device cache for issue attachment bytes. Distributed metadata is signed into
+/// the replica and content-addressed bytes are fetched from trusted peers.
 enum AttachmentStore {
     static var baseDirectory: URL {
         PharosCore.registryURL.deletingLastPathComponent()
@@ -102,6 +102,7 @@ enum AttachmentStore {
     static func fileURL(_ attachment: IssueAttachment, issueID: UUID) -> URL {
         let url = directory(forIssue: issueID).appendingPathComponent(attachment.storedName)
         if !FileManager.default.fileExists(atPath: url.path),
+           !PharosMeshRuntimeMode.usesDistributedMesh,
            ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] == nil {
             _ = try? MeshClient.downloadAttachment(id: attachment.id.uuidString, to: url)
         }
@@ -115,6 +116,15 @@ enum AttachmentStore {
     /// metadata. The stored name is unique (UUID-prefixed) to avoid collisions.
     @discardableResult
     static func add(fileAt source: URL, toIssue id: UUID) throws -> IssueAttachment {
+        try add(fileAt: source, toIssue: id, distributedReference: nil)
+    }
+
+    /// Copies bytes into the device cache and binds them to distributed blob
+    /// metadata without contacting the retired Broker.
+    static func add(
+        fileAt source: URL, toIssue id: UUID,
+        distributedReference: MeshAttachment?
+    ) throws -> IssueAttachment {
         let fm = FileManager.default
         let dir = directory(forIssue: id)
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -123,7 +133,8 @@ enum AttachmentStore {
         let dest = dir.appendingPathComponent(stored)
         try fm.copyItem(at: source, to: dest)
         let id = UUID()
-        if ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] == nil {
+        if distributedReference == nil,
+           ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] == nil {
             do {
                 _ = try MeshClient.uploadAttachment(fileAt: dest, id: id.uuidString,
                                                     name: source.lastPathComponent)
@@ -139,8 +150,21 @@ enum AttachmentStore {
             storedName: stored,
             originalName: source.lastPathComponent,
             isImage: imageExtensions.contains(ext.lowercased()),
-            byteSize: size
+            byteSize: size,
+            meshAttachment: distributedReference
         )
+    }
+
+    static func storeDistributedData(
+        _ data: Data, for attachment: IssueAttachment, issueID: UUID
+    ) throws -> URL {
+        let directory = directory(forIssue: issueID)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        let destination = directory.appendingPathComponent(attachment.storedName)
+        try data.write(to: destination, options: .atomic)
+        return destination
     }
 
     /// Delete every attachment directory whose issue id is not in `keep` — orphan

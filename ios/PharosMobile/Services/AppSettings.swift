@@ -13,6 +13,9 @@ struct SSHHostProfile: Codable, Equatable, Identifiable, Sendable {
     /// meshHost/sshHost remain human-readable and routable SSH fields.
     var nodeID: String? = nil
     var meshHost: String
+    /// Stable P2P Host identity. `meshHost` remains the human-readable label
+    /// and legacy migration fallback; routing must prefer this device ID.
+    var meshDeviceID: String? = nil
     var sshHost: String
     var port: UInt16 = 22
     var username: String
@@ -80,6 +83,13 @@ final class AppSettings {
                                 tailscaleIP: member.tailscaleIP, in: sshHosts)
     }
 
+    func sshHost(forDeviceID deviceID: String, displayName: String) -> SSHHostProfile? {
+        SSHHostResolver.profile(
+            forDeviceID: deviceID, host: displayName,
+            tailscaleIP: nil, in: sshHosts
+        )
+    }
+
     private func load() {
         let source = UserDefaults.standard.data(forKey: Self.storageKey)
         if let source, let decoded = try? JSONDecoder().decode(SyncedConfiguration.self, from: source) {
@@ -109,6 +119,21 @@ enum SSHHostResolver {
         if let nodeID, let exact = uniqueMatch(in: profiles, where: {
             canonical($0.nodeID) == canonical(nodeID)
         }) {
+            return exact
+        }
+        return profile(
+            forDeviceID: nil, host: host,
+            tailscaleIP: tailscaleIP, in: profiles
+        )
+    }
+
+    static func profile(forDeviceID deviceID: String? = nil,
+                        host: String?, tailscaleIP: String?,
+                        in profiles: [SSHHostProfile]) -> SSHHostProfile? {
+        if let deviceID = canonical(deviceID),
+           let exact = uniqueMatch(in: profiles, where: {
+               canonical($0.meshDeviceID) == deviceID
+           }) {
             return exact
         }
         let host = canonical(host)

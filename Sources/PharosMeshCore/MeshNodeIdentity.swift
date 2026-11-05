@@ -1,7 +1,8 @@
 import Foundation
 
 /// Stable identity shared by the Host Node and every local agent registration.
-/// The value survives app upgrades and computer-name/IP changes.
+/// The value survives app upgrades and computer-name/IP changes; existing
+/// installations retain the identifier already stored on disk.
 public enum MeshNodeIdentity {
     public static let current: String = {
         let directory = FileManager.default.homeDirectoryForCurrentUser
@@ -13,7 +14,7 @@ public enum MeshNodeIdentity {
         }
         let value = UUID().uuidString.lowercased()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try? Data((value + "\n").utf8).write(to: file, options: .atomic)
+        try? value.write(to: file, atomically: true, encoding: .utf8)
         return value
     }()
 }

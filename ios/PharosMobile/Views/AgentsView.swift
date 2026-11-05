@@ -1,3 +1,4 @@
+import PharosMeshControl
 import SwiftUI
 
 /// Shared presentation for an agent conversation's current runtime state.
@@ -216,7 +217,12 @@ struct AgentDetailView: View {
     let member: MeshMember
     @State private var terminal: TerminalTarget?
     @State private var showingStopConfirm = false
+    @State private var showingRemoveConfirm = false
     @State private var isStopping = false
+    @State private var isRemoving = false
+    @State private var distributedHost: DistributedAgentHostLocation?
+    @State private var hostLookupError: String?
+    @State private var isLocatingHost = false
 
     var body: some View {
         List {
@@ -247,7 +253,9 @@ struct AgentDetailView: View {
                 if !member.rooms.isEmpty { LabeledContent("Rooms", value: member.rooms.joined(separator: ", ")) }
             }
 
-            if let profile = sshProfile {
+            if PharosMeshRuntimeMode.usesDistributedMesh {
+                distributedAttachSection
+            } else if let profile = sshProfile {
                 Section {
                     Button {
                         terminal = TerminalTarget(member: member, profile: profile)
@@ -267,29 +275,37 @@ struct AgentDetailView: View {
                 }
             }
 
-            if (member.state ?? "").lowercased() != "gone" {
-                Section {
-                    Button(role: .destructive) {
-                        showingStopConfirm = true
-                    } label: {
-                        HStack {
-                            Label("Stop runtime", systemImage: "stop.circle")
-                            if isStopping { Spacer(); ProgressView() }
-                        }
-                    }
-                    .disabled(isStopping)
-                } footer: {
-                    Text("Uses the Broker compatibility command. It ends the current runtime transport, not a future persistent conversation archive.")
-                }
-            }
+            AgentLifecycleControls(
+                isGone: (member.state ?? "").lowercased() == "gone",
+                usesDistributedMesh: PharosMeshRuntimeMode.usesDistributedMesh,
+                hostName: member.host ?? "the agent's host",
+                controlReadiness: distributedHost?.controlReadiness,
+                isLocatingHost: isLocatingHost,
+                isStopping: isStopping,
+                isRemoving: isRemoving,
+                onStop: { showingStopConfirm = true },
+                onRemove: { showingRemoveConfirm = true }
+            )
         }
         .pharosPlainList()
         .navigationTitle("@\(member.nick)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .fullScreenCover(item: $terminal) { RemoteTerminalView(target: $0) }
-        .confirmationDialog("Stop @\(member.nick)'s runtime?", isPresented: $showingStopConfirm, titleVisibility: .visible) {
-            Button("Stop runtime", role: .destructive) {
+        .task(id: member.id) {
+            guard PharosMeshRuntimeMode.usesDistributedMesh else { return }
+            isLocatingHost = true
+            defer { isLocatingHost = false }
+            do {
+                distributedHost = try await store.locateAgentHost(memberID: member.id)
+                hostLookupError = nil
+            } catch {
+                distributedHost = nil
+                hostLookupError = error.localizedDescription
+            }
+        }
+        .confirmationDialog("Stop @\(member.nick)?", isPresented: $showingStopConfirm, titleVisibility: .visible) {
+            Button("Stop agent", role: .destructive) {
                 isStopping = true
                 Task {
                     _ = await store.stopAgent(member)
@@ -300,11 +316,125 @@ struct AgentDetailView: View {
         } message: {
             Text("This ends the legacy tmux runtime on its host. It does not delete vendor conversation history.")
         }
+        .confirmationDialog(
+            "Remove @\(member.nick) from Mesh?",
+            isPresented: $showingRemoveConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Remove from Mesh", role: .destructive) {
+                isRemoving = true
+                Task {
+                    _ = await store.removeAgentFromMesh(member)
+                    isRemoving = false
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the agent from every chat room but does not stop its process on the Host.")
+        }
     }
 
     private var sshProfile: SSHHostProfile? {
         guard let profile = settings.sshHost(for: member),
               profile.identityID != nil, profile.acceptsUnverifiedHostKey else { return nil }
         return profile
+    }
+
+    @ViewBuilder
+    private var distributedAttachSection: some View {
+        if let host = distributedHost,
+           host.controlReadiness == .managed,
+           let profile = settings.sshHost(
+               forDeviceID: host.deviceID.rawValue.uuidString,
+               displayName: host.displayName
+           ),
+           profile.identityID != nil, profile.acceptsUnverifiedHostKey {
+            Section {
+                Button {
+                    terminal = TerminalTarget(
+                        member: member, profile: profile,
+                        distributedResourceID: member.id
+                    )
+                } label: {
+                    Label("Remote Control (SSH → tmux attach)", systemImage: "terminal")
+                }
+            } footer: {
+                Text("Connects to \(profile.username)@\(profile.sshHost). The Host resolves resource \(member.id.prefix(8))… to its private tmux binding.")
+            }
+        } else if isLocatingHost {
+            Section { HStack { ProgressView(); Text("Locating owning Host…") } }
+        } else {
+            Section {
+                Label(
+                    distributedHost.map {
+                        "Add an SSH host mapping for \($0.displayName) in Settings."
+                    } ?? "Owning Host is offline or no longer advertises this agent.",
+                    systemImage: "info.circle"
+                )
+                .font(.caption).foregroundStyle(.secondary)
+                if let hostLookupError {
+                    Text(hostLookupError).font(.caption2).foregroundStyle(.orange)
+                }
+            } footer: {
+                Text("P2P identifies the trusted Host; SSH provides the interactive byte stream. Private tmux socket and session names never leave that Host.")
+            }
+        }
+    }
+}
+
+private struct AgentLifecycleControls: View {
+    let isGone: Bool
+    let usesDistributedMesh: Bool
+    let hostName: String
+    let controlReadiness: DistributedAgentHostControlReadiness?
+    let isLocatingHost: Bool
+    let isStopping: Bool
+    let isRemoving: Bool
+    let onStop: () -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        if !isGone {
+            Section {
+                if canStop {
+                    Button(role: .destructive, action: onStop) {
+                        HStack {
+                            Label("Stop managed agent", systemImage: "stop.circle")
+                            if isStopping { Spacer(); ProgressView() }
+                        }
+                    }
+                    .disabled(isStopping || isRemoving)
+                }
+                if usesDistributedMesh {
+                    Button(role: .destructive, action: onRemove) {
+                        HStack {
+                            Label("Remove from Mesh", systemImage: "person.crop.circle.badge.minus")
+                            if isRemoving { Spacer(); ProgressView() }
+                        }
+                    }
+                    .disabled(isStopping || isRemoving)
+                }
+            } footer: {
+                if usesDistributedMesh {
+                    switch controlReadiness {
+                    case .managed:
+                        Text("Stop sends a signed, generation-bound command to the owning Host. Remove only changes the Mesh roster.")
+                    case .unmanaged:
+                        Text("This Agent is visible but its Host has not verified a safe tmux binding. Open Pharos on \(hostName) to repair it, or remove only its Mesh roster entry.")
+                    case nil:
+                        Text(isLocatingHost
+                             ? "Checking the owning Host's control capability…"
+                             : "The owning Host is unavailable. Removing from Mesh will not stop its process.")
+                    }
+                } else {
+                    Text("Stops the tmux session on \(hostName). The legacy Host node must be online.")
+                }
+            }
+        }
+    }
+
+    private var canStop: Bool {
+        if !usesDistributedMesh { return true }
+        return controlReadiness == .managed
     }
 }

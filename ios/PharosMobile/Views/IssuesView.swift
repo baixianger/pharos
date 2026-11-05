@@ -1,10 +1,13 @@
+import QuickLook
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// Open work across the registry, grouped by workflow state instead of by card.
 struct IssuesView: View {
     @Environment(RoomStore.self) private var store
     @Environment(AppSettings.self) private var settings
+    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @State private var issues: [RemoteIssue] = []
     @State private var loading = false
     @State private var loadError: String?
@@ -73,7 +76,7 @@ struct IssuesView: View {
                     Task { await load() }
                 }
             }
-            .task { await load() }
+            .task(id: distributedMesh.registryRevision) { await load() }
             .refreshable { await load() }
         }
     }
@@ -127,6 +130,7 @@ struct IssuesView: View {
 
     private var emptyDescription: String {
         if let loadError { return loadError }
+        if isDistributed { return "Issues from trusted devices appear here after replica sync." }
         if settings.mesh.host.isEmpty { return "Connect to your Broker in Settings to load issues." }
         if selectedLabel != nil { return "No issues match this label and filter." }
         return filter == .open ? "Nothing is open across your projects." : "No issues match this filter."
@@ -150,18 +154,36 @@ struct IssuesView: View {
             issues = viaMesh
             return
         }
-        loadError = "The Broker is unavailable and no issue cache exists yet."
+        loadError = isDistributed
+            ? "Pair this iPhone with a trusted Pharos device before loading replicated issues."
+            : "The Broker is unavailable and no issue cache exists yet."
+    }
+
+    private var isDistributed: Bool {
+        PharosMeshRuntimeMode.usesDistributedMesh
     }
 }
 
-private struct NewIssueView: View {
+struct NewIssueView: View {
     @Environment(RoomStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var projects: [RemoteProject] = []
     @State private var selectedProject = ""
     @State private var title = ""
+    @State private var bodyText = ""
+    @State private var status = "todo"
+    @State private var priority = "none"
+    @State private var labels = ""
+    @State private var milestoneID: String?
+    @State private var parent: Int?
+    @State private var relations: [RemoteIssueRelation] = []
+    @State private var attachments: [RemoteIssueAttachment] = []
+    @State private var pendingAttachments: [PendingRemoteAttachment] = []
+    @State private var showingFileImporter = false
+    @State private var importError: String?
     @State private var loadingProjects = true
     @State private var saving = false
+    var initialProject: String? = nil
     let onCreated: () -> Void
 
     var body: some View {
@@ -180,13 +202,49 @@ private struct NewIssueView: View {
                     }
                     TextField("Issue title", text: $title, axis: .vertical)
                         .lineLimit(2...5)
+                    TextField("Context", text: $bodyText, axis: .vertical)
+                        .lineLimit(4...10)
                 }
 
-                Section {
-                    LabeledContent("Status", value: "Todo")
-                    LabeledContent("Priority", value: "No priority")
-                } footer: {
-                    Text("Open the issue after creating it to add context, labels, and priority.")
+                Section("Properties") {
+                    Picker("Status", selection: $status) {
+                        Text("Backlog").tag("backlog")
+                        Text("Todo").tag("todo")
+                        Text("In progress").tag("in_progress")
+                        Text("Done").tag("done")
+                        Text("Canceled").tag("canceled")
+                    }
+                    Picker("Priority", selection: $priority) {
+                        Text("No priority").tag("none")
+                        Text("Low").tag("low")
+                        Text("Medium").tag("medium")
+                        Text("High").tag("high")
+                        Text("Urgent").tag("urgent")
+                    }
+                    TextField("Labels, separated by commas", text: $labels)
+                }
+                IssueHierarchyEditorSection(
+                    milestones: selectedProjectModel?.milestones ?? [],
+                    issues: selectedProjectModel?.issues ?? [],
+                    currentIssueNumber: -1,
+                    milestoneID: $milestoneID,
+                    parent: $parent
+                )
+                IssueRelationsEditorSection(
+                    issues: selectedProjectModel?.issues ?? [],
+                    currentIssueNumber: -1,
+                    relations: $relations
+                )
+                IssueAttachmentsEditorSection(
+                    attachments: $attachments,
+                    pendingAttachments: $pendingAttachments,
+                    chooseFiles: { showingFileImporter = true }
+                )
+                if let importError {
+                    Section {
+                        Label(importError, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
                 }
 
                 if let error = store.error {
@@ -212,6 +270,18 @@ private struct NewIssueView: View {
                 }
             }
             .interactiveDismissDisabled(saving)
+            .fileImporter(
+                isPresented: $showingFileImporter,
+                allowedContentTypes: [.item],
+                allowsMultipleSelection: true
+            ) { result in
+                importFiles(result)
+            }
+            .onChange(of: selectedProject) {
+                milestoneID = nil
+                parent = nil
+                relations = []
+            }
             .task { await loadProjects() }
         }
     }
@@ -221,16 +291,42 @@ private struct NewIssueView: View {
         defer { loadingProjects = false }
         projects = (await store.fetchProjectsOverMesh() ?? [])
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        if selectedProject.isEmpty { selectedProject = projects.first?.name ?? "" }
+        if selectedProject.isEmpty {
+            selectedProject = projects.first(where: {
+                $0.name == initialProject
+            })?.name ?? projects.first?.name ?? ""
+        }
     }
 
     private func save() async {
         saving = true
-        let succeeded = await store.addIssue(to: selectedProject, title: title)
+        let parsedLabels = labels.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let succeeded = await store.addIssue(
+            to: selectedProject, title: title, body: bodyText,
+            status: status, priority: priority, labels: parsedLabels,
+            milestoneID: milestoneID, parent: parent,
+            relations: relations,
+            pendingAttachments: pendingAttachments
+        )
         saving = false
         if succeeded {
             onCreated()
             dismiss()
+        }
+    }
+
+    private var selectedProjectModel: RemoteProject? {
+        projects.first { $0.name == selectedProject }
+    }
+
+    private func importFiles(_ result: Result<[URL], Error>) {
+        do {
+            pendingAttachments.append(contentsOf: try pendingIssueAttachments(result))
+            importError = nil
+        } catch {
+            importError = error.localizedDescription
         }
     }
 }
@@ -363,6 +459,8 @@ struct IssueSummaryView: View {
     @State private var showingEditor = false
     @State private var showingDeleteConfirm = false
     @State private var isDeleting = false
+    @State private var project: RemoteProject?
+    @State private var previewURL: URL?
 
     init(issue: RemoteIssue) {
         _issue = State(initialValue: issue)
@@ -393,6 +491,14 @@ struct IssueSummaryView: View {
                                               symbol: issue.priority.lowercased() == "urgent" ? "exclamationmark" : "chart.bar")
                         }
                         IssuePropertyChip(title: issue.project, symbol: "cube")
+                        if let milestoneName = project?.milestones.first(where: {
+                            $0.id == issue.milestoneID
+                        })?.name {
+                            IssuePropertyChip(title: milestoneName, symbol: "flag")
+                        }
+                        if let parent = issue.parent {
+                            IssuePropertyChip(title: "Parent #\(parent)", symbol: "arrow.turn.up.left")
+                        }
                         ForEach(issue.labels, id: \.self) { label in
                             IssuePropertyChip(title: label, symbol: "tag")
                         }
@@ -415,6 +521,19 @@ struct IssueSummaryView: View {
                 Section("Active agent") {
                     Label(session, systemImage: "bolt.horizontal.circle")
                 }
+            }
+
+            if !issue.relations.isEmpty {
+                IssueRelationsSummarySection(relations: issue.relations)
+            }
+
+            if !issue.attachments.isEmpty {
+                IssueAttachmentsSummarySection(
+                    attachments: issue.attachments,
+                    open: { attachment in
+                        Task { await preview(attachment) }
+                    }
+                )
             }
         }
         .pharosPlainList()
@@ -459,6 +578,8 @@ struct IssueSummaryView: View {
                 issue = updated
             }
         }
+        .quickLookPreview($previewURL)
+        .task { await reloadProject() }
         .confirmationDialog("Delete \(issue.project.uppercased())-\(issue.number)?",
                             isPresented: $showingDeleteConfirm, titleVisibility: .visible) {
             Button("Delete issue", role: .destructive) {
@@ -479,6 +600,81 @@ struct IssueSummaryView: View {
         guard let issues = await store.fetchIssuesOverMesh(),
               let updated = issues.first(where: { $0.id == issue.id }) else { return }
         issue = updated
+        await reloadProject()
+    }
+
+    private func reloadProject() async {
+        project = await store.fetchProjectsOverMesh()?.first(where: {
+            $0.name == issue.project
+        })
+    }
+
+    private func preview(_ attachment: RemoteIssueAttachment) async {
+        guard let data = await store.issueAttachmentData(attachment) else { return }
+        let safeName = attachment.originalName.replacingOccurrences(
+            of: "/", with: "-"
+        )
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(attachment.id)-\(safeName)")
+        do {
+            try data.write(to: url, options: .atomic)
+            previewURL = url
+        } catch {
+            // RoomStore already surfaces transport errors. A local preview
+            // write failure simply leaves the existing detail view visible.
+        }
+    }
+}
+
+private struct IssueRelationsSummarySection: View {
+    let relations: [RemoteIssueRelation]
+
+    var body: some View {
+        Section("Related issues") {
+            ForEach(relations) { relation in
+                Label(
+                    "\(relationDisplayName(relation.kind)) #\(relation.target)",
+                    systemImage: "arrow.left.and.right"
+                )
+            }
+        }
+    }
+}
+
+private struct IssueAttachmentsSummarySection: View {
+    let attachments: [RemoteIssueAttachment]
+    let open: (RemoteIssueAttachment) -> Void
+
+    var body: some View {
+        Section("Attachments") {
+            ForEach(attachments) { attachment in
+                IssueAttachmentSummaryRow(
+                    name: attachment.originalName,
+                    isImage: attachment.isImage,
+                    byteSize: attachment.byteSize,
+                    action: { open(attachment) }
+                )
+            }
+        }
+    }
+}
+
+private struct IssueAttachmentSummaryRow: View {
+    let name: String
+    let isImage: Bool
+    let byteSize: Int
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                Label(name, systemImage: isImage ? "photo" : "doc")
+                Spacer()
+                Text(Int64(byteSize), format: .byteCount(style: .file))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
@@ -520,6 +716,14 @@ private struct IssueEditorView: View {
     @State private var status: String
     @State private var priority: String
     @State private var labels: String
+    @State private var milestoneID: String?
+    @State private var parent: Int?
+    @State private var relations: [RemoteIssueRelation]
+    @State private var attachments: [RemoteIssueAttachment]
+    @State private var pendingAttachments: [PendingRemoteAttachment] = []
+    @State private var project: RemoteProject?
+    @State private var showingFileImporter = false
+    @State private var importError: String?
     @State private var saving = false
 
     init(issue: RemoteIssue, onSaved: @escaping (RemoteIssue) -> Void) {
@@ -530,6 +734,10 @@ private struct IssueEditorView: View {
         _status = State(initialValue: issue.status.isEmpty ? "todo" : issue.status)
         _priority = State(initialValue: issue.priority.isEmpty ? "none" : issue.priority)
         _labels = State(initialValue: issue.labels.joined(separator: ", "))
+        _milestoneID = State(initialValue: issue.milestoneID)
+        _parent = State(initialValue: issue.parent)
+        _relations = State(initialValue: issue.relations)
+        _attachments = State(initialValue: issue.attachments)
     }
 
     var body: some View {
@@ -558,6 +766,29 @@ private struct IssueEditorView: View {
                     }
                     TextField("Labels, separated by commas", text: $labels)
                 }
+                IssueHierarchyEditorSection(
+                    milestones: project?.milestones ?? [],
+                    issues: project?.issues ?? [],
+                    currentIssueNumber: issue.number,
+                    milestoneID: $milestoneID,
+                    parent: $parent
+                )
+                IssueRelationsEditorSection(
+                    issues: project?.issues ?? [],
+                    currentIssueNumber: issue.number,
+                    relations: $relations
+                )
+                IssueAttachmentsEditorSection(
+                    attachments: $attachments,
+                    pendingAttachments: $pendingAttachments,
+                    chooseFiles: { showingFileImporter = true }
+                )
+                if let importError {
+                    Section {
+                        Label(importError, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
+                }
                 if let error = store.error {
                     Section {
                         Label(error, systemImage: "exclamationmark.triangle")
@@ -578,6 +809,14 @@ private struct IssueEditorView: View {
                 }
             }
             .interactiveDismissDisabled(saving)
+            .fileImporter(
+                isPresented: $showingFileImporter,
+                allowedContentTypes: [.item],
+                allowsMultipleSelection: true
+            ) { result in
+                importFiles(result)
+            }
+            .task { await loadProject() }
         }
     }
 
@@ -588,15 +827,199 @@ private struct IssueEditorView: View {
             .filter { !$0.isEmpty }
         let succeeded = await store.updateIssue(issue, title: title, body: bodyText,
                                                 status: status, priority: priority,
-                                                labels: parsedLabels)
+                                                labels: parsedLabels,
+                                                milestoneID: milestoneID,
+                                                parent: parent,
+                                                relations: relations,
+                                                attachments: attachments,
+                                                pendingAttachments: pendingAttachments)
         saving = false
         if succeeded {
-            onSaved(RemoteIssue(project: issue.project, number: issue.number,
+            let fallback = RemoteIssue(project: issue.project, number: issue.number,
                                 title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                                 status: status, priority: priority, labels: parsedLabels,
                                 body: bodyText.trimmingCharacters(in: .whitespacesAndNewlines),
-                                activeSession: issue.activeSession))
+                                activeSession: issue.activeSession,
+                                sortOrder: issue.sortOrder,
+                                milestoneID: milestoneID,
+                                parent: parent,
+                                relations: relations,
+                                attachments: attachments,
+                                replicaID: issue.replicaID)
+            let updated = await store.fetchIssuesOverMesh()?.first(where: {
+                $0.id == issue.id
+            })
+            onSaved(updated ?? fallback)
             dismiss()
         }
+    }
+
+    private func loadProject() async {
+        project = await store.fetchProjectsOverMesh()?.first(where: {
+            $0.name == issue.project
+        })
+    }
+
+    private func importFiles(_ result: Result<[URL], Error>) {
+        do {
+            pendingAttachments.append(contentsOf: try pendingIssueAttachments(result))
+            importError = nil
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+}
+
+private struct IssueHierarchyEditorSection: View {
+    let milestones: [RemoteMilestone]
+    let issues: [RemoteIssue]
+    let currentIssueNumber: Int
+    @Binding var milestoneID: String?
+    @Binding var parent: Int?
+
+    var body: some View {
+        Section("Planning") {
+            Picker("Milestone", selection: $milestoneID) {
+                Text("No milestone").tag(String?.none)
+                ForEach(milestones) { milestone in
+                    Text(milestone.name).tag(String?.some(milestone.id))
+                }
+            }
+            Picker("Parent issue", selection: $parent) {
+                Text("No parent").tag(Int?.none)
+                ForEach(candidateParents) { candidate in
+                    Text("#\(candidate.number) \(candidate.title)")
+                        .tag(Int?.some(candidate.number))
+                }
+            }
+        }
+    }
+
+    private var candidateParents: [RemoteIssue] {
+        issues.filter { $0.number != currentIssueNumber }
+    }
+}
+
+private struct IssueRelationsEditorSection: View {
+    let issues: [RemoteIssue]
+    let currentIssueNumber: Int
+    @Binding var relations: [RemoteIssueRelation]
+    @State private var kind = "relates"
+    @State private var target: Int?
+
+    var body: some View {
+        Section {
+            ForEach(relations) { relation in
+                Label(
+                    "\(relationDisplayName(relation.kind)) #\(relation.target)",
+                    systemImage: "arrow.left.and.right"
+                )
+            }
+            .onDelete { relations.remove(atOffsets: $0) }
+            if !candidates.isEmpty {
+                Picker("Relationship", selection: $kind) {
+                    Text("Relates to").tag("relates")
+                    Text("Blocks").tag("blocks")
+                    Text("Blocked by").tag("blocked_by")
+                    Text("Duplicate of").tag("duplicate")
+                }
+                Picker("Issue", selection: $target) {
+                    Text("Choose an issue").tag(Int?.none)
+                    ForEach(candidates) { candidate in
+                        Text("#\(candidate.number) \(candidate.title)")
+                            .tag(Int?.some(candidate.number))
+                    }
+                }
+                Button("Add relationship", systemImage: "link.badge.plus") {
+                    guard let target else { return }
+                    let relation = RemoteIssueRelation(kind: kind, target: target)
+                    if !relations.contains(relation) { relations.append(relation) }
+                }
+                .disabled(target == nil)
+            }
+        } header: {
+            Text("Relationships")
+        } footer: {
+            Text("Swipe a relationship to remove it. Pharos updates the inverse relationship on the other issue automatically.")
+        }
+    }
+
+    private var candidates: [RemoteIssue] {
+        issues.filter { $0.number != currentIssueNumber }
+    }
+}
+
+private struct IssueAttachmentsEditorSection: View {
+    @Binding var attachments: [RemoteIssueAttachment]
+    @Binding var pendingAttachments: [PendingRemoteAttachment]
+    let chooseFiles: () -> Void
+
+    var body: some View {
+        Section {
+            ForEach(attachments) { attachment in
+                Label(
+                    attachment.originalName,
+                    systemImage: attachment.isImage ? "photo" : "doc"
+                )
+            }
+            .onDelete { attachments.remove(atOffsets: $0) }
+            ForEach(pendingAttachments) { attachment in
+                HStack {
+                    Label(
+                        attachment.name,
+                        systemImage: attachment.isImage ? "photo.badge.plus" : "doc.badge.plus"
+                    )
+                    Spacer()
+                    Text("New").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .onDelete { pendingAttachments.remove(atOffsets: $0) }
+            Button("Add files", systemImage: "paperclip", action: chooseFiles)
+        } header: {
+            Text("Attachments")
+        } footer: {
+            Text("Files upload to the signed Mesh when you save. Swipe an item to remove it.")
+        }
+    }
+}
+
+private enum IssueAttachmentImportError: LocalizedError {
+    case tooLarge(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .tooLarge(let name):
+            "\(name) is larger than the 25 MB per-file limit."
+        }
+    }
+}
+
+private func pendingIssueAttachments(
+    _ result: Result<[URL], Error>
+) throws -> [PendingRemoteAttachment] {
+    var pending: [PendingRemoteAttachment] = []
+    for url in try result.get() {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        guard data.count <= 25 * 1_024 * 1_024 else {
+            throw IssueAttachmentImportError.tooLarge(url.lastPathComponent)
+        }
+        let type = UTType(filenameExtension: url.pathExtension)
+        pending.append(PendingRemoteAttachment(
+            id: UUID(), data: data, name: url.lastPathComponent,
+            mediaType: type?.preferredMIMEType ?? "application/octet-stream",
+            isImage: type?.conforms(to: .image) == true
+        ))
+    }
+    return pending
+}
+
+private func relationDisplayName(_ kind: String) -> String {
+    switch kind {
+    case "blocks": "Blocks"
+    case "blocked_by": "Blocked by"
+    case "duplicate": "Duplicate of"
+    default: "Relates to"
     }
 }

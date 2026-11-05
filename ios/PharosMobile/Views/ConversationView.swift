@@ -34,6 +34,10 @@ struct ConversationView: View {
             if let error = store.error { errorBar(error) }
         }
         .navigationBarTitleDisplayMode(.inline)
+        // Keep the navigation identity explicit. A principal toolbar item can
+        // temporarily disappear while the keyboard rebuilds the toolbar;
+        // without a navigation title SwiftUI falls back to the app title.
+        .navigationTitle(store.selectedRoom ?? "Chat")
         .toolbar(.hidden, for: .tabBar)
         .toolbar { channelToolbar }
         .onAppear { draft = MobileRoomDraftCache.draft(for: store.selectedRoom) }
@@ -158,8 +162,8 @@ struct ConversationView: View {
     @ViewBuilder
     private var composer: some View {
         VStack(spacing: 7) {
-            if !availableMembers.isEmpty {
-                RoomMentionStrip(members: availableMembers) { member in
+            if !mentionableMembers.isEmpty {
+                RoomMentionStrip(members: mentionableMembers) { member in
                     store.insertMention(member.nick, into: &draft)
                     showAttachmentPanel = false
                     focused = true
@@ -261,18 +265,12 @@ struct ConversationView: View {
         .padding(.vertical, 6)
     }
 
-    /// Room members eligible to @mention: live agents only. A gone agent can't
-    /// be poked, so surfacing it in the mention strip is misleading.
-    private var availableMembers: [MeshMember] {
+    /// Durable room membership controls addressing. Presence only colors the
+    /// status dot; the owning Host decides whether an addressed agent is idle
+    /// and eligible for a nudge.
+    private var mentionableMembers: [MeshMember] {
         guard let room = store.rooms.first(where: { $0.name == store.selectedRoom }) else { return [] }
-        return room.members
-            .filter { $0 != "human" }
-            .compactMap { store.members[$0] }
-            .filter {
-                $0.nodeOnline == true
-                    && ($0.state.flatMap(MeshSessionState.init(rawValue:))) != .gone
-            }
-            .sorted { $0.nick.localizedCaseInsensitiveCompare($1.nick) == .orderedAscending }
+        return RosterIndex.mentionableAgents(store.members(in: room))
     }
 
     private var channelSubtitle: String {
@@ -413,6 +411,34 @@ struct ConversationView: View {
                 pendingAttachments.append(attachment)
             }
         }
+    }
+
+    private func startsMessageGroup(at index: Int) -> Bool {
+        guard index > 0 else { return true }
+        let current = store.messages[index]
+        let previous = store.messages[index - 1]
+        let currentAuthor = current.authorMemberID ?? "legacy:\(current.from)"
+        let previousAuthor = previous.authorMemberID ?? "legacy:\(previous.from)"
+        return currentAuthor != previousAuthor ||
+            current.date.timeIntervalSince(previous.date) > 5 * 60
+    }
+
+    private func startsNewDay(at index: Int) -> Bool {
+        guard index > 0 else { return true }
+        return !Calendar.current.isDate(store.messages[index].date, inSameDayAs: store.messages[index - 1].date)
+    }
+
+    private func dayDivider(for date: Date) -> some View {
+        HStack(spacing: 10) {
+            Divider()
+            Text(date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day()))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .fixedSize()
+            Divider()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
     private func noticeBar(_ text: String) -> some View {
@@ -595,7 +621,7 @@ struct ManageRoomSheet: View {
 
     private var members: [MeshMember] {
         guard let room = store.rooms.first(where: { $0.name == roomName }) else { return [] }
-        return room.members.compactMap { store.members[$0] }
+        return store.members(in: room)
     }
 
     var body: some View {
@@ -652,7 +678,9 @@ struct ManageRoomSheet: View {
                     }
                     .disabled(busy)
                 } footer: {
-                    Text("Deleting removes the room and its membership for everyone. Message history is retained by the Broker.")
+                    Text(PharosMeshRuntimeMode.usesDistributedMesh
+                         ? "Deleting replicates the room removal to every trusted device. Existing signed message events remain in replica history."
+                         : "Deleting removes the room and its membership for everyone. Message history is retained by the Broker.")
                 }
 
                 if let error = store.error {

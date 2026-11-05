@@ -10,23 +10,7 @@ struct MessageRow: View {
     var onOpenAttachment: ((MeshAttachment) -> Void)?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 11) {
-            if isHuman {
-                Spacer(minLength: 40)
-                humanMessageBody
-            } else {
-                VStack(alignment: .leading, spacing: showsHeader ? 6 : 2) {
-                    if showsHeader {
-                        identityBlock
-                    }
-                    // Agent content deliberately starts at the row's leading
-                    // edge. The avatar belongs to identity, not to the text
-                    // column, so long Markdown lines get the full width.
-                    messageBody
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
+        rowContent
         .padding(.horizontal, 16)
         .padding(.top, showsHeader ? 8 : 1)
         .padding(.bottom, 2)
@@ -40,6 +24,30 @@ struct MessageRow: View {
                     onReply()
                 }
                 .tint(.accentColor)
+            }
+        } preview: {
+            // Do not let the inverted transcript transform leak into the
+            // system's long-press preview. This is a separate source view,
+            // so a quoted message stays upright in the context menu preview.
+            rowContent
+                .padding(16)
+                .background(.background, in: RoundedRectangle(cornerRadius: 14))
+        }
+    }
+
+    private var rowContent: some View {
+        HStack(alignment: .top, spacing: 11) {
+            if isHuman {
+                Spacer(minLength: 40)
+                humanMessageBody
+            } else {
+                VStack(alignment: .leading, spacing: showsHeader ? 6 : 2) {
+                    if showsHeader {
+                        identityBlock
+                    }
+                    messageBody
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -148,7 +156,10 @@ struct MessageRow: View {
         .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 13))
     }
 
-    private var isHuman: Bool { message.from == "human" }
+    private var isHuman: Bool {
+        message.authorMemberID?.hasPrefix("human@") == true ||
+            (message.authorMemberID == nil && message.from == "human")
+    }
     private var displayName: String { isHuman ? "You" : message.from }
 
     private var kindLabel: String? {
