@@ -9,6 +9,20 @@ public enum PromptMode: String, Sendable, Codable, Equatable {
     case steer = "steer"
 }
 
+/// An unchecked Sendable container wrapping raw dictionary payloads across concurrency isolation boundaries.
+public struct BackendWireEvent: @unchecked Sendable {
+    public var payload: [String: Any]
+
+    public init(_ payload: [String: Any] = [:]) {
+        self.payload = payload
+    }
+
+    public subscript(key: String) -> Any? {
+        get { payload[key] }
+        set { payload[key] = newValue }
+    }
+}
+
 /// Unified protocol implemented by all vendor backend adapters (`Codex`, `Agy`, `Dsh`).
 /// Adheres strictly to RFC-006: Unified Client and Backend Integration.
 public protocol PharosAgentBackendAdapter: Sendable {

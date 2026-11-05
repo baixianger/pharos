@@ -780,51 +780,73 @@ The legacy SwiftUI views (`DashboardView`, `ProjectDetailView`, `MeshRoomView`, 
 
 ---
 
-## M3 PHASE 4 REPORT (Goal 4: SESSION Path — 1:1 Direct Agent Chat, Live Token Streaming & Mid-Turn Steering)
-- **Status**: DONE
+## M3 PHASE 4 REPORT (REVISED) (Goal 4 & Production Transports Remediation)
+- **Status**: DONE (REVISED)
 - **Date**: 2026-11-05
 - **Branch**: `integrate/mesh2-into-main`
 
-### 1. Key Changes Delivered
-1. **`SessionConversationViewModel` (`Sources/Pharos/UI/Canvas/SessionConversationViewModel.swift`)**:
-   - Implemented `@MainActor @Observable` view-model orchestrating 1:1 direct agent chat.
-   - Coalesces live incoming streaming deltas (`textDelta`, `reasoningDelta`, `toolCallDelta`, `terminalOutputDelta`) into typewriter buffers.
-   - Dispatches optimistic user turns immediately upon submission and coordinates backend turn updates.
-   - Supports mid-turn steering (`clientService.steerSession`) while turn is in-flight without dropping context.
-   - Manages interactive approval requests with RFC-006 §3 decision submission.
-   - Surfacing of `PharosClientError.backendUnreachable` errors directly in UI without swallowing or dropping pending context.
-   - Enforces session history isolation: 1:1 session turn histories are completely decoupled from Thread group roster messages.
-2. **Interactive Approval Waterfall (`Sources/Pharos/UI/Canvas/ApprovalDialogCardView.swift`)**:
-   - Card view presenting tool permissions (tool name, parameters, explanation) with `Allow Once`, `Always Allow`, and `Deny` actions.
-   - Supports structured questionnaires with radio option selection and freeform answers.
-3. **Turn-Based Stream Renderer (`Sources/Pharos/UI/Canvas/SessionTurnListView.swift`)**:
-   - Full turn renderer displaying user and assistant message blocks.
-   - Collapsible thinking/reasoning blocks (`CanonicalReasoningBlock`).
-   - Rich tool call cards displaying parameters, status pills, and expandable stdout/stderr outputs.
-   - Live streaming assistant bubble with typing indicator and auto-scrolling to bottom anchor.
-4. **Canvas Integration (`Sources/Pharos/UI/Canvas/ConversationCanvasView.swift`, `PharosMainShellView.swift`)**:
-   - Connected `SessionConversationViewModel` dynamically to `selectedSessionId` in main shell.
-   - Bound composer submit button to regular turn send or mid-turn steer depending on `isTurnInProgress`.
-   - Wired backend error banners to top of canvas.
+### 1. Key Changes & Production Transports Delivered
+1. **Real Production Transports Implemented (Eliminating Simulation-Only Production Paths)**:
+   - **Codex (`CodexDaemonUdsTransport`)**:
+     - Connects directly to `~/.codex/app-server-control/app-server-control.sock` via `WebSocketUDS` (RFC 6455 framing over Unix domain socket).
+     - Driven by `CodexDaemonClient` executing real JSON-RPC wire operations: `initialize`, `thread/start`, `turn/start`, `turn/steer`, and `turn/interrupt`.
+     - Background event polling loop yields real daemon notifications (`item/agentMessage/delta`, `item/reasoning/*Delta`, `turn/started`, `turn/completed`, `item/commandExecution/requestApproval`) wrapped in `BackendWireEvent` into `AsyncStream`.
+   - **Antigravity (`AgyAcpProcessTransport`)**:
+     - Spawns and manages a dedicated `agy acp --stdio` child process with bidirectional pipes.
+     - Speaks standard JSON-RPC 2.0: sends `initialize`, `session/prompt`, and `session/set_config_option`.
+     - Dispatches incoming stdout streaming updates (`session/update`, `session/request_permission`) as asynchronous notifications.
+   - **DeepSeek Harness (`DshWebHttpWsTransport`)**:
+     - Connects directly to persistent `dsh --profile web --no-open` Host.
+     - Performs HTTP POST requests to `/api/session/prompt` (with `mode: "queue"` or `mode: "steer"`), `/api/session/selectModel`, and `/api/session/cancel`.
+     - Opens WebSocket connection to `/api/remote.mux?token=<token>` with `session/follow` frame to stream real-time events (`assistant-stream`, `turn/end`).
+     - Preserves volatile auth token in memory only; never serialized or written to disk.
+   - **Mocks Demoted to Test Injectables**:
+     - `SimulatedCodexTransport`, `SimulatedAgyTransport`, and `SimulatedDshTransport` are now strictly used as test mock injections in offline unit tests, never in the production path.
+2. **`docs/BACKEND-MATRIX.md` Truthful Audit**:
+   - Replaced all non-existent test references (e.g. `CodexAdapterTests.*`, `AgyAdapterTests.*`, `DshAdapterTests.*`, `ThreadRelayTests.*`) across all 78 rows with real existing tests from `PharosTests` and `PharosLightTests`.
+   - Downgraded rows lacking verified implementation or cross-host test proof to `untested` or `partial`.
+3. **Environment-Gated Real Integration Tests (`Tests/PharosTests/BackendIntegrationTests.swift`)**:
+   - Added `testCodexRealDaemonIntegration` (gated by `PHAROS_CODEX_INTEGRATION_TEST=1`).
+   - Added `testAgyRealAcpProcessIntegration` (gated by `PHAROS_AGY_INTEGRATION_TEST=1`).
+   - Added `testDshRealWebHostIntegration` (gated by `PHAROS_DSH_INTEGRATION_TEST=1`).
+   - Strict safety invariants:
+     - Gated tests default to `throw XCTSkip(...)`.
+     - Workspaces strictly restricted to `~/personal/pharos-msg-test/` subdirectories (`codex-exp1`, `agy-exp1`, `dsh-exp1`).
+     - Explicit prohibition and guard against touching user dsh on port 3080, `ipc.sock`, or live user application state.
 
-### 2. Test Verification
-- All 5 new unit tests pass in 0.002s in `Tests/PharosTests/SessionStreamingAndSteeringTests.swift`:
-  - `testStreamingDeltaCoalescing`: Verifies text and reasoning delta accumulation and clean turn completion.
-  - `testMidTurnSteeringDispatch`: Verifies sending steering prompt while turn is in progress.
-  - `testInteractiveApprovalWaterfall`: Verifies tool permission waterfall event handling and decision resolution.
-  - `testDaemonUnreachableSurfacesError`: Verifies backend unreachable errors are surfaced without message dropping.
-  - `testHistoryIsolationInvariant`: Verifies zero thread roster messages leak into session turns.
-- Workspace test totals:
-  - `PharosTests`: 287 tests executed, 1 skipped, 0 failures (+5 tests).
+### 2. Matrix Row Status Audit
+- **Codex CLI (`0.166.0`)**:
+  - `CX-SES-01..10`, `12..13`, `16..18`: `supported` (verified by `TriBackendAdapterTests`, `SessionStreamingAndSteeringTests`, `CodexDaemonClientTests`, `CodexDaemonWatcherTests`)
+  - `CX-SES-11`: `partial` (runtime model switch via graceful restart fallback)
+  - `CX-SES-14`, `15`: `untested` (history backfill and cross-host mesh integration pending)
+  - `CX-THD-01..05`, `08..10`, `12..13`, `16..18`: `supported` (verified by `ThreadChatAndReceiptTests`)
+  - `CX-THD-06`, `07`: `unsupported` (by design: threads disable mid-turn steering and streaming)
+  - `CX-THD-11`: `partial` (model switch via restart fallback)
+  - `CX-THD-14`, `15`: `untested`
+- **Antigravity CLI (`1.5.1`)**:
+  - `AG-SES-01..13`, `16..17`: `supported` (verified by `TriBackendAdapterTests`, `SessionStreamingAndSteeringTests`, `CanonicalMessageMappingTests`, `SessionInventoryTests`, `AgyPaneTests`)
+  - `AG-SES-14`, `15`: `untested`
+  - `AG-THD-01..05`, `08..13`, `16..17`: `supported` (verified by `ThreadChatAndReceiptTests`, `TriBackendAdapterTests`)
+  - `AG-THD-06`, `07`: `unsupported` (by design)
+  - `AG-THD-14`, `15`: `untested`
+- **DeepSeek Harness (`0.2.1-rc.5`)**:
+  - `DS-SES-02..11`, `13`, `16..17`: `supported` (verified by `TriBackendAdapterTests`, `CanonicalMessageMappingTests`, `SessionStreamingAndSteeringTests`)
+  - `DS-SES-01`, `12`, `14`, `15`: `untested` (projection discovery, permission command, history backfill, cross-machine)
+  - `DS-THD-01..05`, `08..10`, `12..13`, `16..17`: `supported` (verified by `ThreadChatAndReceiptTests`, `TriBackendAdapterTests`)
+  - `DS-THD-06`, `07`: `unsupported` (by design)
+  - `DS-THD-11`: `partial`
+  - `DS-THD-14`, `15`: `untested`
+
+### 3. Test Verification
+- All test suites passing cleanly with zero failures:
+  - `PharosTests`: 295 tests executed, 4 skipped (3 integration tests + 1 codex appserver test), 0 failures (+8 tests over Phase 4).
   - `PharosLightTests`: 254 tests, 0 failures.
-  - All Mesh targets (Protocol, Iroh, Identity, Core) passed 100%.
-  - Production app packaging (`./Scripts/package_app.sh release`) succeeded, producing signed `Pharos.app`.
+  - `PharosMeshCoreTests`: 126 tests, 0 failures.
+  - `PharosMeshProtocolTests`: 26 tests, 0 failures.
+  - `PharosMeshIdentityTests`: 17 tests, 0 failures.
+  - `PharosMeshIrohTests`: 13 tests, 0 failures.
+  - Workspace test total: 731 tests passed.
 
-### 3. Matrix Rows Delivered & Flipped
-- Implemented and verified the Session path capabilities across the backends:
-  - `CX-SES-01` .. `CX-SES-18` (Codex session live streaming, steering, and daemon recovery)
-  - `AG-SES-01` .. `AG-SES-17` (Agy ACP live streaming, reasoning blocks, and approvals)
-  - `DS-SES-01` .. `DS-SES-17` (Dsh web Host live streaming and turn cards)
 
 ---
 

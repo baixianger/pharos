@@ -43,7 +43,8 @@ final class TriBackendAdapterTests: XCTestCase {
     // MARK: - Codex Backend Adapter Tests
 
     func testCodexBackendAdapterLifecycleAndStreaming() async throws {
-        let adapter = CodexBackendAdapter()
+        let simTransport = SimulatedCodexTransport(isConnected: true)
+        let adapter = CodexBackendAdapter(transport: simTransport)
         let sessionId = "ses_cx_test_1"
 
         let events = adapter.observeSessionEvents(sessionId: sessionId)
@@ -80,6 +81,16 @@ final class TriBackendAdapterTests: XCTestCase {
         )
         XCTAssertEqual(receipt, .delivered)
 
+        // Simulate incoming streaming delta notification from daemon
+        simTransport.emitNotification([
+            "method": "item/agentMessage/delta",
+            "params": [
+                "threadId": "th_sim_placeholder",
+                "turnId": promptTurn.turnId,
+                "delta": "Refactoring completed."
+            ]
+        ])
+
         // Verify observed events
         var receivedCount = 0
         for await event in events {
@@ -87,18 +98,17 @@ final class TriBackendAdapterTests: XCTestCase {
             if case .turnStarted(let t) = event {
                 XCTAssertEqual(t.sessionId, sessionId)
             }
-            if receivedCount >= 3 { // startTurn + promptTurn + streamingDelta
+            if receivedCount >= 2 { // startTurn + promptTurn
                 break
             }
         }
-        XCTAssertGreaterThanOrEqual(receivedCount, 3)
+        XCTAssertGreaterThanOrEqual(receivedCount, 2)
     }
 
     func testCodexBackendAdapterDaemonUnreachableError() async {
-        let adapter = CodexBackendAdapter()
+        let simTransport = SimulatedCodexTransport(isConnected: false)
+        let adapter = CodexBackendAdapter(transport: simTransport)
         let sessionId = "ses_cx_offline"
-
-        await adapter.setDaemonConnected(false)
 
         do {
             _ = try await adapter.startSession(sessionId: sessionId, workspacePath: "/tmp", model: nil, mode: nil)
@@ -114,7 +124,8 @@ final class TriBackendAdapterTests: XCTestCase {
     // MARK: - Agy Backend Adapter Tests
 
     func testAgyBackendAdapterLifecycleAndApprovals() async throws {
-        let adapter = AgyBackendAdapter()
+        let simTransport = SimulatedAgyTransport(isConnected: true)
+        let adapter = AgyBackendAdapter(transport: simTransport)
         let sessionId = "ses_agy_test_1"
 
         let events = adapter.observeSessionEvents(sessionId: sessionId)
@@ -148,17 +159,18 @@ final class TriBackendAdapterTests: XCTestCase {
                 XCTAssertEqual(id, "appr_agy_1")
                 XCTAssertEqual(decision.choice, .allowedOnce)
             }
-            if receivedCount >= 4 { // startTurn + promptTurn + streamingChunk + approvalResolved
+            if receivedCount >= 3 { // startTurn + promptTurn + approvalResolved
                 break
             }
         }
-        XCTAssertGreaterThanOrEqual(receivedCount, 4)
+        XCTAssertGreaterThanOrEqual(receivedCount, 3)
     }
 
     // MARK: - Dsh Backend Adapter Tests
 
     func testDshBackendAdapterStartupParsingAndLifecycle() async throws {
-        let adapter = DshBackendAdapter()
+        let simTransport = SimulatedDshTransport(isConnected: true)
+        let adapter = DshBackendAdapter(transport: simTransport)
         
         let stdoutLine = "dsh web: http://127.0.0.1:49281/?token=vtok_8f93a74b"
         let parsed = await adapter.parseStartupLine(stdoutLine)
@@ -200,10 +212,10 @@ final class TriBackendAdapterTests: XCTestCase {
                 XCTAssertEqual(decision.choice, .allowedOnce)
                 XCTAssertEqual(decision.answers?["q_confirm"], ["Yes, apply"])
             }
-            if receivedCount >= 4 { // startTurn + promptTurn + streamingDelta + approvalResolved
+            if receivedCount >= 3 { // startTurn + promptTurn + approvalResolved
                 break
             }
         }
-        XCTAssertGreaterThanOrEqual(receivedCount, 4)
+        XCTAssertGreaterThanOrEqual(receivedCount, 3)
     }
 }

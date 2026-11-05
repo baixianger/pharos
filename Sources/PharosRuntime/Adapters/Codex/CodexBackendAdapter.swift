@@ -1,6 +1,140 @@
 import Foundation
 import PharosClientKit
 
+/// Transport protocol abstracting the communication with the Codex shared daemon.
+public protocol CodexTransport: Sendable {
+    func call(method: String, params: [String: Any]) async throws -> [String: Any]
+    func observeEvents() -> AsyncStream<BackendWireEvent>
+    func close()
+}
+
+/// Real production transport connecting to the Codex shared daemon via WebSocket over UDS.
+/// Wire protocol: RFC-006 §2; app-server at `~/.codex/app-server-control/app-server-control.sock`.
+public final class CodexDaemonUdsTransport: CodexTransport, @unchecked Sendable {
+    private let client: CodexDaemonClient
+    private var eventContinuations: [UUID: AsyncStream<BackendWireEvent>.Continuation] = [:]
+    private let lock = NSLock()
+    private var pollingTask: Task<Void, Never>?
+
+    public init(socketPath: String = CodexDaemonClient.socketPath()) {
+        self.client = CodexDaemonClient(socketPath: socketPath)
+        startEventLoop()
+    }
+
+    private func startEventLoop() {
+        pollingTask = Task.detached { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { break }
+                do {
+                    let events = try self.client.waitForEvents(timeout: 0.5)
+                    self.lock.withLock {
+                        for ev in events {
+                            let wireEvent = BackendWireEvent(ev)
+                            for cont in self.eventContinuations.values {
+                                cont.yield(wireEvent)
+                            }
+                        }
+                    }
+                } catch {
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                }
+            }
+        }
+    }
+
+    public func call(method: String, params: [String: Any]) async throws -> [String: Any] {
+        do {
+            return try client.call(method, params)
+        } catch let err as CodexDaemonError {
+            switch err {
+            case .unavailable(let reason):
+                throw PharosClientError.backendUnreachable(backend: "codex", reason: "Codex daemon unreachable: \(reason)")
+            case .rpc(let code, let msg):
+                throw PharosClientError.operationFailed("Codex RPC error (\(code)): \(msg)")
+            case .protocolError(let msg):
+                throw PharosClientError.operationFailed("Codex protocol error: \(msg)")
+            case .timeout:
+                throw PharosClientError.connectionFailed("Codex daemon request timed out")
+            }
+        } catch {
+            throw PharosClientError.backendUnreachable(backend: "codex", reason: error.localizedDescription)
+        }
+    }
+
+    public func observeEvents() -> AsyncStream<BackendWireEvent> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            lock.withLock {
+                eventContinuations[id] = continuation
+            }
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.lock.withLock {
+                    _ = self.eventContinuations.removeValue(forKey: id)
+                }
+            }
+        }
+    }
+
+    public func close() {
+        pollingTask?.cancel()
+        client.close()
+    }
+}
+
+/// Simulated transport used exclusively for deterministic unit testing.
+public final class SimulatedCodexTransport: CodexTransport, @unchecked Sendable {
+    public var isConnected: Bool
+    private var eventContinuations: [UUID: AsyncStream<BackendWireEvent>.Continuation] = [:]
+    private let lock = NSLock()
+
+    public init(isConnected: Bool = true) {
+        self.isConnected = isConnected
+    }
+
+    public func call(method: String, params: [String: Any]) async throws -> [String: Any] {
+        guard isConnected else {
+            throw PharosClientError.backendUnreachable(backend: "codex", reason: "Simulated Codex daemon unreachable")
+        }
+        switch method {
+        case "thread/start":
+            return ["thread": ["id": "th_sim_\(UUID().uuidString.prefix(6))"]]
+        case "turn/start", "turn/steer":
+            return ["turn": ["id": "turn_sim_\(UUID().uuidString.prefix(6))"]]
+        case "turn/interrupt":
+            return [:]
+        default:
+            return [:]
+        }
+    }
+
+    public func emitNotification(_ notification: [String: Any]) {
+        let wireEvent = BackendWireEvent(notification)
+        lock.withLock {
+            for cont in eventContinuations.values {
+                cont.yield(wireEvent)
+            }
+        }
+    }
+
+    public func observeEvents() -> AsyncStream<BackendWireEvent> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            lock.withLock {
+                eventContinuations[id] = continuation
+            }
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.lock.withLock {
+                    _ = self.eventContinuations.removeValue(forKey: id)
+                }
+            }
+        }
+    }
+
+    public func close() {}
+}
+
 /// Adapter for OpenAI Codex CLI (`codex-cli 0.166.0`) interacting directly with the shared daemon.
 /// Adheres strictly to RFC-006 §2 and docs/BACKEND-MATRIX.md. No tmux required.
 public actor CodexBackendAdapter: PharosAgentBackendAdapter {
@@ -9,32 +143,126 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
     public nonisolated let translator: CodexMessageTranslator
     public nonisolated let eventRegistry: SessionEventRegistry
 
+    private let transport: CodexTransport
     private var activeSessions: [String: String] = [:] // sessionId -> threadId
-    private var isDaemonConnected: Bool = true
-    private var daemonSocketPath: String
+    private var notificationListenerTask: Task<Void, Never>?
 
     public init(
-        socketPath: String = ("~/.codex/app-server-control/app-server-control.sock" as NSString).expandingTildeInPath,
+        socketPath: String = CodexDaemonClient.socketPath(),
+        transport: CodexTransport? = nil,
         translator: CodexMessageTranslator = CodexMessageTranslator(),
         eventRegistry: SessionEventRegistry = SessionEventRegistry()
     ) {
-        self.daemonSocketPath = socketPath
         self.capabilities = BackendCapabilityRegistry.shared.capabilities(for: "codex")
         self.translator = translator
         self.eventRegistry = eventRegistry
+        self.transport = transport ?? CodexDaemonUdsTransport(socketPath: socketPath)
     }
 
-    /// Explicitly configure daemon connection state for testing.
-    public func setDaemonConnected(_ connected: Bool) {
-        isDaemonConnected = connected
+    private func ensureNotificationObserverStarted() {
+        guard notificationListenerTask == nil else { return }
+        let stream = self.transport.observeEvents()
+        notificationListenerTask = Task { [weak self] in
+            guard let self else { return }
+            for await rawEvent in stream {
+                guard !Task.isCancelled else { break }
+                await self.handleDaemonNotification(rawEvent)
+            }
+        }
+    }
+
+    private func handleDaemonNotification(_ event: BackendWireEvent) {
+        guard let method = event["method"] as? String else { return }
+        let params = event["params"] as? [String: Any]
+        let threadId = params?["threadId"] as? String
+
+        // Find associated session
+        guard let (sessionId, _) = activeSessions.first(where: { threadId == nil || $0.value == threadId }) else {
+            return
+        }
+
+        switch method {
+        case "turn/started":
+            if let turnObj = params?["turn"] as? [String: Any],
+               let turnId = turnObj["id"] as? String {
+                let canonicalTurn = translator.translateTurnStarted(
+                    turnId: turnId,
+                    sessionId: sessionId,
+                    turnNumber: 1,
+                    rawPayload: turnObj
+                )
+                emit(event: .turnStarted(canonicalTurn), for: sessionId)
+            }
+
+        case "item/agentMessage/delta":
+            if let deltaText = params?["delta"] as? String,
+               let turnId = params?["turnId"] as? String {
+                if let delta = translator.translateStreamingDelta(
+                    sessionId: sessionId,
+                    turnId: turnId,
+                    itemType: "agentMessage",
+                    deltaText: deltaText
+                ) {
+                    emit(event: .streamingDelta(delta), for: sessionId)
+                }
+            }
+
+        case "item/reasoning/textDelta":
+            if let deltaText = params?["delta"] as? String,
+               let turnId = params?["turnId"] as? String {
+                if let delta = translator.translateStreamingDelta(
+                    sessionId: sessionId,
+                    turnId: turnId,
+                    itemType: "reasoning",
+                    deltaText: deltaText
+                ) {
+                    emit(event: .streamingDelta(delta), for: sessionId)
+                }
+            }
+
+        case "turn/completed":
+            if let turnObj = params?["turn"] as? [String: Any],
+               let turnId = turnObj["id"] as? String {
+                let status = turnObj["status"] as? String ?? "completed"
+                let initialTurn = CanonicalTurn(turnId: turnId, sessionId: sessionId, turnNumber: 1, status: .inProgress)
+                let canonicalTurn = translator.translateTurnCompleted(
+                    currentTurn: initialTurn,
+                    status: status,
+                    error: turnObj["error"] as? [String: Any],
+                    rawPayload: turnObj
+                )
+                emit(event: .turnCompleted(canonicalTurn), for: sessionId)
+            }
+
+        case "item/commandExecution/requestApproval":
+            if let approvalId = (event["id"] as? String) ?? (params?["id"] as? String) {
+                let approval = CanonicalApprovalRequest(
+                    approvalId: approvalId,
+                    sessionId: sessionId,
+                    kind: .toolPermission(
+                        toolName: (params?["command"] as? String) ?? "shell_command",
+                        params: ["command": .string((params?["command"] as? String) ?? "")],
+                        explanation: (params?["reason"] as? String) ?? "Codex command execution approval"
+                    )
+                )
+                emit(event: .approvalRequired(approval), for: sessionId)
+            }
+
+        default:
+            break
+        }
     }
 
     public func startSession(sessionId: String, workspacePath: String, model: String?, mode: String?) async throws -> CanonicalTurn {
-        guard isDaemonConnected else {
-            throw PharosClientError.backendUnreachable(backend: agentKind, reason: "Codex shared daemon is unreachable at \(daemonSocketPath)")
-        }
-
-        let threadId = "th_\(UUID().uuidString.prefix(8))"
+        ensureNotificationObserverStarted()
+        let params: [String: Any] = [
+            "cwd": workspacePath,
+            "model": model ?? "default",
+            "approvalPolicy": (mode == "yolo") ? "never" : "prompt"
+        ]
+        let res = try await transport.call(method: "thread/start", params: params)
+        let threadObj = res["thread"] as? [String: Any]
+        let threadId = (threadObj?["id"] as? String) ?? (res["id"] as? String) ?? "th_\(UUID().uuidString.prefix(8))"
         activeSessions[sessionId] = threadId
 
         let turn = translator.translateTurnStarted(
@@ -53,16 +281,20 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
     }
 
     public func sendSessionPrompt(sessionId: String, prompt: String, mode: PromptMode) async throws -> CanonicalTurn {
-        guard isDaemonConnected else {
-            let err = PharosClientError.backendUnreachable(backend: agentKind, reason: "Codex shared daemon is unreachable")
-            emit(event: .backendError(err), for: sessionId)
-            throw err
-        }
         guard let threadId = activeSessions[sessionId] else {
             throw PharosClientError.sessionNotFound(sessionId)
         }
 
-        let turnId = "turn_\(UUID().uuidString.prefix(8))"
+        let method = (mode == .steer) ? "turn/steer" : "turn/start"
+        let params: [String: Any] = [
+            "threadId": threadId,
+            "input": [["type": "text", "text": prompt]]
+        ]
+
+        let res = try await transport.call(method: method, params: params)
+        let turnObj = res["turn"] as? [String: Any]
+        let turnId = (turnObj?["id"] as? String) ?? (res["id"] as? String) ?? "turn_\(UUID().uuidString.prefix(8))"
+
         let turn = translator.translateTurnStarted(
             turnId: turnId,
             sessionId: sessionId,
@@ -70,48 +302,38 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
             rawPayload: ["threadId": threadId, "promptMode": mode.rawValue]
         )
         emit(event: .turnStarted(turn), for: sessionId)
-
-        // Stream simulated/translated typing delta
-        if let delta = translator.translateStreamingDelta(
-            sessionId: sessionId,
-            turnId: turnId,
-            itemType: "agentMessage",
-            deltaText: "Acknowledged prompt in \(mode.rawValue) mode"
-        ) {
-            emit(event: .streamingDelta(delta), for: sessionId)
-        }
-
         return turn
     }
 
     public func interruptSession(sessionId: String) async throws {
-        guard isDaemonConnected else {
-            throw PharosClientError.backendUnreachable(backend: agentKind, reason: "Codex shared daemon is unreachable")
-        }
-        guard activeSessions[sessionId] != nil else {
+        guard let threadId = activeSessions[sessionId] else {
             throw PharosClientError.sessionNotFound(sessionId)
         }
+        _ = try await transport.call(method: "turn/interrupt", params: ["threadId": threadId])
     }
 
     public func selectSessionModel(sessionId: String, model: String) async throws {
-        // Fallback per BackendCapabilities: graceful restart
-        guard isDaemonConnected else {
-            throw PharosClientError.backendUnreachable(backend: agentKind, reason: "Codex shared daemon is unreachable")
+        guard activeSessions[sessionId] != nil else {
+            throw PharosClientError.sessionNotFound(sessionId)
         }
+        // Fallback per BackendCapabilities: graceful restart
     }
 
     public func resolveApproval(sessionId: String, approvalId: String, decision: ApprovalDecision) async throws {
-        guard isDaemonConnected else {
-            throw PharosClientError.backendUnreachable(backend: agentKind, reason: "Codex shared daemon is unreachable")
-        }
+        let decisionStr = (decision.choice == .allowedOnce || decision.choice == .allowedAlways) ? "accept" : "decline"
+        _ = try await transport.call(method: "item/commandExecution/replyApproval", params: [
+            "id": approvalId,
+            "decision": decisionStr
+        ])
         emit(event: .approvalResolved(approvalId: approvalId, decision: decision), for: sessionId)
     }
 
     public func deliverThreadMessage(threadId: String, message: ClientThreadMessage) async throws -> DeliveryReceiptState {
-        guard isDaemonConnected else {
-            throw PharosClientError.backendUnreachable(backend: agentKind, reason: "Codex shared daemon is unreachable")
-        }
-        // Delivered into member's own thread via turn/start
+        let params: [String: Any] = [
+            "threadId": threadId,
+            "input": [["type": "text", "text": message.text]]
+        ]
+        _ = try await transport.call(method: "turn/start", params: params)
         return .delivered
     }
 
