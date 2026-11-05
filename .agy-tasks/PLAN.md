@@ -731,4 +731,52 @@ The legacy SwiftUI views (`DashboardView`, `ProjectDetailView`, `MeshRoomView`, 
   - `DS-THD-01` .. `DS-THD-17` (Dsh thread message delivery via plugin)
   - Pitfall checks: `PIT-DS-16`, `PIT-CX-14`, `PIT-AG-07`.
 
+---
+
+## M3 PHASE 3 REPORT (Goal 3: Native SwiftUI 3-Pane Desktop Client Shell)
+- **Status**: DONE
+- **Date**: 2026-11-05
+- **Branch**: `integrate/mesh2-into-main`
+
+### 1. Key Changes Delivered
+1. **Third-Party Attribution**:
+   - Created `THIRD_PARTY_NOTICES.md` at repo root crediting Grok Bot as the open-source blueprint for desktop layout geometry, design tokens, color palette, and procedural avatar references.
+2. **Design Tokens & Palette (`Sources/Pharos/UI/DesignTokens/PharosDesignTokens.swift`)**:
+   - Ported semantic layout metrics, corner radii (hairline 0.5px to pill 9999px), and fluid spring curves (`panelExpand`, `detailsDrawer`, `composerResize`).
+   - Defined Light & Dark color systems for surfaces (`pane`, `chrome`, `sidebar`, `elevated`), inks, borders, status (`working`, `attention`, `danger`), and bubbles.
+3. **Responsive Layout State Engine (`Sources/Pharos/UI/Shell/ShellLayoutState.swift`)**:
+   - Pure Swift `@Observable` model managing window constraints, hysteresis, and breakpoints.
+   - Enforces minimum window dimensions: **`512 x 520` DIP**.
+   - Computes sidebar auto-compact breakpoint: `expandedSidebarWidth + 424px`.
+   - Computes details dock threshold: `effectiveSidebarWidth + 424 + 280px`.
+   - Implements drag hysteresis: collapses to 88px below 210px, expands back at >= 220px.
+   - Guarantees minimum conversation canvas width of 424px.
+4. **Three-Pane Presentation Views (`Sources/Pharos/UI/`)**:
+   - `NavigationRosterView`: Left navigation pane supporting both full 240–400px list and 88px compact icon rail with tab switching (`Sessions` | `Threads` | `Projects`).
+   - `ConversationCanvasView`: Middle canvas with titlebar, status pills, conversation stream, and variable-height composer (`PharosComposerView`).
+   - `ConversationDetailsView`: Right inspector with 3 sub-tabs (`Details`, `Library`, `Computer`), MODEL/MODE controls, Stop/Revive lifecycle buttons, and overlay close handling.
+   - `PharosMainShellView`: Top-level native macOS shell orchestrating the 3 panes, responsive resizing, and docked vs overlay transitions, interacting exclusively with `PharosClientService`.
+5. **Release App Packaging**:
+   - Verified `./Scripts/package_app.sh release` builds and codesigns `Pharos.app` cleanly without warnings or errors.
+
+### 2. Test Verification
+- All 6 new unit tests pass in 0.001s in `Tests/PharosTests/ShellLayoutGeometryTests.swift`:
+  - `testMinimumWindowClamping`: Verifies 512x520 DIP minimum window clamping.
+  - `testSidebarWidthBoundaries`: Verifies 240–400px clamping and default 280px width.
+  - `testSidebarDragHysteresis`: Verifies 210px collapse and 220px expand thresholds.
+  - `testAutoCompactBreakpointCalculation`: Verifies auto-collapse at `expandedWidth + 424px`.
+  - `testDetailsDockVsOverlayBreakpoints`: Verifies docking above `sidebarWidth + 424 + 280px` and overlay drawer below.
+  - `testCanvasWidthCalculation`: Verifies 424px minimum canvas width retention.
+- Workspace test totals:
+  - `PharosTests`: 282 tests executed, 1 skipped, 0 failures (+6 tests).
+  - `PharosLightTests`: 254 tests, 0 failures.
+  - Architecture boundary assertions verified: 0 UI imports across all backend targets.
+  - Total: 718 tests passed across the workspace.
+
+### 3. Matrix Rows Delivered & Flipped
+- Foundation container hosting all rows in `docs/BACKEND-MATRIX.md`:
+  - `*-SES-01` .. `*-SES-18` (1:1 Session canvas, header, composer, and inspector shell)
+  - `*-THD-01` .. `*-THD-18` (Thread roster and group chat canvas shell)
+
+
 
