@@ -153,6 +153,7 @@ public final class AgyAcpProcessTransport: AgyTransport, @unchecked Sendable {
 /// Simulated transport for Antigravity ACP unit testing.
 public final class SimulatedAgyTransport: AgyTransport, @unchecked Sendable {
     public var isConnected: Bool
+    public var sentRequests: [[String: Any]] = []
     private var eventContinuations: [UUID: AsyncStream<BackendWireEvent>.Continuation] = [:]
     private let lock = NSLock()
 
@@ -163,6 +164,9 @@ public final class SimulatedAgyTransport: AgyTransport, @unchecked Sendable {
     public func sendRequest(method: String, params: [String: Any]) async throws -> BackendWireEvent {
         guard isConnected else {
             throw PharosClientError.backendUnreachable(backend: "agy", reason: "Simulated agy process unreachable")
+        }
+        lock.withLock {
+            sentRequests.append(["method": method, "params": params])
         }
         switch method {
         case "initialize":
@@ -329,6 +333,19 @@ public actor AgyBackendAdapter: PharosAgentBackendAdapter {
         _ = try await transport.sendRequest(method: "session/set_config_option", params: [
             "sessionId": convId,
             "config": ["model": model]
+        ])
+    }
+
+    public func setSessionMode(sessionId: String, mode: String) async throws {
+        guard let convId = activeSessions[sessionId] else {
+            throw PharosClientError.sessionNotFound(sessionId)
+        }
+        // Mode toggle sets ACP session config option
+        // In accordance with AG-SES-12
+        let permMode = (mode.lowercased() == "yolo") ? "dangerously-skip-permissions" : "ask-approvals"
+        _ = try await transport.sendRequest(method: "session/set_config_option", params: [
+            "sessionId": convId,
+            "config": ["permission_mode": permMode]
         ])
     }
 

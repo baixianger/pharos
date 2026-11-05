@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import PharosClientKit
 
 /// Sub-tabs within the conversation details inspector.
@@ -23,10 +24,14 @@ public struct ConversationDetailsView: View {
     public var currentModel: String
     public var currentMode: String
     public var workspacePath: String
+    public var sessionId: String
 
     // Avatar Customization State
     @State private var selectedShape: AvatarShape = .blob
     @State private var selectedColor: AvatarPaletteColor = .blue
+
+    // Live Terminal State for Computer Tab
+    @State private var terminalViewModel: LiveTerminalViewModel
 
     public let onModelChange: (String) -> Void
     public let onModeToggle: () -> Void
@@ -43,6 +48,7 @@ public struct ConversationDetailsView: View {
         currentModel: String = "gpt-4o",
         currentMode: String = "yolo",
         workspacePath: String = "~/workspace",
+        sessionId: String = "ses_main_01",
         onModelChange: @escaping (String) -> Void = { _ in },
         onModeToggle: @escaping () -> Void = {},
         onStop: @escaping () -> Void = {},
@@ -57,11 +63,28 @@ public struct ConversationDetailsView: View {
         self.currentModel = currentModel
         self.currentMode = currentMode
         self.workspacePath = workspacePath
+        self.sessionId = sessionId
         self.onModelChange = onModelChange
         self.onModeToggle = onModeToggle
         self.onStop = onStop
         self.onRevive = onRevive
         self.onAvatarChange = onAvatarChange
+        self._terminalViewModel = State(initialValue: LiveTerminalViewModel(
+            tmuxSession: "pharos:\(memberName)"
+        ))
+    }
+
+    public var availableModels: [String] {
+        switch agentKind.lowercased() {
+        case "codex":
+            return ["gpt-4o", "gpt-4o-mini", "o1", "o1-mini", "claude-3-5-sonnet"]
+        case "agy":
+            return ["gemini-2.5-pro", "gemini-2.5-flash", "claude-3-7-sonnet"]
+        case "dsh":
+            return ["deepseek-chat", "deepseek-reasoner"]
+        default:
+            return ["default", "gpt-4o", "gemini-2.5-pro"]
+        }
     }
 
     public var body: some View {
@@ -74,7 +97,7 @@ public struct ConversationDetailsView: View {
 
             // Sub-tab content
             ScrollView {
-                VStack(spacing: 16) {
+                VStack(spacing: 14) {
                     switch selectedSubTab {
                     case .details:
                         detailsSection
@@ -122,147 +145,211 @@ public struct ConversationDetailsView: View {
     private var detailsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             // Avatar Identity & Customizer Card
-            VStack(spacing: 12) {
-                Text("AVATAR IDENTITY")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                HStack(spacing: 14) {
-                    PharosAvatarView(
-                        seed: memberName,
-                        customShape: selectedShape,
-                        customColor: selectedColor,
-                        status: .working,
-                        size: 56,
-                        showRing: true
-                    )
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(memberName)
-                            .font(.system(size: 13, weight: .bold))
-
-                        Picker("Shape", selection: $selectedShape) {
-                            ForEach(AvatarShape.allCases) { shape in
-                                Text(shape.displayName).tag(shape)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .onChange(of: selectedShape) { _, newShape in
-                            onAvatarChange(newShape, selectedColor)
-                        }
-                    }
-                }
-
-                // Color Swatches
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(AvatarPaletteColor.allCases.filter { $0 != .black }) { color in
-                            Button(action: {
-                                selectedColor = color
-                                onAvatarChange(selectedShape, color)
-                            }) {
-                                Circle()
-                                    .fill(color.color(isDark: false))
-                                    .frame(width: 18, height: 18)
-                                    .overlay(
-                                        Circle()
-                                            .stroke(Color.primary, lineWidth: selectedColor == color ? 2 : 0)
-                                    )
-                            }
-                            .buttonStyle(.plain)
-                            .help(color.rawValue.capitalized)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
-            .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            avatarCard
 
             // Metadata Card
-            VStack(alignment: .leading, spacing: 8) {
-                Text("METADATA")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.secondary)
-
-                metadataRow(label: "Name", value: memberName)
-                metadataRow(label: "Agent", value: agentKind.uppercased())
-                metadataRow(label: "Host Node", value: machineName)
-                metadataRow(label: "Path", value: workspacePath)
-            }
-            .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            metadataCard
 
             // Model & Mode Controls
-            VStack(alignment: .leading, spacing: 10) {
-                Text("CONTROLS")
-                    .font(.system(size: 10, weight: .bold))
+            controlsCard
+
+            // Lifecycle Operations
+            lifecycleCard
+        }
+    }
+
+    private var avatarCard: some View {
+        VStack(spacing: 12) {
+            Text("AVATAR IDENTITY")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 14) {
+                PharosAvatarView(
+                    seed: memberName,
+                    customShape: selectedShape,
+                    customColor: selectedColor,
+                    status: .working,
+                    size: 56,
+                    showRing: true
+                )
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(memberName)
+                        .font(.system(size: 13, weight: .bold))
+
+                    Picker("Shape", selection: $selectedShape) {
+                        ForEach(AvatarShape.allCases) { shape in
+                            Text(shape.displayName).tag(shape)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .onChange(of: selectedShape) { _, newShape in
+                        onAvatarChange(newShape, selectedColor)
+                    }
+                }
+            }
+
+            // Color Swatches
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(AvatarPaletteColor.allCases.filter { $0 != .black }) { color in
+                        Button(action: {
+                            selectedColor = color
+                            onAvatarChange(selectedShape, color)
+                        }) {
+                            Circle()
+                                .fill(color.color(isDark: false))
+                                .frame(width: 18, height: 18)
+                                .overlay(
+                                    Circle()
+                                        .stroke(Color.primary, lineWidth: selectedColor == color ? 2 : 0)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .help(color.rawValue.capitalized)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var metadataCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("METADATA")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.secondary)
+
+            metadataRow(label: "Name", value: memberName)
+            metadataRow(label: "Agent", value: agentKind.uppercased())
+            metadataRow(label: "Host Node", value: machineName)
+            metadataRow(label: "Session ID", value: sessionId)
+
+            Divider()
+                .overlay(Color.primary.opacity(0.06))
+
+            // Workspace Path & Open Actions
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Workspace")
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
 
-                HStack {
-                    Text("Model")
-                        .font(.system(size: 12, weight: .medium))
-                    Spacer()
-                    Text(currentModel)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
-                }
+                Text(workspacePath)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
 
+                HStack(spacing: 8) {
+                    Button(action: {
+                        let expanded = (workspacePath as NSString).expandingTildeInPath
+                        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: expanded)
+                    }) {
+                        Label("Finder", systemImage: "folder")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button(action: {
+                        let expanded = (workspacePath as NSString).expandingTildeInPath
+                        if let url = URL(string: "vscode://file/\(expanded)") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }) {
+                        Label("VS Code", systemImage: "chevron.left.forwardslash.chevron.right")
+                            .font(.system(size: 11))
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var controlsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("CONTROLS")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.secondary)
+
+            // MODEL Switcher Dropdown
+            HStack {
+                Text("Model")
+                    .font(.system(size: 12, weight: .medium))
+                Spacer()
+                Picker("Model", selection: Binding(
+                    get: { currentModel },
+                    set: { newModel in onModelChange(newModel) }
+                )) {
+                    ForEach(availableModels, id: \.self) { model in
+                        Text(model).tag(model)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+            }
+
+            Divider()
+                .overlay(Color.primary.opacity(0.06))
+
+            // MODE Switcher (YOLO vs SAFE)
+            VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("Mode")
                         .font(.system(size: 12, weight: .medium))
                     Spacer()
-                    Button(action: onModeToggle) {
-                        Text(currentMode.uppercased())
-                            .font(.system(size: 10, weight: .bold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(
-                                currentMode == "yolo"
-                                    ? PharosDesignTokens.Colors.statusWorking.opacity(0.18)
-                                    : PharosDesignTokens.Colors.statusAttention.opacity(0.18)
-                            )
-                            .foregroundStyle(
-                                currentMode == "yolo"
-                                    ? PharosDesignTokens.Colors.statusWorking
-                                    : PharosDesignTokens.Colors.statusAttention
-                            )
-                            .clipShape(Capsule())
+                    Picker("Mode", selection: Binding(
+                        get: { currentMode.lowercased() },
+                        set: { _ in onModeToggle() }
+                    )) {
+                        Text("YOLO").tag("yolo")
+                        Text("SAFE").tag("safe")
                     }
-                    .buttonStyle(.plain)
+                    .pickerStyle(.segmented)
+                    .frame(width: 130)
                 }
-            }
-            .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
 
-            // Lifecycle Operations
-            VStack(spacing: 8) {
-                Button(action: onStop) {
-                    HStack {
-                        Image(systemName: "stop.circle")
-                        Text("Stop Member")
-                    }
-                    .font(.system(size: 12, weight: .medium))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                }
-                .buttonStyle(.bordered)
-
-                Button(action: onRevive) {
-                    HStack {
-                        Image(systemName: "arrow.counterclockwise.circle")
-                        Text("Revive Member")
-                    }
-                    .font(.system(size: 12, weight: .medium))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                }
-                .buttonStyle(.borderedProminent)
+                Text(currentMode.lowercased() == "yolo"
+                     ? "Autonomous execution (zero prompt confirmation)."
+                     : "Safe mode (prompts for tool & execution approvals).")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
             }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var lifecycleCard: some View {
+        VStack(spacing: 8) {
+            Button(action: onStop) {
+                HStack {
+                    Image(systemName: "stop.circle")
+                    Text("Stop Member")
+                }
+                .font(.system(size: 12, weight: .medium))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.bordered)
+
+            Button(action: onRevive) {
+                HStack {
+                    Image(systemName: "arrow.counterclockwise.circle")
+                    Text("Revive Member")
+                }
+                .font(.system(size: 12, weight: .medium))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.borderedProminent)
         }
     }
 
@@ -281,49 +368,12 @@ public struct ConversationDetailsView: View {
     // MARK: - Library Tab
 
     private var librarySection: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "doc.text.magnifyingglass")
-                .font(.system(size: 28))
-                .foregroundStyle(.tertiary)
-
-            Text("No artifacts attached")
-                .font(.system(size: 13, weight: .medium))
-
-            Text("Generated patches, logs, and files will appear here.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, minHeight: 180)
-        .padding(.top, 20)
+        SessionLibraryView()
     }
 
     // MARK: - Computer Tab
 
     private var computerSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("TMUX LIVE STREAM")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Circle()
-                    .fill(Color.green)
-                    .frame(width: 6, height: 6)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("$ pharos member status")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.green)
-                Text("[tmux] pane active • 80x24 • UDS connected")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(10)
-            .background(Color.black)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
+        LiveTerminalView(viewModel: terminalViewModel)
     }
 }

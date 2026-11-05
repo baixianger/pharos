@@ -34,6 +34,7 @@ public protocol PharosAgentBackendAdapter: Sendable {
     func sendSessionPrompt(sessionId: String, prompt: String, mode: PromptMode) async throws -> CanonicalTurn
     func interruptSession(sessionId: String) async throws
     func selectSessionModel(sessionId: String, model: String) async throws
+    func setSessionMode(sessionId: String, mode: String) async throws
     func resolveApproval(sessionId: String, approvalId: String, decision: ApprovalDecision) async throws
 
     // Thread Roster Operations (plain text mailbox dispatch)

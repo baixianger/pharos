@@ -30,6 +30,8 @@ public struct PharosMainShellView: View {
     // Active session metadata & composer state
     @State private var composerText: String = ""
     @State private var isSteeringMode: Bool = false
+    @State private var currentModel: String = "gpt-4o"
+    @State private var currentMode: String = "yolo"
 
     public init(clientService: PharosClientService = MockPharosClientService()) {
         self.clientService = clientService
@@ -219,13 +221,41 @@ public struct PharosMainShellView: View {
             memberName: activeTitle,
             agentKind: activeAgentKind ?? "codex",
             machineName: activeMachineName ?? "local",
-            currentModel: "gpt-4o",
-            currentMode: "yolo",
+            currentModel: currentModel,
+            currentMode: currentMode,
             workspacePath: "~/personal/pharos",
-            onModelChange: { _ in },
-            onModeToggle: {},
-            onStop: {},
-            onRevive: {}
+            sessionId: selectedSessionId ?? "ses_main_01",
+            onModelChange: { newModel in
+                currentModel = newModel
+                Task {
+                    try? await clientService.setMemberModel(name: activeTitle, model: newModel)
+                }
+            },
+            onModeToggle: {
+                currentMode = (currentMode == "yolo") ? "safe" : "yolo"
+                let updatedMode = currentMode
+                Task {
+                    try? await clientService.setMemberMode(name: activeTitle, mode: updatedMode)
+                }
+            },
+            onStop: {
+                Task {
+                    try? await clientService.stopMember(name: activeTitle)
+                }
+            },
+            onRevive: {
+                Task {
+                    try? await clientService.reviveMember(name: activeTitle)
+                }
+            },
+            onAvatarChange: { shape, color in
+                Task {
+                    try? await clientService.setMemberAvatar(
+                        name: activeTitle,
+                        avatar: ClientAvatarInfo(seed: activeTitle, colorHex: color.lightHex)
+                    )
+                }
+            }
         )
     }
 

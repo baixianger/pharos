@@ -85,6 +85,7 @@ public final class CodexDaemonUdsTransport: CodexTransport, @unchecked Sendable 
 /// Simulated transport used exclusively for deterministic unit testing.
 public final class SimulatedCodexTransport: CodexTransport, @unchecked Sendable {
     public var isConnected: Bool
+    public var calledMethods: [String] = []
     private var eventContinuations: [UUID: AsyncStream<BackendWireEvent>.Continuation] = [:]
     private let lock = NSLock()
 
@@ -95,6 +96,9 @@ public final class SimulatedCodexTransport: CodexTransport, @unchecked Sendable 
     public func call(method: String, params: [String: Any]) async throws -> [String: Any] {
         guard isConnected else {
             throw PharosClientError.backendUnreachable(backend: "codex", reason: "Simulated Codex daemon unreachable")
+        }
+        lock.withLock {
+            calledMethods.append(method)
         }
         switch method {
         case "thread/start":
@@ -317,6 +321,16 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
             throw PharosClientError.sessionNotFound(sessionId)
         }
         // Fallback per BackendCapabilities: graceful restart
+    }
+
+    public func setSessionMode(sessionId: String, mode: String) async throws {
+        guard let threadId = activeSessions[sessionId] else {
+            throw PharosClientError.sessionNotFound(sessionId)
+        }
+        // Mode toggle sets approval policy: 'never' for yolo, 'on-request' for safe
+        // In accordance with PIT-CX-12 & CX-SES-12
+        let policy = (mode.lowercased() == "yolo") ? "never" : "on-request"
+        _ = try? await transport.call(method: "thread/setApprovalPolicy", params: ["threadId": threadId, "policy": policy])
     }
 
     public func resolveApproval(sessionId: String, approvalId: String, decision: ApprovalDecision) async throws {

@@ -5,6 +5,7 @@ import PharosClientKit
 public protocol DshTransport: Sendable {
     func sendPrompt(port: Int, token: String, sessionId: String, prompt: String, mode: PromptMode) async throws -> [String: Any]
     func selectModel(port: Int, token: String, sessionId: String, model: String) async throws
+    func executeCommand(port: Int, token: String, sessionId: String, command: String) async throws
     func cancelSession(port: Int, token: String, sessionId: String) async throws
     func observeMuxStream(port: Int, token: String, sessionId: String) -> AsyncStream<BackendWireEvent>
     func close()
@@ -53,6 +54,16 @@ public final class DshWebHttpWsTransport: DshTransport, @unchecked Sendable {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": sessionId, "model": model])
+        _ = try? await URLSession.shared.data(for: req)
+    }
+
+    public func executeCommand(port: Int, token: String, sessionId: String, command: String) async throws {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/api/commands/execute") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": sessionId, "line": command])
         _ = try? await URLSession.shared.data(for: req)
     }
 
@@ -149,12 +160,16 @@ public final class SimulatedDshTransport: DshTransport, @unchecked Sendable {
         return ["turnId": "turn_dsh_\(UUID().uuidString.prefix(6))"]
     }
 
+    public var lastExecutedCommand: String?
+    public func executeCommand(port: Int, token: String, sessionId: String, command: String) async throws {
+        lastExecutedCommand = command
+    }
     public func selectModel(port: Int, token: String, sessionId: String, model: String) async throws {}
     public func cancelSession(port: Int, token: String, sessionId: String) async throws {}
 
     public func emitNotification(sessionId: String, notification: [String: Any]) {
         let wireEvent = BackendWireEvent(notification)
-        lock.withLock {
+        _ = lock.withLock {
             eventContinuations[sessionId]?.yield(wireEvent)
         }
     }
@@ -323,6 +338,17 @@ public actor DshBackendAdapter: PharosAgentBackendAdapter {
             throw PharosClientError.sessionNotFound(sessionId)
         }
         try await transport.selectModel(port: port, token: token, sessionId: dshId, model: model)
+    }
+
+    public func setSessionMode(sessionId: String, mode: String) async throws {
+        guard let port = hostPort, let token = volatileAuthToken else {
+            throw PharosClientError.backendUnreachable(backend: "dsh", reason: "dsh web Host is unreachable")
+        }
+        guard let dshId = activeSessions[sessionId] else {
+            throw PharosClientError.sessionNotFound(sessionId)
+        }
+        let command = (mode.lowercased() == "yolo") ? "/permission unrestricted" : "/permission ask"
+        try await transport.executeCommand(port: port, token: token, sessionId: dshId, command: command)
     }
 
     public func resolveApproval(sessionId: String, approvalId: String, decision: ApprovalDecision) async throws {

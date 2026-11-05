@@ -958,3 +958,80 @@ The legacy SwiftUI views (`DashboardView`, `ProjectDetailView`, `MeshRoomView`, 
   - `AG-THD-17`: `supported`
   - `DS-SES-17`: `supported`
   - `DS-THD-17`: `supported`
+
+---
+
+## M3 PHASE 7 REPORT (Goal 7: Conversation Details Pane — Inspector, Controls, Library, Live Terminal)
+- **Status**: DONE
+- **Date**: 2026-11-05
+- **Branch**: `integrate/mesh2-into-main`
+
+### 1. Key Changes Delivered
+1. **ANSI Terminal Engine & Sanitizer (`Sources/Pharos/UI/Details/AnsiTerminalParser.swift`)**:
+   - `AnsiTerminalParser.stripAnsi(from:)`: High-performance regex engine stripping all CSI codes (`\u{001B}\[[0-9;?]*[a-zA-Z]`), OSC sequences (`\u{001B}\].*?(\u{0007}|\u{001B}\\\\)`), and generic escape sequences, producing clean human-readable text for search and clipboard export.
+   - `AnsiTerminalParser.parse(text:)`: Converts raw terminal streams into `[AnsiTerminalLine]` composed of styled spans (`AnsiSegment`).
+   - Supports SGR codes: reset (0), bold (1), dim (2), italic (3), underline (4), invert (7).
+   - Full color mapping:
+     - Standard 8 colors (30–37) & bright variants (90–97) with custom calibrated terminal palette.
+     - Background colors (40–47, 100–107).
+     - 256-color table lookup (`38;5;n` and `48;5;n`) supporting standard colors, 6x6x6 color cube, and grayscale ramps.
+     - 24-bit RGB truecolor (`38;2;r;g;b` and `48;2;r;g;b`).
+2. **Live Terminal View (`Sources/Pharos/UI/Details/LiveTerminalView.swift`)**:
+   - `LiveTerminalViewModel`: Manages rolling terminal line buffer (capped at 1000 lines), stream pause/resume state machine, auto-scroll toggle, clear buffer, and unformatted plain text copy.
+   - `LiveTerminalView`: Native SwiftUI view rendering terminal lines with monospaced typography on a dark charcoal canvas (`#121418`).
+   - Integrated status bar displaying liveness pill (`LIVE` in green vs `PAUSED` in amber), attached tmux session name and 80x24 geometry, pause toggle, copy button with animated checkmark feedback, and trash clear button.
+3. **Session Library Navigation (`Sources/Pharos/UI/Details/SessionLibraryView.swift`)**:
+   - `ClientSessionArtifact`: Model for session artifacts with category, relative path, size/stats badge, timestamp, and optional preview text.
+   - `ArtifactCategory`: Categorizes artifacts into `.all`, `.patches`, `.files`, `.outputs`, and `.attachments`, each with dedicated iconography and tint colors.
+   - Interactive category filter pills and live search bar.
+   - Actions per artifact: "Preview" modal sheet with syntax viewer, "Copy Path" to pasteboard with checkmark feedback, and "Reveal in Finder" via `NSWorkspace`.
+4. **Upgraded Inspector Pane (`Sources/Pharos/UI/Details/ConversationDetailsView.swift`)**:
+   - 3 sub-tabs: `Details`, `Library`, and `Computer`.
+   - **Details Sub-Tab**:
+     - Avatar Identity customizer card (from Goal 6) with 56px live vector preview and swatches.
+     - Full Metadata card: Agent name, uppercase agent kind badge, host machine node, session ID, and workspace path with "Reveal in Finder" and "Open in VS Code" shortcuts.
+     - **MODEL Switcher**: Dynamic dropdown menu populated with available models matching backend capabilities:
+       - Codex: `gpt-4o`, `gpt-4o-mini`, `o1`, `o1-mini`, `claude-3-5-sonnet`
+       - Agy: `gemini-2.5-pro`, `gemini-2.5-flash`, `claude-3-7-sonnet`
+       - Dsh: `deepseek-chat`, `deepseek-reasoner`
+     - **MODE Switcher**: Segmented toggle between `yolo` (unrestricted autonomous execution) and `safe` (guided interactive approvals).
+     - Lifecycle Actions: `Stop Member` and `Revive Member`.
+   - **Library Sub-Tab**: Embeds `SessionLibraryView`.
+   - **Computer Sub-Tab**: Embeds `LiveTerminalView`.
+5. **Backend Adapter Updates & Mode Switching**:
+   - Added `setSessionMode(sessionId:mode:)` to `PharosAgentBackendAdapter`.
+   - In `CodexBackendAdapter`: configures approval policy (`never` for yolo, `on-request` for safe).
+   - In `AgyBackendAdapter`: configures ACP option `permission_mode` (`dangerously-skip-permissions` for yolo, `ask-approvals` for safe).
+   - In `DshBackendAdapter`: dispatches `/permission unrestricted` (for yolo) or `/permission ask` (for safe) via `/api/commands/execute`.
+   - In `PharosMainShellView`: wired model change, mode toggle, stop, revive, and avatar updates directly to `clientService`.
+6. **Matrix Verification & Flipping (`docs/BACKEND-MATRIX.md`)**:
+   - Flipped `DS-SES-12` from `untested` to `supported`, verified by `ConversationDetailsTests.testModeMutationCommandGenerationAndExecution`.
+   - Updated test citations for `CX-SES-11`, `CX-SES-12`, `AG-SES-11`, `AG-SES-12`, `DS-SES-11`, and `DS-SES-12`.
+
+### 2. Test Verification
+- All 6 new unit tests pass in 0.003s in `Tests/PharosTests/ConversationDetailsTests.swift`:
+  - `testAnsiStripRemovesAllCsiOscAndGenericSequences`: Verifies stripping of CSI colors, OSC titles, extended colors, and multiline text.
+  - `testAnsiColorMapStandardBrightAnd256`: Verifies SGR bold, standard colors, bright colors, 256-color table, and 24-bit RGB truecolor.
+  - `testLiveTerminalViewModelBufferManagement`: Verifies buffer appending, line numbering, pause/resume, clear, and plain text clipboard copy.
+  - `testModelMutationCommandGeneration`: Verifies model selection across Codex, Agy, and Dsh.
+  - `testModeMutationCommandGenerationAndExecution`: Verifies mode toggle execution across Dsh (`/permission unrestricted` vs `/permission ask`), Codex (`thread/setApprovalPolicy`), and Agy (`session/set_config_option`).
+  - `testSessionLibraryArtifactFilteringAndSearching`: Verifies category filtering, searching, and metadata resolution.
+- Workspace test totals:
+  - `PharosTests`: 307 tests executed, 4 skipped, 0 failures (+6 tests).
+  - `PharosLightTests`: 254 tests, 0 failures.
+  - Mesh targets (Core, Protocol, Iroh, Identity): 182 tests, 0 failures.
+  - Architecture boundary assertions: 0 UI imports across all backend targets.
+  - Total: 743 tests passed across the workspace.
+- Production app packaging (`./Scripts/package_app.sh release`) succeeded, producing signed `Pharos.app`.
+
+### 3. Matrix Rows Delivered & Flipped
+- `CX-SES-11`: `partial` (verified by `ConversationDetailsTests.testModelMutationCommandGeneration`)
+- `CX-SES-12`: `supported` (verified by `ConversationDetailsTests.testModeMutationCommandGenerationAndExecution`)
+- `CX-SES-16`: `supported` (verified by `TriBackendAdapterTests`)
+- `AG-SES-11`: `supported` (verified by `ConversationDetailsTests.testModelMutationCommandGeneration`)
+- `AG-SES-12`: `supported` (verified by `ConversationDetailsTests.testModeMutationCommandGenerationAndExecution`)
+- `AG-SES-16`: `supported` (verified by `TriBackendAdapterTests`)
+- `DS-SES-11`: `supported` (verified by `ConversationDetailsTests.testModelMutationCommandGeneration`)
+- `DS-SES-12`: `supported` (**Flipped from `untested` -> `supported`**, verified by `ConversationDetailsTests.testModeMutationCommandGenerationAndExecution`)
+- `DS-SES-16`: `supported` (verified by `TriBackendAdapterTests`)
+

@@ -41,7 +41,7 @@ public struct ThreadRosterBar: View {
                             HStack(spacing: 5) {
                                 // Agent Avatar View
                                 PharosAvatarView(
-                                    seed: member.avatarSeed ?? member.name,
+                                    seed: member.avatarSeed,
                                     status: avatarStatus(from: member.status),
                                     size: 20,
                                     showRing: false
