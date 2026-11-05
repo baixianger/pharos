@@ -58,6 +58,11 @@ public struct LightTmuxBinding: Codable, Equatable, Sendable {
     public var endedAt: Date?         // set when Pharos observed the tmux session gone
     public var autoRevive: Bool?      // opt-in per member, default nil/false
     public var endedReason: String?   // "stopped" (explicit member stop), "exited" (agent/tmux went away on its own)
+    public var permissionMode: String? // "yolo" (default) | "safe"
+
+    public var effectiveMode: String {
+        permissionMode == "safe" ? "safe" : "yolo"
+    }
 
     public init(
         session: String,
@@ -68,7 +73,8 @@ public struct LightTmuxBinding: Codable, Equatable, Sendable {
         launchedAt: Date? = nil,
         endedAt: Date? = nil,
         autoRevive: Bool? = nil,
-        endedReason: String? = nil
+        endedReason: String? = nil,
+        permissionMode: String? = nil
     ) {
         self.session = session
         self.cwd = cwd
@@ -79,6 +85,7 @@ public struct LightTmuxBinding: Codable, Equatable, Sendable {
         self.endedAt = endedAt
         self.autoRevive = autoRevive
         self.endedReason = endedReason
+        self.permissionMode = permissionMode
     }
 }
 

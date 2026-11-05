@@ -53,8 +53,10 @@ public final class CLIMemberAgents: LightMemberAgents, @unchecked Sendable {
         model: String?,
         tmuxSession: String?,
         openingMessage: String?,
-        project: String
+        project: String,
+        mode: String? = nil
     ) throws -> LightMember {
+        let effectiveMode = mode ?? "yolo"
         if !selfHost.matches(host) {
             guard let nodes else {
                 throw CLIMemberAgentsError("launch on another host is not supported yet: run it on that machine")
@@ -68,7 +70,8 @@ public final class CLIMemberAgents: LightMemberAgents, @unchecked Sendable {
                 host: host,
                 model: model,
                 tmuxSession: tmuxSession,
-                openingMessage: openingMessage
+                openingMessage: openingMessage,
+                mode: effectiveMode
             )
             let request = LightNodeAgentRequest(action: "launch", launch: spec)
             let b64 = LightNodeExec.encode(request)
@@ -112,7 +115,8 @@ public final class CLIMemberAgents: LightMemberAgents, @unchecked Sendable {
             model: model,
             sessionName: tmuxSession,
             openingMessage: openingMessage,
-            host: host
+            host: host,
+            mode: effectiveMode
         )
 
         let result = try lifecycle.launch(request)
@@ -140,8 +144,10 @@ public final class CLIMemberAgents: LightMemberAgents, @unchecked Sendable {
         model: String?,
         tmuxSession: String?,
         project: String,
-        autoRevive: Bool
+        autoRevive: Bool,
+        mode: String? = nil
     ) throws -> LightMember {
+        let effectiveMode = mode ?? "yolo"
         if !selfHost.matches(host) {
             guard let nodes else {
                 throw CLIMemberAgentsError("adopt on another host is not supported yet: run it on that machine")
@@ -156,7 +162,8 @@ public final class CLIMemberAgents: LightMemberAgents, @unchecked Sendable {
                 host: host,
                 model: model,
                 tmuxSession: tmuxSession,
-                autoRevive: autoRevive
+                autoRevive: autoRevive,
+                mode: effectiveMode
             )
             let request = LightNodeAgentRequest(action: "adopt", adopt: spec)
             let b64 = LightNodeExec.encode(request)
@@ -198,7 +205,8 @@ public final class CLIMemberAgents: LightMemberAgents, @unchecked Sendable {
             model: model,
             tmuxSession: tmuxSession,
             project: project,
-            autoRevive: autoRevive
+            autoRevive: autoRevive,
+            mode: effectiveMode
         )
         let member = try lifecycle.adopt(request: adoptReq)
         lock.lock()
@@ -321,6 +329,49 @@ public final class CLIMemberAgents: LightMemberAgents, @unchecked Sendable {
 
         guard let binding = resp.binding else {
             throw CLIMemberAgentsError("remote switch model did not return a binding")
+        }
+
+        var notes = resp.notes ?? []
+        notes.append("via \(run.path.rawValue) on \(run.node)")
+        lock.lock()
+        _notes = notes
+        lock.unlock()
+
+        return binding
+    }
+
+    public func switchMode(_ member: LightMember, mode: String, force: Bool) throws -> LightTmuxBinding {
+        if selfHost.matches(member.host) {
+            let binding = try lifecycle.switchMode(member: member, mode: mode, force: force)
+            lock.lock()
+            _notes = ["switched to mode \(mode)"]
+            lock.unlock()
+            return binding
+        }
+
+        guard let nodes else {
+            throw CLIMemberAgentsError("switch mode on another host is not supported yet: run it on that machine")
+        }
+
+        let request = LightNodeAgentRequest(action: "mode", member: member, force: force, mode: mode)
+        let b64 = LightNodeExec.encode(request)
+
+        guard let run = nodes.run(member.host, argv: ["node-agent", "--payload", b64], timeout: 60) else {
+            let status = nodes.status(member.host)
+            let msg = LightRelay.nodeOfflineMessage(lastSeen: status.lastSeen, now: Date())
+            throw CLIMemberAgentsError("Pharos node \(member.host) is offline (\(msg))")
+        }
+
+        guard let resp = Self.parseResponse(run.stdout) else {
+            throw CLIMemberAgentsError("invalid response from node \(member.host)")
+        }
+
+        guard resp.ok else {
+            throw CLIMemberAgentsError(resp.error ?? "remote switch mode failed")
+        }
+
+        guard let binding = resp.binding else {
+            throw CLIMemberAgentsError("remote switch mode did not return a binding")
         }
 
         var notes = resp.notes ?? []

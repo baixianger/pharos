@@ -9,6 +9,7 @@ public struct CLIAgentLaunchRequest: Sendable {
     public var sessionName: String?
     public var openingMessage: String?
     public var host: String
+    public var mode: String
 
     public init(
         name: String,
@@ -17,7 +18,8 @@ public struct CLIAgentLaunchRequest: Sendable {
         model: String? = nil,
         sessionName: String? = nil,
         openingMessage: String? = nil,
-        host: String = "local"
+        host: String = "local",
+        mode: String = "yolo"
     ) {
         self.name = name
         self.app = app
@@ -26,6 +28,7 @@ public struct CLIAgentLaunchRequest: Sendable {
         self.sessionName = sessionName
         self.openingMessage = openingMessage
         self.host = host
+        self.mode = mode
     }
 }
 
@@ -51,6 +54,7 @@ public struct CLIAgentAdoptRequest: Sendable, Equatable {
     public var tmuxSession: String?
     public var project: String?
     public var autoRevive: Bool
+    public var mode: String
 
     public init(
         name: String,
@@ -61,7 +65,8 @@ public struct CLIAgentAdoptRequest: Sendable, Equatable {
         model: String? = nil,
         tmuxSession: String? = nil,
         project: String? = nil,
-        autoRevive: Bool = false
+        autoRevive: Bool = false,
+        mode: String = "yolo"
     ) {
         self.name = name
         self.app = app
@@ -72,6 +77,7 @@ public struct CLIAgentAdoptRequest: Sendable, Equatable {
         self.tmuxSession = tmuxSession
         self.project = project
         self.autoRevive = autoRevive
+        self.mode = mode
     }
 }
 
@@ -231,7 +237,7 @@ public struct CLIAgentLifecycle: Sendable {
         let launchStart = now()
         if !adopted {
             let bin = descriptor.resolveBinary(env: env, isExecutable: isExecutable)
-            let argv = descriptor.launchArgv(bin: bin, model: model)
+            let argv = descriptor.launchArgv(bin: bin, model: model, mode: request.mode)
             if let err = tmux.newSession(name: sessionName, cwd: resolvedCwd, argv: argv) {
                 throw CLIAgentLifecycleError.tmux(err)
             }
@@ -371,7 +377,8 @@ public struct CLIAgentLifecycle: Sendable {
             agentPID: panePID,
             agentStarted: agentStarted,
             launchedAt: now(),
-            endedAt: nil
+            endedAt: nil,
+            permissionMode: request.mode
         )
         var notes = adopted ? ["adopted existing tmux session \(sessionName)"] : []
         if let rolloutNote { notes.append(rolloutNote) }
@@ -421,7 +428,7 @@ public struct CLIAgentLifecycle: Sendable {
         }
 
         let bin = descriptor.resolveBinary(env: env, isExecutable: isExecutable)
-        let argv = descriptor.resumeArgv(bin: bin, sessionID: request.sessionID, model: model)
+        let argv = descriptor.resumeArgv(bin: bin, sessionID: request.sessionID, model: model, mode: request.mode)
         if let err = tmux.newSession(name: sessionName, cwd: resolvedCwd, argv: argv) {
             throw CLIAgentLifecycleError.tmux(err)
         }
@@ -438,7 +445,8 @@ public struct CLIAgentLifecycle: Sendable {
             agentStarted: agentStarted,
             launchedAt: now(),
             endedAt: nil,
-            autoRevive: request.autoRevive
+            autoRevive: request.autoRevive,
+            permissionMode: request.mode
         )
         let proj = request.project ?? URL(fileURLWithPath: resolvedCwd).lastPathComponent
         return LightMember(
@@ -452,7 +460,7 @@ public struct CLIAgentLifecycle: Sendable {
         )
     }
 
-    public func revive(member: LightMember, model: String? = nil) throws -> LightTmuxBinding {
+    public func revive(member: LightMember, model: String? = nil, mode: String? = nil) throws -> LightTmuxBinding {
         guard let binding = member.tmux else {
             throw CLIAgentLifecycleError.invalid("member has no tmux binding")
         }
@@ -482,8 +490,9 @@ public struct CLIAgentLifecycle: Sendable {
             selectedModel = binding.model
         }
 
+        let selectedMode = mode ?? binding.permissionMode ?? "yolo"
         let bin = descriptor.resolveBinary(env: env, isExecutable: isExecutable)
-        let argv = descriptor.resumeArgv(bin: bin, sessionID: member.sessionID, model: selectedModel)
+        let argv = descriptor.resumeArgv(bin: bin, sessionID: member.sessionID, model: selectedModel, mode: selectedMode)
         let resolvedCwd = URL(fileURLWithPath: binding.cwd).resolvingSymlinksInPath().path
 
         if live.tmuxAlive {
@@ -511,7 +520,8 @@ public struct CLIAgentLifecycle: Sendable {
             launchedAt: now(),
             endedAt: nil,
             autoRevive: binding.autoRevive,
-            endedReason: nil
+            endedReason: nil,
+            permissionMode: selectedMode
         )
     }
 
@@ -522,6 +532,24 @@ public struct CLIAgentLifecycle: Sendable {
         var stoppedMember = member
         stoppedMember.tmux = stopResult.binding
         return try revive(member: stoppedMember, model: model)
+    }
+
+    /// Local graceful restart mode switch: stop(force:) then revive(member:, mode: M).
+    public func switchMode(member: LightMember, mode: String, force: Bool = false) throws -> LightTmuxBinding {
+        guard let binding = member.tmux else {
+            throw CLIAgentLifecycleError.invalid("member has no tmux binding")
+        }
+        let live = tmux.liveness(binding)
+        if live.agentAlive {
+            let stopResult = try stop(member: member, force: force)
+            var stoppedMember = member
+            stoppedMember.tmux = stopResult.binding
+            return try revive(member: stoppedMember, mode: mode)
+        } else {
+            var updated = binding
+            updated.permissionMode = mode
+            return updated
+        }
     }
 
     public func stop(member: LightMember, force: Bool, timeout: TimeInterval = 20) throws -> CLIAgentStopResult {

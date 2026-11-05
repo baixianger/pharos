@@ -613,6 +613,7 @@ public enum LightInventoryCommands {
             project = URL(fileURLWithPath: finalCwd).lastPathComponent
         }
 
+        let mode = argv.flag("safe") ? "safe" : (argv.option("mode") ?? "yolo")
         do {
             var member = try agents.adopt(
                 name: validatedName,
@@ -623,8 +624,10 @@ public enum LightInventoryCommands {
                 model: argv.option("model"),
                 tmuxSession: argv.option("tmux"),
                 project: project,
-                autoRevive: argv.flag("auto-revive")
+                autoRevive: argv.flag("auto-revive"),
+                mode: mode
             )
+            member.tmux?.permissionMode = mode
             if argv.flag("auto-revive") {
                 member.tmux?.autoRevive = true
             }

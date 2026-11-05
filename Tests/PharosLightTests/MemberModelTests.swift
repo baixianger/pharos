@@ -438,7 +438,7 @@ final class MemberModelTests: XCTestCase {
         let res = run(relay, "member", ["list"])
         XCTAssertEqual(res.exitCode, 0)
         let lines = res.text.components(separatedBy: "\n")
-        XCTAssertEqual(lines[0], "NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES\tTMUX\tLIVE\tMODEL\tSTATE")
+        XCTAssertEqual(lines[0], "NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES\tTMUX\tLIVE\tMODEL\tMODE\tSTATE")
 
         let m1Line = try XCTUnwrap(lines.first { $0.hasPrefix("m1\t") })
         XCTAssertTrue(m1Line.contains("\tgpt-4o\t"), "m1 shows gpt-4o in MODEL column")
@@ -447,6 +447,6 @@ final class MemberModelTests: XCTestCase {
         XCTAssertTrue(m2Line.contains("\t-\t"), "m2 shows - in MODEL column")
 
         let m3Line = try XCTUnwrap(lines.first { $0.hasPrefix("m3\t") })
-        XCTAssertTrue(m3Line.contains("\t-\t-\t-\t-"), "m3 shows - across tmux, live, model, state")
+        XCTAssertTrue(m3Line.contains("\t-\t-\t-\t-\t-"), "m3 shows - across tmux, live, model, mode, state")
     }
 }

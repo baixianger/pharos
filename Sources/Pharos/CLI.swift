@@ -1045,8 +1045,10 @@ enum CLI {
           See `pharos help chat` for intents, --to/--cc, --deliver, --rounds, and the subagent pattern.
           member register --name N --host H --app codex|claude|dsh|ag|cursor --project P --session S [--route R]...
           member register --name N --app webhook [--webhook CONFIG]      (remote assistant via HTTPS POST)
-          member adopt <address|host app id> --name X [--dir D] [--model M] [--tmux S] [--auto-revive] [--project P] [--force] [--json]
+          member launch --app codex|agy --name N (--dir D | --project P) [--host H] [--model M] [--tmux S] [--safe] [--mode safe|yolo] [--auto-revive] [--json]
+          member adopt <address|host app id> --name X [--dir D] [--model M] [--tmux S] [--safe] [--mode safe|yolo] [--auto-revive] [--project P] [--force] [--json]
           member model <name> [<model>] [--force] [--json]
+          member mode <name> [safe|yolo] [--force] [--json]
           member list [--json]
           attention list [--json]                  Members waiting on a human (needs_human): what, host, session, age
           attention report --state needs_human|clear --session S [--app A] [--host H] [--what T] [--ttl 20m]

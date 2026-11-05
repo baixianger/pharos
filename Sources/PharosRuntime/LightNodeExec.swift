@@ -35,6 +35,7 @@ public struct LightNodeLaunchSpec: Codable, Equatable, Sendable {
     public var name, app, cwd, project: String
     public var host: String
     public var model, tmuxSession, openingMessage: String?
+    public var mode: String?
 
     public init(
         name: String,
@@ -44,7 +45,8 @@ public struct LightNodeLaunchSpec: Codable, Equatable, Sendable {
         host: String,
         model: String? = nil,
         tmuxSession: String? = nil,
-        openingMessage: String? = nil
+        openingMessage: String? = nil,
+        mode: String? = nil
     ) {
         self.name = name
         self.app = app
@@ -54,6 +56,7 @@ public struct LightNodeLaunchSpec: Codable, Equatable, Sendable {
         self.model = model
         self.tmuxSession = tmuxSession
         self.openingMessage = openingMessage
+        self.mode = mode
     }
 }
 
@@ -61,6 +64,7 @@ public struct LightNodeAdoptSpec: Codable, Equatable, Sendable {
     public var name, app, cwd, sessionID, project, host: String
     public var model, tmuxSession: String?
     public var autoRevive: Bool?
+    public var mode: String?
 
     public init(
         name: String,
@@ -71,7 +75,8 @@ public struct LightNodeAdoptSpec: Codable, Equatable, Sendable {
         host: String,
         model: String? = nil,
         tmuxSession: String? = nil,
-        autoRevive: Bool? = nil
+        autoRevive: Bool? = nil,
+        mode: String? = nil
     ) {
         self.name = name
         self.app = app
@@ -82,16 +87,18 @@ public struct LightNodeAdoptSpec: Codable, Equatable, Sendable {
         self.model = model
         self.tmuxSession = tmuxSession
         self.autoRevive = autoRevive
+        self.mode = mode
     }
 }
 
 public struct LightNodeAgentRequest: Codable, Equatable, Sendable {
-    public var action: String          // "launch" | "adopt" | "revive" | "stop" | "status" | "model"
-    public var member: LightMember?    // revive/stop/status/model
+    public var action: String          // "launch" | "adopt" | "revive" | "stop" | "status" | "model" | "mode"
+    public var member: LightMember?    // revive/stop/status/model/mode
     public var launch: LightNodeLaunchSpec?   // launch
     public var adopt: LightNodeAdoptSpec?     // adopt
     public var force: Bool?
     public var model: String?
+    public var mode: String?
 
     public init(
         action: String,
@@ -99,7 +106,8 @@ public struct LightNodeAgentRequest: Codable, Equatable, Sendable {
         launch: LightNodeLaunchSpec? = nil,
         adopt: LightNodeAdoptSpec? = nil,
         force: Bool? = nil,
-        model: String? = nil
+        model: String? = nil,
+        mode: String? = nil
     ) {
         self.action = action
         self.member = member
@@ -107,6 +115,7 @@ public struct LightNodeAgentRequest: Codable, Equatable, Sendable {
         self.adopt = adopt
         self.force = force
         self.model = model
+        self.mode = mode
     }
 }
 
@@ -205,7 +214,8 @@ public enum LightNodeExec {
                     model: spec.model,
                     tmuxSession: spec.tmuxSession,
                     openingMessage: spec.openingMessage,
-                    project: spec.project
+                    project: spec.project,
+                    mode: spec.mode
                 )
                 member.host = spec.host
                 return encodeLine(LightNodeAgentResponse(ok: true, member: member, notes: agents.notes))
@@ -222,7 +232,8 @@ public enum LightNodeExec {
                     model: spec.model,
                     tmuxSession: spec.tmuxSession,
                     project: spec.project,
-                    autoRevive: spec.autoRevive ?? false
+                    autoRevive: spec.autoRevive ?? false,
+                    mode: spec.mode
                 )
                 member.host = spec.host
                 return encodeLine(LightNodeAgentResponse(ok: true, member: member, notes: agents.notes))
@@ -252,6 +263,15 @@ public enum LightNodeExec {
                     return encodeLine(LightNodeAgentResponse(ok: false, error: "missing model"))
                 }
                 let binding = try agents.switchModel(member, model: targetModel, force: request.force ?? false)
+                return encodeLine(LightNodeAgentResponse(ok: true, binding: binding, notes: agents.notes))
+            case "mode":
+                guard let member = request.member else {
+                    return encodeLine(LightNodeAgentResponse(ok: false, error: "missing member for mode"))
+                }
+                guard let targetMode = request.mode, !targetMode.isEmpty else {
+                    return encodeLine(LightNodeAgentResponse(ok: false, error: "missing mode"))
+                }
+                let binding = try agents.switchMode(member, mode: targetMode, force: request.force ?? false)
                 return encodeLine(LightNodeAgentResponse(ok: true, binding: binding, notes: agents.notes))
             default:
                 return encodeLine(LightNodeAgentResponse(ok: false, error: "unknown agent action \(request.action)"))

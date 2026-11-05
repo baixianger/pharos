@@ -40,16 +40,22 @@ public struct CLIAgentDescriptor: Sendable, Equatable {
         self.availableModels = availableModels
     }
 
-    /// argv for a fresh session: codex: [bin, "--no-alt-screen", "-c", "check_for_update_on_startup=false"] (+ ["-m", model]); agy: [bin] (+ ["--model", model])
-    public func launchArgv(bin: String, model: String?) -> [String] {
+    /// argv for a fresh session: codex: [bin, "--no-alt-screen", "-c", "check_for_update_on_startup=false"] (+ skip-approval if yolo) (+ ["-m", model]); agy: [bin] (+ skip-approval if yolo) (+ ["--model", model])
+    public func launchArgv(bin: String, model: String?, mode: String = "yolo") -> [String] {
         if app == "codex" {
             var args = [bin, "--no-alt-screen", "-c", "check_for_update_on_startup=false"]
+            if mode != "safe" {
+                args.append("--dangerously-bypass-approvals-and-sandbox")
+            }
             if let model, !model.isEmpty {
                 args.append(contentsOf: ["-m", model])
             }
             return args
         } else {
             var args = [bin]
+            if mode != "safe" {
+                args.append("--dangerously-skip-permissions")
+            }
             if let model, !model.isEmpty {
                 args.append(contentsOf: ["--model", model])
             }
@@ -57,16 +63,22 @@ public struct CLIAgentDescriptor: Sendable, Equatable {
         }
     }
 
-    /// argv for resuming `sessionID`: codex: [bin, "resume", sessionID, "--no-alt-screen", "-c", "check_for_update_on_startup=false"] (+ -m); agy: [bin, "--conversation", sessionID] (+ --model)
-    public func resumeArgv(bin: String, sessionID: String, model: String?) -> [String] {
+    /// argv for resuming `sessionID`: codex: [bin, "resume", sessionID, "--no-alt-screen", "-c", "check_for_update_on_startup=false"] (+ skip-approval if yolo) (+ -m); agy: [bin, "--conversation", sessionID] (+ skip-approval if yolo) (+ --model)
+    public func resumeArgv(bin: String, sessionID: String, model: String?, mode: String = "yolo") -> [String] {
         if app == "codex" {
             var args = [bin, "resume", sessionID, "--no-alt-screen", "-c", "check_for_update_on_startup=false"]
+            if mode != "safe" {
+                args.append("--dangerously-bypass-approvals-and-sandbox")
+            }
             if let model, !model.isEmpty {
                 args.append(contentsOf: ["-m", model])
             }
             return args
         } else {
             var args = [bin, "--conversation", sessionID]
+            if mode != "safe" {
+                args.append("--dangerously-skip-permissions")
+            }
             if let model, !model.isEmpty {
                 args.append(contentsOf: ["--model", model])
             }

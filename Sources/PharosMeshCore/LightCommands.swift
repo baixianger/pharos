@@ -22,12 +22,17 @@ public struct LightMemberAgentsError: Error, LocalizedError, Equatable {
 
 public protocol LightMemberAgents: Sendable {
     func launch(name: String, app: String, cwd: String, host: String, model: String?, tmuxSession: String?,
-                openingMessage: String?, project: String) throws -> LightMember   // returns member with tmux binding + routes
+                openingMessage: String?, project: String) throws -> LightMember
+    func launch(name: String, app: String, cwd: String, host: String, model: String?, tmuxSession: String?,
+                openingMessage: String?, project: String, mode: String?) throws -> LightMember
     func adopt(name: String, app: String, cwd: String, sessionID: String, host: String, model: String?, tmuxSession: String?,
                project: String, autoRevive: Bool) throws -> LightMember
+    func adopt(name: String, app: String, cwd: String, sessionID: String, host: String, model: String?, tmuxSession: String?,
+               project: String, autoRevive: Bool, mode: String?) throws -> LightMember
     func revive(_ member: LightMember) throws -> LightTmuxBinding
     func stop(_ member: LightMember, force: Bool) throws -> LightTmuxBinding
     func switchModel(_ member: LightMember, model: String, force: Bool) throws -> LightTmuxBinding
+    func switchMode(_ member: LightMember, mode: String, force: Bool) throws -> LightTmuxBinding
     func modelInfo(_ member: LightMember) -> LightMemberModelInfo?
     func status(_ member: LightMember) -> LightMemberRuntimeStatus?   // nil = not a tmux CLI member
     var notes: [String] { get }
@@ -35,15 +40,34 @@ public protocol LightMemberAgents: Sendable {
 
 extension LightMemberAgents {
     public var notes: [String] { [] }
+    public func launch(name: String, app: String, cwd: String, host: String, model: String?, tmuxSession: String?,
+                       openingMessage: String?, project: String) throws -> LightMember {
+        try launch(name: name, app: app, cwd: cwd, host: host, model: model, tmuxSession: tmuxSession,
+                   openingMessage: openingMessage, project: project, mode: "yolo")
+    }
+    public func launch(name: String, app: String, cwd: String, host: String, model: String?, tmuxSession: String?,
+                       openingMessage: String?, project: String, mode: String?) throws -> LightMember {
+        try launch(name: name, app: app, cwd: cwd, host: host, model: model, tmuxSession: tmuxSession,
+                   openingMessage: openingMessage, project: project)
+    }
     public func adopt(name: String, app: String, cwd: String, sessionID: String, host: String, model: String?, tmuxSession: String?,
                       project: String, autoRevive: Bool) throws -> LightMember {
-        throw LightMemberAgentsError("member adopt needs live CLI access")
+        try adopt(name: name, app: app, cwd: cwd, sessionID: sessionID, host: host, model: model, tmuxSession: tmuxSession,
+                  project: project, autoRevive: autoRevive, mode: "yolo")
+    }
+    public func adopt(name: String, app: String, cwd: String, sessionID: String, host: String, model: String?, tmuxSession: String?,
+                      project: String, autoRevive: Bool, mode: String?) throws -> LightMember {
+        try adopt(name: name, app: app, cwd: cwd, sessionID: sessionID, host: host, model: model, tmuxSession: tmuxSession,
+                  project: project, autoRevive: autoRevive)
     }
     public func stop(_ member: LightMember, force: Bool) throws -> LightTmuxBinding {
         throw LightMemberAgentsError("member stop needs live CLI access")
     }
     public func switchModel(_ member: LightMember, model: String, force: Bool) throws -> LightTmuxBinding {
         throw LightMemberAgentsError("member switchModel needs live CLI access")
+    }
+    public func switchMode(_ member: LightMember, mode: String, force: Bool) throws -> LightTmuxBinding {
+        throw LightMemberAgentsError("member switchMode needs live CLI access")
     }
     public func modelInfo(_ member: LightMember) -> LightMemberModelInfo? {
         nil
@@ -300,9 +324,10 @@ public enum LightCommands {
             let lines = rows.map { row in
                 let routes = row.member.routes.map(\.id).joined(separator: ",")
                 let model = row.member.tmux?.model ?? "-"
-                return "\(row.member.name)\t\(row.member.app)\t\(row.member.host)\t\(row.member.project)\t\(row.member.sessionID)\t\(routes)\t\(row.tmux)\t\(row.live)\t\(model)\t\(row.state)"
+                let mode = row.member.tmux != nil ? (row.member.tmux?.permissionMode ?? "yolo") : "-"
+                return "\(row.member.name)\t\(row.member.app)\t\(row.member.host)\t\(row.member.project)\t\(row.member.sessionID)\t\(routes)\t\(row.tmux)\t\(row.live)\t\(model)\t\(mode)\t\(row.state)"
             }
-            var out = ["NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES\tTMUX\tLIVE\tMODEL\tSTATE"] + lines
+            var out = ["NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES\tTMUX\tLIVE\tMODEL\tMODE\tSTATE"] + lines
             let tableNames = Set(members.map(\.name))
             out.append(contentsOf: groupedAttentionLines(relay.activeAttention(), at: moment, filterMembers: tableNames))
             return ok(out.joined(separator: "\n"))
@@ -353,7 +378,7 @@ public enum LightCommands {
             guard let app = argv.option("app"),
                   let name = argv.option("name"),
                   let finalDir = dir, !finalDir.isEmpty else {
-                return usage("pharos member launch --app codex|agy --name N (--dir D | --project P) [--host H] [--model M] [--tmux SESSION] [--message TEXT] [--auto-revive] [--json]")
+                return usage("pharos member launch --app codex|agy --name N (--dir D | --project P) [--host H] [--model M] [--tmux SESSION] [--safe] [--mode safe|yolo] [--message TEXT] [--auto-revive] [--json]")
             }
             guard let agents else {
                 return LightCLIResult(exitCode: 1, text: "error: member launch needs live CLI access (PHAROS_LIGHT_LIVE=1)")
@@ -366,6 +391,10 @@ public enum LightCommands {
             let model = argv.option("model")
             let tmuxSession = argv.option("tmux")
             let message = argv.option("message")
+            let mode = argv.flag("safe") ? "safe" : (argv.option("mode") ?? "yolo")
+            guard mode == "safe" || mode == "yolo" else {
+                return LightCLIResult(exitCode: 2, text: "error: invalid mode '\(mode)' (expected safe or yolo)")
+            }
 
             let validatedName = try LightRelay.validateName(name)
             _ = try LightRelay.validateProject(project)
@@ -382,8 +411,10 @@ public enum LightCommands {
                 model: model,
                 tmuxSession: tmuxSession,
                 openingMessage: message,
-                project: project
+                project: project,
+                mode: mode
             )
+            member.tmux?.permissionMode = mode
             if argv.flag("auto-revive") {
                 member.tmux?.autoRevive = true
             }
@@ -491,6 +522,11 @@ public enum LightCommands {
                 project = last.isEmpty ? "default" : last
             }
 
+            let mode = argv.flag("safe") ? "safe" : (argv.option("mode") ?? "yolo")
+            guard mode == "safe" || mode == "yolo" else {
+                return LightCLIResult(exitCode: 2, text: "error: invalid mode '\(mode)' (expected safe or yolo)")
+            }
+
             var member = try agents.adopt(
                 name: validatedName,
                 app: app,
@@ -500,8 +536,10 @@ public enum LightCommands {
                 model: argv.option("model"),
                 tmuxSession: argv.option("tmux"),
                 project: project,
-                autoRevive: argv.flag("auto-revive")
+                autoRevive: argv.flag("auto-revive"),
+                mode: mode
             )
+            member.tmux?.permissionMode = mode
             if argv.flag("auto-revive") {
                 member.tmux?.autoRevive = true
             }
@@ -542,7 +580,7 @@ public enum LightCommands {
             return ok("stopped \(name) (\(how)); revive with: pharos member revive \(name)")
         case "set":
             guard let name = argv.positional.dropFirst().first else {
-                return usage("pharos member set N --auto-revive on|off")
+                return usage("pharos member set N [--auto-revive on|off] [--mode safe|yolo]")
             }
             guard let member = relay.member(named: name) else {
                 throw LightRelayError.unknownMember(name)
@@ -550,22 +588,34 @@ public enum LightCommands {
             guard var binding = member.tmux else {
                 return LightCLIResult(exitCode: 1, text: "error: member \(name) has no tmux binding")
             }
-            guard let raw = argv.option("auto-revive") else {
-                return usage("pharos member set N --auto-revive on|off")
+            var changes: [String] = []
+            if let rawAuto = argv.option("auto-revive") {
+                let val: Bool
+                switch rawAuto.lowercased() {
+                case "on", "true", "1", "yes": val = true
+                case "off", "false", "0", "no": val = false
+                default:
+                    return usage("pharos member set N [--auto-revive on|off] [--mode safe|yolo]")
+                }
+                binding.autoRevive = val
+                changes.append("auto-revive \(val ? "on" : "off")")
             }
-            let val: Bool
-            switch raw.lowercased() {
-            case "on", "true", "1", "yes": val = true
-            case "off", "false", "0", "no": val = false
-            default:
-                return usage("pharos member set N --auto-revive on|off")
+            if let rawMode = argv.option("mode") {
+                let m = rawMode.lowercased()
+                guard m == "safe" || m == "yolo" else {
+                    return usage("pharos member set N [--auto-revive on|off] [--mode safe|yolo]")
+                }
+                binding.permissionMode = m
+                changes.append("mode \(m)")
             }
-            binding.autoRevive = val
+            if changes.isEmpty {
+                return usage("pharos member set N [--auto-revive on|off] [--mode safe|yolo]")
+            }
             try relay.updateTmux(member: name, binding)
             var updated = member
             updated.tmux = binding
             if argv.flag("json") { return json(updated) }
-            return ok("set \(name) auto-revive \(val ? "on" : "off")")
+            return ok("set \(name) \(changes.joined(separator: ", "))")
         case "revive":
             guard let name = argv.positional.dropFirst().first else {
                 return usage("pharos member revive N [--json]")
@@ -671,8 +721,48 @@ public enum LightCommands {
             updated.tmux = newBinding
             if argv.flag("json") { return json(updated) }
             return ok("switched \(name) to model \(targetModel) (restarted in tmux \(newBinding.session), resumed \(member.sessionID))")
+        case "mode":
+            let positional = Array(argv.positional.dropFirst())
+            guard let name = positional.first else {
+                return usage("pharos member mode <name> [safe|yolo] [--force] [--json]")
+            }
+            guard let member = relay.member(named: name) else {
+                throw LightRelayError.unknownMember(name)
+            }
+            guard member.tmux != nil else {
+                return LightCLIResult(exitCode: 1, text: "error: member \(name) has no tmux binding")
+            }
+
+            if positional.count < 2 {
+                // Show mode
+                let currentMode = member.tmux?.permissionMode ?? "yolo"
+                if argv.flag("json") {
+                    return json(["member": member.name, "mode": currentMode])
+                } else {
+                    return ok("member: \(member.name)\nmode: \(currentMode)")
+                }
+            }
+
+            guard let agents else {
+                return LightCLIResult(exitCode: 1, text: "error: member mode needs live CLI access (PHAROS_LIGHT_LIVE=1)")
+            }
+
+            let targetMode = positional[1].lowercased()
+            guard targetMode == "safe" || targetMode == "yolo" else {
+                return LightCLIResult(exitCode: 2, text: "error: invalid mode '\(targetMode)' (expected safe or yolo)")
+            }
+
+            var newBinding = try agents.switchMode(member, mode: targetMode, force: argv.flag("force"))
+            newBinding.autoRevive = member.tmux?.autoRevive
+            newBinding.endedReason = nil
+            newBinding.endedAt = nil
+            try relay.updateTmux(member: name, newBinding)
+            var updated = member
+            updated.tmux = newBinding
+            if argv.flag("json") { return json(updated) }
+            return ok("switched \(name) to mode \(targetMode) (tmux \(newBinding.session))")
         default:
-            return usage("pharos member register|list|launch|revive|stop|set|model")
+            return usage("pharos member register|list|launch|revive|stop|set|model|mode")
         }
     }
 
@@ -767,6 +857,7 @@ public enum LightCommands {
             project = last.isEmpty ? "default" : last
         }
 
+        let mode = argv.flag("safe") ? "safe" : (argv.option("mode") ?? "yolo")
         var member = try agents.adopt(
             name: chosenName,
             app: app,
@@ -776,8 +867,10 @@ public enum LightCommands {
             model: argv.option("model"),
             tmuxSession: argv.option("tmux"),
             project: project,
-            autoRevive: argv.flag("auto-revive")
+            autoRevive: argv.flag("auto-revive"),
+            mode: mode
         )
+        member.tmux?.permissionMode = mode
         if argv.flag("auto-revive") {
             member.tmux?.autoRevive = true
         }
@@ -1429,11 +1522,12 @@ extension LightCommands {
       human answers in the agent's own app.
 
     CLI AGENT MEMBERS (tmux-backed codex / agy)
-      pharos member launch --app codex|agy --name N --dir D [--host H] [--model M] [--tmux SESSION] [--message TEXT] [--project P] [--auto-revive] [--json]
+      pharos member launch --app codex|agy --name N --dir D [--host H] [--model M] [--tmux SESSION] [--safe] [--mode safe|yolo] [--message TEXT] [--project P] [--auto-revive] [--json]
       pharos member revive N [--json]
       pharos member stop N [--force] [--json]
-      pharos member set N --auto-revive on|off
+      pharos member set N [--auto-revive on|off] [--mode safe|yolo]
       pharos member model N [<model>] [--force] [--json]
+      pharos member mode N [safe|yolo] [--force] [--json]
       Launches, revives, or stops a tmux-backed CLI agent member. Replies are read from the
       daemon (codex) / transcript (agy). needs_human is report-only.
 
