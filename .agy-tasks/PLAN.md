@@ -125,9 +125,9 @@ Milestone 3 transforms Pharos from a CLI-driven session launcher into a **unifie
 - **Process Hosting Split**:
   - **Codex**: Needs **no tmux** (its daemon is self-managed by Codex / app-server). Pharos connects directly to the shared daemon (`~/.codex/app-server-control/app-server-control.sock` via WebSocket-over-UDS). Uses `turn/start` + `turn/steer`, maps its events, and backfills with `thread/turns/list` after reconnects. Never touches `ipc.sock`. Explicitly designates Pharos as the approval owner.
   - **dsh**:
-    - *UI Direct Chat Path* (chatting with a session in the unified UI): Uses the HTTP/WS port of a `dsh web` Host started with `dsh --profile web --no-open --port <fixed> --host 127.0.0.1`, kept running in a dedicated tmux session and owned by Pharos. The launch token is kept in memory only and never written to disk or logs. Uses `/api/session/*` plus `session/follow` on `/api/remote.mux`.
+    - *UI Direct Chat Path* (chatting with a session in the unified UI): Uses the HTTP/WS port of a `dsh web` Host started with `dsh --profile web --no-open --port 0 --host 127.0.0.1`, kept running in a dedicated tmux session and owned by Pharos. The launch token is kept in memory only and never written to disk or logs. Uses `/api/session/*` plus `session/follow` on `/api/remote.mux`.
     - *Threads Inter-Agent Path* (`dsh-plugin-pharos` plugin): ONLY for dsh replying to and exchanging messages with other agents in Threads (`delivery.poll` -> `agent.followup()` -> `delivery.ack`). It is NOT the UI chat path.
-    - *Adapter Details*: Marked **TBD (Pending Supplementary Research from `rea-dshweb` in `~/brainstorm/collections/research/dsh-web/`)**.
+    - *Adapter Wire Details (Research C finalized)*: Managed Host URL parsed from startup line; `GET /connect?token=...&interactions=answer` exchanges token for cookie (disabling 302 redirects); `/api/remote.mux` multiplexes `session/follow` (`assistantStream: true`), `$events` (waterfall approvals via `POST /api/$events/result`), and `workspace/follow`; prompt turns via `POST /api/session/prompt` (`mode: "queue"` / `"steer"`); turn cancellation via `POST /api/session/cancel`; reconnect gap backfill via `POST /api/session/page`. Cookie lifecycle strictly bound to mux socket (reconnects re-acquire cookie).
   - **agy**: `agy acp` (stdio JSON-RPC) as the primary path. Because it is a stdio child process, the headless Pharos backend daemon holds and supervises it, keeping it independent of SwiftUI client restarts. The tmux TUI stays as the external fallback.
 - **Scope Exclusion**: Headless modes (`dsh --profile headless`, `agy print stream-json`) are explicitly **OUT of M3** and deferred to future milestones.
 
@@ -184,7 +184,7 @@ flowchart TD
     subgraph Adapters ["Tri-Backend Adapters (PharosAgentBackendAdapter)"]
         CodexAd["CodexAdapter<br>(WebSocket-over-UDS to Shared Daemon<br>No tmux needed; self-managed)"]
         AgyAd["AgyAdapter<br>(agy acp Stdio Child held by Backend Daemon<br>Tmux TUI fallback)"]
-        DshAd["DshAdapter [TBD details]<br>(dsh web --no-open in tmux for UI Chat<br>dsh-plugin-pharos for Threads)"]
+        DshAd["DshAdapter<br>(Persistent dsh web Host HTTP/WS in Tmux for UI Chat<br>dsh-plugin-pharos for Threads)"]
     end
 
     UI --> API
@@ -227,11 +227,11 @@ public enum DeliveryGuarantee: String, Sendable, Codable {
 |---|---|---|---|
 | **Member Type** | `codex` | `dsh` (first-class member type) | `agy` |
 | **Hosting Model** | Self-managed shared daemon (`~/.codex/app-server-control/app-server-control.sock`). **No tmux needed**. | Persistent `dsh web --no-open` Host running in **tmux session** (`127.0.0.1:<port>`). In-memory token only. | Stdio child process held by **headless Pharos daemon** (independent of UI restarts). Tmux TUI fallback. |
-| **SESSION: Primary Connection** | WebSocket-over-UDS to shared daemon. Never touch `ipc.sock`. Explicit approval owner. | HTTP/WS port of `dsh web` host in tmux. Token in memory only (never logged). **[TBD pending rea-dshweb]** | `agy acp` (ACP 1.5.0 stdio JSON-RPC) held by backend daemon. |
-| **SESSION: Injection & Steering** | `turn/start` (idle turn), `turn/steer` (mid-turn append/steering). | `POST /api/session/prompt` (queue/steer via web API). | `session/prompt` (supports mid-turn steering/appending). |
-| **SESSION: Reply Streaming** | Real-time `item/agentMessage/delta`, `item/completed`, `turn/completed`. Backfill via `thread/turns/list` on reconnect. | `session/follow` on `/api/remote.mux` real-time WebSocket stream. | Real-time `session/update` chunks and `session/prompt` stopReason. |
-| **SESSION: Approvals (`needs_human`)** | In-memory `waitingOnApproval` via `thread/status/changed`; Pharos answers approvals (`ApprovalBroker` single lease). | Approvals / user questions answered via web API (`userQuestions/answer`). | ACP `session/request_permission` forwards to UI; user decision sent back. |
-| **SESSION: Model Switching** | Graceful restart fallback (`/quit` -> wait -> `codex resume -m <model>`). | Web API `session/control` (`selectModel`); audit trail in `model/selection`. | In-session hot swap via ACP `session/set_config_option` from dynamic `configOptions`. |
+| **SESSION: Primary Connection** | WebSocket-over-UDS to shared daemon. Never touch `ipc.sock`. Explicit approval owner. | HTTP/WS to `dsh web` host in tmux (`127.0.0.1:<port>`). In-memory token; `GET /connect?token=...&interactions=answer` acquires cookie; connects to `/api/remote.mux`. | `agy acp` (ACP 1.5.0 stdio JSON-RPC) held by backend daemon. |
+| **SESSION: Injection & Steering** | `turn/start` (idle turn), `turn/steer` (mid-turn append/steering). | `POST /api/session/prompt` (`mode: "queue"` for turns, `mode: "steer"` for mid-turn steering). | `session/prompt` (supports mid-turn steering/appending). |
+| **SESSION: Reply Streaming** | Real-time `item/agentMessage/delta`, `item/completed`, `turn/completed`. Backfill via `thread/turns/list` on reconnect. | Real-time `session/follow` (`assistantStream: true`) on `/api/remote.mux` (`text-delta`, `reasoning-delta`). Snapshot + `session/page` gap backfill. | Real-time `session/update` chunks and `session/prompt` stopReason. |
+| **SESSION: Approvals (`needs_human`)** | In-memory `waitingOnApproval` via `thread/status/changed`; Pharos answers approvals (`ApprovalBroker` single lease). | `$events` mux stream receives `approval/request` waterfall; operator answers via `POST /api/$events/result` (`allowed-once` / `rejected`). | ACP `session/request_permission` forwards to UI; user decision sent back. |
+| **SESSION: Model Switching** | Graceful restart fallback (`/quit` -> wait -> `codex resume -m <model>`). | `POST /api/session/selectModel` (`sessionId, provider, model`); durable audit in `model/selection`. | In-session hot swap via ACP `session/set_config_option` from dynamic `configOptions`. |
 | **THREAD: Delivery Primitive** | Mailbox delivers via same daemon connection with `turn/start` into member's own thread. | `dsh-plugin-pharos` in-process delivery loop (`delivery.poll` -> `agent.followup()` -> `delivery.ack`). | Mailbox delivers over same ACP connection into member's session (or tmux keystroke fallback). |
 | **THREAD: Reply & Receipts** | On `turn/completed`, captures final turn reply, posts back to thread plus delivery receipt. | Plugin emits `session/event` (`turn/end`), completes `delivery.ack`, posts reply back to thread + receipt. | On completion, captures final reply, posts back to thread plus delivery receipt. |
 | **THREAD: Token Streaming** | **Not required**. Delivers completed final message to thread. | **Not required**. Delivers completed final message to thread. | **Not required**. Delivers completed final message to thread. |
@@ -328,16 +328,25 @@ flowchart TD
 **Matrix Rows Delivered**:
 - **Codex**: `CX-SES-01` (discover), `CX-SES-02` (status), `CX-SES-03` (create), `CX-SES-04` (resume), `CX-SES-05` (send), `CX-SES-06` (steer), `CX-SES-07` (streaming), `CX-SES-08` (readback), `CX-SES-09` (interrupt), `CX-SES-10` (approvals), `CX-SES-11` (model), `CX-SES-12` (yolo), `CX-SES-13` (receipts), `CX-SES-14` (backfill), `CX-SES-16` (project-cwd).
 - **Antigravity**: `AG-SES-01` (discover), `AG-SES-02` (status), `AG-SES-03` (create), `AG-SES-04` (resume), `AG-SES-05` (send), `AG-SES-06` (steer), `AG-SES-07` (streaming), `AG-SES-08` (readback), `AG-SES-09` (interrupt), `AG-SES-10` (approvals), `AG-SES-11` (model), `AG-SES-12` (yolo), `AG-SES-13` (receipts), `AG-SES-14` (backfill), `AG-SES-16` (project-cwd).
-- **DSH**: `DS-SES-01` (discover), `DS-SES-02..13` (TBD pending `rea-dshweb`), `DS-SES-14` (backfill), `DS-SES-16` (workspace), and `DS-THD-05`, `DS-THD-08`, `DS-THD-10`, `DS-THD-13` (in-process plugin loop).
+- **DSH**: `DS-SES-01` (discover), `DS-SES-02` (live-status), `DS-SES-03` (create), `DS-SES-04` (resume), `DS-SES-05` (send), `DS-SES-06` (steer), `DS-SES-07` (streaming), `DS-SES-08` (readback), `DS-SES-09` (interrupt), `DS-SES-10` (approvals), `DS-SES-11` (model), `DS-SES-12` (permission-mode), `DS-SES-13` (receipts), `DS-SES-14` (backfill), `DS-SES-16` (workspace), and `DS-THD-01..17` (Threads roster via `dsh-plugin-pharos` delivery loop).
 
 - **Scope**:
   - Refactor backend runtime into unified adapter subsystem under `Sources/PharosRuntime/Adapters/`:
     - `CodexAdapter`: Connects directly to the shared daemon via WebSocket-over-UDS (`~/.codex/app-server-control/app-server-control.sock`). Needs **no tmux** (the Codex daemon is self-managed). Implements `thread/start`, `thread/resume` multi-client subscription, `turn/start` + `turn/steer` (idle and mid-turn steering), streaming deltas (`item/agentMessage/delta`), and `thread/turns/list` backfill after reconnects. Never touches `ipc.sock`. Explicitly designates Pharos as the approval owner (`ApprovalBroker` single-lease coordinator) to resolve first-response-wins races.
     - `AgyAdapter`: Held and supervised by the headless Pharos backend daemon as a long-running `agy acp` stdio child process (client UI quits/restarts do not affect it). Implements ACP 1.5.0 stdio JSON-RPC (`session/new`, `session/prompt`, `session/update`, `session/request_permission`, `session/set_config_option`). Retains Attached read-only supervisor (`flock` on `presence/<id>.lock` + `transcript.jsonl` tailing) and tmux TUI as external fallback.
-    - `DshAdapter` (**TBD — Detailed Web API Mechanics Pending Supplementary Research `rea-dshweb`**):
-      - *UI Chat Path*: Pharos spawns and owns a dedicated `dsh web` host running inside a tmux session (`dsh --profile web --no-open --port <fixed> --host 127.0.0.1`). The launch token is captured from stdout into memory only and is never logged or written to disk. Communicates over `/api/session/*` plus `session/follow` on `/api/remote.mux`.
-      - *Threads Inter-Agent Path*: `dsh-plugin-pharos 0.2.0` (in-process Cordis plugin) connects to Pharos Runtime socket and runs the `delivery.poll` -> `agent.followup()` -> `delivery.ack` loop. Used **strictly for dsh replying to and exchanging messages with other agents in Threads**—it is NOT the UI chat path.
-      - *Research Pending*: Full endpoint schemas, follow stream formats, and token lifecycle details will be finalized once the supplementary research (`rea-dshweb` in `~/brainstorm/collections/research/dsh-web/`) is handed over by the PM.
+    - `DshAdapter` (Persistent `dsh web` Host HTTP/WS + in-process `dsh-plugin-pharos`):
+      - *UI Chat Path (Session)*: Pharos spawns and owns a dedicated `dsh web` host running inside a tmux session (`dsh --profile web --no-open --port 0 --host 127.0.0.1`).
+        - **Readiness & Token Discovery**: Captures stdout line `^dsh web: (http://127.0.0.1:(\d+)/\?token=(\S+))$` to discover dynamic port and raw token directly into volatile memory (token is never written to disk or logs; buffer cleared immediately).
+        - **Auth & Cookie Lifecycle**: URLSession disables HTTP redirection on `GET /connect?token=<token>&interactions=answer` to extract `Set-Cookie: dsh-auth-<hash>=v2...`. Note that closing the mux WebSocket destroys the Peer on the Host and immediately invalidates the cookie (PIT-DS-07); reconnecting executes a fresh `/connect` using the in-memory token.
+        - **WebSocket Multiplexing (`/api/remote.mux`)**: `URLSessionWebSocketTask` connects with cookie header; multiplexes text-based frames (`open`, `item`, `end`, `cancel`). Streams:
+          - `session/follow` with `assistantStream: true`: provides incremental real-time token deltas (`text-delta`, `reasoning-delta`). Reconnects consume fresh snapshot and backfill missing sequence gaps via `POST /api/session/page`.
+          - `$events`: delivers agent-scoped `approval/request` waterfalls; answered via `POST /api/$events/result` (`allowed-once` / `rejected`).
+          - `workspace/follow`: consumes baseline frame for workspace discovery (replaces non-existent `workspace/list`).
+        - **Turn Injection & Steering**: Turn prompts sent via unary `POST /api/session/prompt` with `mode: "queue"`. Mid-turn user steering injected via `mode: "steer"` (consumed at next step).
+        - **Interruption & Control**: Turn cancellation via `POST /api/session/cancel` with `{sessionId}` (`session/control` is a read-only projection stream).
+        - **Model Selection**: `POST /api/session/selectModel` with `{sessionId, provider, model}` validated against `session/modelCatalog`.
+        - **Process Supervisor**: Managed process terminated via `SIGTERM` (exit code 0; avoids SIGINT exit 130).
+      - *Threads Inter-Agent Path (Thread)*: `dsh-plugin-pharos 0.2.0` (in-process Cordis plugin) connects to Pharos Runtime socket and runs the `delivery.poll` -> `agent.followup()` -> `delivery.ack` loop. Used **strictly for dsh replying to and exchanging messages with other agents in Threads**—it is NOT the UI chat path.
   - Introduce `BackendCapabilityRegistry` mapping member types to declared capabilities.
   - Scope Exclusion: Headless modes (`dsh --profile headless`, `agy print stream-json`) are explicitly **OUT of M3** and deferred to post-M3.
   - Ensure all known CLI defects documented in `docs/PITFALLS.md` are handled with appropriate workarounds.
@@ -392,7 +401,7 @@ flowchart TD
 **Matrix Rows Delivered**:
 - **Codex**: `CX-SES-01` (discover), `CX-SES-02` (status), `CX-SES-05` (send), `CX-SES-06` (steer), `CX-SES-07` (streaming), `CX-SES-08` (readback), `CX-SES-09` (interrupt), `CX-SES-10` (approvals), `CX-SES-13` (receipts), `CX-SES-14` (backfill), `CX-SES-15` (cross-machine).
 - **Antigravity**: `AG-SES-01` (discover), `AG-SES-02` (status), `AG-SES-05` (send), `AG-SES-06` (steer), `AG-SES-07` (streaming), `AG-SES-08` (readback), `AG-SES-09` (interrupt), `AG-SES-10` (approvals), `AG-SES-13` (receipts), `AG-SES-14` (backfill), `AG-SES-15` (cross-machine).
-- **DSH**: `DS-SES-01` (discover), `DS-SES-02..10` (TBD pending `rea-dshweb`), `DS-SES-13` (receipts), `DS-SES-14` (backfill), `DS-SES-15` (cross-machine).
+- **DSH**: `DS-SES-01` (discover), `DS-SES-02` (live-status), `DS-SES-03` (create), `DS-SES-04` (resume), `DS-SES-05` (send), `DS-SES-06` (steer), `DS-SES-07` (streaming), `DS-SES-08` (readback), `DS-SES-09` (interrupt), `DS-SES-10` (approvals), `DS-SES-13` (receipts), `DS-SES-14` (backfill), `DS-SES-15` (cross-machine).
 
 - **Design**:
   - **Left Pane — `Sessions` Tab**:
@@ -403,7 +412,7 @@ flowchart TD
     - Human composer at bottom: multi-line expandable input with syntax highlight, file drop, and Send button (`Enter` to send, `Shift+Enter` for newline).
   - **Central Service Routing & Injection**:
     - `Codex`: Routes directly to shared daemon via WebSocket-over-UDS (`app-server-control.sock`). Injects via `turn/start` (idle) or `turn/steer` (mid-turn). Reconnect backfill via `thread/turns/list`. Pharos acts as explicit approval owner.
-    - `dsh`: Routes to persistent `dsh web --no-open` Host running in tmux (`127.0.0.1:<port>`). Injects via `POST /api/session/prompt` (queue/steer); subscribes to live token stream via `session/follow` on `/api/remote.mux`; handles approvals and model selection via web API. Launch token kept in memory only. **[TBD details pending rea-dshweb]**
+    - `dsh`: Routes to persistent `dsh web --no-open` Host running in tmux (`127.0.0.1:<port>`). Injects via unary `POST /api/session/prompt` (`mode: "queue"` for new turns, `mode: "steer"` for mid-turn steering); subscribes to incremental token deltas (`text-delta`, `reasoning-delta`) via `session/follow` (`assistantStream: true`) on `/api/remote.mux`; resolves `approval/request` waterfalls via `POST /api/$events/result`; cancels active turns via `POST /api/session/cancel`; switches models via `POST /api/session/selectModel`. Launch token kept in volatile memory only (never written to disk or logs); reconnects issue a fresh `/connect` to re-acquire cookie.
     - `agy`: Routes to `agy acp` (stdio JSON-RPC) long-running child held by headless Pharos backend daemon. Injects via `session/prompt` (supports mid-turn append/steering); receives streaming chunks via `session/update`; forwards interactive approvals via `session/request_permission`; switches models dynamically via `session/set_config_option`. Tmux TUI fallback.
   - **Live Token Streaming & Approval Dialogs**:
     - Real-time token deltas render live in streaming chat bubbles (`item/agentMessage/delta`, `session/update`, `session/follow`).
@@ -424,7 +433,7 @@ flowchart TD
     2. Select local `agy` session: send prompt; verify live token streaming; submit mid-turn steer; verify approval resolution.
     3. Select local `dsh` session: send prompt; verify web API follow stream; verify launch token remains volatile in memory only (never written to disk or logs).
   - *Cross-host (mini <-> Air)*: Select remote agent session on Air from mini UI; type message; verify message dispatches to Air's Pharos node, executes locally on Air, and streams live tokens back to mini UI.
-  - *Matrix Verification*: Flips rows `CX-SES-05..10`, `AG-SES-05..10`, and `DS-SES-05..10` from `untested`/`TBD` to `supported` with live streaming logs.
+  - *Matrix Verification*: Flips rows `CX-SES-05..10`, `AG-SES-05..10`, and `DS-SES-05..10` to `supported` with live streaming logs.
 - **Risks & Mitigations**:
   - *Risk*: TUI ANSI escape codes or control characters corrupting chat bubbles.
   - *Mitigation*: Robust ANSI strip and sanitize filter in presentation layer; preferred use of structured JSON streams over terminal capture.
@@ -565,7 +574,7 @@ The legacy SwiftUI views (`DashboardView`, `ProjectDetailView`, `MeshRoomView`, 
 2. **Phase 2: Tri-Backend Adapters & Capability Engine**
    - `CodexAdapter` (WebSocket-over-UDS shared daemon client; no tmux needed; approval owner).
    - `AgyAdapter` (ACP stdio supervisor held by Pharos backend daemon; tmux TUI fallback).
-   - `DshAdapter` (Pharos-managed `dsh web --no-open` in tmux for UI chat + `dsh-plugin-pharos` delivery loop for Threads inter-agent chat; **web API details TBD pending `rea-dshweb` research**).
+   - `DshAdapter` (Pharos-managed persistent `dsh web --no-open` in tmux for UI chat using `/api/remote.mux` HTTP/WS + `dsh-plugin-pharos` delivery loop for Threads inter-agent chat).
    - Elevation of `dsh` as third first-class member type across CLI and mesh.
    - Headless modes (`dsh --profile headless`, `agy print stream-json`) deferred to post-M3.
 3. **Phase 3: Grok-Bot Client Shell & Design Tokens**

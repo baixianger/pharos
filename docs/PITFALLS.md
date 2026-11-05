@@ -242,3 +242,153 @@ Each entry: CLI + version, symptom, repro, impact on Pharos, workaround (if any)
 - **Impact on Pharos**: Multi-agent thread collaboration hangs on idle dsh sessions.
 - **Workaround**: Use the RFC-003 Agent Runtime socket delivery loop (`delivery.poll` -> `agent.followup()` -> `delivery.ack`) to proactively wake the container on incoming thread mail.
 - **Upstream status**: Configuration default in web profile.
+
+---
+
+### DeepSeek Harness: API cookie and mux socket coupled lifecycle (socket close immediately invalidates cookie with 401)
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: The authentication cookie `dsh-auth-<authority-hash>=v2...` issued by `GET /connect` is strictly coupled to the active multiplexed WebSocket connection. As soon as the `/api/remote.mux` WebSocket closes, the Host destroys the client Peer object. All subsequent unary HTTP requests (`POST /api/*`) bearing that cookie immediately fail with HTTP 401 Unauthorized, and attempting to open a second WebSocket with the same cookie is rejected with HTTP 409 Conflict.
+- **Repro**: Call `GET /connect?token=...` -> open `/api/remote.mux` -> invoke `POST /api/session/list` (200 OK) -> close WebSocket -> invoke `POST /api/session/list` again -> returns HTTP 401 Unauthorized.
+- **Impact on Pharos**: Any naive reconnection or connection-pooling logic that reuses cached cookies across disconnects will permanently fail with 401.
+- **Workaround**: Retain the raw startup token in volatile memory. Whenever the WebSocket closes or errors out, discard the old cookie and execute a fresh `GET /connect?token=<token>&interactions=answer` handshake to obtain a new Peer and cookie before opening a new WebSocket.
+- **Upstream status**: By design in `dsh-client-connection` (peer lifecycle is tied to the primary API connection socket).
+
+---
+
+### DeepSeek Harness: `interactions=none` hangs approval requests indefinitely without timeout
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: When connecting via `GET /connect?interactions=none`, attempting to open the `$events` logical stream returns `gateway/interactions-forbidden`. If an agent invokes a tool requiring interactive permission (e.g., shell command in `danger-full-access` mode), the Host records `approval/asked` in session logs but never emits `approval/decided`, never completes the tool call, and hangs the turn indefinitely (observed hanging > 7 seconds with zero timeout or fail-closed abort).
+- **Repro**: Connect with `interactions=none`, submit prompt that triggers an interactive approval tool, observe `session/follow` stream.
+- **Impact on Pharos**: Headless or passive connections that fail to register as interactive answerers hang active turns and freeze the UI in a perpetual "busy" state.
+- **Workaround**: Always connect using `interactions=answer` and open the `$events` logical stream on the mux WebSocket. The adapter must actively monitor the `$events` stream and resolve incoming `approval/request` events via `POST /api/$events/result` (or automatically reject them if no operator UI is attached).
+- **Upstream status**: Web Host interactive answerer waterfall design (lacks server-side fail-closed timeout).
+
+---
+
+### DeepSeek Harness: Approvals use `$events` waterfall and `POST /api/$events/result` (not `approval/*` or `userQuestions/answer`)
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: There are no `/api/approval/*` RPC endpoints in the web Host (calling them returns 404). Calling `POST /api/userQuestions/answer` during an active tool approval request fails or has no effect because `userQuestions/answer` is exclusively designed for timed questionnaire prompts in projection state `state: "continued"`.
+- **Repro**: Attempt to invoke `/api/approval/answer` or invoke `userQuestions/answer` while an agent is paused on a tool permission check.
+- **Impact on Pharos**: Attempting to resolve approvals via `userQuestions/answer` or non-existent approval endpoints leaves approvals unanswered and hangs the turn.
+- **Workaround**: Interactive approvals arrive as agent-scoped waterfalls over the `$events` mux stream (`approval/request`). The adapter resolves them by submitting `POST /api/$events/result` with body `{"clientId": "...", "eventId": "...", "outcome": {"kind": "result", "value": "allowed-once" | "rejected"}}`.
+- **Upstream status**: By design (Agent-scoped Remote Event waterfall protocol).
+
+---
+
+### DeepSeek Harness: `session/control` is a read-only projection stream (not interrupt/model-switch)
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: `session/control` takes zero request parameters and cannot be used to interrupt turns or switch models. Sending action payloads (`{action: "interrupt"}`) to `POST /api/session/control` fails with `gateway/arguments-invalid`. Opening `session/control` as a stream returns `{type: "baseline"}` and `{type: "projection"}` live feeds.
+- **Repro**: Send `{"action": "interrupt"}` to `POST /api/session/control`.
+- **Impact on Pharos**: Mid-turn turn cancellation and model switching fail if routed to `session/control`.
+- **Workaround**: To cancel/interrupt an in-flight turn, call unary RPC `POST /api/session/cancel` with payload `{"sessionId": "<id>"}`. To switch the active model, call `POST /api/session/selectModel` with `{"sessionId": "<id>", "provider": "<provider>", "model": "<model>"}`.
+- **Upstream status**: By design (`session/control` is a live projection feed).
+
+---
+
+### DeepSeek Harness: `session/follow` lacks resume cursor (reconnection requires new snapshot and `session/page`)
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: The `session/follow` multiplexed stream accepts parameters `address`, `assistantStream`, `maxMessages`, and `turnWindow`, but does NOT accept any resume cursor (`cursor`, `afterSeq`, or `Last-Event-ID`). Opening a new follow stream always transmits a fresh initial `snapshot` bounded by `maxMessages` (default 50).
+- **Repro**: Execute multiple conversation turns exceeding 50 messages, close the WebSocket, re-open `session/follow`. The snapshot only includes recent messages, and earlier turns between the disconnect and reconnect are omitted.
+- **Impact on Pharos**: Simply appending follow stream events across reconnects can miss message turns or cause gaps in conversation history.
+- **Workaround**: Maintain the highest processed durable `event.seq`. Upon reconnect, inspect the newly received `snapshot.cursor` and records. Deduplicate known `seq` items, and backfill any missing sequence range using paginated unary calls to `POST /api/session/page` with arguments `{"throughSeq": snapshot.cursor, "beforeSeq": lastProcessedSeq + 1, "maxMessages": 50}`.
+- **Upstream status**: By design (RemoteJournalStream snapshot semantics).
+
+---
+
+### DeepSeek Harness: Duplicate `streamId` closes entire mux WebSocket (code 1008)
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: Sending an `open` frame on `/api/remote.mux` containing a `streamId` that is already active on the same WebSocket causes the Host to immediately close the entire underlying WebSocket with status code 1008 and reason `invalid Remote stream request`.
+- **Repro**: Send `{"type": "open", "streamId": "s1", ...}` followed by a second `open` frame with `"streamId": "s1"`.
+- **Impact on Pharos**: A bug in client stream ID generation drops all concurrent streams (including active chat sessions, approvals, and workspace monitors) across the entire application.
+- **Workaround**: Generate cryptographically unique UUIDs for every logical stream; track active streams in a client registry, and ensure an explicit `cancel` or `end` frame is processed before retiring or reusing stream identifiers.
+- **Upstream status**: Protocol requirement in `/api/remote.mux` framing engine.
+
+---
+
+### DeepSeek Harness: `printUrl: false` makes web Host unattachable with no CLI override
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: If the web profile's `cordis.patch.yml` sets `printUrl: false`, launching `dsh --profile web` will not print the `dsh web: http://127.0.0.1:<port>/?token=...` startup line to stdout. The CLI has no command-line override flag (`--print-url`), and the token is never persisted to disk.
+- **Repro**: Add `printUrl: false` to profile configuration; launch `dsh --profile web --no-open`. Process starts but prints nothing to stdout.
+- **Impact on Pharos**: Pharos cannot capture the authentication token or discover the bound port, rendering the web Host completely unattachable.
+- **Workaround**: Pharos ensures its managed profile configuration maintains `printUrl: true` (or omits the override to retain default true). The supervisor process applies a 15-second timeout on initial launch; if no URL line appears, it kills the process with SIGKILL and reports a configuration fault.
+- **Upstream status**: Configuration behavior by design.
+
+---
+
+### DeepSeek Harness: `--port 0` assigns OS port discoverable only in stdout URL line
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: Passing `--port 0` to `dsh --profile web` dynamically binds an ephemeral OS port. The allocated port is not written to any PID file, socket path, or environment variable.
+- **Repro**: Launch `dsh --profile web --no-open --port 0 --host 127.0.0.1`; the actual bound port differs from 0.
+- **Impact on Pharos**: Attempting to connect before parsing stdout or guessing the port causes connection errors.
+- **Workaround**: For ephemeral instances, parse the dynamically allocated port directly from the stdout startup line regex `^dsh web: http://127.0.0.1:(\d+)/\?token=(\S+)$`. For long-running managed instances, use an explicitly allocated port discovered via port pre-check.
+- **Upstream status**: Standard OS ephemeral port allocation.
+
+---
+
+### DeepSeek Harness: `SIGINT` exits with code 130 instead of graceful shutdown
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: Sending `SIGINT` (Ctrl-C) to a running web Host causes the Node.js runtime to terminate with exit code 130 without performing full cleanup. Sending `SIGTERM` cleanly terminates the process with exit code 0 within ~60–350 ms, closing listening sockets and releasing file locks.
+- **Repro**: Execute `kill -INT <pid>` vs `kill -TERM <pid>`.
+- **Impact on Pharos**: Supervisors inspecting exit codes will classify `SIGINT` as an abnormal crash and may trigger unwanted crash recovery loops.
+- **Workaround**: Supervisors must always use `SIGTERM` for graceful shutdown, awaiting termination for up to 2 seconds before escalating to `SIGKILL`. Never send `C-c` keystrokes to the underlying tmux pane.
+- **Upstream status**: Standard Node.js signal handling convention.
+
+---
+
+### DeepSeek Harness: `session/create` with existing `sessionId` silently spawns a new session
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: Invoking `POST /api/session/create` passing an already existing or non-blank `sessionId` does not return an error or resume the session; instead, it generates and returns a completely new session with a different `sessionId`.
+- **Repro**: Create session `A`, send a prompt turn, then call `session/create` passing `{"sessionId": "A", ...}`. The returned session ID is `B` (where `B != A`).
+- **Impact on Pharos**: Treating `session/create` as an idempotent "get-or-create" or session resume operation silently discards conversation history and creates zombie sessions.
+- **Workaround**: Use `session/create` strictly when initiating brand-new sessions. To re-attach to an existing session, directly invoke `session/follow` or `session/prompt` (the Host automatically resumes existing sessions from disk).
+- **Upstream status**: By design in session factory reuse policy.
+
+---
+
+### DeepSeek Harness: Secondary Host encounters `session/writer-held`; released only on process termination
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: Each active session is locked via an exclusive flock on `~/.dsh/storages/session_projcache/sessions/<id>.v4.session.lock`. If a second `dsh web` host attempts to send a prompt to an active session held by the first host, the request fails with error code `session/writer-held`. If the first host crashes or is killed via `SIGKILL`, the `.lock` file remains on disk, but the kernel immediately releases the advisory flock, allowing a new host to resume the session immediately.
+- **Repro**: Launch Host A and prompt session `S`. Launch Host B under the same `DSH_HOME` and prompt session `S` -> fails with `session/writer-held`. Kill Host A (`kill -9`) -> Host B immediately succeeds on prompt.
+- **Impact on Pharos**: Pharos cannot run multiple concurrent web hosts accessing the same session; however, crash recovery does not require manual lock file deletion.
+- **Workaround**: Enforce a single Pharos-managed Host instance per machine. If the host terminates, a newly spawned host can take over sessions without deleting `.lock` files.
+- **Upstream status**: Advisory kernel flock design.
+
+---
+
+### DeepSeek Harness: No `workspace/list` endpoint and `session/list` lacks cwd filter or pagination
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: Calling `POST /api/workspace/list` returns 404 Not Found. Calling `POST /api/session/list` with parameters like `cwd` or `workspaceId` ignores those arguments and returns the full global session array; passing `cursor` does not paginate and does not return `nextCursor`.
+- **Repro**: Call `/api/workspace/list` or inspect argument descriptors in `lib/typert.host.js`.
+- **Impact on Pharos**: Attempting to fetch workspace lists or paginate session queries via server-side filters fails.
+- **Workaround**: To obtain registered workspaces, open the `workspace/follow` stream and consume its initial baseline frame before closing the stream. For sessions, fetch the full inventory via `POST /api/session/list` and perform client-side filtering by `cwd` and sorting by `updatedAt`.
+- **Upstream status**: Protocol design (`workspace` is a live follow stream; `session/list` is a host-wide snapshot).
+
+---
+
+### DeepSeek Harness: Host/Origin DNS rebinding fence and authority-bound cookies
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: The web Host strictly validates the `Host` and `Origin` headers against allowed authorities (`127.0.0.1:<port>`). If requests originate with external origins or missing port numbers (`Host: 127.0.0.1` without port), the request returns HTTP 403 Forbidden. Furthermore, the authentication cookie is bound to the authority hash; accessing via `localhost:<port>` using a cookie issued for `127.0.0.1:<port>` returns HTTP 401 Unauthorized.
+- **Repro**: Issue `GET /connect` against `127.0.0.1:<port>`, then make a request with `Host: localhost:<port>` carrying the issued cookie -> 401 Unauthorized.
+- **Impact on Pharos**: Switching between `localhost` and `127.0.0.1`, or omitting the port in client HTTP headers, causes abrupt authentication failures.
+- **Workaround**: The client URLSession must consistently address the host using the exact authority string (`127.0.0.1:<port>`) for all requests (`/connect`, unary RPC, and `/api/remote.mux`).
+- **Upstream status**: Security protection against DNS rebinding and cross-origin hijacking.
+
+---
+
+### DeepSeek Harness: `$events` ordinary emit notifications do not replay (only pending waterfalls replay)
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: Ephemeral notifications on `$events` (such as `api-session/status`, `api-session/added`, `api-session/activity`) are fire-and-forget; if the client is disconnected when an event is emitted, it is permanently lost. However, unresolved approval requests (`approval/request` waterfalls) remain pending on the Host and ARE replayed to answering clients upon reconnection.
+- **Repro**: Disconnect WebSocket, trigger session status change, reconnect `$events`; status emit is not received. Trigger approval while disconnected, reconnect; pending approval is immediately replayed.
+- **Impact on Pharos**: Relying solely on emit notifications leads to stale session lists and status states after connection drops.
+- **Workaround**: Upon reconnecting, always execute a full `POST /api/session/list` query to re-baseline session states. Handle approvals reactively as replayed waterfalls.
+- **Upstream status**: By design (best-effort notification vs durable approval lifecycle).
+
+---
+
+### DeepSeek Harness: `assistant-stream` revision is attempt-scoped (not a global message sequence ID)
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: In `session/follow` with `assistantStream: true`, the `revision` number on `start` and `chunk` frames starts at 1 and increments within a single turn attempt. If a turn involves multiple steps (e.g. after a steering message) or if the stream reconnects, `revision` resets back to 1.
+- **Repro**: Observe `revision` field in `assistant-stream` frames across multi-step turns.
+- **Impact on Pharos**: Using `revision` as a unique message identifier or global sorting key causes message collision and disordered transcripts.
+- **Workaround**: Identify streaming chunks using `attemptId + index` for real-time bubble animation. Use durable journal events (`event.seq`) as canonical message identifiers, and treat `assistant/message` as the ground-truth final message content.
+- **Upstream status**: By design in ephemeral presentation stream.
