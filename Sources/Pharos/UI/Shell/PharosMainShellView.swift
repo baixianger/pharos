@@ -24,6 +24,9 @@ public struct PharosMainShellView: View {
     // 1:1 Direct Agent Session View Model
     @State private var sessionViewModel: SessionConversationViewModel?
 
+    // Multi-Agent Thread View Model (RFC-006 §2, §5)
+    @State private var threadViewModel: ThreadConversationViewModel?
+
     // Active session metadata & composer state
     @State private var composerText: String = ""
     @State private var isSteeringMode: Bool = false
@@ -93,6 +96,15 @@ public struct PharosMainShellView: View {
                     Task { await vm.loadHistory() }
                 } else {
                     self.sessionViewModel = nil
+                }
+            }
+            .onChange(of: selectedThreadId) { _, newId in
+                if let id = newId {
+                    let vm = ThreadConversationViewModel(threadId: id, clientService: clientService)
+                    self.threadViewModel = vm
+                    Task { await vm.loadThreadData() }
+                } else {
+                    self.threadViewModel = nil
                 }
             }
         }
@@ -168,7 +180,7 @@ public struct PharosMainShellView: View {
             },
             turns: sessionViewModel?.turns ?? [],
             activeApproval: sessionViewModel?.activeApproval,
-            activeError: sessionViewModel?.activeError,
+            activeError: selectedTab == .threads ? threadViewModel?.activeError : sessionViewModel?.activeError,
             liveStreamingText: sessionViewModel?.liveStreamingText ?? "",
             liveReasoningText: sessionViewModel?.liveReasoningText ?? "",
             isTurnInProgress: sessionViewModel?.isTurnInProgress ?? false,
@@ -176,7 +188,20 @@ public struct PharosMainShellView: View {
                 Task { await sessionViewModel?.resolveApproval(decision: decision) }
             },
             onDismissError: {
-                sessionViewModel?.dismissError()
+                if selectedTab == .threads {
+                    threadViewModel?.dismissError()
+                } else {
+                    sessionViewModel?.dismissError()
+                }
+            },
+            isThreadMode: selectedTab == .threads,
+            threadMessages: threadViewModel?.messages ?? [],
+            threadMembers: threadViewModel?.rosterMembers ?? [],
+            implicitHumanId: "human",
+            onMentionAgent: { agentName in
+                if !composerText.contains("@\(agentName)") {
+                    composerText = "@\(agentName) " + composerText
+                }
             }
         )
     }
@@ -256,7 +281,12 @@ public struct PharosMainShellView: View {
             }
             if let t = try? await clientService.fetchThreads() {
                 self.threads = t
-                if selectedThreadId == nil { selectedThreadId = t.first?.id }
+                if selectedThreadId == nil, let firstId = t.first?.id {
+                    selectedThreadId = firstId
+                    let vm = ThreadConversationViewModel(threadId: firstId, clientService: clientService)
+                    self.threadViewModel = vm
+                    Task { await vm.loadThreadData() }
+                }
             }
             if let p = try? await clientService.fetchProjects() {
                 self.projects = p
@@ -269,8 +299,8 @@ public struct PharosMainShellView: View {
         Task {
             if selectedTab == .sessions {
                 await sessionViewModel?.sendPrompt(text: message, isSteer: isSteeringMode)
-            } else if selectedTab == .threads, let tId = selectedThreadId {
-                _ = try? await clientService.sendThreadMessage(threadId: tId, text: message)
+            } else if selectedTab == .threads {
+                await threadViewModel?.sendMessage(text: message)
             }
         }
     }

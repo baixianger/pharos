@@ -26,6 +26,13 @@ public struct ConversationCanvasView: View {
     public let onResolveApproval: (ApprovalDecision) -> Void
     public let onDismissError: () -> Void
 
+    // Thread Path state (RFC-006 §2, §5)
+    public var isThreadMode: Bool = false
+    public var threadMessages: [ClientThreadMessage] = []
+    public var threadMembers: [ClientMemberDetail] = []
+    public var implicitHumanId: String = "human"
+    public let onMentionAgent: (String) -> Void
+
     public init(
         title: String,
         subtitle: String? = nil,
@@ -45,7 +52,12 @@ public struct ConversationCanvasView: View {
         liveReasoningText: String = "",
         isTurnInProgress: Bool = false,
         onResolveApproval: @escaping (ApprovalDecision) -> Void = { _ in },
-        onDismissError: @escaping () -> Void = {}
+        onDismissError: @escaping () -> Void = {},
+        isThreadMode: Bool = false,
+        threadMessages: [ClientThreadMessage] = [],
+        threadMembers: [ClientMemberDetail] = [],
+        implicitHumanId: String = "human",
+        onMentionAgent: @escaping (String) -> Void = { _ in }
     ) {
         self.title = title
         self.subtitle = subtitle
@@ -66,6 +78,11 @@ public struct ConversationCanvasView: View {
         self.isTurnInProgress = isTurnInProgress
         self.onResolveApproval = onResolveApproval
         self.onDismissError = onDismissError
+        self.isThreadMode = isThreadMode
+        self.threadMessages = threadMessages
+        self.threadMembers = threadMembers
+        self.implicitHumanId = implicitHumanId
+        self.onMentionAgent = onMentionAgent
     }
 
     public var body: some View {
@@ -73,26 +90,46 @@ public struct ConversationCanvasView: View {
             // Header
             canvasHeader
 
+            // Thread Roster Bar (Collaborative multi-agent roster)
+            if isThreadMode {
+                ThreadRosterBar(
+                    members: threadMembers,
+                    onMentionAgent: onMentionAgent
+                )
+            }
+
             Divider()
                 .overlay(Color.primary.opacity(0.08))
 
             // Message Scroll Canvas
             ScrollViewReader { scrollProxy in
                 ScrollView {
-                    if turns.isEmpty && liveStreamingText.isEmpty && liveReasoningText.isEmpty && activeApproval == nil {
-                        emptyState
-                    } else {
-                        SessionTurnListView(
-                            turns: turns,
-                            activeApproval: activeApproval,
+                    if isThreadMode {
+                        ThreadChatListView(
+                            messages: threadMessages,
+                            members: threadMembers,
+                            implicitHumanId: implicitHumanId,
                             activeError: activeError,
-                            liveStreamingText: liveStreamingText,
-                            liveReasoningText: liveReasoningText,
-                            isTurnInProgress: isTurnInProgress,
-                            onResolveApproval: onResolveApproval,
-                            onDismissError: onDismissError
+                            onDismissError: onDismissError,
+                            onMentionAgent: onMentionAgent
                         )
-                        .id("bottom_anchor")
+                        .id("thread_bottom_anchor")
+                    } else {
+                        if turns.isEmpty && liveStreamingText.isEmpty && liveReasoningText.isEmpty && activeApproval == nil {
+                            emptyState
+                        } else {
+                            SessionTurnListView(
+                                turns: turns,
+                                activeApproval: activeApproval,
+                                activeError: activeError,
+                                liveStreamingText: liveStreamingText,
+                                liveReasoningText: liveReasoningText,
+                                isTurnInProgress: isTurnInProgress,
+                                onResolveApproval: onResolveApproval,
+                                onDismissError: onDismissError
+                            )
+                            .id("bottom_anchor")
+                        }
                     }
                 }
                 .onChange(of: liveStreamingText) { _, _ in
@@ -100,6 +137,9 @@ public struct ConversationCanvasView: View {
                 }
                 .onChange(of: turns.count) { _, _ in
                     scrollProxy.scrollTo("bottom_anchor", anchor: .bottom)
+                }
+                .onChange(of: threadMessages.count) { _, _ in
+                    scrollProxy.scrollTo("thread_bottom_anchor", anchor: .bottom)
                 }
             }
 
@@ -109,7 +149,7 @@ public struct ConversationCanvasView: View {
             // Expandable Bottom Composer
             PharosComposerView(
                 text: $composerText,
-                placeholder: isSteeringMode ? "Steer \(title) mid-turn…" : "Message \(title)…",
+                placeholder: composerPlaceholder,
                 isSteeringMode: isSteeringMode,
                 onToggleSteering: onToggleSteering,
                 onSend: onSendMessage
@@ -117,6 +157,16 @@ public struct ConversationCanvasView: View {
         }
         .frame(minWidth: PharosDesignTokens.Layout.canvasMinChatWidth)
         .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private var composerPlaceholder: String {
+        if isThreadMode {
+            return "Message #\(title)… (@agent to direct)"
+        }
+        if isSteeringMode {
+            return "Steer \(title) mid-turn…"
+        }
+        return "Message \(title)…"
     }
 
     // MARK: - Header
