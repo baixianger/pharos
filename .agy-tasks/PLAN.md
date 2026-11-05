@@ -112,6 +112,8 @@
 
 ## ## M3 PROPOSAL
 
+- Authority & Design Reference: [RFC-006: Unified Client and Backend Integration](docs/RFC-006-UNIFIED-CLIENT-AND-BACKEND-INTEGRATION.md)
+
 ### 1. Executive Summary & Core Architectural Tenants
 
 Milestone 3 transforms Pharos from a CLI-driven session launcher into a **unified multi-agent desktop command center** across distributed macOS nodes (`xiangs-mac-mini`, `xiangs-macbook-air`, and future iOS companions). It delivers:
@@ -120,7 +122,7 @@ Milestone 3 transforms Pharos from a CLI-driven session launcher into a **unifie
 3. **Strict UI / Backend Boundary**: The SwiftUI client is a pure presentation layer communicating solely through `PharosClientKit` (versioned Codable/Sendable DTOs and an async event stream). Zero backend logic in UI; zero UI imports in backend; compile-time enforced in `Package.swift`.
 4. **Host Node State Isolation**: Vendor files (`~/.gemini`, `~/.codex`, `~/.dsh`) remain strictly on the host executing them. The Pharos Mesh and Broker synchronize typed metadata, event journals, and delivery mailboxes across nodes—never raw sockets or file locks.
 
-#### Common Integration Pattern & Process Hosting (Added 2026-11-05 13:35 User Decisions)
+#### Common Integration Pattern & Process Hosting (RFC-006 §2 & User Decisions)
 - **Central Service Pattern**: Each backend operates a long-running central service. The Pharos adapter connects to that service to dispatch messages, stream replies, and observe live events. The SwiftUI client consumes exclusively the versioned `PharosClientKit` API.
 - **Process Hosting Split**:
   - **Codex**: Needs **no tmux** (its daemon is self-managed by Codex / app-server). Pharos connects directly to the shared daemon (`~/.codex/app-server-control/app-server-control.sock` via WebSocket-over-UDS). Uses `turn/start` + `turn/steer`, maps its events, and backfills with `thread/turns/list` after reconnects. Never touches `ipc.sock`. Explicitly designates Pharos as the approval owner.
@@ -131,17 +133,17 @@ Milestone 3 transforms Pharos from a CLI-driven session launcher into a **unifie
   - **agy**: `agy acp` (stdio JSON-RPC) as the primary path. Because it is a stdio child process, the headless Pharos backend daemon holds and supervises it, keeping it independent of SwiftUI client restarts. The tmux TUI stays as the external fallback.
 - **Scope Exclusion**: Headless modes (`dsh --profile headless`, `agy print stream-json`) are explicitly **OUT of M3** and deferred to future milestones.
 
-#### Architectural Principle: Two Completely Distinct Paths (Session vs Thread) (Added 2026-11-05 13:36 User Decision)
-- **SESSION (1:1 Direct Agent Chat)**:
-  - The human operator chats 1:1 with one agent session in the unified UI.
-  - Traffic routes directly through that backend's central long-running service:
-    - **Codex**: Shared daemon WebSocket (`app-server-control.sock`). No tmux needed.
-    - **dsh**: Persistent `dsh web --no-open` Host port in tmux (`127.0.0.1:<fixed>`), token kept in memory only.
-    - **agy**: `agy acp` (stdio JSON-RPC) held by headless Pharos backend daemon (tmux TUI fallback).
-  - Core requirements: Live token-level streaming output, mid-turn steering (`turn/steer`, ACP prompt), in-UI approval prompts/resolutions, and dynamic model switching.
-- **THREAD (Group Collaboration Roster)**:
-  - A group chat containing multiple agents plus the human participant.
-  - Messages route through the Pharos broker/mesh durable mailbox; delivered to each member; on completion, final replies are captured and posted back into the thread.
+#### Architectural Principle: Two Interaction Modes Only (Session vs Thread per RFC-006 §1 & GOAL.md 15:02)
+- **SESSION (1:1 Direct Agent Chat over Mesh)**:
+  - In the generic Session view, the human operator talks directly to one agent session over the mesh.
+  - The client dispatches requests to the host node owning the session; that node drives the vendor service locally (Codex daemon UDS, dsh web Host HTTP/WS, agy ACP stdio) and streams canonical events back over the mesh to the client.
+  - Local and remote hosts share the exact same execution path.
+  - Operates under the **Canonical Rich Message & Event Model** (`docs/MESSAGE-MODEL.md`: turns, steps, thinking, typing deltas, tool execution cards, approval waterfalls).
+  - High-frequency streaming deltas are coalesced by the backend before pushing to the client event stream to guarantee smooth 60/120fps UI rendering without redraw storms (RFC-006 §4).
+- **THREAD (Multi-Agent Group Conversation)**:
+  - A multi-agent collaboration room over the durable mesh mailbox (RFC-005 point-to-point delivery).
+  - **Implicit Human Participant**: The human is an **implicit, invisible participant of every thread** by default. They are never listed in the roster, but can always post, receive all messages and replies, and serve as the default reply target. No join step is needed.
+  - **Plain Chat Bubbles Only**: Threads do NOT use the rich hierarchical block model. Messages are simple chat bubbles (`ClientThreadMessage`: sender ID, avatar seed, text, timestamp, delivery receipts). An agent's thread reply is strictly its final text, with zero intermediate thinking, tool, or step events.
   - Delivery mechanisms per member:
     - **dsh**: `dsh-plugin-pharos` in-process delivery loop (`delivery.poll` -> `agent.followup()` -> `delivery.ack`). Strictly used for Threads; never used for Sessions.
     - **Codex**: Durable mailbox delivers via daemon connection with `turn/start` into member's own thread; on `turn/completed`, posts final reply to thread plus delivery receipt.
@@ -274,15 +276,16 @@ flowchart TD
     - **Remediation 2 (VIO-02, VIO-03)**: Relocate `Shell.run` and `RemoteLaunch` execution logic into `PharosRuntime/Adapters/`. Zero `Process()` or SSH invocations in client presentation targets.
     - **Remediation 3 (VIO-06, VIO-07)**: Migrate project persistence (`projects.json`) and registry synchronization from `ProjectStore.swift` into the backend daemon. Client accesses projects via `PharosClientService.fetchProjects()`.
     - **Remediation 4 (VIO-08, VIO-09)**: Move CLI entry points (`CLI.swift`, `LightCLI.swift`, `DistributedRegistryCLI.swift`) out of GUI target into headless target `PharosMesh`.
-    - **Remediation 5**: Expand `ArchitectureBoundaryTests` to automatically assert 0 occurrences of `SwiftUI`/`AppKit` across all 11 backend directories and verify clean target separation.
+    - **Remediation 5**: Expand `ArchitectureBoundaryTests` to automatically assert 0 occurrences of `SwiftUI`/`AppKit` across all 11 backend directories and verify clean target separation. (Implemented and verified green across all 11 backend targets).
   - **Pharos Canonical Message & Event Model** (Specified in [`docs/MESSAGE-MODEL.md`](file:///Users/baixianger/personal/pharos/docs/MESSAGE-MODEL.md)):
     - **Scope Separation**: The Rich Canonical Message Model applies **EXCLUSIVELY to SESSIONS (1:1 direct chat)**.
     - SESSIONS: Define unified `CanonicalTurn`, `CanonicalStep`, and typed `CanonicalBlock` (`userText`, `assistantText`, `reasoning`, `toolCall`, `toolResult`, `terminalCommand`, `filePatch`, `attachment`).
     - **Lossless Invariant**: `rawVendorPayload: [String: JSONValue]?` preserved on every turn, step, block, and approval object.
     - Define `CanonicalStreamingDelta` (`textDelta`, `reasoningDelta`, `toolCallDelta`, `terminalOutputDelta`) for real-time typing animation in 1:1 sessions.
+    - **UI Render Protection (RFC-006 §4)**: Backend service coalesces high-frequency streaming deltas before pushing to client event stream to guarantee smooth 60/120fps UI rendering.
     - Define `CanonicalApprovalRequest` supporting tool permissions and structured `CanonicalQuestionnaire` waterfalls (`intent: "plan-review"`).
     - Composite stable identifiers `(sessionId, turnId, stepId, blockId)` ensuring idempotency across reconnects.
-    - **THREADS (Group Chat Roster)**: Use dedicated, lightweight `ClientThreadMessage` DTO (plain chat bubbles: sender ID, name, avatar seed, text, timestamp, delivery receipts, optional attachments). Agents post **only final committed text replies**; no intermediate thinking, tools, or step events in threads.
+    - **THREADS (Group Chat Roster)**: Use dedicated, lightweight `ClientThreadMessage` DTO (plain chat bubbles: sender ID, name, avatar seed, text, timestamp, delivery receipts, optional attachments). Agents post **only final committed text replies**; no intermediate thinking, tools, or step events in threads. Human is an implicit, invisible participant of every thread by default (RFC-006 §1).
   - **Client Summaries & Protocol**:
     - `ClientSessionSummary`, `ClientThreadSummary`, `ClientProjectSummary`, `ClientMemberDetail`, `ClientAvatarInfo`.
     - Protocol `PharosClientService`:
@@ -430,12 +433,14 @@ flowchart TD
   - **Middle Pane — 1:1 Conversation Canvas**:
     - Selecting a session loads its dedicated 1:1 conversation history (`ClientSessionMessage`).
     - Human composer at bottom: multi-line expandable input with syntax highlight, file drop, and Send button (`Enter` to send, `Shift+Enter` for newline).
-  - **Central Service Routing & Injection**:
+  - **Central Service Routing & Injection (Uniform Local & Remote Path per RFC-006 §1)**:
+    - Client dispatches to the host node owning the session over mesh; that host node interacts with the vendor service locally and streams canonical events back over mesh.
     - `Codex`: Routes directly to shared daemon via WebSocket-over-UDS (`app-server-control.sock`). Injects via `turn/start` (idle) or `turn/steer` (mid-turn). Reconnect backfill via `thread/turns/list`. Pharos acts as explicit approval owner.
     - `dsh`: Routes to persistent `dsh web --no-open` Host running in tmux (`127.0.0.1:<port>`). Injects via unary `POST /api/session/prompt` (`mode: "queue"` for new turns, `mode: "steer"` for mid-turn steering); subscribes to incremental token deltas (`text-delta`, `reasoning-delta`) via `session/follow` (`assistantStream: true`) on `/api/remote.mux`; resolves `approval/request` waterfalls via `POST /api/$events/result`; cancels active turns via `POST /api/session/cancel`; switches models via `POST /api/session/selectModel`. Launch token kept in volatile memory only (never written to disk or logs); reconnects issue a fresh `/connect` to re-acquire cookie.
     - `agy`: Routes to `agy acp` (stdio JSON-RPC) long-running child held by headless Pharos backend daemon. Injects via `session/prompt` (supports mid-turn append/steering); receives streaming chunks via `session/update`; forwards interactive approvals via `session/request_permission`; switches models dynamically via `session/set_config_option`. Tmux TUI fallback.
-  - **Live Token Streaming & Approval Dialogs**:
+  - **Live Token Streaming, Event Coalescing & Approval Dialogs**:
     - Real-time token deltas render live in streaming chat bubbles (`item/agentMessage/delta`, `session/update`, `session/follow`).
+    - Backend coalesces high-frequency deltas before emitting to client to prevent UI redraw bottlenecks (RFC-006 §4).
     - Actionable `needs_human` approval cards: "Allow once", "Allow always", "Reject" with immediate RPC callback resolution.
   - **History Isolation Invariant**:
     - 1:1 session messages are stored and rendered exclusively as `ClientSessionMessage`. They never appear in thread rosters and are never polluted by group thread deliveries.
@@ -480,8 +485,8 @@ flowchart TD
       - Alignment: User/human messages right-aligned; agent messages left-aligned with 36px deterministic Canvas avatar.
       - Expandable sheet composer: Compact 44px height (22px radius); expands on multiline input (scrollHeight ≥ 39px) to 18px radius with 0.5px hairline border; 300ms linear spring animation.
       - Strict IP adherence: Layout and interaction ergonomics only. 100% Pharos-original Swift views, system fonts, and semantic tokens (`pharosChrome`, `pharosElevated`, `pharosInkPrimary`, `pharosAccent`). Zero copied assets, fonts, or SVGs.
-    - Human operator is a first-class roster participant (`tester` / `human`).
-    - Composer allows the human to post into the thread; message dispatches to all other roster participants using Pharos light messaging delivery rules.
+    - **Implicit Human Participant**: The human operator is an **implicit, invisible participant of every thread** by default (RFC-006 §1 & GOAL.md 15:02): never listed in the roster, can always post, receives all messages and replies, and serves as the default reply target for agents. No join step needed.
+    - Composer allows the human to post into the thread (addressing specific agents); message dispatches to target roster participants using Pharos light messaging delivery rules.
   - **Durable Mailbox Routing & Delivery Primitives**:
     - Messages route through Pharos broker/mesh durable mailbox. Delivered to each roster member; final replies captured and posted back into the thread.
     - Delivery mechanisms per member:
@@ -503,14 +508,15 @@ flowchart TD
 - **Acceptance Criteria**:
   - *Unit*:
     - Roster participant derivation and durable mailbox fanout tests.
+    - Implicit human participant routing: verifies human operator receives all messages and replies without being listed in the thread roster.
     - 4-stage delivery receipt state machine tests (`pending` -> `delivered` -> `consumed`).
     - Final turn reply extraction tests without token streaming.
     - Cross-contamination assertion: verify thread messages never enter `ClientSessionMessage` store.
   - *Live (mini)*:
-    - Create thread `t_collab_test` containing local `codex` member, local `agy` member, local `dsh` member, and human composer.
+    - Create thread `t_collab_test` containing local `codex` member, local `agy` member, local `dsh` member (human is implicit participant).
     - Human posts message into thread; verify all 3 agents receive message via their respective delivery primitives; verify final replies appear in thread with verified receipts.
   - *Cross-host (mini <-> Air)*:
-    - Thread spanning mini `codex` member, Air `agy` member, and human composer. Human posts from mini UI; remote Air agy receives message via Air Pharos node, executes, and posts final reply + receipt back to the thread.
+    - Thread spanning mini `codex` member, Air `agy` member, and implicit human. Human posts from mini UI; remote Air agy receives message via Air Pharos node, executes, and posts final reply + receipt back to the thread.
   - *Matrix Verification*: Flips rows `*-THD-05`, `*-THD-08`, and `*-THD-13` to `supported` across all 3 backends with multi-agent delivery evidence.
 - **Risks & Mitigations**:
   - *Risk*: Infinite reply loops between autonomous agents.

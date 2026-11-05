@@ -1,27 +1,33 @@
 # Pharos Canonical Message & Event Model
 
 ---
-summary: Specification of the Pharos Canonical Message & Event Model. Evaluates dsh web, Codex app-server, Antigravity ACP, and the public Agent Client Protocol (ACP) standard. Recommends a Pharos Superset Canonical Model combining dsh's hierarchical blocks and turn state with ACP's typed content model and lossless rawVendorPayload preservation.
+summary: Specification of the Pharos Canonical Message & Event Model companion to RFC-006. Evaluates dsh web, Codex app-server, Antigravity ACP, and the public Agent Client Protocol (ACP) standard. Recommends a Pharos Superset Canonical Model combining dsh's hierarchical blocks and turn state with ACP's typed content model and lossless rawVendorPayload preservation for Sessions, alongside lightweight plain chat bubbles for Threads with Grok Bot inspired styling.
 ---
+
+- Authority & Design Reference: [RFC-006: Unified Client and Backend Integration](RFC-006-UNIFIED-CLIENT-AND-BACKEND-INTEGRATION.md)
 
 ## 1. Executive Summary & Design Philosophy
 
-Milestone 3 requires an interactive desktop client (modelled on Grok Bot) that unifies multiple heterogeneous AI coding backends (`dsh`, `Codex`, `agy`) across distributed hosts (`mini`, `Air`) into a single cohesive interface.
+As established in [RFC-006](RFC-006-UNIFIED-CLIENT-AND-BACKEND-INTEGRATION.md), Pharos operates as one unified, native SwiftUI front end over heterogeneous coding agent backends (`dsh`, `Codex`, `agy`) across distributed Macs.
 
-Each underlying CLI presents a distinctly shaped communication protocol:
-- **`dsh` (web Host 0.2.1-rc.5)** delivers a rich, hierarchical, stream-based presentation model (`turn` -> `step` -> typed `content[]` blocks with distinct `text-delta` vs `reasoning-delta`, explicit `tool/call` and `tool/result` correlation, and structured approval waterfalls).
-- **`Codex` (app-server 0.166.0)** models sessions as threads emitting tagged union items (`userMessage`, `agentMessage`, `reasoning`, `commandExecution`, `fileChange`, `mcpToolCall`) with delta streams and active flags (`waitingOnApproval`).
-- **`Antigravity` (agy 1.5.1)** operates an ACP stdio JSON-RPC interface emitting `session/update` chunks and step journals (`transcript.jsonl`) recording `USER_INPUT`, `PLANNER_RESPONSE`, `thinking`, `content`, and `tool_calls`.
-- **Public `Agent Client Protocol` (ACP)** provides an emerging vendor-neutral specification based on structured content blocks (`text`, `thought`, `tool_call`, `tool_result`) and JSON-RPC lifecycle methods.
-
-Rather than forcing the client UI to handle three separate protocol dialects, Pharos establishes **ONE Canonical Message & Event Model** (`PharosClientKit`). The client UI renders exclusively against this canonical model. Each backend adapter is responsible for bidirectional translation between the vendor wire protocol and the canonical representation.
+### The Two Interaction Modes (RFC-006 §1 & GOAL.md 15:02):
+1. **SESSION (1:1 Direct Chat over Mesh)**:
+   - In the generic Session view, the human talks directly to one agent session over the mesh.
+   - The client dispatches requests to the Pharos node on the host that owns the session. That host node drives the vendor's central service locally (Codex app-server daemon / dsh web Host in tmux / agy ACP stdio) and streams canonical events back over the mesh to the client.
+   - Local and remote hosts use the exact same path.
+   - Operates under the **Canonical Rich Message & Event Model** (turns, steps, thinking, typing deltas, tool execution cards, approval waterfalls).
+2. **THREAD (Multi-Agent Group Conversation)**:
+   - The human posts in a group conversation and addresses specific agents. Point-to-point mesh deliveries follow RFC-005.
+   - **Implicit Human Participant**: The human is an **implicit, invisible participant of every thread** by default. They are never listed in the roster, but can always post, receive all messages and replies, and serve as the default reply target. No join step is needed.
+   - **Plain Chat Bubbles**: Threads do NOT use the rich hierarchical block model. Messages are simple chat bubbles (`ClientThreadMessage`: sender ID, avatar seed, text, timestamp, delivery receipts). An agent's thread reply is strictly its final text, with zero intermediate thinking, tool, or step events.
 
 ### Core Architectural Invariants:
 1. **Lossless Translation with `rawVendorPayload`**: No backend metadata is ever silently dropped. Every canonical message, step, tool call, and approval preserves `rawVendorPayload: [String: JSONValue]` containing the unadulterated wire payload.
 2. **Dual-Phase Streaming (Deltas vs Committed Blocks)**: Live interactive turns stream ephemeral token deltas (`textDelta`, `reasoningDelta`, `toolCallDelta`) into active chat bubbles. Upon turn completion, the adapter commits authoritative, durable blocks.
-3. **Strict Scope Separation (Sessions vs Threads)**: Per user decision (15:00), the **Canonical Rich Message Model applies EXCLUSIVELY to SESSIONS (1:1 direct chat)**. SESSIONS require granular turns, steps, thinking/reasoning blocks, tool execution cards, streaming deltas, and approval waterfalls. In contrast, **THREADS (Group Chat Roster)** use a **separate, lightweight, plain chat bubble DTO** (`ClientThreadMessage`). In Threads, agents do NOT emit thinking, tool, or step events; they return only their final plain text reply over the mesh mailbox.
+3. **Strict Scope Separation (Sessions vs Threads)**: Per RFC-006 §3, the Rich Canonical Message Model applies EXCLUSIVELY to SESSIONS. THREADS use the lightweight plain chat bubble DTO (`ClientThreadMessage`).
 4. **Stable Composite Identifiers for Reconnect & Replay**: Because some backends (Codex, agy) lack global sequence numbers, the session model establishes composite keys: `(sessionId, turnId, stepId, blockId)` and optional monotonic sequence `seq` to ensure idempotent deduplication and gap reconciliation.
 5. **Thread Visual Presentation (Grok Bot Reference)**: Thread chat views adopt the refined bubble and composer geometry from Grok Bot UI research (`2026-11-05_ui-design.md`) as layout and interaction ideas, while adhering strictly to public-repo IP boundaries (100% Pharos-original Swift code, tokens, and Canvas rendering).
+6. **UI Render Protection via Event Coalescing (RFC-006 §4)**: The backend service coalesces high-frequency streaming deltas before pushing to the client event stream to guarantee smooth 60/120fps UI rendering without per-token redraw storms.
 
 ---
 
@@ -284,10 +290,11 @@ public struct CanonicalQuestionOption: Sendable, Codable, Equatable {
 
 ### 4.2 Thread Message DTO (`ClientThreadMessage`)
 
-Threads represent multi-agent collaborative task rosters where agents and the human operator converse over the durable Pharos Mesh Mailbox.
+Threads represent multi-agent collaborative task rosters where agents and the human operator converse over the durable Pharos Mesh Mailbox (following RFC-005 point-to-point delivery).
 
-Per user directive (Added 15:00), **Threads do NOT use the rich hierarchical block model**. In Threads:
-- Agents emit **only their final committed plain text reply** upon turn completion.
+Per user directive (RFC-006 §1 & GOAL.md 15:00/15:02), **Threads do NOT use the rich hierarchical block model**:
+- **Implicit Human Participant**: The human is an **implicit, invisible participant of every thread** by default. They are never listed in the roster, but can always post messages into the thread (addressing specific agents), receive all messages and replies, and serve as the default reply target for agents. No join step is needed.
+- **Plain Chat Bubbles Only**: Agents emit **only their final committed plain text reply** upon turn completion.
 - There are **no intermediate thinking/reasoning blocks, no tool execution steps, and no token-level streaming deltas**.
 - Messages are represented by a clean, lightweight DTO:
 

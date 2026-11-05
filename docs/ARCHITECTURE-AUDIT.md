@@ -1,19 +1,23 @@
 # Pharos Architecture Audit (main @ 627fc46)
 
 ---
-summary: Architecture audit of Pharos at main 627fc46 following the merge of Mesh 2.0 (PR #4). Maps actual target dependencies and imports against core architectural invariants. Catalogs all violations with file:line, severity, and concrete fixes. Details duplicate/dead layers and defines the automated layering enforcement plan for Milestone 3.
+summary: Architecture audit of Pharos at main 627fc46 following the merge of Mesh 2.0 (PR #4). Maps actual target dependencies and imports against core architectural invariants. Catalogs all violations with file:line, severity, and concrete fixes. Details duplicate/dead layers and defines the automated layering enforcement plan for Milestone 3 companion to RFC-006.
 ---
+
+- Authority & Design Reference: [RFC-006: Unified Client and Backend Integration](RFC-006-UNIFIED-CLIENT-AND-BACKEND-INTEGRATION.md)
 
 ## 1. Architectural Invariants & Design Principles
 
-The Pharos architecture is guided by six core invariants established in `.agy-tasks/GOAL.md` (sections 11:48 and 14:52):
+The Pharos architecture is guided by six core invariants established in `.agy-tasks/GOAL.md` and [RFC-006](RFC-006-UNIFIED-CLIENT-AND-BACKEND-INTEGRATION.md):
 
 1. **Strict Client / Backend Boundary (`PharosClientKit`)**: The SwiftUI client is a pure presentation layer. It must contain NO delivery, tmux, CLI, SSH, mesh, broker, transcript-parsing, or persistence logic.
 2. **One Versioned Client API**: All client <-> backend communication occurs exclusively through strongly-typed, `Codable`/`Sendable` DTOs and async event streams exposed by `PharosClientKit` (backed by a local UDS JSON-RPC daemon).
 3. **Headless Backend Autonomy**: Backend modules (`PharosRuntime`, `PharosMesh*`, `PharosAgentCore`, adapters) must never import `SwiftUI` or `AppKit`. The backend must be 100% testable and runnable headless via CLI and daemon without the macOS app process running.
 4. **Host Node State Isolation**: Vendor state (`~/.gemini`, `~/.codex`, `~/.dsh`) remains strictly on the executing host. Cross-machine communication routes through the remote host's Pharos node over Mesh/Broker—never raw sockets or file locks across machines.
 5. **Zero UI Shelling Out**: The client UI must never invoke `Process()`, shell out to `/bin/sh`, run `/usr/bin/ssh`, or manipulate tmux panes directly. All actions are dispatched as high-level requests to the backend service.
-6. **Path Separation (Session vs Thread)**: Direct 1:1 agent sessions (with live token streaming and steering) and multi-agent collaborative threads (with mailbox delivery and receipts) are distinct execution flows sharing a canonical message schema.
+6. **Two Interaction Modes Only (Session vs Thread per RFC-006 §1 & GOAL.md 15:02)**:
+   - **Session (1:1 Direct Chat over Mesh)**: In the generic Session view, the human talks directly to one agent session over the mesh. The client dispatches requests to the host node owning the session; that node drives the vendor service locally (Codex daemon UDS, dsh web Host HTTP/WS, agy ACP stdio) and streams canonical events back over the mesh to the client (uniform path for local and remote hosts). Uses the Rich Canonical Message Model (`docs/MESSAGE-MODEL.md`).
+   - **Thread (Multi-Agent Group Conversation)**: The human posts in a group conversation and addresses specific agents over the durable mesh mailbox (RFC-005 point-to-point delivery). The human is an **implicit, invisible participant of every thread** by default (never listed in the roster, can always send, receives all messages and replies, and is the default reply target). Threads use lightweight plain chat bubbles (`ClientThreadMessage`), where agents emit only their final plain text reply upon turn finish with zero intermediate thinking, tool, or step events.
 
 ---
 
@@ -119,10 +123,10 @@ All 32 `import SwiftUI` and 18 `import AppKit` occurrences across `Sources/` are
 
 To ensure that the architecture does not regress during Milestone 3 implementation, Pharos incorporates automated layering enforcement into the build and test pipeline.
 
-### 5.1 Unit Test Gate: `ArchitectureLayeringTests`
-A dedicated test suite in `Tests/PharosTests/ArchitectureLayeringTests.swift` enforces:
-1. **No SwiftUI / AppKit in Backend**: Scans all Swift source files under `Sources/` outside of designated presentation targets. Asserts 0 occurrences of `import SwiftUI`, `import AppKit`, or `import Cocoa`.
-2. **No `Process()` in Presentation**: Scans all client presentation source files to ensure no UI code invokes `Process()`, `Shell.run`, or `NSTask`.
+### 5.1 Unit Test Gate: `ArchitectureBoundaryTests`
+An automated test suite in `Tests/PharosTests/ArchitectureBoundaryTests.swift` enforces layering across the repository:
+1. **No SwiftUI / AppKit in Backend**: Scans all Swift source files across all 11 backend directories outside `Sources/Pharos/` (`Sources/PharosMesh*`, `Sources/PharosAgentCore`, `Sources/PharosRuntime`, `Sources/PharosCodexAdapter`, etc.). Asserts 0 occurrences of `import SwiftUI`, `import AppKit`, or `import Cocoa`. (Verified passing at 100% clean).
+2. **No `Process()` in Presentation**: Scans client presentation source files to ensure no UI code invokes `Process()`, `Shell.run`, or `NSTask`.
 3. **No Direct Backend Internal Imports in Client**: Once `PharosClientKit` is introduced, verifies that client files import ONLY `PharosClientKit`, `SwiftUI`, and `Foundation`.
 
 ### 5.2 Build Boundary Enforcement in `Package.swift`
