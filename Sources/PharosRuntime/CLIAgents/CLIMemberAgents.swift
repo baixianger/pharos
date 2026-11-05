@@ -289,6 +289,70 @@ public final class CLIMemberAgents: LightMemberAgents, @unchecked Sendable {
         return binding
     }
 
+    public func switchModel(_ member: LightMember, model: String, force: Bool) throws -> LightTmuxBinding {
+        if selfHost.matches(member.host) {
+            let binding = try lifecycle.switchModel(member: member, model: model, force: force)
+            lock.lock()
+            _notes = ["switched to model \(model)"]
+            lock.unlock()
+            return binding
+        }
+
+        guard let nodes else {
+            throw CLIMemberAgentsError("switch model on another host is not supported yet: run it on that machine")
+        }
+
+        let request = LightNodeAgentRequest(action: "model", member: member, force: force, model: model)
+        let b64 = LightNodeExec.encode(request)
+
+        guard let run = nodes.run(member.host, argv: ["node-agent", "--payload", b64], timeout: 60) else {
+            let status = nodes.status(member.host)
+            let msg = LightRelay.nodeOfflineMessage(lastSeen: status.lastSeen, now: Date())
+            throw CLIMemberAgentsError("Pharos node \(member.host) is offline (\(msg))")
+        }
+
+        guard let resp = Self.parseResponse(run.stdout) else {
+            throw CLIMemberAgentsError("invalid response from node \(member.host)")
+        }
+
+        guard resp.ok else {
+            throw CLIMemberAgentsError(resp.error ?? "remote switch model failed")
+        }
+
+        guard let binding = resp.binding else {
+            throw CLIMemberAgentsError("remote switch model did not return a binding")
+        }
+
+        var notes = resp.notes ?? []
+        notes.append("via \(run.path.rawValue) on \(run.node)")
+        lock.lock()
+        _notes = notes
+        lock.unlock()
+
+        return binding
+    }
+
+    public func modelInfo(_ member: LightMember) -> LightMemberModelInfo? {
+        let currentModel = member.tmux?.model ?? "default"
+        guard let descriptor = CLIAgentDescriptor.named(member.app, env: lifecycle.env) else {
+            return nil
+        }
+        let available = descriptor.availableModels
+        var quotaMap: [String: String] = [:]
+        for m in available {
+            if let until = lifecycle.quota.exhausted(app: member.app, model: m) {
+                quotaMap[m] = ISO8601DateFormatter().string(from: until)
+            }
+        }
+        return LightMemberModelInfo(
+            member: member.name,
+            app: member.app,
+            current: currentModel,
+            available: available,
+            quota: quotaMap
+        )
+    }
+
     public func status(_ member: LightMember) -> LightMemberRuntimeStatus? {
         guard member.tmux != nil else { return nil }
         guard selfHost.matches(member.host) else { return nil }

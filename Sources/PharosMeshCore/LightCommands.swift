@@ -27,6 +27,8 @@ public protocol LightMemberAgents: Sendable {
                project: String, autoRevive: Bool) throws -> LightMember
     func revive(_ member: LightMember) throws -> LightTmuxBinding
     func stop(_ member: LightMember, force: Bool) throws -> LightTmuxBinding
+    func switchModel(_ member: LightMember, model: String, force: Bool) throws -> LightTmuxBinding
+    func modelInfo(_ member: LightMember) -> LightMemberModelInfo?
     func status(_ member: LightMember) -> LightMemberRuntimeStatus?   // nil = not a tmux CLI member
     var notes: [String] { get }
 }
@@ -39,6 +41,28 @@ extension LightMemberAgents {
     }
     public func stop(_ member: LightMember, force: Bool) throws -> LightTmuxBinding {
         throw LightMemberAgentsError("member stop needs live CLI access")
+    }
+    public func switchModel(_ member: LightMember, model: String, force: Bool) throws -> LightTmuxBinding {
+        throw LightMemberAgentsError("member switchModel needs live CLI access")
+    }
+    public func modelInfo(_ member: LightMember) -> LightMemberModelInfo? {
+        nil
+    }
+}
+
+public struct LightMemberModelInfo: Codable, Equatable, Sendable {
+    public var member: String
+    public var app: String
+    public var current: String
+    public var available: [String]
+    public var quota: [String: String]
+
+    public init(member: String, app: String, current: String, available: [String], quota: [String: String] = [:]) {
+        self.member = member
+        self.app = app
+        self.current = current
+        self.available = available
+        self.quota = quota
     }
 }
 
@@ -275,9 +299,10 @@ public enum LightCommands {
             if members.isEmpty { return ok("no members") }
             let lines = rows.map { row in
                 let routes = row.member.routes.map(\.id).joined(separator: ",")
-                return "\(row.member.name)\t\(row.member.app)\t\(row.member.host)\t\(row.member.project)\t\(row.member.sessionID)\t\(routes)\t\(row.tmux)\t\(row.live)\t\(row.state)"
+                let model = row.member.tmux?.model ?? "-"
+                return "\(row.member.name)\t\(row.member.app)\t\(row.member.host)\t\(row.member.project)\t\(row.member.sessionID)\t\(routes)\t\(row.tmux)\t\(row.live)\t\(model)\t\(row.state)"
             }
-            var out = ["NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES\tTMUX\tLIVE\tSTATE"] + lines
+            var out = ["NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES\tTMUX\tLIVE\tMODEL\tSTATE"] + lines
             let tableNames = Set(members.map(\.name))
             out.append(contentsOf: groupedAttentionLines(relay.activeAttention(), at: moment, filterMembers: tableNames))
             return ok(out.joined(separator: "\n"))
@@ -590,8 +615,64 @@ public enum LightCommands {
             ))
             if argv.flag("json") { return json(member) }
             return ok("registered \(member.name)")
+        case "model":
+            let positional = Array(argv.positional.dropFirst())
+            guard let name = positional.first else {
+                return usage("pharos member model <name> [<model>] [--force] [--json]")
+            }
+            guard let member = relay.member(named: name) else {
+                throw LightRelayError.unknownMember(name)
+            }
+            guard member.tmux != nil else {
+                return LightCLIResult(exitCode: 1, text: "error: member \(name) has no tmux binding")
+            }
+
+            guard let agents else {
+                return LightCLIResult(exitCode: 1, text: "error: member model needs live CLI access (PHAROS_LIGHT_LIVE=1)")
+            }
+
+            if positional.count < 2 {
+                // Show models
+                guard let info = agents.modelInfo(member) else {
+                    return LightCLIResult(exitCode: 1, text: "error: could not determine models for \(member.app)")
+                }
+
+                if argv.flag("json") {
+                    return json(info)
+                }
+
+                var lines = [
+                    "member: \(member.name)",
+                    "current model: \(info.current)",
+                    "available models:"
+                ]
+                if info.available.isEmpty {
+                    lines.append("  (none)")
+                } else {
+                    for m in info.available {
+                        if let dateStr = info.quota[m] {
+                            lines.append("  - \(m) (over quota until \(dateStr))")
+                        } else {
+                            lines.append("  - \(m)")
+                        }
+                    }
+                }
+                return ok(lines.joined(separator: "\n"))
+            }
+
+            // Switch model
+            let targetModel = positional[1]
+            var newBinding = try agents.switchModel(member, model: targetModel, force: argv.flag("force"))
+            newBinding.autoRevive = member.tmux?.autoRevive
+            newBinding.endedReason = nil
+            newBinding.endedAt = nil
+            try relay.updateTmux(member: name, newBinding)
+            var updated = member
+            updated.tmux = newBinding
+            if argv.flag("json") { return json(updated) }
+            return ok("switched \(name) to model \(targetModel) (restarted in tmux \(newBinding.session), resumed \(member.sessionID))")
         default:
-            return usage("pharos member register|list|launch|revive|stop|set")
+            return usage("pharos member register|list|launch|revive|stop|set|model")
         }
     }
 
@@ -1352,6 +1433,7 @@ extension LightCommands {
       pharos member revive N [--json]
       pharos member stop N [--force] [--json]
       pharos member set N --auto-revive on|off
+      pharos member model N [<model>] [--force] [--json]
       Launches, revives, or stops a tmux-backed CLI agent member. Replies are read from the
       daemon (codex) / transcript (agy). needs_human is report-only.
 

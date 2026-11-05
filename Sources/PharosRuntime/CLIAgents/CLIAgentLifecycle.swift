@@ -452,7 +452,7 @@ public struct CLIAgentLifecycle: Sendable {
         )
     }
 
-    public func revive(member: LightMember) throws -> LightTmuxBinding {
+    public func revive(member: LightMember, model: String? = nil) throws -> LightTmuxBinding {
         guard let binding = member.tmux else {
             throw CLIAgentLifecycleError.invalid("member has no tmux binding")
         }
@@ -464,24 +464,26 @@ public struct CLIAgentLifecycle: Sendable {
             throw CLIAgentLifecycleError.alreadyAlive("agent is already alive in tmux session \(binding.session)")
         }
 
-        let model: String?
-        if descriptor.app == "agy" {
+        let selectedModel: String?
+        if let model, !model.isEmpty {
+            selectedModel = model
+        } else if descriptor.app == "agy" {
             if let current = binding.model, quota.exhausted(app: "agy", model: current) == nil {
-                model = current
+                selectedModel = current
             } else {
                 guard let picked = quota.pick(app: "agy", chain: descriptor.modelChain) else {
                     let nextReset = quota.earliestReset(app: "agy", chain: descriptor.modelChain)
                     let dateStr = nextReset != nil ? ISO8601DateFormatter().string(from: nextReset!) : "unknown"
                     throw CLIAgentLifecycleError.needsHuman("all agy models are over quota until \(dateStr)")
                 }
-                model = picked
+                selectedModel = picked
             }
         } else {
-            model = binding.model
+            selectedModel = binding.model
         }
 
         let bin = descriptor.resolveBinary(env: env, isExecutable: isExecutable)
-        let argv = descriptor.resumeArgv(bin: bin, sessionID: member.sessionID, model: model)
+        let argv = descriptor.resumeArgv(bin: bin, sessionID: member.sessionID, model: selectedModel)
         let resolvedCwd = URL(fileURLWithPath: binding.cwd).resolvingSymlinksInPath().path
 
         if live.tmuxAlive {
@@ -503,7 +505,7 @@ public struct CLIAgentLifecycle: Sendable {
         return LightTmuxBinding(
             session: binding.session,
             cwd: resolvedCwd,
-            model: model,
+            model: selectedModel,
             agentPID: newPid,
             agentStarted: newStart,
             launchedAt: now(),
@@ -511,6 +513,15 @@ public struct CLIAgentLifecycle: Sendable {
             autoRevive: binding.autoRevive,
             endedReason: nil
         )
+    }
+
+    /// Local graceful restart model switch: stop(force:) then revive(member:, model: M).
+    public func switchModel(member: LightMember, model: String, force: Bool = false) throws -> LightTmuxBinding {
+        // TODO: In-session model switch (via TUI shortcut) can be implemented if verified in future specs. Graceful restart path used as the reliable default.
+        let stopResult = try stop(member: member, force: force)
+        var stoppedMember = member
+        stoppedMember.tmux = stopResult.binding
+        return try revive(member: stoppedMember, model: model)
     }
 
     public func stop(member: LightMember, force: Bool, timeout: TimeInterval = 20) throws -> CLIAgentStopResult {

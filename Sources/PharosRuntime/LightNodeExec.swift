@@ -86,24 +86,27 @@ public struct LightNodeAdoptSpec: Codable, Equatable, Sendable {
 }
 
 public struct LightNodeAgentRequest: Codable, Equatable, Sendable {
-    public var action: String          // "launch" | "adopt" | "revive" | "stop" | "status"
-    public var member: LightMember?    // revive/stop/status
+    public var action: String          // "launch" | "adopt" | "revive" | "stop" | "status" | "model"
+    public var member: LightMember?    // revive/stop/status/model
     public var launch: LightNodeLaunchSpec?   // launch
     public var adopt: LightNodeAdoptSpec?     // adopt
     public var force: Bool?
+    public var model: String?
 
     public init(
         action: String,
         member: LightMember? = nil,
         launch: LightNodeLaunchSpec? = nil,
         adopt: LightNodeAdoptSpec? = nil,
-        force: Bool? = nil
+        force: Bool? = nil,
+        model: String? = nil
     ) {
         self.action = action
         self.member = member
         self.launch = launch
         self.adopt = adopt
         self.force = force
+        self.model = model
     }
 }
 
@@ -241,6 +244,15 @@ public enum LightNodeExec {
                 }
                 let status = agents.status(member)
                 return encodeLine(LightNodeAgentResponse(ok: true, status: status, notes: agents.notes))
+            case "model":
+                guard let member = request.member else {
+                    return encodeLine(LightNodeAgentResponse(ok: false, error: "missing member for model"))
+                }
+                guard let targetModel = request.model, !targetModel.isEmpty else {
+                    return encodeLine(LightNodeAgentResponse(ok: false, error: "missing model"))
+                }
+                let binding = try agents.switchModel(member, model: targetModel, force: request.force ?? false)
+                return encodeLine(LightNodeAgentResponse(ok: true, binding: binding, notes: agents.notes))
             default:
                 return encodeLine(LightNodeAgentResponse(ok: false, error: "unknown agent action \(request.action)"))
             }

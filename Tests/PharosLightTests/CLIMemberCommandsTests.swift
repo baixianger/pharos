@@ -144,13 +144,13 @@ final class CLIMemberCommandsTests: XCTestCase {
         let res = run(relay, "member", ["list"], agents: fakeAgents)
         XCTAssertEqual(res.exitCode, 0)
         let lines = res.text.components(separatedBy: "\n")
-        XCTAssertEqual(lines[0], "NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES\tTMUX\tLIVE\tSTATE")
+        XCTAssertEqual(lines[0], "NAME\tAPP\tHOST\tPROJECT\tSESSION\tROUTES\tTMUX\tLIVE\tMODEL\tSTATE")
 
         let plainLine = try XCTUnwrap(lines.first { $0.hasPrefix("plain-bot\t") })
-        XCTAssertTrue(plainLine.contains("\t-\t-\t-"), "plain member has - for tmux, live, and state")
+        XCTAssertTrue(plainLine.contains("\t-\t-\t-\t-"), "plain member has - for tmux, live, model, and state")
 
         let liveLine = try XCTUnwrap(lines.first { $0.hasPrefix("live-bot\t") })
-        XCTAssertTrue(liveLine.contains("\ttmux-live\talive\tthinking"), "live member shows tmux, live, and activity")
+        XCTAssertTrue(liveLine.contains("\ttmux-live\talive\to3\tthinking"), "live member shows tmux, live, model, and activity")
     }
 
     func testMemberListEndedMarkerPersistence() throws {
@@ -179,7 +179,7 @@ final class CLIMemberCommandsTests: XCTestCase {
         XCTAssertEqual(res.exitCode, 0)
         let lines = res.text.components(separatedBy: "\n")
         let deadLine = try XCTUnwrap(lines.first { $0.hasPrefix("dead-bot\t") })
-        XCTAssertTrue(deadLine.contains("\ttmux-dead\tended\t-"), "dead status turns into ended and shows '-' for state")
+        XCTAssertTrue(deadLine.contains("\ttmux-dead\tended\to3\t-"), "dead status turns into ended and shows '-' for state")
 
         // Relay must have persisted endedAt
         let persisted = try XCTUnwrap(relay.member(named: "dead-bot")?.tmux)
@@ -730,13 +730,13 @@ final class CLIMemberCommandsTests: XCTestCase {
         let lines = res.text.components(separatedBy: "\n")
 
         let freshLine = try XCTUnwrap(lines.first { $0.hasPrefix("remote-fresh\t") })
-        XCTAssertTrue(freshLine.contains("\ttmux-remote\talive\tthinking"))
+        XCTAssertTrue(freshLine.contains("\ttmux-remote\talive\t-\tthinking"))
 
         let staleLine = try XCTUnwrap(lines.first { $0.hasPrefix("remote-stale\t") })
-        XCTAssertTrue(staleLine.contains("\ttmux-remote\tstale\t-"))
+        XCTAssertTrue(staleLine.contains("\ttmux-remote\tstale\t-\t-"))
 
         let noneLine = try XCTUnwrap(lines.first { $0.hasPrefix("remote-none\t") })
-        XCTAssertTrue(noneLine.contains("\ttmux-remote\t?\t-"))
+        XCTAssertTrue(noneLine.contains("\ttmux-remote\t?\t-\t-"))
 
         // JSON list includes reportedAt, reportedBy, and stale detail annotation
         let jsonRes = run(relay, "member", ["list", "--json"])

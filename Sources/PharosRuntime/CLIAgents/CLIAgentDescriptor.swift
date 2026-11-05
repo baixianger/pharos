@@ -12,6 +12,7 @@ public struct CLIAgentDescriptor: Sendable, Equatable {
     public var routes: [LightRoute]
     public var openingMessageRequired: Bool
     public var exitCommand: String
+    public var availableModels: [String]
 
     public init(
         app: String,
@@ -23,7 +24,8 @@ public struct CLIAgentDescriptor: Sendable, Equatable {
         modelChain: [String],
         routes: [LightRoute],
         openingMessageRequired: Bool,
-        exitCommand: String = ""
+        exitCommand: String = "",
+        availableModels: [String] = []
     ) {
         self.app = app
         self.displayName = displayName
@@ -35,6 +37,7 @@ public struct CLIAgentDescriptor: Sendable, Equatable {
         self.routes = routes
         self.openingMessageRequired = openingMessageRequired
         self.exitCommand = exitCommand
+        self.availableModels = availableModels
     }
 
     /// argv for a fresh session: codex: [bin, "--no-alt-screen", "-c", "check_for_update_on_startup=false"] (+ ["-m", model]); agy: [bin] (+ ["--model", model])
@@ -124,38 +127,71 @@ public struct CLIAgentDescriptor: Sendable, Equatable {
         }
     }
 
-    public static let codex = CLIAgentDescriptor(
-        app: "codex",
-        displayName: "Codex",
-        binaryEnv: "PHAROS_CODEX_TUI_BIN",
-        binaryCandidates: [
-            "/opt/homebrew/bin/codex",
-            "~/.local/bin/codex",
-            "/usr/local/bin/codex"
-        ],
-        processNames: ["codex"],
-        appDataDir: "~/.codex",
-        modelChain: [],
-        routes: [
-            LightRoute(
-                id: "daemon",
-                access: .write,
-                fallback: false,
-                summary: "codex shared app-server daemon: thread/queue/add into the member's TUI thread; read via thread/turns/list. Never answers approvals."
-            ),
-            LightRoute(
-                id: "tui",
-                access: .write,
-                fallback: true,
-                summary: "tmux send-keys into the member's tmux session (idle check first); replies from the transcript (agy) or the daemon/rollout (codex)."
-            )
-        ],
-        openingMessageRequired: false,
-        exitCommand: "/quit"
-    )
+    public static func codex(env: [String: String] = ProcessInfo.processInfo.environment) -> CLIAgentDescriptor {
+        var models: [String] = []
+        if let envList = env["PHAROS_CODEX_MODELS"]?.trimmingCharacters(in: .whitespacesAndNewlines), !envList.isEmpty {
+            models = envList.components(separatedBy: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        } else {
+            let home = env["HOME"] ?? NSHomeDirectory()
+            let configURL = URL(fileURLWithPath: home).appendingPathComponent(".codex/config.toml")
+            if let content = try? String(contentsOf: configURL, encoding: .utf8) {
+                for line in content.components(separatedBy: .newlines) {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if trimmed.hasPrefix("model") && trimmed.contains("=") {
+                        let parts = trimmed.split(separator: "=", maxSplits: 1).map(String.init)
+                        if parts.count == 2 {
+                            let val = parts[1].trimmingCharacters(in: .whitespaces)
+                                .trimmingCharacters(in: CharacterSet(charactersIn: "\"\'"))
+                            if !val.isEmpty && !models.contains(val) {
+                                models.append(val)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return CLIAgentDescriptor(
+            app: "codex",
+            displayName: "Codex",
+            binaryEnv: "PHAROS_CODEX_TUI_BIN",
+            binaryCandidates: [
+                "/opt/homebrew/bin/codex",
+                "~/.local/bin/codex",
+                "/usr/local/bin/codex"
+            ],
+            processNames: ["codex"],
+            appDataDir: "~/.codex",
+            modelChain: [],
+            routes: [
+                LightRoute(
+                    id: "daemon",
+                    access: .write,
+                    fallback: false,
+                    summary: "codex shared app-server daemon: thread/queue/add into the member's TUI thread; read via thread/turns/list. Never answers approvals."
+                ),
+                LightRoute(
+                    id: "tui",
+                    access: .write,
+                    fallback: true,
+                    summary: "tmux send-keys into the member's tmux session (idle check first); replies from the transcript (agy) or the daemon/rollout (codex)."
+                )
+            ],
+            openingMessageRequired: false,
+            exitCommand: "/quit",
+            availableModels: models
+        )
+    }
+
+    public static var codex: CLIAgentDescriptor {
+        codex(env: ProcessInfo.processInfo.environment)
+    }
 
     public static func agy(env: [String: String]) -> CLIAgentDescriptor {
-        CLIAgentDescriptor(
+        let chain = CLIModelChains.agy(env: env)
+        return CLIAgentDescriptor(
             app: "agy",
             displayName: "Antigravity CLI",
             binaryEnv: "PHAROS_AGY_BIN",
@@ -165,7 +201,7 @@ public struct CLIAgentDescriptor: Sendable, Equatable {
             ],
             processNames: ["agy"],
             appDataDir: "~/.gemini/antigravity-cli",
-            modelChain: CLIModelChains.agy(env: env),
+            modelChain: chain,
             routes: [
                 LightRoute(
                     id: "tui",
@@ -175,16 +211,17 @@ public struct CLIAgentDescriptor: Sendable, Equatable {
                 )
             ],
             openingMessageRequired: true,
-            exitCommand: "/exit"
+            exitCommand: "/exit",
+            availableModels: chain
         )
     }
 
     public static func named(_ app: String, env: [String: String]) -> CLIAgentDescriptor? {
         switch app.lowercased() {
         case "codex":
-            return .codex
+            return codex(env: env)
         case "agy", "antigravity":
-            return .agy(env: env)
+            return agy(env: env)
         default:
             return nil
         }
