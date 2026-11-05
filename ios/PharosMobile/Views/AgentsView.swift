@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Shared presentation for a mesh agent's live session state.
+/// Shared presentation for an agent conversation's current runtime state.
 enum AgentStatus {
     static func color(_ raw: String?) -> Color {
         switch raw.flatMap(MeshSessionState.init(rawValue:)) {
@@ -41,8 +41,21 @@ enum AgentStatus {
     }
 }
 
-/// Live roster of every agent across every machine on the mesh — the "see other
-/// ends' agents" panel. Backed by the same `who` poll that drives the chat.
+enum MobileSessionOwnership: String {
+    case attached = "ATTACHED"
+    case external = "EXTERNAL"
+
+    static func classify(_ member: MeshMember) -> Self {
+        guard member.session?.isEmpty == false, member.kind?.isEmpty == false else { return .external }
+        return .attached
+    }
+
+    var color: Color { self == .attached ? .blue : .orange }
+}
+
+/// Compatibility Session surface backed by the Broker roster. RFC-003's remote
+/// Runtime gateway will add Managed conversations and archives to this view;
+/// current records are truthfully labelled Attached or External.
 struct AgentsView: View {
     @Environment(RoomStore.self) private var store
     @State private var filter: AgentFilter = .live
@@ -77,16 +90,16 @@ struct AgentsView: View {
             .overlay {
                 if agents.isEmpty {
                     ContentUnavailableView {
-                        Label(store.error == nil ? "No agents here" : "Agents unavailable",
+                        Label(store.error == nil ? "No sessions here" : "Sessions unavailable",
                               systemImage: store.error == nil ? "terminal" : "exclamationmark.triangle")
                     } description: {
-                        Text(store.error ?? "Agents appear when they join a Mesh room.")
+                        Text(store.error ?? "Attached sessions appear after they register with the Broker.")
                     } actions: {
                         if store.error != nil { Button("Try again") { Task { await store.refresh() } } }
                     }
                 }
             }
-            .navigationTitle("Agents")
+            .navigationTitle("Sessions")
             .toolbarTitleDisplayMode(.inlineLarge)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -97,7 +110,7 @@ struct AgentsView: View {
                     } label: {
                         Image(systemName: "line.3.horizontal.decrease")
                     }
-                    .accessibilityLabel("Agent display options")
+                    .accessibilityLabel("Session display options")
                 }
             }
             .refreshable { await store.refresh() }
@@ -138,7 +151,7 @@ enum AgentFilter: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .live: "Live"
-        case .all: "All agents"
+        case .all: "All sessions"
         case .ended: "Ended"
         }
     }
@@ -153,6 +166,7 @@ struct AgentRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(member.nick).font(.body.weight(.semibold))
+                    sessionBadge
                     Text(AgentStatus.label(member.state)).font(.caption).foregroundStyle(.secondary)
                 }
                 Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -182,8 +196,17 @@ struct AgentRow: View {
         if let project = member.project, !project.isEmpty {
             bits.append((project as NSString).abbreviatingWithTildeInPath)
         }
-        if let pane = member.tmuxPane, !pane.isEmpty { bits.append(pane) }
+        if member.tmuxPane?.isEmpty == false { bits.append("tmux fallback") }
         return bits.isEmpty ? "no location reported" : bits.joined(separator: " · ")
+    }
+
+    private var sessionBadge: some View {
+        let ownership = MobileSessionOwnership.classify(member)
+        return Text(ownership.rawValue)
+            .font(.system(size: 8, weight: .bold)).tracking(0.5)
+            .foregroundStyle(ownership.color)
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .background(ownership.color.opacity(0.1), in: Capsule())
     }
 }
 
@@ -197,6 +220,15 @@ struct AgentDetailView: View {
 
     var body: some View {
         List {
+            Section("Session") {
+                LabeledContent("Ownership", value: MobileSessionOwnership.classify(member).rawValue.capitalized)
+                LabeledContent("Delivery endpoint", value: String(member.id.prefix(8)))
+                if let session = member.session, !session.isEmpty {
+                    LabeledContent("Vendor session", value: String(session.prefix(12)))
+                }
+                LabeledContent("Runtime control", value: "Broker compatibility path")
+            }
+
             Section {
                 LabeledContent("State") {
                     HStack(spacing: 6) {
@@ -211,9 +243,8 @@ struct AgentDetailView: View {
                 if let host = member.host { LabeledContent("Host", value: host) }
                 if let ip = member.tailscaleIP { LabeledContent("Tailscale IP", value: ip) }
                 if let project = member.project { LabeledContent("Directory", value: (project as NSString).abbreviatingWithTildeInPath) }
-                if let pane = member.tmuxPane { LabeledContent("tmux pane", value: pane) }
+                if let pane = member.tmuxPane { LabeledContent("Fallback transport", value: "tmux \(pane)") }
                 if !member.rooms.isEmpty { LabeledContent("Rooms", value: member.rooms.joined(separator: ", ")) }
-                LabeledContent("Session", value: String(member.id.prefix(8)))
             }
 
             if let profile = sshProfile {
@@ -221,13 +252,13 @@ struct AgentDetailView: View {
                     Button {
                         terminal = TerminalTarget(member: member, profile: profile)
                     } label: {
-                        Label("Remote Control (SSH → tmux attach)", systemImage: "terminal")
+                        Label("Legacy terminal attach", systemImage: "terminal")
                     }
                     .disabled(member.tmuxPane == nil)
                 } footer: {
                     Text(member.tmuxPane == nil
                          ? "This agent didn't report a tmux pane, so it can't be attached."
-                         : "Opens an SSH terminal on \(profile.username)@\(profile.sshHost) and attaches its tmux pane.")
+                         : "External fallback: opens SSH to \(profile.username)@\(profile.sshHost) and attaches its tmux pane. This is not a Runtime surface attachment.")
                 }
             } else {
                 Section {
@@ -242,13 +273,13 @@ struct AgentDetailView: View {
                         showingStopConfirm = true
                     } label: {
                         HStack {
-                            Label("Stop agent", systemImage: "stop.circle")
+                            Label("Stop runtime", systemImage: "stop.circle")
                             if isStopping { Spacer(); ProgressView() }
                         }
                     }
                     .disabled(isStopping)
                 } footer: {
-                    Text("Enqueues a stop command on \(member.host ?? "the agent's host"). Requires the host node to be online and a paired Broker.")
+                    Text("Uses the Broker compatibility command. It ends the current runtime transport, not a future persistent conversation archive.")
                 }
             }
         }
@@ -257,8 +288,8 @@ struct AgentDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .fullScreenCover(item: $terminal) { RemoteTerminalView(target: $0) }
-        .confirmationDialog("Stop @\(member.nick)?", isPresented: $showingStopConfirm, titleVisibility: .visible) {
-            Button("Stop agent", role: .destructive) {
+        .confirmationDialog("Stop @\(member.nick)'s runtime?", isPresented: $showingStopConfirm, titleVisibility: .visible) {
+            Button("Stop runtime", role: .destructive) {
                 isStopping = true
                 Task {
                     _ = await store.stopAgent(member)
@@ -267,7 +298,7 @@ struct AgentDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This ends the agent's tmux session on its host.")
+            Text("This ends the legacy tmux runtime on its host. It does not delete vendor conversation history.")
         }
     }
 

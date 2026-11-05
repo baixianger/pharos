@@ -96,11 +96,40 @@ enum MeshHooks {
     static func unread(_ args: [String]) -> Int32 {
         let hookStop = args.contains("--hook-stop")
         let json = args.contains("--json")
-        let explicitNick = args.first { !$0.hasPrefix("-") }
+        let memberIndex = args.firstIndex(of: "--member")
+        let explicitMember = memberIndex.flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
+        if memberIndex != nil, explicitMember == nil {
+            print("error: --member needs a session id")
+            return 2
+        }
+        let optionValues = Set(memberIndex.map { [$0 + 1] } ?? [])
+        let explicitNick = args.indices.first { !optionValues.contains($0) && !args[$0].hasPrefix("-") }
+            .map { args[$0] }
 
         if hookStop { return stopHook(explicitNick: explicitNick, codex: args.contains("--codex")) }
         if args.contains("--hook-post-tool") {
             return postToolHook(explicitNick: explicitNick, codex: args.contains("--codex"))
+        }
+
+        if let explicitMember, !explicitMember.isEmpty {
+            let response = MeshClient.send(MeshRequest(cmd: "peek", memberID: explicitMember))
+            guard response.ok else {
+                print("error: \(response.error ?? "mesh unread failed")")
+                return 1
+            }
+            let messages = response.messages ?? []
+            if json {
+                let payload: [String: Any] = ["member": explicitMember, "count": messages.count]
+                if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) {
+                    print(String(decoding: data, as: UTF8.self))
+                }
+            } else if messages.isEmpty {
+                print("(no unread for member \(explicitMember))")
+            } else {
+                print("\(messages.count) unread for member \(explicitMember):")
+                for message in messages { print(messageSummary(message)) }
+            }
+            return 0
         }
 
         guard let member = resolveMember(cwd: FileManager.default.currentDirectoryPath,
@@ -143,6 +172,52 @@ enum MeshHooks {
                                   stateReason: reason)
         request.nodeID = MeshNodeIdentity.current
         MeshClient.sendIfUp(request)
+        persistRuntimeState(state, session: session, reason: reason)
+    }
+
+    /// Hooks remain fail-open: persist a tiny normalized state record locally.
+    /// The Claude Channel owns Runtime registration and imports this record, so
+    /// compaction, probes and hook retries cannot create duplicate sessions.
+    private static func persistRuntimeState(_ state: MeshSessionState, session: String?,
+                                            reason: String?) {
+        guard let session, !session.isEmpty else { return }
+        let normalized: (presence: String, activity: String, attention: String)
+        switch state.rawValue {
+        case "busy", "working": normalized = ("online", "running", "none")
+        case "blocked", "waiting":
+            let value = reason?.lowercased() ?? ""
+            normalized = ("online", "running",
+                          value.contains("permission") || value.contains("approval")
+                            ? "waitingForApproval" : "waitingForInput")
+        case "idle": normalized = ("online", "idle", "waitingForInput")
+        case "stopped": normalized = ("online", "idle", reason == nil ? "none" : "failed")
+        case "gone": normalized = ("offline", "idle", "none")
+        default: normalized = ("online", "unknown", "none")
+        }
+        let directory = MeshPaths.supportDir
+            .appendingPathComponent("Runtime/session-states", isDirectory: true)
+        let filename = Data(session.utf8).base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "=", with: "") + ".json"
+        let sequence = UInt64(Date().timeIntervalSince1970 * 1_000_000)
+        var object: [String: Any] = [
+            "vendorSessionID": session,
+            "presence": normalized.presence,
+            "activity": normalized.activity,
+            "attention": normalized.attention,
+            "persistence": "persistent",
+            "source": "structuredHook",
+            "sourceEpoch": session,
+            "sequence": sequence,
+            "vendorRawState": state.rawValue,
+        ]
+        if let reason { object["reason"] = reason }
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
+            return
+        }
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? data.write(to: directory.appendingPathComponent(filename), options: .atomic)
     }
 
     /// Stop-hook body. Every failure path returns 0 with no output: a broken or
@@ -472,10 +547,15 @@ enum MeshHooks {
     }
 
     private static func messageSummary(_ message: MeshMsg) -> String {
-        let quote = message.replyTo.map { " ↳ \($0.from): \($0.preview)" } ?? ""
+        let quote = message.replyTo.map { " " + inertQuoteSummary(from: $0.from, preview: $0.preview) } ?? ""
         let files = (message.attachments ?? []).map { "[attachment \($0.name), id \($0.id)]" }
         let body = ([message.text] + files).filter { !$0.isEmpty }.joined(separator: " ")
         return "[\(message.room)] \(message.from): \(body)\(quote)"
+    }
+
+    /// Historical context only: mentions and commands inside a quote are inert.
+    static func inertQuoteSummary(from: String, preview: String) -> String {
+        "[quoted-context inactive; mentions do not route] \(from): \(preview)"
     }
 
     // MARK: local reads

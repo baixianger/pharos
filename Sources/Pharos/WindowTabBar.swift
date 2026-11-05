@@ -9,12 +9,14 @@ import SwiftUI
 // tab <room name>.
 enum PharosViewTitle {
     static let dashboard = "Pharos"
+    static let sessions = "Agent Sessions"
     static let rooms = "Chatroom"
     static let project = "Project"
 }
 
 enum PharosTabTitle {
     static let dashboard = "Dashboard"
+    static let sessions = "Sessions"
     static func room(_ room: String) -> String {
         room.isEmpty ? "Chatroom" : room
     }

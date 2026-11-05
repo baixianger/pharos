@@ -1,0 +1,56 @@
+@startsalt
+skinparam monochrome true
+skinparam shadowing false
+title Pharos macOS - Inbox
+{
+  {+
+    PHAROS
+    --
+    [ ] Command Center
+    [ ] Sessions        4
+    [ ] Projects        8
+    [X] Inbox           3
+    --
+    "FILTERS"
+    "All"
+    "Approvals"
+    "Messages"
+    "System"
+    --
+    [   Settings    ]
+  } | {+
+    == Inbox
+    "[/ Unread 3 | All ]                    [ Mark all read ]"
+    --
+    "APPROVAL"
+    "Codex wants to run a network command"
+    "Pharos Runtime RPC - mac-mini - now"
+    "                                      [Deny] [Review]"
+    --
+    "MESSAGE"
+    "Claude requested a product decision"
+    "iOS navigation - macbook - 4m"
+    "                                      [Open Session]"
+    --
+    "SYSTEM"
+    "DSH delivery failed after one attempt"
+    "Broker plugin - mac-mini - 12m"
+    "                                      [Inspect] [Retry]"
+  } | {+
+    == Approval details
+    "Codex / Pharos Runtime RPC"
+    "Command execution request"
+    --
+    "Command"
+    "curl https://example.invalid/schema"
+    --
+    "Reason"
+    "Fetch the protocol schema requested by the user."
+    --
+    "Scope"
+    "This command only"
+    --
+    [ Deny ]                         [ Approve once ]
+  }
+}
+@endsalt

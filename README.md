@@ -213,6 +213,30 @@ The macOS executable provides two adapters over shared core behavior: CLI
 argument/output handling and SwiftUI presentation. SwiftUI code does not manage
 LaunchAgents or construct helper process commands.
 
+### Target agent runtime architecture
+
+Pharos is moving from terminal-owned agent processes to persistent conversations
+driven by a Host Runtime RPC. Codex App Server, Claude native messaging/Channels,
+and the DSH Cordis plugin remain vendor-specific drivers behind one Pharos
+conversation, runtime-lease, surface-attachment, and delivery model. Native TUIs,
+Desktop/mobile clients where supported, and Pharos itself become attachable
+presentation surfaces rather than conversation owners.
+
+tmux poke remains legacy shipped behavior during the migration; it is not part
+of the target transport. See [RFC-003: Agent Runtime RPC and Persistent
+Conversations](docs/RFC-003-AGENT-RUNTIME-RPC.md).
+
+Agents that are not wired into the Host Runtime can still be addressed through
+the lightweight tier: a Broker member directory, point-to-point delivery, and
+email-style threads (a new send mints one; a reply inherits it from the reply-id).
+`pharos session new` creates a session on a Pharos node via the achat executable
+and registers it (`dsh`, `ag`, `codex`, or `cursor`). A missing workspace is added first unless `--no-add-project`.
+`--host local` runs on this machine. A node with no recent heartbeat is used
+when `ssh pharos --version` succeeds, and queued only when that probe fails.
+`pharos project add` registers a workspace on that same node
+(`added`, `already`, or `needs_user_action`).
+See [RFC-005: Lightweight Agent Messaging](docs/RFC-005-LIGHTWEIGHT-AGENT-MESSAGING.md).
+
 ---
 
 ## Privacy

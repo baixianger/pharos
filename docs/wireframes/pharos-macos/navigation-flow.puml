@@ -1,0 +1,40 @@
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam activity {
+  BackgroundColor white
+  BorderColor black
+}
+title Pharos macOS - Primary Workspace Flow
+
+start
+:Open Command Center;
+if (Needs attention?) then (yes)
+  :Review approval, message, or failed delivery;
+  :Open related Session;
+else (no)
+  if (Continue active work?) then (yes)
+    :Open Session;
+  else (no)
+    :Open Project;
+    :Select Work Item;
+    if (Session attached?) then (yes)
+      :Open Session;
+    else (no)
+      :Start Session;
+      :Choose vendor only if needed;
+    endif
+  endif
+endif
+:Observe stream and send input;
+if (Agent needs approval?) then (yes)
+  :Create Inbox item;
+  :Review and resolve;
+  :Return to Session;
+endif
+if (Work complete?) then (yes)
+  :Mark Work Item done;
+  :Detach or archive Session;
+endif
+stop
+@enduml

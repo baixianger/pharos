@@ -1,0 +1,241 @@
+import Foundation
+import PharosMeshCore
+
+public struct CLIAgentDescriptor: Sendable, Equatable {
+    public var app: String
+    public var displayName: String
+    public var binaryEnv: String
+    public var binaryCandidates: [String]
+    public var processNames: [String]
+    public var appDataDir: String
+    public var modelChain: [String]
+    public var routes: [LightRoute]
+    public var openingMessageRequired: Bool
+    public var exitCommand: String
+    public var availableModels: [String]
+
+    public init(
+        app: String,
+        displayName: String,
+        binaryEnv: String,
+        binaryCandidates: [String],
+        processNames: [String],
+        appDataDir: String,
+        modelChain: [String],
+        routes: [LightRoute],
+        openingMessageRequired: Bool,
+        exitCommand: String = "",
+        availableModels: [String] = []
+    ) {
+        self.app = app
+        self.displayName = displayName
+        self.binaryEnv = binaryEnv
+        self.binaryCandidates = binaryCandidates
+        self.processNames = processNames
+        self.appDataDir = appDataDir
+        self.modelChain = modelChain
+        self.routes = routes
+        self.openingMessageRequired = openingMessageRequired
+        self.exitCommand = exitCommand
+        self.availableModels = availableModels
+    }
+
+    /// argv for a fresh session: codex: [bin, "--no-alt-screen", "-c", "check_for_update_on_startup=false"] (+ skip-approval if yolo) (+ ["-m", model]); agy: [bin] (+ skip-approval if yolo) (+ ["--model", model])
+    public func launchArgv(bin: String, model: String?, mode: String = "yolo") -> [String] {
+        if app == "codex" {
+            var args = [bin, "--no-alt-screen", "-c", "check_for_update_on_startup=false"]
+            if mode != "safe" {
+                args.append("--dangerously-bypass-approvals-and-sandbox")
+            }
+            if let model, !model.isEmpty {
+                args.append(contentsOf: ["-m", model])
+            }
+            return args
+        } else {
+            var args = [bin]
+            if mode != "safe" {
+                args.append("--dangerously-skip-permissions")
+            }
+            if let model, !model.isEmpty {
+                args.append(contentsOf: ["--model", model])
+            }
+            return args
+        }
+    }
+
+    /// argv for resuming `sessionID`: codex: [bin, "resume", sessionID, "--no-alt-screen", "-c", "check_for_update_on_startup=false"] (+ skip-approval if yolo) (+ -m); agy: [bin, "--conversation", sessionID] (+ skip-approval if yolo) (+ --model)
+    public func resumeArgv(bin: String, sessionID: String, model: String?, mode: String = "yolo") -> [String] {
+        if app == "codex" {
+            var args = [bin, "resume", sessionID, "--no-alt-screen", "-c", "check_for_update_on_startup=false"]
+            if mode != "safe" {
+                args.append("--dangerously-bypass-approvals-and-sandbox")
+            }
+            if let model, !model.isEmpty {
+                args.append(contentsOf: ["-m", model])
+            }
+            return args
+        } else {
+            var args = [bin, "--conversation", sessionID]
+            if mode != "safe" {
+                args.append("--dangerously-skip-permissions")
+            }
+            if let model, !model.isEmpty {
+                args.append(contentsOf: ["--model", model])
+            }
+            return args
+        }
+    }
+
+    /// env value, else first executable candidate (expand ~ with HOME), else app name
+    public func resolveBinary(env: [String: String], isExecutable: (String) -> Bool) -> String {
+        if let val = env[binaryEnv], !val.trimmingCharacters(in: .whitespaces).isEmpty {
+            return val
+        }
+        let home = env["HOME"] ?? NSHomeDirectory()
+        for candidate in binaryCandidates {
+            let expanded: String
+            if candidate.hasPrefix("~/") {
+                expanded = home + "/" + candidate.dropFirst(2)
+            } else if candidate == "~" {
+                expanded = home
+            } else {
+                expanded = candidate
+            }
+            if isExecutable(expanded) {
+                return expanded
+            }
+        }
+        return app
+    }
+
+    private func expandedAppData(home: String) -> String {
+        if appDataDir.hasPrefix("~/") {
+            return home + "/" + appDataDir.dropFirst(2)
+        } else if appDataDir == "~" {
+            return home
+        } else {
+            return appDataDir
+        }
+    }
+
+    /// agy: <appData>/brain/<id>/.system_generated/logs/transcript.jsonl ; codex: nil (read via daemon)
+    public func transcriptPath(sessionID: String, home: String) -> String? {
+        if app == "agy" {
+            let dir = expandedAppData(home: home)
+            return "\(dir)/brain/\(sessionID)/.system_generated/logs/transcript.jsonl"
+        }
+        return nil
+    }
+
+    /// agy: <appData>/presence/<id>.lock (held by the TUI that owns the conversation); codex: <appData>/thread-writer-locks/<id>.lock
+    public func lockPath(sessionID: String, home: String) -> String {
+        let dir = expandedAppData(home: home)
+        if app == "agy" {
+            return "\(dir)/presence/\(sessionID).lock"
+        } else if app == "codex" {
+            return "\(dir)/thread-writer-locks/\(sessionID).lock"
+        } else {
+            return "\(dir)/locks/\(sessionID).lock"
+        }
+    }
+
+    public static func codex(env: [String: String] = ProcessInfo.processInfo.environment) -> CLIAgentDescriptor {
+        var models: [String] = []
+        if let envList = env["PHAROS_CODEX_MODELS"]?.trimmingCharacters(in: .whitespacesAndNewlines), !envList.isEmpty {
+            models = envList.components(separatedBy: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        } else {
+            let home = env["HOME"] ?? NSHomeDirectory()
+            let configURL = URL(fileURLWithPath: home).appendingPathComponent(".codex/config.toml")
+            if let content = try? String(contentsOf: configURL, encoding: .utf8) {
+                for line in content.components(separatedBy: .newlines) {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if trimmed.hasPrefix("model") && trimmed.contains("=") {
+                        let parts = trimmed.split(separator: "=", maxSplits: 1).map(String.init)
+                        if parts.count == 2 {
+                            let val = parts[1].trimmingCharacters(in: .whitespaces)
+                                .trimmingCharacters(in: CharacterSet(charactersIn: "\"\'"))
+                            if !val.isEmpty && !models.contains(val) {
+                                models.append(val)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return CLIAgentDescriptor(
+            app: "codex",
+            displayName: "Codex",
+            binaryEnv: "PHAROS_CODEX_TUI_BIN",
+            binaryCandidates: [
+                "/opt/homebrew/bin/codex",
+                "~/.local/bin/codex",
+                "/usr/local/bin/codex"
+            ],
+            processNames: ["codex"],
+            appDataDir: "~/.codex",
+            modelChain: [],
+            routes: [
+                LightRoute(
+                    id: "daemon",
+                    access: .write,
+                    fallback: false,
+                    summary: "codex shared app-server daemon: thread/queue/add into the member's TUI thread; read via thread/turns/list. Never answers approvals."
+                ),
+                LightRoute(
+                    id: "tui",
+                    access: .write,
+                    fallback: true,
+                    summary: "tmux send-keys into the member's tmux session (idle check first); replies from the transcript (agy) or the daemon/rollout (codex)."
+                )
+            ],
+            openingMessageRequired: false,
+            exitCommand: "/quit",
+            availableModels: models
+        )
+    }
+
+    public static var codex: CLIAgentDescriptor {
+        codex(env: ProcessInfo.processInfo.environment)
+    }
+
+    public static func agy(env: [String: String]) -> CLIAgentDescriptor {
+        let chain = CLIModelChains.agy(env: env)
+        return CLIAgentDescriptor(
+            app: "agy",
+            displayName: "Antigravity CLI",
+            binaryEnv: "PHAROS_AGY_BIN",
+            binaryCandidates: [
+                "/opt/homebrew/bin/agy",
+                "~/.local/bin/agy"
+            ],
+            processNames: ["agy"],
+            appDataDir: "~/.gemini/antigravity-cli",
+            modelChain: chain,
+            routes: [
+                LightRoute(
+                    id: "tui",
+                    access: .write,
+                    fallback: false,
+                    summary: "tmux send-keys into the member's tmux session (idle check first); replies from the transcript (agy) or the daemon/rollout (codex)."
+                )
+            ],
+            openingMessageRequired: true,
+            exitCommand: "/exit",
+            availableModels: chain
+        )
+    }
+
+    public static func named(_ app: String, env: [String: String]) -> CLIAgentDescriptor? {
+        switch app.lowercased() {
+        case "codex":
+            return codex(env: env)
+        case "agy", "antigravity":
+            return agy(env: env)
+        default:
+            return nil
+        }
+    }
+}

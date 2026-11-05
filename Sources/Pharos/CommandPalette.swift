@@ -276,6 +276,16 @@ private struct PaletteRow: View {
                     }
 
                     QuickActionButton(
+                        symbol: "point.3.connected.trianglepath.dotted",
+                        label: "DeepSeek",
+                        disabled: !project.hasLocal
+                    ) {
+                        Task { await LaunchService.launchAgent(.dsh, project: project, terminal: store.terminal) }
+                        onSelect()
+                        onAction()
+                    }
+
+                    QuickActionButton(
                         symbol: "terminal",
                         label: "Terminal",
                         disabled: !project.hasLocal

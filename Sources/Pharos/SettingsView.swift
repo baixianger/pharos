@@ -26,8 +26,15 @@ struct HelpBadge: View {
 
 struct SettingsView: View {
     var initialTab: Int? = nil
-    // Seeded by SnapshotMode (screenshot runs open a specific tab); defaults to General.
     @State private var tab: Int
+
+    private let destinations: [(title: String, icon: String)] = [
+        ("General", "slider.horizontal.3"),
+        ("Launch", "play.square.stack"),
+        ("Projects", "folder"),
+        ("Agents & CLI", "terminal"),
+        ("Machines", "macbook.and.iphone")
+    ]
 
     init(initialTab: Int? = nil) {
         self.initialTab = initialTab
@@ -35,19 +42,89 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        TabView(selection: $tab) {
-            GeneralSettingsTab()
-                .tabItem { Label("General", systemImage: "gearshape") }.tag(0)
-            LaunchSettingsTab()
-                .tabItem { Label("Launch", systemImage: "paperplane.fill") }.tag(1)
-            ProjectsSettingsTab()
-                .tabItem { Label("Projects", systemImage: "folder") }.tag(2)
-            CLISettingsTab()
-                .tabItem { Label("CLI", systemImage: "terminal") }.tag(3)
-            MachinesSettingsTab()
-                .tabItem { Label("Machines", systemImage: "macbook.and.iphone") }.tag(4)
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Image(systemName: "point.3.filled.connected.trianglepath.dotted")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(.tint)
+                    Text("Pharos")
+                        .font(.title2.weight(.semibold))
+                    Text("Control center")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 22)
+                .padding(.bottom, 18)
+
+                VStack(spacing: 4) {
+                    ForEach(destinations.indices, id: \.self) { index in
+                        Button {
+                            withAnimation(.easeOut(duration: 0.16)) { tab = index }
+                        } label: {
+                            HStack(spacing: 11) {
+                                Image(systemName: destinations[index].icon)
+                                    .font(.system(size: 14, weight: .medium))
+                                    .frame(width: 19)
+                                Text(destinations[index].title)
+                                    .font(.system(size: 13, weight: tab == index ? .semibold : .medium))
+                                Spacer()
+                            }
+                            .foregroundStyle(tab == index ? .primary : .secondary)
+                            .padding(.horizontal, 12)
+                            .frame(height: 38)
+                            .background {
+                                if tab == index {
+                                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                        .fill(.white.opacity(0.09))
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 8)
+
+                Spacer()
+
+                Text("Settings are local to this Pharos host unless marked as Broker data.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(18)
+            }
+            .frame(width: 196)
+            .background(.black.opacity(0.12))
+
+            Divider().opacity(0.45)
+
+            VStack(spacing: 0) {
+                HStack {
+                    Text(destinations[tab].title)
+                        .font(.title2.weight(.semibold))
+                    Spacer()
+                }
+                .padding(.horizontal, 22)
+                .padding(.vertical, 18)
+
+                Divider().opacity(0.35)
+
+                Group {
+                    switch tab {
+                    case 0: GeneralSettingsTab()
+                    case 1: LaunchSettingsTab()
+                    case 2: ProjectsSettingsTab()
+                    case 3: CLISettingsTab()
+                    default: MachinesSettingsTab()
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
-        .frame(width: 520, height: 480)
+        .frame(width: 780, height: 600)
+        .background(.regularMaterial)
     }
 }
 

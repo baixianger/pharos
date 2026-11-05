@@ -473,8 +473,8 @@ private struct IPadAgentsIndex: View {
         .pharosPlainList()
         .overlay {
             if agents.isEmpty {
-                ContentUnavailableView("No agents here", systemImage: "terminal",
-                                       description: Text("Agents appear after they join a Mesh room."))
+                ContentUnavailableView("No sessions here", systemImage: "terminal",
+                                       description: Text("Attached sessions appear after they register with the Broker."))
             }
         }
     }
@@ -534,8 +534,8 @@ private struct IPadWorkspaceDetail: View {
             if let selectedAgent {
                 AgentDetailView(member: selectedAgent)
             } else {
-                IPadDetailPlaceholder(title: "Choose an agent", symbol: "terminal",
-                                      description: "Select an agent from the middle column.")
+                IPadDetailPlaceholder(title: "Choose a session", symbol: "terminal",
+                                      description: "Select an attached or external session from the middle column.")
             }
         case .chat:
             if !brokerConfigured {

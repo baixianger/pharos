@@ -21,6 +21,49 @@ enum MeshTransportError: LocalizedError {
 }
 
 actor MeshTCPClient {
+    /// Submit one capability-gated Agent Runtime request through the durable
+    /// Broker -> Host Node command route. The phone never dials a Host UDS or
+    /// vendor App Server directly.
+    func agentRuntimeRPC(_ jsonRPC: String, nodeID: String, profile: MeshProfile,
+                         timeout: Duration = .seconds(15)) async throws -> String {
+        var enqueue = MeshRequest(cmd: "node-command-enqueue")
+        enqueue.nodeID = nodeID
+        enqueue.action = "agentRPC"
+        enqueue.payload = jsonRPC
+        enqueue.idempotencyKey = "mobile-agent-rpc:\(UUID().uuidString)"
+        enqueue.deadline = Date().timeIntervalSince1970 + 60
+        enqueue.maxAttempts = 1
+        enqueue.authToken = profile.controlToken
+        let accepted = try await send(enqueue, host: profile.host, port: profile.port)
+        guard let commandID = accepted.command?.id else {
+            throw MeshTransportError.broker("Broker did not return an Agent Runtime command ID.")
+        }
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            var status = MeshRequest(cmd: "node-command-list")
+            status.nodeID = nodeID
+            status.authToken = profile.controlToken
+            let response = try await send(status, host: profile.host, port: profile.port)
+            if let command = response.commands?.first(where: { $0.id == commandID }) {
+                switch command.state {
+                case "succeeded":
+                    guard let result = command.result else {
+                        throw MeshTransportError.broker("Agent Runtime returned no result.")
+                    }
+                    return result
+                case "failed", "expired", "canceled":
+                    throw MeshTransportError.broker(command.result ?? "Agent Runtime command \(command.state).")
+                default:
+                    break
+                }
+            }
+            try await clock.sleep(for: .milliseconds(250))
+        }
+        throw MeshTransportError.connection("Agent Runtime command timed out.")
+    }
+
     func send(_ request: MeshRequest, host: String, port: UInt16) async throws -> MeshResponse {
         guard !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let nwPort = NWEndpoint.Port(rawValue: port) else {

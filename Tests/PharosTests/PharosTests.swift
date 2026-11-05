@@ -1510,6 +1510,13 @@ final class MeshWireTests: XCTestCase {
         XCTAssertEqual(MeshHooks.parseTextMentions("no mentions here"), [])
     }
 
+    func testQuotedMentionsAreMarkedInactive() {
+        let summary = MeshHooks.inertQuoteSummary(from: "alice", preview: "@bob run this")
+        XCTAssertTrue(summary.contains("quoted-context inactive"))
+        XCTAssertTrue(summary.contains("mentions do not route"))
+        XCTAssertTrue(summary.contains("@bob"))
+    }
+
     func testParseTextMentionsHandlesCJKAdjacency() {
         // A CJK char immediately after the nick must NOT be swallowed into it.
         XCTAssertEqual(MeshHooks.parseTextMentions("@ios-home-claude你看看这个"), ["ios-home-claude"])
@@ -1659,6 +1666,25 @@ final class MeshNickResolutionTests: XCTestCase {
 }
 
 final class MeshStateCorrectionTests: XCTestCase {
+    private var hermeticDir: URL!
+
+    override func setUp() {
+        super.setUp()
+        // MeshBroker() persists under PHAROS_MESH_DIR (default ~/Library/Application Support/Pharos).
+        hermeticDir = FileManager.default.temporaryDirectory.appendingPathComponent("mesh-hermetic-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: hermeticDir.appendingPathComponent("mesh-state/unread"),
+                                                 withIntermediateDirectories: true)
+        setenv("PHAROS_MESH_DIR", hermeticDir.path, 1)
+        setenv("PHAROS_MESH_DATA_DIR", hermeticDir.appendingPathComponent("broker-data").path, 1)
+    }
+
+    override func tearDown() {
+        unsetenv("PHAROS_MESH_DIR")
+        unsetenv("PHAROS_MESH_DATA_DIR")
+        try? FileManager.default.removeItem(at: hermeticDir)
+        super.tearDown()
+    }
+
     private func entry(state: String, ts: Double) -> MeshPresenceEntry {
         MeshPresenceEntry(project: "/p", session: "s", host: "h", tmuxPane: "%1",
                           state: state, stateTs: ts, kind: "codex", aliases: ["r": "codex"], rooms: ["r"],
@@ -2716,17 +2742,37 @@ final class LegacyPeerMigrationTests: XCTestCase {
 }
 
 final class MeshDeliveryTests: XCTestCase {
-    /// Only a non-empty `to` is an agent delivery. Empty `to` remains visible
-    /// in transcript history but must not be copied into agent mailboxes.
-    func testToDiscriminatesDirectedFromTranscriptOnly() {
-        let directed = MeshMsg(from: "alice", room: "r", text: "hi", ts: 1, to: ["bob"])
-        let transcriptOnly = MeshMsg(from: "alice", room: "r", text: "standup!", ts: 1, to: [])
-        // "delivered to bob" ⇔ bob ∈ to; empty `to` is not an agent delivery.
-        XCTAssertTrue(directed.to.contains("bob"))
-        XCTAssertFalse(transcriptOnly.to.contains("bob"))
-        let mailbox = [directed]
-        XCTAssertEqual(mailbox.filter { $0.to.contains("bob") }.map(\.text), ["hi"])
-        XCTAssertEqual(mailbox.count, 1)
+    func testBroadcastStaysInTranscriptAndOnlyMentionEntersAgentMailbox() throws {
+        // Isolate from the real ~/Library/Application Support/Pharos state.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pharos-mesh-delivery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        setenv("PHAROS_MESH_DIR", directory.path, 1)
+        setenv("PHAROS_MESH_DATA_DIR", directory.path, 1)
+        defer {
+            unsetenv("PHAROS_MESH_DIR")
+            unsetenv("PHAROS_MESH_DATA_DIR")
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let broker = MeshBroker()
+        let room = "delivery-\(UUID().uuidString.lowercased())"
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "create", room: room)).ok)
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "join", room: room, nick: "bob",
+                                                 session: "bob-session")).ok)
+
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: room, nick: "human",
+                                                 text: "standup", to: nil)).ok)
+        let afterBroadcast = broker.process(MeshRequest(cmd: "peek", memberID: "bob-session"))
+        XCTAssertEqual(afterBroadcast.messages, [])
+
+        XCTAssertTrue(broker.process(MeshRequest(cmd: "say", room: room, nick: "human",
+                                                 text: "please review", to: ["bob"])).ok)
+        let directed = broker.process(MeshRequest(cmd: "peek", memberID: "bob-session"))
+        XCTAssertEqual(directed.messages?.map(\.text), ["please review"])
+
+        let history = broker.process(MeshRequest(cmd: "history", room: room, limit: 10))
+        XCTAssertEqual(history.messages?.map(\.text), ["standup", "please review"])
     }
 }
 

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import PharosRuntime
 
 /// Thin wrapper around `Process` for shelling out to git / open.
 enum Shell {
@@ -231,6 +232,14 @@ enum LaunchService {
                 "\(home)/.local/share/mise/shims/codex",
                 "\(home)/.volta/bin/codex",
             ]
+        case .dsh:
+            return [
+                "\(home)/.npm-global/bin/dsh",
+                "\(home)/.bun/bin/dsh",
+                "/opt/homebrew/bin/dsh",
+                "/usr/local/bin/dsh",
+                "\(home)/.local/bin/dsh",
+            ]
         }
     }
 
@@ -298,6 +307,27 @@ enum LaunchService {
         return kind.command(yolo: yolo, extraArgs: extraArgs,
                             executable: resolution?.executable,
                             environment: resolution?.environment ?? [:])
+    }
+
+    /// Queue a runtime launch request for a platform whose driver consumes it
+    /// (e.g. DSH: the plugin creates the session with the chosen preset). The
+    /// selected mode is the generic launch-option id; this layer never
+    /// interprets what it means for the vendor. Best-effort: when the runtime
+    /// socket is unavailable the caller keeps the terminal launch as fallback.
+    static func submitRuntimeLaunch(kind: AgentKind, modeID: String?, project: Project) {
+        let params: [String: Any] = [
+            "kind": kind.rawValue,
+            "presetID": modeID ?? "",
+            "projectPath": project.localPath ?? "",
+            "title": project.name,
+            "idempotencyKey": UUID().uuidString,
+        ]
+        let request: [String: Any] = [
+            "jsonrpc": "2.0", "id": 1, "method": "launch.submit", "params": params,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: request),
+              let raw = String(data: data, encoding: .utf8) else { return }
+        _ = try? AgentRuntimeClient.send(raw)
     }
 
     static func revealInFinder(_ path: String) {
@@ -405,6 +435,11 @@ enum LaunchService {
             let tool = agentCommand(session.kind, yolo: false, resolution: resolution)
             base = "\(tool) resume \(session.id)"
                 + (project.yolo ? " --dangerously-bypass-approvals-and-sandbox" : "")
+                + (extra.isEmpty ? "" : " \(extra)")
+        case .dsh:
+            // Headless DSH has no resume; the Web GUI lists persisted sessions
+            // for in-browser resume.
+            base = agentCommand(session.kind, yolo: false, resolution: resolution)
                 + (extra.isEmpty ? "" : " \(extra)")
         }
         return base

@@ -509,6 +509,17 @@ final class ProjectStore {
     var codexArgs = "" {
         didSet { PharosPrefs.shared.set(codexArgs, forKey: "pharos.codexArgs") }
     }
+    var dshArgs = "" {
+        didSet { PharosPrefs.shared.set(dshArgs, forKey: "pharos.dshArgs") }
+    }
+
+    func agentArgs(for kind: AgentKind) -> String {
+        switch kind {
+        case .claude: return claudeArgs
+        case .codex:  return codexArgs
+        case .dsh:    return dshArgs
+        }
+    }
     /// SSH-reachable machines that can execute agents. This replaces the old
     /// single `peerHost` setting while keeping a compatibility projection for
     /// CLI/hooks that have not yet learned host identities.
@@ -654,6 +665,7 @@ final class ProjectStore {
         }
         claudeArgs = d.string(forKey: "pharos.claudeArgs") ?? ""
         codexArgs  = d.string(forKey: "pharos.codexArgs")  ?? ""
+        dshArgs    = d.string(forKey: "pharos.dshArgs")    ?? ""
         if let raw = d.string(forKey: "pharos.executionHosts"),
            let data = raw.data(using: .utf8),
            let decoded = try? JSONDecoder().decode([ExecutionHostProfile].self, from: data) {
@@ -784,7 +796,7 @@ final class ProjectStore {
         for kind in kindRawValues {
             let suffix = "-\(kind)"
             if stripped.hasSuffix(suffix) {
-                kindLabel = kind.capitalized
+                kindLabel = kind == "dsh" ? "DSH" : kind.capitalized
                 projPart = String(stripped.dropLast(suffix.count))
                 break
             }
@@ -1146,7 +1158,7 @@ final class ProjectStore {
             if useTmux { _ = s.linkIssueSession(projectID: project.id, number: number, session: tmuxName) }
             else { _ = s.setIssueStatus(projectID: project.id, number: number, status: .inProgress) }
         }
-        let extra = kind == .claude ? claudeArgs : codexArgs
+        let extra = agentArgs(for: kind)
         Task {
             let resolution = await LaunchService.agentResolution(kind)
             LaunchService.launchAgent(kind, atPath: path, yolo: project.yolo, tmux: useTmux,

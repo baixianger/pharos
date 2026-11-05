@@ -1,0 +1,41 @@
+@startsalt
+skinparam monochrome true
+skinparam shadowing false
+title Pharos macOS - Agent Sidebar Shell
+{
+  {+
+    "[ +  New Session                         ] [S] [<]"
+    --
+    "PROJECTS"
+    "| Projects                                      8  >"
+    "# Rooms                                         5  >"
+    "  Settings                                         >"
+    --
+    "PINNED"
+    "# pharos-dev                                3 unread"
+    "B  C Runtime RPC                          working"
+    "G  A iOS navigation                      approval"
+    --
+    "ACTIVE SESSIONS"
+    "B  Pharos gateway           Codex          working"
+    "G  NearTo foundation        Claude         waiting"
+    "B  Broker plugin            DSH               idle"
+    "C Legacy terminal           Codex         fallback"
+    "  Show all sessions                              >"
+    --
+    "mac-mini + macbook                             online"
+  } | {+
+    == Pharos gateway
+    "Codex     Working     Pharos     mac-mini"
+    --
+    "Session transcript and runtime activity"
+    ""
+    "The main surface shifts as one rounded layer while the"
+    "sidebar is revealed. It returns to a square full-window"
+    "surface when the sidebar is hidden."
+    ""
+    --
+    "[ Message this session...                              ] [Send]"
+  }
+}
+@endsalt

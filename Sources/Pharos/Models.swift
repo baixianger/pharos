@@ -368,14 +368,60 @@ struct GitHubRepo: Identifiable, Codable, Hashable {
     var id: String { url }
 }
 
-/// The two coding agents Pharos can launch.
+/// The coding agents Pharos can launch.
+/// A vendor-neutral launch mode an agent platform declares. The UI renders
+/// these generically and appends the chosen option's extraArgs to the launch
+/// command. Vendors own this list; the UI never interprets a mode's meaning.
+struct AgentLaunchOption: Identifiable, Hashable {
+    let id: String
+    let label: String
+    let detail: String
+    let extraArgs: String
+}
+
 enum AgentKind: String, CaseIterable, Identifiable {
     case claude
     case codex
+    case dsh
 
     var id: String { rawValue }
-    var label: String { self == .claude ? "Claude Code" : "Codex" }
-    var symbol: String { self == .claude ? "sparkles" : "chevron.left.forwardslash.chevron.right" }
+    var label: String {
+        switch self {
+        case .claude: return "Claude Code"
+        case .codex:  return "Codex"
+        case .dsh:    return "DeepSeek"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .claude: return "sparkles"
+        case .codex:  return "chevron.left.forwardslash.chevron.right"
+        case .dsh:    return "point.3.connected.trianglepath.dotted"
+        }
+    }
+
+    /// Launch modes this platform exposes. Empty = a single default launch.
+    /// DSH's modes are dynamic agent presets discovered from disk, not a
+    /// hardcoded list — the UI renders whatever discovery returns.
+    var launchOptions: [AgentLaunchOption] {
+        switch self {
+        case .claude, .codex:
+            return []
+        case .dsh:
+            return DSHLaunchDiscovery.presets()
+        }
+    }
+
+    /// Platforms whose session creation is routed through the runtime
+    /// launch-request RPC (a driver consumes the queued request). Others launch
+    /// purely as a CLI command in the terminal. The New Session UI reads this
+    /// generically and never decides what it means.
+    var launchesViaRuntime: Bool {
+        switch self {
+        case .dsh: return true
+        case .claude, .codex: return false
+        }
+    }
 
     func command(yolo: Bool, extraArgs: String = "", executable: String? = nil,
                  environment: [String: String] = [:]) -> String {
@@ -398,6 +444,10 @@ enum AgentKind: String, CaseIterable, Identifiable {
             base = yolo ? "\(tool) --dangerously-skip-permissions" : tool
         case .codex:
             base = yolo ? "\(tool) --dangerously-bypass-approvals-and-sandbox" : tool
+        case .dsh:
+            // DSH has no terminal TUI; its interactive surface is the Web GUI.
+            // yolo/sandbox is configured inside the web app, not via a flag.
+            base = "\(tool) web"
         }
         let trimmed = extraArgs.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? base : "\(base) \(trimmed)"

@@ -8,6 +8,8 @@ import Glibc
 
 enum MeshNodeService {
     private static let label = "me.pai.pharos.mesh-node"
+    private static let daemonLabel = "me.pai.pharos.mesh"
+    private static let legacyDaemonLabel = "me.pai.pharos.daemon"
 
     static func install(endpoint: String?, buildID: String? = nil) throws -> String {
         if let endpoint, !safeEndpoint(endpoint) { throw ServiceError.invalidEndpoint }
@@ -20,6 +22,10 @@ enum MeshNodeService {
             .appendingPathComponent("Library/Logs/Pharos", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        // A pre-pharosd Mesh Node owns and unlinks this socket on shutdown.
+        // Stop it before the independent daemon binds the same public path.
+        _ = command("/bin/launchctl", ["bootout", "gui/\(getuid())", file.path])
+        try installDaemonLaunchAgent(logDirectory: logDirectory)
         let endpointArguments = endpoint.map {
             "<string>--endpoint</string><string>\(xml($0))</string>"
         } ?? ""
@@ -45,7 +51,6 @@ enum MeshNodeService {
         </dict></plist>
         """
         try Data(plist.utf8).write(to: file, options: .atomic)
-        _ = command("/bin/launchctl", ["bootout", "gui/\(getuid())", file.path])
         let result = command("/bin/launchctl", ["bootstrap", "gui/\(getuid())", file.path])
         guard result.status == 0 else { throw ServiceError.command(result.output) }
         return file.path
@@ -119,7 +124,53 @@ enum MeshNodeService {
             [.posixPermissions: NSNumber(value: Int16(0o755))],
             ofItemAtPath: destination.path
         )
+        for helperName in ["pharos-meshd", "pharos-codex-adapter"] {
+            let helperSource = source.deletingLastPathComponent().appendingPathComponent(helperName)
+            guard FileManager.default.isExecutableFile(atPath: helperSource.path) else { continue }
+            let helperDestination = directory.appendingPathComponent(helperName)
+            try Data(contentsOf: helperSource).write(to: helperDestination, options: .atomic)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o755))],
+                ofItemAtPath: helperDestination.path
+            )
+        }
         return destination.path
+    }
+
+    private static func installDaemonLaunchAgent(logDirectory: URL) throws {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let runtimeDirectory = home
+            .appendingPathComponent("Library/Application Support/Pharos/Runtime", isDirectory: true)
+        let executable = runtimeDirectory.appendingPathComponent("pharos-meshd")
+        guard FileManager.default.isExecutableFile(atPath: executable.path) else {
+            throw ServiceError.command("Missing installed backend: \(executable.path)")
+        }
+        let file = home.appendingPathComponent("Library/LaunchAgents/\(daemonLabel).plist")
+        let socket = runtimeDirectory.appendingPathComponent("agent-runtime.sock").path
+        let log = logDirectory.appendingPathComponent("pharos-meshd.log").path
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict>
+          <key>Label</key><string>\(daemonLabel)</string>
+          <key>ProgramArguments</key><array>
+            <string>\(xml(executable.path))</string>
+            <string>--socket</string><string>\(xml(socket))</string>
+            <string>--data-dir</string><string>\(xml(runtimeDirectory.path))</string>
+          </array>
+          <key>RunAtLoad</key><true/>
+          <key>KeepAlive</key><true/>
+          <key>ThrottleInterval</key><integer>5</integer>
+          <key>ProcessType</key><string>Background</string>
+          <key>StandardOutPath</key><string>\(xml(log))</string>
+          <key>StandardErrorPath</key><string>\(xml(log))</string>
+        </dict></plist>
+        """
+        try Data(plist.utf8).write(to: file, options: .atomic)
+        _ = command("/bin/launchctl", ["bootout", "gui/\(getuid())/\(legacyDaemonLabel)"])
+        _ = command("/bin/launchctl", ["bootout", "gui/\(getuid())", file.path])
+        let result = command("/bin/launchctl", ["bootstrap", "gui/\(getuid())", file.path])
+        guard result.status == 0 else { throw ServiceError.command(result.output) }
     }
 
     private static func xml(_ value: String) -> String {

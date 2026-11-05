@@ -1,4 +1,5 @@
 import Foundation
+import PharosMeshCore
 import PharosRuntime
 
 /// The `pharos` command-line front door — Pharos's interface for agents and
@@ -33,6 +34,9 @@ enum CLI {
 
         switch command {
         case "help", "--help", "-h":
+            if let topic = rest.first, ["chat", "messaging", "send", "reply", "intents", "webhook"].contains(topic) {
+                print(LightCommands.chatHelp); return 0
+            }
             printUsage(); return 0
         case "version", "--version", "-v":
             print("pharos \(version)"); return 0
@@ -43,7 +47,9 @@ enum CLI {
         // The CLI is a first-class front door and cannot rely on the SwiftUI
         // app having run first. Activate the saved device route before any
         // command can fall back to an islanded local UDS broker.
-        if command != "runtime" {
+        // An explicit PHAROS_MESH_TCP (a chosen mesh, e.g. a test mesh) wins over the saved route.
+        let explicitMesh = !(ProcessInfo.processInfo.environment["PHAROS_MESH_TCP"] ?? "").isEmpty
+        if command != "runtime", !explicitMesh {
             _ = try? PharosRuntimeCoordinator().activateSavedRoute()
         }
 
@@ -70,8 +76,6 @@ enum CLI {
                 let yolo: Bool? = p.has("no-yolo") ? false : (p.has("yolo") ? true : nil)
                 let tmux: Bool? = p.has("tmux") ? true : nil
                 return ok(try await PharosCore.launchAgent(project: p.arg(0), agent: p.arg(1), yolo: yolo, tmux: tmux, host: p.opt("host"), source: .cli))
-            case "agents":
-                return ok(RemoteLaunch.listAgents(host: p.opt("host"), filter: p.arg(0)))
             case "agent":
                 return try runAgent(p)
             case "resume":
@@ -116,6 +120,7 @@ enum CLI {
                 }
                 return ok(try PharosCore.setLocalPath(project: p.arg(0), path: p.arg(1), clear: p.has("clear")))
             case "host":
+                if let code = hostExecute(rest, json: p.has("json")) { return code }
                 return emit(PharosCore.hostInfo(), json: p.has("json"))
             case "search":
                 return emit(try PharosCore.search(p.positional.joined(separator: " ")), json: p.has("json"))
@@ -127,6 +132,18 @@ enum CLI {
                 return ok(try PharosCore.setFlag(name: p.arg(0), flag: "tmux", value: try boolArg(p.arg(1), label: "on|off")))
             case "mesh":
                 return await runMesh(rest)
+            case "member", "thread", "send", "reply", "wait", "read", "session", "project", "attention", "ls", "agents":
+                return finishLight(lightDispatch(command: command, arguments: rest))
+            case "node-deliver", "node-harvest":
+                return finishLight(nodeExecute(command: command, arguments: rest))
+            case "node-agent":
+                return finishLight(nodeAgentExecute(rest))
+            case "node-inventory":
+                return finishLight(nodeInventoryExecute())
+            case "light-tick":
+                return finishLight(lightTick(json: true))
+            case "webhook", "webhooks":
+                return finishLight(LightWebhookCommands.execute(arguments: rest, store: LightWebhookStore()))
             case "runtime":
                 return runRuntime(rest)
             case "skill", "skills":
@@ -145,6 +162,125 @@ enum CLI {
     }
 
     // MARK: Sub-dispatchers
+
+    static func lightExecute(command: String, arguments: [String]) -> LightCLIResult {
+        do {
+            let environment = ProcessInfo.processInfo.environment
+            let router = lightRouter()
+            let cliEnv = CLIAgentEnvironment.make(env: environment, nodes: router)
+            let hubName = router.hubName()
+            let selfHost = LightSelfHost.fromEnvironment(environment)
+            let hostOwner: @Sendable (String) -> String = { label in
+                let folded = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if folded == "local" || selfHost.matches(folded) {
+                    if let hub = hubName { return router.canonical(hub) }
+                }
+                return router.canonical(label)
+            }
+            let relay = try makeLightRelay()
+            let invStore = LightInventoryStore(rootDir: relay.storeURL)
+            return LightCommands.execute(
+                command: command,
+                arguments: arguments,
+                relay: relay,
+                routesForApp: LightRouteCatalog.defaults(for:),
+                agents: cliEnv?.memberAgents,
+                hostOwner: hostOwner,
+                refreshInventory: { host in
+                    if let run = router.run(host, argv: ["node-inventory"], timeout: 45), run.status == 0 {
+                        if let data = run.stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+                           let inv = try? LightInventoryStore.jsonDecoder.decode(LightNodeInventory.self, from: data) {
+                            try? invStore.save(node: host, inventory: inv)
+                        }
+                    }
+                }
+            )
+        } catch {
+            return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")
+        }
+    }
+
+    static func makeLightRelay() throws -> LightRelay {
+        let environment = ProcessInfo.processInfo.environment
+        let bins = LightAppBins.fromEnvironment(environment)
+        let forwarder: (any LightReplyForwarding)?
+        if let host = environment["PHAROS_LIGHT_SSH_HOST"], !host.isEmpty {
+            forwarder = SSHLightReplyForwarder(destination: host,
+                                               remoteCommand: bins.remotePharosShell,
+                                               runner: FoundationLightProcessRunner())
+        } else {
+            forwarder = nil
+        }
+        let live = environment["PHAROS_LIGHT_LIVE"] == "1"
+        let router = lightRouter()
+        let cliEnv = CLIAgentEnvironment.make(env: environment)
+        let driver = ExternalLightDriver(
+            allowLive: live,
+            runner: live ? FoundationLightProcessRunner() : nil,
+            binaries: .fromEnvironment(environment),
+            codexSessions: CodexRolloutReader(),
+            achat: bins.achat,
+            replyFloorStore: LightRelay.defaultStoreURL().appendingPathComponent("achat-reply-floors.json"),
+            selfHost: .fromEnvironment(environment),
+            nodes: router,
+            cliAgents: cliEnv?.driver
+        )
+        return try LightRelay(
+            store: LightRelay.defaultStoreURL(),
+            driver: driver,
+            forwarder: forwarder,
+            webhook: environment["PHAROS_LIGHT_WEBHOOK"],
+            liveness: router
+        )
+    }
+
+    static func sessionExecute(arguments: [String]) -> LightCLIResult {
+        do {
+            let environment = ProcessInfo.processInfo.environment
+            return LightSessionService(
+                relay: try makeLightRelay(),
+                runner: FoundationLightProcessRunner(),
+                prober: LoopbackDebugProber(),
+                ports: .fromEnvironment(environment),
+                apps: .fromEnvironment(environment),
+                selfHost: .fromEnvironment(environment),
+                nodes: lightRouter()
+            ).execute(arguments: arguments)
+        } catch {
+            return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")
+        }
+    }
+
+    static func projectExecute(arguments: [String]) -> LightCLIResult {
+        do {
+            let relay = try makeLightRelay()
+            if let wsResult = LightInventoryCommands.executeProjectWorkspaces(
+                arguments: arguments,
+                rootDir: relay.storeURL,
+                canonicalHost: { lightRouter().canonical($0) }
+            ) {
+                return wsResult
+            }
+            let environment = ProcessInfo.processInfo.environment
+            return LightSessionService(
+                relay: relay,
+                runner: FoundationLightProcessRunner(),
+                prober: LoopbackDebugProber(),
+                ports: .fromEnvironment(environment),
+                apps: .fromEnvironment(environment),
+                selfHost: .fromEnvironment(environment),
+                nodes: lightRouter()
+            ).executeProject(arguments: arguments)
+        } catch {
+            return LightCLIResult(exitCode: 1, text: "error: \(error.localizedDescription)")
+        }
+    }
+
+    static func finishLight(_ result: LightCLIResult) -> Int32 {
+        if !result.text.isEmpty { print(result.text) }
+        for note in result.notes { FileHandle.standardError.write(Data((note + "\n").utf8)) }
+        return result.exitCode
+    }
 
     private static func runRuntime(_ args: [String]) -> Int32 {
         let parsed = parse(Array(args.dropFirst()))
@@ -256,7 +392,7 @@ enum CLI {
 
         switch sub {
         case "daemon":
-            MeshBroker.runDaemon()                          // never returns
+            MeshBroker.runDaemon(runtimeDeliverySink: MeshRuntimeDeliveryBridge.submit)
         case "create":
             guard let room = a.first else { print("usage: pharos mesh create <room>"); return 2 }
             return report(MeshClient.send(MeshRequest(cmd: "create", room: room)))
@@ -268,7 +404,7 @@ enum CLI {
             for ri in rooms { print("\(ri.name)  [\(ri.members.joined(separator: ", "))]") }
             return 0
         case "join":
-            guard a.count >= 2 else { print("usage: pharos mesh join <room> <nick> [--session <id>] [--kind claude|codex]"); return 2 }
+            guard a.count >= 2 else { print("usage: pharos mesh join <room> <nick> [--session <id>] [--kind claude|codex|dsh]"); return 2 }
             // cwd is recorded as the nick's project so hooks can resolve cwd → nick;
             // --session (the id the SessionStart hook injected) makes it exact.
             let env = ProcessInfo.processInfo.environment
@@ -316,8 +452,11 @@ enum CLI {
             printMessages(r.messages ?? [], empty: "(no history)")
             return 0
         case "leave":
-            guard a.count >= 2 else { print("usage: pharos mesh leave <room> <nick>"); return 2 }
-            return report(MeshClient.send(MeshRequest(cmd: "leave", room: a[0], nick: a[1])))
+            guard a.count >= 2 else { print("usage: pharos mesh leave <room> <nick> [--member <id>]"); return 2 }
+            let memberID = a.firstIndex(of: "--member")
+                .flatMap { $0 + 1 < a.count ? a[$0 + 1] : nil }
+            return report(MeshClient.send(MeshRequest(cmd: "leave", room: a[0], nick: a[1],
+                                                      memberID: memberID)))
         case "rename-member":
             guard a.count >= 3 else { print("usage: pharos mesh rename-member <room> <nick> <new-nick>"); return 2 }
             return report(MeshClient.send(MeshRequest(cmd: "rename-member", room: a[0], nick: a[1], text: a[2])))
@@ -398,11 +537,13 @@ enum CLI {
             let nick = a.first.flatMap { $0.hasPrefix("--") ? nil : $0 }
             let memberID = a.firstIndex(of: "--member").flatMap { i in i + 1 < a.count ? a[i + 1] : nil }
                 ?? MeshHooks.currentSessionID()
+            let limit = a.firstIndex(of: "--limit").flatMap { i in i + 1 < a.count ? Int(a[i + 1]) : nil }
             guard nick != nil || memberID != nil else {
-                print("usage: pharos mesh recv [<nick>] [--member <session-id>]")
+                print("usage: pharos mesh recv [<nick>] [--member <session-id>] [--limit N]")
                 return 2
             }
             let r = MeshClient.send(MeshRequest(cmd: "recv", nick: nick, memberID: memberID,
+                                                limit: limit,
                                                 project: FileManager.default.currentDirectoryPath))
             guard r.ok else { return report(r) }
             printMessages(r.messages ?? [], empty: "(no unread)")
@@ -411,6 +552,14 @@ enum CLI {
             let r = MeshClient.send(MeshRequest(cmd: "who"))
             guard r.ok else { return report(r) }
             let members = r.members ?? []
+            if a.contains("--json") {
+                if let data = try? JSONEncoder().encode(members) {
+                    print(String(decoding: data, as: UTF8.self))
+                    return 0
+                }
+                print("error: could not encode mesh roster")
+                return 1
+            }
             if members.isEmpty { print("(nobody has joined yet)") }
             for m in members {
                 let live = m.nick == "human" || m.nodeOnline == true
@@ -468,7 +617,7 @@ enum CLI {
                     guard i + 1 < a.count else { print("error: --project needs a project name"); return 2 }
                     projectName = a[i + 1]; i += 2
                 default:
-                    if let parsed = AgentKind(rawValue: a[i]) { kind = parsed; i += 1 }
+                    if let parsed = AgentKind(rawValue: a[i]), parsed != .dsh { kind = parsed; i += 1 }
                     else { print("error: expected claude, codex, --host, --cwd, or --project; got '\(a[i])'"); return 2 }
                 }
             }
@@ -559,19 +708,19 @@ enum CLI {
       say    <room> <nick> <text> [@n …] [--reply ID] [--attach FILE]
                                           explicit legacy form; sender still comes from session identity
       attachment put|get …                upload or download a Mesh attachment
-      recv   [<nick>] [--member <id>]     drain unread for this session across ALL its rooms
-      who                                 roster: every joined agent + live state/host/tmux pane
+      recv   [<nick>] [--member <id>] [--limit N]  drain unread for this session across ALL its rooms
+      who [--json]                       roster: every joined agent + live state/host/tmux pane
       pair [--endpoint HOST:PORT]         show an iPhone pairing link (and QR when qrencode is installed)
       spawn  <room> <nick> [claude|codex] [--host <ssh>]  spawn local/remote + confirm join (GUI "add member")
       poke   [<room>] <nick>              manually run the safe auto-poke path
-      unread [<nick>] [--json]            peek the local unread signal (no daemon, never consumes)
+      unread [<nick>] [--member <id>] [--json]  peek unread without consuming (explicit member queries broker)
       unread --hook-stop                  Claude Code Stop-hook mode (fail-open, reads hook JSON on stdin)
       unread --hook-post-tool             Claude Code PostToolUse-hook mode (poke mode: mid-turn delivery)
       mark --hook                         Claude Code state-hook mode (UserPromptSubmit/Notification/SessionEnd)
       session-start [--silent]            record hook session identity for the current tmux pane
       install-hooks [--project <dir> | --user]   wire all mesh hooks into .claude/settings.json
       install-hooks --codex                      wire mesh hooks into ~/.codex/hooks.json (Codex agents)
-      leave  <room> <nick>                leave a room
+      leave  <room> <nick> [--member <id>]  leave a room, optionally guarding the session identity
       rename-member <room> <nick> <new>   rename a member without changing its session identity
       rename <room> <new-name>            rename a room
       delete <room>                       delete a room (drops its transcript)
@@ -720,7 +869,7 @@ enum CLI {
         return 0
     }
 
-    private static func fail(_ message: String) -> Int32 {
+    static func fail(_ message: String) -> Int32 {
         FileHandle.standardError.write(Data("error: \(message)\n".utf8))
         return 1
     }
@@ -805,7 +954,7 @@ enum CLI {
 
     private static var version: String { "0.11.1" }
 
-    private static func prettyJSON(_ obj: Any) -> String {
+    static func prettyJSON(_ obj: Any) -> String {
         guard
             let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
             let str = String(data: data, encoding: .utf8)
@@ -821,6 +970,8 @@ enum CLI {
           pharos <command> [args] [--json]
 
         READ
+          ls [host[/app[/project]]] [--all] [--json] [--refresh]   Directory overview, workspaces, and agent sessions
+          agents [--host H] [--app A] [--project P] [--all] [--refresh] [--json]   List host agent sessions from inventory
           list                         List projects (alias: projects)
           groups                       List groups and their counts
           git <project>                Git status for a project
@@ -878,6 +1029,9 @@ enum CLI {
 
         MULTI-MACHINE (Broker-owned project data; paths stay on each Host)
           host                         Show this machine's host key
+          host list [--json]           Pharos nodes on the mesh: name, online/offline, last seen, aliases
+          host alias <node> <short> [--ssh DEST]   Your short name for a node (usable as any --host)
+          host unalias <short>         Remove an alias (aliases live in ~/.config/pharos/hosts.json)
           path <project>               Show THIS Host's local folder
           path <project> <path>        Set THIS machine's local folder for a project
           path <project> --clear       Forget this machine's local folder
@@ -886,6 +1040,67 @@ enum CLI {
                                        Run a pure Node against a remote Broker
           runtime set broker           Run a local Broker plus the required Node
           runtime reconcile            Re-apply the saved runtime configuration
+
+        LIGHTWEIGHT MESSAGING (point-to-point; a thread is email-style, not a room)
+          See `pharos help chat` for intents, --to/--cc, --deliver, --rounds, and the subagent pattern.
+          member register --name N --host H --app codex|claude|dsh|ag|cursor --project P --session S [--route R]...
+          member register --name N --app webhook [--webhook CONFIG]      (remote assistant via HTTPS POST)
+          member launch --app codex|agy --name N (--dir D | --project P) [--host H] [--model M] [--tmux S] [--safe] [--mode safe|yolo] [--auto-revive] [--json]
+          member adopt <address|host app id> --name X [--dir D] [--model M] [--tmux S] [--safe] [--mode safe|yolo] [--auto-revive] [--project P] [--force] [--json]
+          member model <name> [<model>] [--force] [--json]
+          member mode <name> [safe|yolo] [--force] [--json]
+          member list [--json]
+          attention list [--json]                  Members waiting on a human (needs_human): what, host, session, age
+          attention report --state needs_human|clear --session S [--app A] [--host H] [--what T] [--ttl 20m]
+                                       (fed by per-app hooks and polls; Pharos never approves or denies)
+          send [--thread T] --from NAME [--to NAME...] [--cc NAME]... [--intent ask|inform|discuss] [--deliver] [--rounds N]
+               [--hop-limit N] [--ttl 24h] [--once] -- <text>
+          reply r_xxx [--cc NAME]... [--intent answer|ask|inform] [--deliver] [--ttl 24h] [--once] -- <text>
+          webhook set NAME --url URL [--header-name H] --secret-stdin|--secret-file F|--secret-env VAR
+          webhook list [--json] | show NAME | remove NAME   (secrets always shown as ***)
+          read --thread ID [--json] | read r_xxx [--json]
+          thread list [--json]
+          thread show <id> [--json]
+          thread <id> member list [--json]
+          thread <id> member add <member|address> [--name X] [--from Y]
+          thread <id> member remove <member> [--from Y]
+          thread stop <id>
+          session new --host H --app dsh|ag|codex|cursor --workspace PROJECT|DIR [--path DIR] [--title T] [--name N] [--launch] [--dry-run] [--no-add-project] [--no-queue] [--json]
+          session workspaces --host H --app dsh|ag|codex|cursor [--launch] [--no-queue] [--json]
+          session pull --node H [--json]
+          session ack <request-id> [--result JSON]
+          project list --host H [--app dsh|ag|codex|cursor] [--dry-run] [--no-queue] [--json]
+          project add --host H --path DIR [--name N] [--app dsh|ag|codex|cursor] [--dry-run] [--no-queue] [--json]
+          A new send mints a thread. A reply inherits that thread from the reply-id and
+          goes back only to the sender, plus --cc. `@name` in text is plain text (a hint is
+          printed when it names an unaddressed member). An answer is recorded, not delivered,
+          unless --deliver. Hand messaging to a subagent that returns only the conclusion.
+          `thread new` and `thread add` are not commands. Participants are derived.
+          Leading words that name registered members are recipients until `--`.
+          Tokens after `--` are the message, including a token that looks like a flag
+          (`--json`). They are not read as options.
+          `session new` and `project list|add` run on the target Pharos node. `--host local`
+          (or this machine's hostname / an alias / PHAROS_SELF_HOST) runs here. Another
+          machine is reached Pharos node to Pharos node over the mesh, SSH is the backup,
+          else the request waits in that node's inbox on the Broker (72h) unless `--no-queue`.
+          Output says `via mesh|ssh|queued`; an unreachable node is "Pharos node offline".
+          Members on other machines get messages through their own node the same way.
+          `session new` adds a missing project unless `--no-add-project`.
+          Codex and Antigravity get a first message when `--title` is omitted.
+          `--launch` is the only way a node starts an app, and the only command that
+          needs a debug port (env override, else achat config, else dsh 9301 / codex 9302).
+          `--launch --dry-run` reports the port, the probe, and whether it would launch.
+          Debug ports and the achat binary come from the environment, not the repo.
+          On a machine that is not the Broker's, messaging commands are forwarded to the
+          Broker's node over the mesh (SSH backup: PHAROS_LIGHT_SSH_HOST or `host alias --ssh`).
+          `pharos reply` from a sandbox that blocks the store and sockets is written to a spool
+          (PHAROS_LIGHT_SPOOL, /private/tmp/pharos-spool-UID, or $TMPDIR/pharos-spool) and the
+          local node delivers it. The node also reads back answers from read-only sessions.
+          SSH backup commands run `pharos` on the target;
+          set PHAROS_LIGHT_REMOTE_PHAROS (e.g. ~/.local/bin/pharos) when it is not
+          on the target's non-interactive SSH PATH. Set PHAROS_LIGHT_WEBHOOK only to a loopback URL.
+          PHAROS_LIGHT_LIVE=1 runs headless codex/claude and tmux, and delegates
+          desktop, ipc, and web sends to achat. Pharos does not speak CDP or IPC.
 
         OTHER
           help, version

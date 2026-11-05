@@ -1,9 +1,8 @@
 import Foundation
 
 /// The four workspace surfaces the menu-bar launches, mirroring the iOS tabs
-/// (projects · issues · agents · chat). On the Mac these all live in the main
-/// window: Projects and the cross-project Issues/Agents overviews are the
-/// Dashboard (optionally focused on a section), and Chat opens the rooms view.
+/// (projects · issues · agents · chat). Agents opens the dedicated unified
+/// session surface; Projects/Issues use the Dashboard and Chat opens rooms.
 enum MenuNavTarget: Equatable {
     case projects
     case issues
@@ -15,7 +14,7 @@ enum MenuNavTarget: Equatable {
         switch self {
         case .projects:  nil
         case .issues:    .issues
-        case .agents:    .agents
+        case .agents:    nil
         case .chatRooms: nil
         }
     }

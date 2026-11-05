@@ -266,10 +266,13 @@ enum RemoteLaunch {
             return
         }
 
-        let hookArgs = kind == .codex ? "--codex" : "--user"
-        guard ssh(host, "pharos mesh install-hooks \(hookArgs) >/dev/null").ok else {
-            fail("couldn't install \(kind.rawValue) mesh hooks on \(host)")
-            return
+        // DSH uses the plugin (no shell hooks), so there is nothing to install.
+        if kind != .dsh {
+            let hookArgs = kind == .codex ? "--codex" : "--user"
+            guard ssh(host, "pharos mesh install-hooks \(hookArgs) >/dev/null").ok else {
+                fail("couldn't install \(kind.rawValue) mesh hooks on \(host)")
+                return
+            }
         }
 
         let homeProbe = ssh(host, #"printf %s "$HOME""#)

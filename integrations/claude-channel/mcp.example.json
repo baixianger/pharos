@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "pharos": {
+      "command": "node",
+      "args": ["/absolute/path/to/pharos/integrations/claude-channel/server.mjs"]
+    }
+  }
+}

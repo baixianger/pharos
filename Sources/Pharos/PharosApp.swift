@@ -57,6 +57,7 @@ struct PharosApp: App {
                 }
             }
                 .environment(store)
+                .tint(PharosTheme.accent)
                 .preferredColorScheme(store.appearance.colorScheme)
                 .task {
                     guard !store.didBootstrapMesh else { return }
@@ -73,6 +74,8 @@ struct PharosApp: App {
                 }
         }
         .defaultSize(width: 1180, height: 760)
+        .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands {
             // Replace the default "About Pharos" with our custom window.
             CommandGroup(replacing: .appInfo) {

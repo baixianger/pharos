@@ -99,7 +99,32 @@ public struct MeshEvent: Codable, Sendable, Equatable, Identifiable {
 }
 
 public enum MeshNodeCommandAction: String, Codable, Sendable, CaseIterable {
-    case spawnAgent, stopSession, poke, reconcile
+    case spawnAgent, stopSession, poke, reconcile, agentRPC
+    /// Run one allow-listed `pharos` light command (session/project/reply/deliver…)
+    /// on the target node. Payload: `MeshLightCommandPayload` JSON.
+    case light
+}
+
+/// Payload of a `light` node command: the `pharos` argv the target node runs
+/// for itself. The node allow-lists `argv[0]`; it never runs a shell.
+public struct MeshLightCommandPayload: Codable, Sendable, Equatable {
+    public var argv: [String]
+    public var timeoutSec: Double?
+
+    public init(argv: [String], timeoutSec: Double? = nil) {
+        self.argv = argv; self.timeoutSec = timeoutSec
+    }
+}
+
+/// Result a node records for a `light` command.
+public struct MeshLightCommandResult: Codable, Sendable, Equatable {
+    public var exitCode: Int32
+    public var stdout: String
+    public var stderr: String
+
+    public init(exitCode: Int32, stdout: String, stderr: String) {
+        self.exitCode = exitCode; self.stdout = stdout; self.stderr = stderr
+    }
 }
 
 public enum MeshNodeCommandState: String, Codable, Sendable {
@@ -347,11 +372,14 @@ public struct MeshNodeInfo: Codable, Sendable, Equatable, Identifiable {
     public var tailscaleIP: String?
     public var lastSeen: Double
     public var buildID: String?
+    /// The node heartbeats over the Broker's own local socket: it runs on the
+    /// Broker's machine (the hub that owns the light ledger).
+    public var brokerLocal: Bool?
 
     public init(id: String, host: String, tailscaleIP: String?, lastSeen: Double,
-                buildID: String? = nil) {
+                buildID: String? = nil, brokerLocal: Bool? = nil) {
         self.id = id; self.host = host; self.tailscaleIP = tailscaleIP; self.lastSeen = lastSeen
-        self.buildID = buildID
+        self.buildID = buildID; self.brokerLocal = brokerLocal
     }
 }
 
@@ -445,6 +473,8 @@ public enum MeshPaths {
     }
     public static var brokerControlTokenFile: URL { dataDirectory.appendingPathComponent("mesh-control-token") }
     public static var nodeCommandsFile: URL { dataDirectory.appendingPathComponent("mesh-node-commands.json") }
+    /// Every node that ever heartbeated, with its last-seen time (`node-roster`).
+    public static var knownNodesFile: URL { dataDirectory.appendingPathComponent("mesh-known-nodes.json") }
     public static var mailboxesFile: URL { dataDirectory.appendingPathComponent("mesh-mailboxes.json") }
     public static var dialEndpoint: String? {
         if let env = tcpEndpoint { return env }
@@ -634,6 +664,14 @@ func meshReadExactly(_ fd: Int32, count: Int) -> Data? {
 /// mirrors each nick's unread to a signal file for the hooks, and appends every
 /// message to a per-room transcript file for the GUI to read. Only @mentioned
 /// messages enter an agent mailbox; the Stop hook surfaces them at the next turn.
+public enum MeshRuntimeDeliveryRoute: Sendable, Equatable {
+    case accepted
+    case forward(String)
+    case fallback
+}
+
+public typealias MeshRuntimeDeliverySink = (MeshMsg, MeshMemberInfo) -> MeshRuntimeDeliveryRoute
+
 public final class MeshBroker: @unchecked Sendable {
     private let lock = NSLock()
     /// Narrow I/O lock for transcript reads, appends, deletes, and renames.
@@ -649,20 +687,29 @@ public final class MeshBroker: @unchecked Sendable {
     private var presence: [String: MeshPresenceEntry] = [:]
     private var pairingTokens: [String: Double] = [:]
     private var nodes: [String: MeshNodeInfo] = [:]
+    /// Durable roster: online and offline nodes, so `pharos host list` can show last-seen.
+    private var knownNodes: [String: MeshNodeInfo] = [:]
+    private var knownNodesWrittenAt: Double = 0
     private var nodeCommands: [MeshNodeCommand] = []
     private var cachedBrokerID: String?
     private var cachedControlToken: String?
+    private let runtimeDeliverySink: MeshRuntimeDeliverySink?
+    private let persistsRoster: Bool
 
-    public init(loadPersistentState: Bool = false) {
+    public init(loadPersistentState: Bool = false,
+                runtimeDeliverySink: MeshRuntimeDeliverySink? = nil) {
+        self.runtimeDeliverySink = runtimeDeliverySink
+        self.persistsRoster = loadPersistentState
         if loadPersistentState {
+            loadKnownNodesLocked()
             loadNodeCommandsLocked()
             loadMailboxesLocked()
             loadPresenceLocked(resetStates: true)
         }
     }
 
-    public static func runDaemon() -> Never {
-        let broker = MeshBroker(loadPersistentState: true) // keep strong lifetime for weak listener closures
+    public static func runDaemon(runtimeDeliverySink: MeshRuntimeDeliverySink? = nil) -> Never {
+        let broker = MeshBroker(loadPersistentState: true, runtimeDeliverySink: runtimeDeliverySink)
         broker.serve()
         exit(0)   // unreachable
     }
@@ -809,6 +856,7 @@ public final class MeshBroker: @unchecked Sendable {
             return MeshResponse(ok: true, capabilities: [
                 "mesh-v2", "message-id", "reply-v1", "attachment-v1", "headless-v1",
                 "registry-cas-v1", "pairing-v2", "events-v1", "node-v2",
+                "agent-runtime-gateway-v1", "node-roster-v1", "light-node-v1",
                 "session-sender-v1", "history-page-v1"
             ])
 
@@ -823,9 +871,12 @@ public final class MeshBroker: @unchecked Sendable {
                 return .fail("node id and host required")
             }
             lock.lock()
-            nodes[id] = MeshNodeInfo(id: id, host: host, tailscaleIP: req.tailscaleIP,
-                                     lastSeen: Date().timeIntervalSince1970, buildID: req.payload)
+            let info = MeshNodeInfo(id: id, host: host, tailscaleIP: req.tailscaleIP,
+                                    lastSeen: Date().timeIntervalSince1970, buildID: req.payload,
+                                    brokerLocal: trustedLocal ? true : nil)
+            nodes[id] = info
             pruneNodesLocked()
+            rememberNodeLocked(info)
             lock.unlock()
             recoverUnreadPokes(nodeID: id, host: host, tailscaleIP: req.tailscaleIP)
             return .okay()
@@ -971,7 +1022,7 @@ public final class MeshBroker: @unchecked Sendable {
             if let retryAt = req.retryAt {
                 nodeCommands[index].nextAttemptAt = max(nodeCommands[index].updatedAt, retryAt)
             }
-            if !nodeCommands[index].state.isTerminal,
+            if !nodeCommands[index].state.isTerminal, nodeCommands[index].state != .running,
                nodeCommands[index].attempts >= nodeCommands[index].maxAttempts {
                 nodeCommands[index].state = .failed
                 nodeCommands[index].result = req.payload ?? "retry attempts exhausted"
@@ -992,6 +1043,25 @@ public final class MeshBroker: @unchecked Sendable {
                 .sorted { $0.createdAt > $1.createdAt }
             lock.unlock()
             return MeshResponse(ok: true, commands: values)
+
+        case "node-roster":
+            // Online and offline nodes. Clients derive online from lastSeen (70s window).
+            lock.lock()
+            let roster = knownNodes.values.sorted { $0.host < $1.host }
+            lock.unlock()
+            return MeshResponse(ok: true, nodes: roster)
+
+        case "node-command-get":
+            guard authorizeControl(req, trustedLocal: trustedLocal) else {
+                return .fail("valid control credential required")
+            }
+            guard let commandID = req.commandID else { return .fail("command id required") }
+            lock.lock()
+            expireNodeCommandsLocked()
+            let found = nodeCommands.first { $0.id == commandID && (req.nodeID == nil || $0.nodeID == req.nodeID) }
+            lock.unlock()
+            guard let found else { return .fail("command not found") }
+            return MeshResponse(ok: true, command: found)
 
         case "node-list":
             lock.lock(); pruneNodesLocked()
@@ -1189,7 +1259,7 @@ public final class MeshBroker: @unchecked Sendable {
                                    attachments: attachments.isEmpty ? nil : attachments)
             publish(kind: .message, room: r, message: delivery.message)
             if req.to?.isEmpty == false {
-                for target in delivery.targets {
+                for target in delivery.fallbackTargets {
                     _ = enqueuePokeCommand(for: target,
                                            idempotencyKey: "message:\(delivery.message.id ?? "unknown")",
                                            requireUnread: true)
@@ -1329,13 +1399,21 @@ public final class MeshBroker: @unchecked Sendable {
                 lock.unlock(); return .fail("member not found")
             }
             var out: [MeshMsg] = []
+            var pendingByRoom: [(String, [MeshMsg])] = []
             for name in rooms.keys {
                 if let box = rooms[name]!.mailboxes[memberID], !box.isEmpty {
                     out.append(contentsOf: box)
-                    rooms[name]!.mailboxes[memberID] = []
+                    pendingByRoom.append((name, box))
                 }
             }
             out.sort { $0.ts < $1.ts }
+            if let limit = req.limit, limit > 0 {
+                out = Array(out.prefix(min(limit, 100)))
+            }
+            let drainedIDs = Set(out.map(\.stableID))
+            for (name, box) in pendingByRoom {
+                rooms[name]!.mailboxes[memberID] = box.filter { !drainedIDs.contains($0.stableID) }
+            }
             syncUnreadLocked(memberID)
             lock.unlock()
             return MeshResponse(ok: true, messages: out, note: out.isEmpty ? "idle" : nil)
@@ -1436,7 +1514,7 @@ public final class MeshBroker: @unchecked Sendable {
     ///    enqueue it for any agent or trigger a Stop hook.
     private func deliver(room r: String, from n: String, text t: String, to: [String]?,
                          replyTo: MeshReply?, attachments: [MeshAttachment]?)
-        -> (message: MeshMsg, targets: [MeshMemberInfo]) {
+        -> (message: MeshMsg, targets: [MeshMemberInfo], fallbackTargets: [MeshMemberInfo]) {
         let msg = MeshMsg(id: UUID().uuidString, from: n, room: r, text: t,
                           ts: Date().timeIntervalSince1970, to: to ?? [],
                           replyTo: replyTo, attachments: attachments)
@@ -1444,17 +1522,32 @@ public final class MeshBroker: @unchecked Sendable {
         if rooms[r] == nil { rooms[r] = Room() }
         // Only explicit @ targets create mailbox entries. Plain room chatter
         // remains in the transcript but is invisible to agent delivery hooks.
+        var seenTargetIDs = Set<String>()
         let targetIDs = (to ?? []).compactMap { rooms[r]!.members[$0] }
-        for memberID in targetIDs { rooms[r]!.mailboxes[memberID, default: []].append(msg) }
-        for memberID in targetIDs { syncUnreadLocked(memberID) }
+            .filter { seenTargetIDs.insert($0).inserted }
         if let senderID = rooms[r]!.members[n] { touchPresenceLocked(senderID) }
         let targets = targetIDs.compactMap { memberID -> MeshMemberInfo? in
             guard let alias = rooms[r]!.members.first(where: { $0.value == memberID })?.key else { return nil }
             return memberInfoLocked(room: r, nick: alias)
         }
         lock.unlock()
+        let runtimeTargetIDs = Set(targets.compactMap { target -> String? in
+            switch runtimeDeliverySink?(msg, target) ?? .fallback {
+            case .accepted:
+                return target.id
+            case .forward(let request):
+                return routeRuntimeDelivery(request, message: msg, target: target) ? target.id : nil
+            case .fallback:
+                return nil
+            }
+        })
+        let fallbackIDs = targetIDs.filter { !runtimeTargetIDs.contains($0) }
+        lock.lock()
+        for memberID in fallbackIDs { rooms[r]!.mailboxes[memberID, default: []].append(msg) }
+        for memberID in fallbackIDs { syncUnreadLocked(memberID) }
+        lock.unlock()
         appendTranscript(msg)
-        return (msg, targets)
+        return (msg, targets, targets.filter { !runtimeTargetIDs.contains($0.id) })
     }
 
     // MARK: event stream
@@ -1535,6 +1628,19 @@ public final class MeshBroker: @unchecked Sendable {
     @discardableResult
     private func enqueuePokeCommand(for member: MeshMemberInfo, idempotencyKey: String,
                                     requireUnread: Bool, preferredNodeID: String? = nil) -> MeshNodeCommand? {
+        guard let nodeID = targetNodeID(for: member, preferredNodeID: preferredNodeID),
+              let data = try? JSONEncoder().encode(MeshNodePokePayload(memberID: member.id,
+                                                                       requireUnread: requireUnread)),
+              let payload = String(data: data, encoding: .utf8) else { return nil }
+        return process(MeshRequest(cmd: "node-command-enqueue", payload: payload,
+                                   nodeID: nodeID, action: MeshNodeCommandAction.poke.rawValue,
+                                   idempotencyKey: idempotencyKey + ":" + member.id,
+                                   deadline: Date().timeIntervalSince1970 + 86_400,
+                                   maxAttempts: 240), trustedLocal: true).command
+    }
+
+    private func targetNodeID(for member: MeshMemberInfo,
+                              preferredNodeID: String? = nil) -> String? {
         lock.lock()
         pruneNodesLocked()
         let nodeID: String?
@@ -1550,15 +1656,53 @@ public final class MeshBroker: @unchecked Sendable {
             })?.id
         }
         lock.unlock()
-        guard let nodeID,
-              let data = try? JSONEncoder().encode(MeshNodePokePayload(memberID: member.id,
-                                                                       requireUnread: requireUnread)),
-              let payload = String(data: data, encoding: .utf8) else { return nil }
-        return process(MeshRequest(cmd: "node-command-enqueue", payload: payload,
-                                   nodeID: nodeID, action: MeshNodeCommandAction.poke.rawValue,
-                                   idempotencyKey: idempotencyKey + ":" + member.id,
-                                   deadline: Date().timeIntervalSince1970 + 86_400,
-                                   maxAttempts: 240), trustedLocal: true).command
+        return nodeID
+    }
+
+    private func routeRuntimeDelivery(_ request: String, message: MeshMsg,
+                                      target: MeshMemberInfo) -> Bool {
+        guard let nodeID = targetNodeID(for: target) else { return false }
+        let now = Date().timeIntervalSince1970
+        guard let command = process(MeshRequest(
+            cmd: "node-command-enqueue", payload: request, nodeID: nodeID,
+            action: MeshNodeCommandAction.agentRPC.rawValue,
+            idempotencyKey: "runtime-delivery:\(message.stableID):\(target.id)",
+            deadline: now + 10, maxAttempts: 1
+        ), trustedLocal: true).command else { return false }
+
+        let unclaimedDeadline = now + 2
+        let terminalDeadline = now + 8
+        while Date().timeIntervalSince1970 < terminalDeadline {
+            lock.lock()
+            expireNodeCommandsLocked()
+            guard let index = nodeCommands.firstIndex(where: { $0.id == command.id }) else {
+                lock.unlock(); return false
+            }
+            let current = nodeCommands[index]
+            if current.state.isTerminal {
+                lock.unlock()
+                return current.state == .succeeded && runtimeDeliveryWasAccepted(current.result)
+            }
+            if current.state == .queued && Date().timeIntervalSince1970 >= unclaimedDeadline {
+                nodeCommands[index].state = .canceled
+                nodeCommands[index].updatedAt = Date().timeIntervalSince1970
+                nodeCommands[index].result = "runtime delivery node did not claim command"
+                writeNodeCommandsLocked()
+                lock.unlock()
+                publish(kind: .nodeCommand)
+                return false
+            }
+            lock.unlock()
+            usleep(25_000)
+        }
+        return false
+    }
+
+    private func runtimeDeliveryWasAccepted(_ result: String?) -> Bool {
+        guard let data = result?.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let response = object["result"] as? [String: Any] else { return false }
+        return response["submitted"] as? Bool == true
     }
 
     /// A node may have been offline when messages were written. Its first
@@ -1627,6 +1771,36 @@ public final class MeshBroker: @unchecked Sendable {
         let expected = controlToken()
         guard supplied.utf8.count == expected.utf8.count else { return false }
         return zip(supplied.utf8, expected.utf8).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
+    }
+
+    private func rememberNodeLocked(_ info: MeshNodeInfo) {
+        let isNew = knownNodes[info.id] == nil
+        let changed = knownNodes[info.id].map {
+            $0.host != info.host || $0.tailscaleIP != info.tailscaleIP || $0.brokerLocal != info.brokerLocal
+        } ?? true
+        knownNodes[info.id] = info
+        // Heartbeats arrive every few seconds; persist new/changed nodes at once, else every 30s.
+        if isNew || changed || info.lastSeen - knownNodesWrittenAt >= 30 {
+            knownNodesWrittenAt = info.lastSeen
+            writeKnownNodesLocked()
+        }
+    }
+
+    private func loadKnownNodesLocked() {
+        guard let data = try? Data(contentsOf: MeshPaths.knownNodesFile),
+              let values = try? JSONDecoder().decode([MeshNodeInfo].self, from: data) else { return }
+        knownNodes = Dictionary(values.map { ($0.id, $0) }, uniquingKeysWith: { a, b in a.lastSeen >= b.lastSeen ? a : b })
+    }
+
+    private func writeKnownNodesLocked() {
+        guard persistsRoster else { return }
+        let values = knownNodes.values.sorted { $0.id < $1.id }
+        guard let data = try? JSONEncoder().encode(values) else { return }
+        try? FileManager.default.createDirectory(at: MeshPaths.dataDirectory, withIntermediateDirectories: true)
+        try? data.write(to: MeshPaths.knownNodesFile, options: .atomic)
+        #if !os(Windows)
+        chmod(MeshPaths.knownNodesFile.path, 0o600)
+        #endif
     }
 
     private func loadNodeCommandsLocked() {
@@ -2228,6 +2402,10 @@ public final class MeshBroker: @unchecked Sendable {
             _ = try? fh.seekToEnd()
             try? fh.write(contentsOf: data)
         } else {
+            // An in-process broker (tests, embedded use) never ran `serve()`,
+            // so the transcript directory may not exist yet.
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                     withIntermediateDirectories: true)
             try? data.write(to: url)
         }
     }

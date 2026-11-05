@@ -1,0 +1,49 @@
+@startsalt
+skinparam monochrome true
+skinparam shadowing false
+title Pharos macOS - Command Center
+{
+  {+
+    PHAROS
+    --
+    [X] Command Center
+    [ ] Sessions        4
+    [ ] Projects        8
+    [ ] Inbox           3
+    --
+    "HOSTS"
+    "mac-mini       online"
+    "macbook        online"
+    --
+    [ + New Session ]
+    [   Settings    ]
+  } | {+
+    == Command Center
+    "Thursday, 20 August          All systems connected"
+    --
+    {+
+      **NEEDS ATTENTION**
+      --
+      "! Codex / Pharos RFC     Waiting for approval      [Review]"
+      "! Claude / iOS polish    Agent requested input     [Open]"
+      "! DSH / Broker plugin    Delivery failed           [Retry]"
+    }
+    --
+    {+
+      **ACTIVE SESSIONS**                                      [View all]
+      --
+      "Codex   Pharos Runtime RPC       Working      03:14      [Open]"
+      "Claude  iOS navigation           Waiting      18:42      [Open]"
+      "DSH     Broker plugin            Idle         42:07      [Open]"
+    }
+    --
+    {+
+      **RECENT PROJECTS**
+      --
+      "Pharos          2 active sessions     Updated now"
+      "NearTo          1 blocked item        Updated 2h ago"
+      "Beiou           No active work        Updated yesterday"
+    }
+  }
+}
+@endsalt
