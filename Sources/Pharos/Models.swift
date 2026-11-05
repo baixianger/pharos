@@ -1,6 +1,21 @@
 import Foundation
 import PharosMeshProtocol
 
+/// Agent session record for dashboard inventory rollup.
+struct DashboardAgentSession: Hashable, Sendable, Identifiable {
+    let session: String
+    let sshHost: String?
+    var id: String { "\(sshHost ?? "local")|\(session)" }
+
+    static func unregistered(running: Set<String>, remoteHosts: [String: String],
+                             registered: Set<Self>) -> [Self] {
+        running.compactMap { session in
+            let value = Self(session: session, sshHost: remoteHosts[session])
+            return registered.contains(value) ? nil : value
+        }.sorted { $0.id < $1.id }
+    }
+}
+
 /// A custom command button the user attaches to a project.
 struct Playbook: Identifiable, Codable, Hashable {
     var id: UUID = UUID()

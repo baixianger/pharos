@@ -20,250 +20,27 @@ enum WorkspaceSurface: Equatable {
     case sessions
 }
 
-/// Routes menu-bar requests (surface nav + specific project/room deep-links)
-/// into the main window's split-view selection. Bundled as one modifier so
-/// ContentView's body stays within the type-checker's budget.
-private struct MenuBarRouting: ViewModifier {
-    @Environment(ProjectStore.self) private var store
-    @Binding var selectedProject: Project.ID?
-    @Binding var openRoom: String?
-    @Binding var dashboardFocus: DashboardFocus?
-    @Binding var surface: WorkspaceSurface
-
-    func body(content: Content) -> some View {
-        content
-            .onChange(of: store.menuNavRequest) { _, target in
-                guard let target else { return }
-                store.menuNavRequest = nil
-                switch target {
-                case .projects, .issues:
-                    openRoom = nil
-                    selectedProject = nil          // → Dashboard (cross-project home)
-                    surface = .dashboard
-                    dashboardFocus = target.dashboardFocus
-                case .agents:
-                    openRoom = nil
-                    selectedProject = nil
-                    surface = .sessions
-                    dashboardFocus = nil
-                case .chatRooms:
-                    selectedProject = nil
-                    surface = .dashboard
-                    if openRoom == nil { openRoom = "" }   // open the rooms surface
-                }
-            }
-            .onChange(of: store.requestedProjectOpen) { _, id in
-                guard let id else { return }
-                store.requestedProjectOpen = nil
-                openRoom = nil
-                surface = .dashboard
-                selectedProject = id
-            }
-            .onChange(of: store.requestedRoomOpen) { _, room in
-                guard let room else { return }
-                store.requestedRoomOpen = nil
-                selectedProject = nil
-                surface = .dashboard
-                openRoom = room
-            }
-    }
-}
-
+/// The unified content view for Pharos, presenting the new Grok-Bot inspired 3-pane client shell.
 struct ContentView: View {
     @Environment(ProjectStore.self) private var store
-    @State private var snapSettingsTab: Int?   // snapshot mode: Settings shown as a sheet
-    @AppStorage("pharos.onboarded")    private var onboarded  = false
-    @AppStorage("pharos.launchCount")  private var launchCount = 0
-    @AppStorage("pharos.sidebar.visible") private var sidebarVisible = true
-    @State private var selectedProject: Project.ID?
-    /// Per-tab chat-room route: nil = not in the rooms view (show project /
-    /// dashboard); non-nil = this tab is a chat room showing that room (""
-    /// until the first is picked). Per window tab, so tabs never co-switch.
-    @State private var openRoom: String?
-    /// Menu-bar nav target for the Dashboard to scroll to, applied once then
-    /// cleared so a manual scroll isn't yanked back on the next redraw.
-    @State private var dashboardFocus: DashboardFocus?
-    @State private var surface: WorkspaceSurface = .sessions
-    @State private var showAdd = false
-    @State private var showImport = false
-    @State private var showPalette = false
-    @State private var showTrash = false
-    @State private var showOnboarding = false
-
-    /// Native window-tab label. The visible content title is owned independently
-    /// by each detail view (`Pharos`, `Chat Rooms`, or `Project`).
-    private var tabTitle: String {
-        if let r = openRoom { return PharosTabTitle.room(r) }
-        if let id = selectedProject, let p = store.project(id) { return PharosTabTitle.project(p.name) }
-        if surface == .sessions { return PharosTabTitle.sessions }
-        return PharosTabTitle.dashboard
-    }
-
-    /// The window title, mirroring each screen's `navigationTitle`, so
-    /// WindowTabBar can set it via AppKit the instant the window exists
-    /// (default: "Pharos" for the dashboard) rather than waiting for SwiftUI.
-    private var contentTitle: String {
-        if openRoom != nil { return PharosViewTitle.rooms }
-        if let id = selectedProject, store.project(id) != nil { return PharosViewTitle.project }
-        if surface == .sessions { return PharosViewTitle.sessions }
-        return PharosViewTitle.dashboard
-    }
-
-    @ViewBuilder
-    private var detailView: some View {
-        if let t = snapSettingsTab {
-            SettingsView(initialTab: t)   // snapshot mode: Settings inline in the detail pane
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if openRoom != nil {
-            MeshRoomView(room: Binding(
-                get: { openRoom ?? "" },
-                // An async room reload may finish after the user navigates to
-                // Dashboard. Never let that stale child write resurrect chat.
-                set: { nextRoom in
-                    openRoom = ContentRouteState.applyingRoomWrite(
-                        current: openRoom, next: nextRoom
-                    )
-                }
-            ))
-        } else if let id = selectedProject, store.project(id) != nil {
-            ProjectDetailView(projectID: id)
-        } else if surface == .sessions {
-            AgentSessionsView(openRoom: $openRoom, selectedProject: $selectedProject)
-        } else {
-            DashboardView(selectedProject: $selectedProject, openRoom: $openRoom,
-                          focus: $dashboardFocus)
-        }
-    }
+    @State private var snapSettingsTab: Int?
 
     var body: some View {
-        @Bindable var store = store
-        AgentWorkspaceShell(isSidebarVisible: $sidebarVisible) { toggleSidebar in
-            AgentSidebarView(selectedProject: $selectedProject, openRoom: $openRoom,
-                             surface: $surface, toggleSidebar: toggleSidebar)
-        } workspace: {
-            detailView
-        }
-        // Project ⇄ room are mutually exclusive within a tab.
-        .onChange(of: selectedProject) { _, id in
-            if id != nil { openRoom = nil; surface = .dashboard }
-        }
-        .onChange(of: openRoom) { _, r in
-            if r != nil { selectedProject = nil; surface = .dashboard }
-        }
-        .task { await SnapshotMode.run(store: store, select: { selectedProject = $0 },
-                                       openRoom: { openRoom = $0 },
-                                       showSettings: { snapSettingsTab = $0 }) }
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                RoomsToolbarButton(openRoom: $openRoom)
-
-                Button { store.refreshAllGit() } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                .help("Reload git status")
-                .accessibilityLabel("Refresh git status")
-
-                Menu {
-                    Button { store.requestAdd() } label: { Label("Add Local Folder…", systemImage: "folder.badge.plus") }
-                    Button { store.requestImport() } label: { Label("Import from GitHub…", systemImage: "arrow.down.circle") }
-                } label: {
-                    Label("Add", systemImage: "plus")
-                }
-                .help("Add a project")
-                .accessibilityLabel("Add project")
-
-                Button { showTrash = true } label: {
-                    Label("Trash", systemImage: "clock.arrow.circlepath")
-                }
-                .help("Recently deleted — restore or purge")
-                .accessibilityLabel("Show recently deleted")
-
-                Button {
-                    if let id = selectedProject, let p = store.project(id) {
-                        store.remove(p)
-                        selectedProject = nil
-                    }
-                } label: {
-                    Label("Remove", systemImage: "minus.circle")
-                }
-                .help("Forget the selected project (its files stay on disk; undo from Trash)")
-                .accessibilityLabel("Remove selected project")
-                .disabled(selectedProject == nil)
+        Group {
+            if let t = snapSettingsTab {
+                SettingsView(initialTab: t)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                PharosMainShellView()
             }
         }
-        .toolbarBackground(.visible, for: .windowToolbar)
-        // Native tab label = the specific name (tabTitle); the window title =
-        // the generic screen type (contentTitle, shown top-left in the toolbar).
-        .background(WindowTabBar(title: tabTitle, windowTitle: contentTitle))
-        .sheet(isPresented: $showAdd) { AddProjectSheet() }
-        .sheet(isPresented: $showImport) { GitHubImportSheet() }
-        .sheet(isPresented: $showPalette) {
-            CommandPalette(selectedProject: $selectedProject, isPresented: $showPalette)
-                .environment(store)
-        }
-        .sheet(isPresented: $showTrash) {
-            TrashView().environment(store)
-        }
-        .sheet(isPresented: $showOnboarding) {
-            OnboardingView {
-                onboarded = true
-                showOnboarding = false
-            }
-            .environment(store)
-        }
-        .alert("Something went wrong",
-               isPresented: Binding(
-                   get: { store.lastError != nil },
-                   set: { if !$0 { store.lastError = nil } }
-               ),
-               actions: {
-                   Button("OK") { store.lastError = nil }
-               },
-               message: {
-                   Text(store.lastError ?? "")
-               })
-        .onChange(of: store.addRequested) { _, requested in
-            if requested { showAdd = true; store.addRequested = false }
-        }
-        .onChange(of: store.importRequested) { _, requested in
-            if requested { showImport = true; store.importRequested = false }
-        }
-        .onChange(of: store.paletteRequested) { _, requested in
-            if requested { showPalette = true; store.paletteRequested = false }
-        }
-        .modifier(MenuBarRouting(selectedProject: $selectedProject, openRoom: $openRoom,
-                                 dashboardFocus: $dashboardFocus, surface: $surface))
-        .onChange(of: store.trashRequested) { _, requested in
-            if requested { showTrash = true; store.trashRequested = false }
-        }
-        .onChange(of: store.projects) { _, projects in
-            // Mark onboarded once the user has at least one project
-            if !projects.isEmpty { onboarded = true }
-        }
-        .overlay(alignment: .bottom) {
-            StarPromptBanner()
-                .environment(store)
-                .animation(.spring(duration: 0.35), value: launchCount)
-        }
-        .overlay(alignment: .bottom) {
-            if let undo = store.lastUndo {
-                UndoToast(token: undo)
-                    .environment(store)
-                    .padding(.bottom, 56)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        .animation(.spring(duration: 0.3), value: store.lastUndo)
-        .onAppear {
-            if !onboarded && store.projects.isEmpty {
-                showOnboarding = true
-            }
-            // Increment the launch counter once per process launch — gated on a
-            // process-wide flag so a recreated ContentView can't re-increment it.
-            if !launchCountedThisProcess {
-                launchCountedThisProcess = true
-                launchCount += 1
-            }
+        .task {
+            await SnapshotMode.run(
+                store: store,
+                select: { _ in },
+                openRoom: { _ in },
+                showSettings: { snapSettingsTab = $0 }
+            )
         }
     }
 }
