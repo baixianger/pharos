@@ -207,3 +207,39 @@ Every pitfall uncovered in the three research archives is indexed below and mapp
 | `PIT-DS-13` | `dsh 0.2.1-rc.5` | `printUrl:false` makes web Host unattachable with no CLI override | `DS-SES-03` | Enforce `printUrl:true` in Pharos-managed profile configuration; verify stdout URL line. |
 | `PIT-DS-14` | `dsh 0.2.1-rc.5` | `--port 0` assigns OS port discoverable only in stdout URL line | `DS-SES-03` | Parse dynamically bound port from `dsh web: http://127.0.0.1:<port>/?token=...` on startup. |
 | `PIT-DS-15` | `dsh 0.2.1-rc.5` | `SIGINT` exits with code 130 instead of graceful shutdown | `DS-SES-03`, `DS-SES-04` | Always terminate Host using `SIGTERM` (exit 0) and avoid `C-c` in tmux pane. |
+| `PIT-CX-14` | `codex-cli 0.166.0` | Commentary phase and reasoning items omitted from SQLite preview index | `CX-SES-08`, `CX-SES-14` | Translate full rollout event stream rather than SQLite preview summaries; raw flags preserved in `rawVendorPayload`. |
+| `PIT-AG-07` | `agy 1.5.1` | Tool results decoupled from tool calls across separate transcript journal steps | `AG-SES-08`, `AG-THD-08` | Adapter maintains in-flight tool correlation map by `tool_call_id` to assemble complete `CanonicalToolResult`. |
+| `PIT-DS-16` | `dsh 0.2.1-rc.5` | `tool/call` arguments encoded as JSON-stringified payloads rather than structured objects | `DS-SES-08`, `DS-SES-10` | Adapter performs secondary JSON decoding on `arguments`, preserving raw unparsed string in `CanonicalToolCall.rawArguments`. |
+
+---
+
+## 5. Message Model Translation & Semantic Loss Matrix
+
+The table below specifies how each backend's wire objects translate into the Pharos Canonical Message Model (`docs/MESSAGE-MODEL.md`), detailing fidelity, semantic loss, unmapped gaps, and preservation mechanisms.
+
+| Backend & Version | Wire Entity | Canonical Target Entity | Translation Mechanism | Fidelity | Loss / Unmapped Gaps | Workaround & Preservation |
+|---|---|---|---|---|---|---|
+| **dsh 0.2.1-rc.5** | `turn/start` / `turn/end` | `CanonicalTurn` | Maps turn number and termination reason (`reason.kind`) | 100% | None | Raw `reason` object preserved in `CanonicalTurn.rawVendorPayload`. |
+| **dsh 0.2.1-rc.5** | `step/start` / `step/end` | `CanonicalStep` | Direct mapping of step sequence | 100% | None | Preserved in `CanonicalStep`. |
+| **dsh 0.2.1-rc.5** | `assistant-stream` `text-delta` | `CanonicalStreamingDelta` (`.textDelta`) | Real-time token streaming to chat bubble | 100% | None | Ephemeral streaming presentation. |
+| **dsh 0.2.1-rc.5** | `assistant-stream` `reasoning-delta` | `CanonicalStreamingDelta` (`.reasoningDelta`) | Real-time reasoning animation | 100% | None | Ephemeral streaming presentation. |
+| **dsh 0.2.1-rc.5** | `assistant/message.content[text]` | `CanonicalBlock.assistantText` | Committed text block | 100% | None | Canonical committed text block. |
+| **dsh 0.2.1-rc.5** | `assistant/message.content[reasoning]` | `CanonicalBlock.reasoning` | Committed thought block | 100% | None | Canonical committed reasoning block. |
+| **dsh 0.2.1-rc.5** | `tool/call` + `tool/result` | `CanonicalBlock.toolCall` + `toolResult` | Correlated via `callId` | 99% | Arguments transmitted as stringified JSON | Secondary JSON parse into `[String: JSONValue]`; raw string in `rawArguments` (PIT-DS-16). |
+| **dsh 0.2.1-rc.5** | `$events` `approval/request` | `CanonicalApprovalRequest` (`.toolPermission`) | Waterfall event mapped to modal approval | 100% | None | Resolved via `POST /api/$events/result`. |
+| **dsh 0.2.1-rc.5** | `$events` `user-questions/request` | `CanonicalApprovalRequest` (`.structuredQuestionnaire`) | Multi-select questions mapped to interactive form | 100% | None | `intent` (e.g. `plan-review`) directly mapped. |
+| **dsh 0.2.1-rc.5** | `projections.values` | `ClientSessionSummary` | Session title, cwd, model metadata | 98% | Custom projections unmapped in UI | Preserved in `ClientSessionSummary.rawVendorPayload`. |
+| **Codex 0.166.0** | `turn/started` / `turn/completed` | `CanonicalTurn` | Maps turn ID and completion status | 100% | None | Failure details mapped to `CanonicalError`. |
+| **Codex 0.166.0** | `item/agentMessage/delta` | `CanonicalStreamingDelta` (`.textDelta`) | Live text delta stream | 100% | None | Live bubble stream. |
+| **Codex 0.166.0** | `item/reasoning/*Delta` | `CanonicalStreamingDelta` (`.reasoningDelta`) | Live reasoning delta stream | 100% | None | Live reasoning stream. |
+| **Codex 0.166.0** | `item/completed` (`agentMessage`) | `CanonicalBlock.assistantText` | Committed text block | 98% | `phase` flag (`commentary` vs `final_answer`) | Phase flag preserved in `rawVendorPayload` (PIT-CX-14). |
+| **Codex 0.166.0** | `item/completed` (`reasoning`) | `CanonicalBlock.reasoning` | Maps `content` and `summary` | 100% | None | `summary` mapped to optional reasoning header. |
+| **Codex 0.166.0** | `item/completed` (`commandExecution`) | `CanonicalBlock.terminalCommand` | Maps command, cwd, exit code, stdout/stderr | 100% | None | Complete terminal card presentation. |
+| **Codex 0.166.0** | `item/completed` (`fileChange`) | `CanonicalBlock.filePatch` | Maps file path, patch kind, and diff | 100% | None | Integrated diff presentation. |
+| **Codex 0.166.0** | `thread/status/changed` (`waitingOnApproval`) | `CanonicalApprovalRequest` | Approval activeFlag generates modal request | 95% | Memory-only; lacks wire sequence number | Synthetic ID generated; bound to single `ApprovalBroker` lease. |
+| **agy 1.5.1** | `session/prompt` (ACP) | `CanonicalTurn` | Prompt lifecycle maps to turn bounds | 100% | None | Turn status resolved via prompt stopReason. |
+| **agy 1.5.1** | `session/update` (ACP) | `CanonicalStreamingDelta` | Streaming progress and content chunk | 100% | None | Ephemeral streaming presentation. |
+| **agy 1.5.1** | `transcript.jsonl` (`USER_INPUT`) | `CanonicalBlock.userText` | Raw user prompt string | 100% | None | Canonical user block. |
+| **agy 1.5.1** | `transcript.jsonl` (`PLANNER_RESPONSE`) | `CanonicalBlock.assistantText` + `reasoning` | Separates `content` from `thinking` | 100% | None | Distinct text and reasoning blocks. |
+| **agy 1.5.1** | `transcript.jsonl` (`tool_calls[]`) | `CanonicalBlock.toolCall` + `toolResult` | Correlates tool call with subsequent observation | 95% | Tool results decouple across transcript lines | Adapter tracks in-flight call IDs to merge results into complete block (PIT-AG-07). |
+| **agy 1.5.1** | `session/request_permission` | `CanonicalApprovalRequest` (`.toolPermission`) | ACP permission request mapped to modal | 100% | None | Decision returned via ACP JSON-RPC response. |

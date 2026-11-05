@@ -392,3 +392,33 @@ Each entry: CLI + version, symptom, repro, impact on Pharos, workaround (if any)
 - **Impact on Pharos**: Using `revision` as a unique message identifier or global sorting key causes message collision and disordered transcripts.
 - **Workaround**: Identify streaming chunks using `attemptId + index` for real-time bubble animation. Use durable journal events (`event.seq`) as canonical message identifiers, and treat `assistant/message` as the ground-truth final message content.
 - **Upstream status**: By design in ephemeral presentation stream.
+
+---
+
+### OpenAI Codex: Ephemeral commentary phases and reasoning items omitted from SQLite preview index
+- **CLI + version**: `codex-cli 0.166.0`
+- **Symptom**: In `ThreadItem`, agent messages with `phase: "commentary"` and `reasoning` items are persisted into rollout `.jsonl` files but are omitted from SQLite's `thread_turns.preview` index. Querying SQLite directly yields only final answer text without thinking steps.
+- **Repro**: Query `state_5.sqlite` for turns containing extensive reasoning blocks.
+- **Impact on Pharos**: Offline SQL indexing misses reasoning transcripts and intermediary commentary steps.
+- **Workaround**: Canonical model translation relies on full rollout event streams or `thread/items/list` RPC calls rather than SQLite preview summaries; raw commentary phase flags are preserved in `CanonicalBlock.rawVendorPayload`.
+- **Upstream status**: Database indexing optimization by design.
+
+---
+
+### Antigravity: Tool results decoupled from tool calls across separate transcript journal steps
+- **CLI + version**: `agy 1.5.1`
+- **Symptom**: In `transcript.jsonl`, `tool_calls` are recorded inside a `PLANNER_RESPONSE` step, but their execution outputs and errors do not appear in that step; they are recorded as subsequent synthetic steps or system observations without an explicit parent pointer.
+- **Repro**: Inspect consecutive lines in `transcript.jsonl` following a shell execution tool call.
+- **Impact on Pharos**: Naive 1-to-1 step parsers fail to correlate tool calls with their corresponding execution results, displaying empty tool cards.
+- **Workaround**: `AgyAdapter` maintains an in-flight tool correlation map keyed by `tool_call_id`; upon encountering a result observation, it resolves the pending `CanonicalToolCall` into a complete `CanonicalToolResult` and attaches the result block to the parent turn.
+- **Upstream status**: Journal serialization format design.
+
+---
+
+### DeepSeek Harness: `tool/call` arguments encoded as JSON-stringified payloads rather than structured objects
+- **CLI + version**: `dsh 0.2.1-rc.5` (web Host)
+- **Symptom**: In both durable `assistant/message` blocks and live `tool-call-delta` frames, `arguments` is transmitted as an escaped JSON string (`"{\"path\":\"file.txt\"}"`) rather than a direct JSON object dictionary.
+- **Repro**: Inspect JSON payload of `tool/call` or `assistant-stream` tool call chunk.
+- **Impact on Pharos**: Directly decoding `arguments` into `[String: JSONValue]` fails with type mismatch errors.
+- **Workaround**: `DshAdapter` performs secondary JSON parsing on `arguments`: it attempts to decode the string into structured `[String: JSONValue]`, while preserving the exact unparsed string in `CanonicalToolCall.rawArguments`.
+- **Upstream status**: By design in Cordis tool calling schema.

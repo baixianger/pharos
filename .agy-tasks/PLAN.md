@@ -260,80 +260,83 @@ flowchart TD
 
 ---
 
-### Goal 1: Strict UI / Backend Isolation & Versioned Client API (`PharosClientKit`)
+### Goal 1: Strict UI / Backend Isolation, Architecture Audit Remediation & Canonical Message Model (`PharosClientKit`)
 **Rank**: 1 (Architectural Foundation)  
-**Value**: Prevents UI regressions, eliminates cross-layer spaghetti, enables independent headless daemon execution, and provides 100% deterministic mocking for client UI tests.  
-**Matrix Rows Delivered**: Foundational API contract underpinning all rows in [`docs/BACKEND-MATRIX.md`](file:///Users/baixianger/personal/pharos/docs/BACKEND-MATRIX.md) (`CX-SES-01..17`, `CX-THD-01..17`, `AG-SES-01..17`, `AG-THD-01..17`, `DS-SES-01..17`, `DS-THD-01..17`). Specifically establishes `ClientSessionMessage` for 1:1 Session rows (`*-SES-*`) and `ClientThreadMessage` for Thread roster rows (`*-THD-*`).
+**Value**: Prevents UI regressions, eliminates cross-layer spaghetti, establishes the single canonical message/event model across all backends, resolves all architecture audit violations (`docs/ARCHITECTURE-AUDIT.md`), and provides 100% deterministic mocking for client UI tests.  
+**Matrix Rows Delivered**: Foundational API contract underpinning all rows in [`docs/BACKEND-MATRIX.md`](file:///Users/baixianger/personal/pharos/docs/BACKEND-MATRIX.md) (`CX-SES-01..17`, `CX-THD-01..17`, `AG-SES-01..17`, `AG-THD-01..17`, `DS-SES-01..17`, `DS-THD-01..17`, plus Section 5 Message Model Translation).
 
 - **Scope**:
-  - Define separate SPM library target `PharosClientKit` in `Package.swift`.
-  - Define versioned, strongly-typed DTOs conforming to `Codable`, `Sendable`, and `Equatable`:
-    - `ClientSessionSummary`: id, host, memberName, agentType (`codex` | `agy` | `dsh`), workspacePath, activeModel, activeMode (`yolo` | `safe`), activityState (`idle` | `busy` | `needs_human` | `stopped`), avatarSeed, unreadCount, updatedAt.
-    - `ClientThreadSummary`: threadId, title, participantNames, unreadCount, lastMessagePreview, lastMessageAt.
-    - `ClientProjectSummary`: projectId, name, path, trackedHosts (`mini`, `air`), activeSessionCount.
-    - **`ClientSessionMessage` (1:1 Session Direct Chat)**: id, sessionId, senderType (`human` | `agent`), content, timestamp, streamingState (`streaming` | `completed` | `failed`), toolCalls: `[ClientToolCall]`, pendingApproval: `ClientApprovalRequest?`.
-    - **`ClientThreadMessage` (Thread Roster Group Chat)**: id, threadId, senderName, senderType (`human` | `agent`), avatarSeed, content, timestamp, status (`pending` | `delivered` | `consumed` | `unverifiedFallback`), receipts: `[ClientDeliveryReceipt]`.
-    - `ClientMemberDetail`: host, agentType, workspacePath, sessionId, model, mode, tmuxSessionName, liveness, capabilities: `BackendCapabilities`.
-    - `ClientAvatarInfo`: seed, customColorHex, customImageUrl, stateRing (`idle` | `working` | `needs_human` | `stopped`).
-    - `ClientAttentionItem`: memberName, threadId, reason, toolName, promptText, requestedAt.
-  - Define protocol `PharosClientService`:
-    ```swift
-    public protocol PharosClientService: Sendable {
-        func fetchSessions() async throws -> [ClientSessionSummary]
-        func fetchThreads() async throws -> [ClientThreadSummary]
-        func fetchProjects() async throws -> [ClientProjectSummary]
-        func fetchSessionMessages(sessionId: String) async throws -> [ClientSessionMessage]
-        func fetchThreadMessages(threadId: String) async throws -> [ClientThreadMessage]
-        func fetchMemberDetail(name: String) async throws -> ClientMemberDetail
-        
-        // 1:1 Session actions (live streaming, steering, approvals)
-        func sendSessionMessage(sessionId: String, text: String) async throws -> ClientSessionMessage
-        func steerSession(sessionId: String, text: String) async throws
-        func resolveSessionApproval(sessionId: String, approvalId: String, decision: String) async throws
-        
-        // Thread Roster actions (reliable delivery, fanout, receipts)
-        func sendThreadMessage(threadId: String, text: String) async throws -> ClientThreadMessage
-        
-        // Member administration
-        func setMemberMode(name: String, mode: String) async throws
-        func setMemberModel(name: String, model: String) async throws
-        func setMemberAvatar(name: String, avatar: ClientAvatarInfo) async throws
-        func stopMember(name: String) async throws
-        func reviveMember(name: String) async throws
-        
-        func events() -> AsyncStream<PharosClientEvent>
-    }
-    ```
-  - Implement `RealPharosClientService` communicating with local backend daemon over Unix Domain Socket (`agent-runtime.sock` / `client-rpc.sock`) using JSON-RPC 2.0.
-  - Implement `MockPharosClientService` with rich fixture states for Xcode previews and deterministic UI testing.
-  - Compile-time enforcement:
-    - Backend targets (`PharosRuntime`, `PharosMesh*`, `PharosLight`) must not import `SwiftUI` or `AppKit`.
-    - Client UI target must import only `PharosClientKit`.
-    - Automated unit test `ArchitectureBoundaryTests` scanning AST / module imports to fail builds on boundary violations.
+  - **Define `PharosClientKit` Library Target** in `Package.swift`:
+    - Strict presentation-facing library depending exclusively on `Foundation`.
+    - Client UI target (`Pharos` / `PharosApp`) depends **only** on `PharosClientKit`, `SwiftUI`, and `AppKit`. Backend modules never import `SwiftUI`/`AppKit`.
+  - **Architecture Audit Remediation** (Resolving violations cataloged in [`docs/ARCHITECTURE-AUDIT.md`](file:///Users/baixianger/personal/pharos/docs/ARCHITECTURE-AUDIT.md)):
+    - **Remediation 1 (VIO-01)**: Delete `Sources/Pharos/MeshCoreExports.swift` (`@_exported import PharosMeshCore`).
+    - **Remediation 2 (VIO-02, VIO-03)**: Relocate `Shell.run` and `RemoteLaunch` execution logic into `PharosRuntime/Adapters/`. Zero `Process()` or SSH invocations in client presentation targets.
+    - **Remediation 3 (VIO-06, VIO-07)**: Migrate project persistence (`projects.json`) and registry synchronization from `ProjectStore.swift` into the backend daemon. Client accesses projects via `PharosClientService.fetchProjects()`.
+    - **Remediation 4 (VIO-08, VIO-09)**: Move CLI entry points (`CLI.swift`, `LightCLI.swift`, `DistributedRegistryCLI.swift`) out of GUI target into headless target `PharosMesh`.
+    - **Remediation 5**: Expand `ArchitectureBoundaryTests` to automatically assert 0 occurrences of `SwiftUI`/`AppKit` across all 11 backend directories and verify clean target separation.
+  - **Pharos Canonical Message & Event Model** (Specified in [`docs/MESSAGE-MODEL.md`](file:///Users/baixianger/personal/pharos/docs/MESSAGE-MODEL.md)):
+    - Define unified `CanonicalTurn`, `CanonicalStep`, and typed `CanonicalBlock` (`userText`, `assistantText`, `reasoning`, `toolCall`, `toolResult`, `terminalCommand`, `filePatch`, `attachment`).
+    - **Lossless Invariant**: `rawVendorPayload: [String: JSONValue]?` preserved on every turn, step, block, and approval object.
+    - Define `CanonicalStreamingDelta` (`textDelta`, `reasoningDelta`, `toolCallDelta`, `terminalOutputDelta`) for real-time typing animation.
+    - Define `CanonicalApprovalRequest` supporting tool permissions and structured `CanonicalQuestionnaire` waterfalls (`intent: "plan-review"`).
+    - Composite stable identifiers `(sessionId, turnId, stepId, blockId)` ensuring idempotency across reconnects.
+  - **Client Summaries & Protocol**:
+    - `ClientSessionSummary`, `ClientThreadSummary`, `ClientProjectSummary`, `ClientMemberDetail`, `ClientAvatarInfo`.
+    - Protocol `PharosClientService`:
+      ```swift
+      public protocol PharosClientService: Sendable {
+          func fetchSessions() async throws -> [ClientSessionSummary]
+          func fetchThreads() async throws -> [ClientThreadSummary]
+          func fetchProjects() async throws -> [ClientProjectSummary]
+          func fetchSessionHistory(sessionId: String) async throws -> [CanonicalTurn]
+          func fetchThreadMessages(threadId: String) async throws -> [ClientThreadMessage]
+          func fetchMemberDetail(name: String) async throws -> ClientMemberDetail
+          
+          // 1:1 Session actions (live streaming, steering, approvals)
+          func sendSessionMessage(sessionId: String, text: String) async throws -> CanonicalTurn
+          func steerSession(sessionId: String, text: String) async throws
+          func resolveSessionApproval(sessionId: String, approvalId: String, decision: ApprovalDecision) async throws
+          
+          // Thread Roster actions (reliable delivery, fanout, receipts)
+          func sendThreadMessage(threadId: String, text: String) async throws -> ClientThreadMessage
+          
+          // Member administration
+          func setMemberMode(name: String, mode: String) async throws
+          func setMemberModel(name: String, model: String) async throws
+          func setMemberAvatar(name: String, avatar: ClientAvatarInfo) async throws
+          func stopMember(name: String) async throws
+          func reviveMember(name: String) async throws
+          
+          func events() -> AsyncStream<PharosClientEvent>
+      }
+      ```
+  - Implement `RealPharosClientService` over UDS JSON-RPC and `MockPharosClientService` for deterministic UI testing and previews.
   - Document client contract in `docs/CLIENT-API.md`.
 - **Acceptance Criteria**:
-  - *Unit*: 100% test coverage for all DTO serialization roundtrips. `ArchitectureBoundaryTests` passes and rejects artificial cross-boundary imports.
+  - *Unit*: 100% test coverage for all canonical model serialization roundtrips. `ArchitectureBoundaryTests` passes across all 11 backend target directories.
+  - *Audit Verification*: Verifies VIO-01 through VIO-09 are eliminated or walled behind `PharosClientKit`.
   - *Live (mini)*: Standalone CLI daemon starts; `RealPharosClientService` executes queries and receives streaming events over UDS.
-  - *Cross-host (mini <-> Air)*: Client queries on Air route over mesh transport to mini daemon, returning identical DTO snapshots.
-  - *Matrix Verification*: Validates foundational schema and serialization for all 102 rows in [`docs/BACKEND-MATRIX.md`](file:///Users/baixianger/personal/pharos/docs/BACKEND-MATRIX.md).
+  - *Cross-host (mini <-> Air)*: Client queries on Air route over mesh transport to mini daemon, returning identical canonical DTO snapshots.
+  - *Matrix Verification*: Validates foundational schema and serialization for all 102 rows + Section 5 in [`docs/BACKEND-MATRIX.md`](file:///Users/baixianger/personal/pharos/docs/BACKEND-MATRIX.md).
 - **Risks & Mitigations**:
   - *Risk*: Transcript serialization latency on massive sessions.
-  - *Mitigation*: Stream incremental `ClientMessageDelta` events; fetch paginated history on demand rather than full session transcripts on startup.
+  - *Mitigation*: Stream incremental `CanonicalStreamingDelta` events; fetch paginated turn history on demand via `session/page` or `thread/turns/list`.
 
 ---
 
-### Goal 2: Tri-Backend Adapters (`CodexAdapter`, `AgyAdapter`, `DshAdapter`) & Capability Registry
+### Goal 2: Tri-Backend Adapters (`CodexAdapter`, `AgyAdapter`, `DshAdapter`), Canonical Translation Layers & Capability Registry
 **Rank**: 2 (Core Engine & Protocols)  
-**Value**: Solves CLI fragmentation by providing dedicated, robust driver implementations adhering to real-world protocol mechanics uncovered in reverse-engineering.  
+**Value**: Solves CLI fragmentation by providing dedicated driver implementations and bidirectional translation layers that convert vendor wire protocols into the Pharos Canonical Message Model with near-zero information loss.  
 **Matrix Rows Delivered**:
-- **Codex**: `CX-SES-01` (discover), `CX-SES-02` (status), `CX-SES-03` (create), `CX-SES-04` (resume), `CX-SES-05` (send), `CX-SES-06` (steer), `CX-SES-07` (streaming), `CX-SES-08` (readback), `CX-SES-09` (interrupt), `CX-SES-10` (approvals), `CX-SES-11` (model), `CX-SES-12` (yolo), `CX-SES-13` (receipts), `CX-SES-14` (backfill), `CX-SES-16` (project-cwd).
-- **Antigravity**: `AG-SES-01` (discover), `AG-SES-02` (status), `AG-SES-03` (create), `AG-SES-04` (resume), `AG-SES-05` (send), `AG-SES-06` (steer), `AG-SES-07` (streaming), `AG-SES-08` (readback), `AG-SES-09` (interrupt), `AG-SES-10` (approvals), `AG-SES-11` (model), `AG-SES-12` (yolo), `AG-SES-13` (receipts), `AG-SES-14` (backfill), `AG-SES-16` (project-cwd).
-- **DSH**: `DS-SES-01` (discover), `DS-SES-02` (live-status), `DS-SES-03` (create), `DS-SES-04` (resume), `DS-SES-05` (send), `DS-SES-06` (steer), `DS-SES-07` (streaming), `DS-SES-08` (readback), `DS-SES-09` (interrupt), `DS-SES-10` (approvals), `DS-SES-11` (model), `DS-SES-12` (permission-mode), `DS-SES-13` (receipts), `DS-SES-14` (backfill), `DS-SES-16` (workspace), and `DS-THD-01..17` (Threads roster via `dsh-plugin-pharos` delivery loop).
+- **Codex**: `CX-SES-01..16`, `CX-THD-01..17`, and Section 5 Codex Translation.
+- **Antigravity**: `AG-SES-01..16`, `AG-THD-01..17`, and Section 5 agy Translation.
+- **DSH**: `DS-SES-01..17`, `DS-THD-01..17`, and Section 5 dsh Translation.
 
 - **Scope**:
   - Refactor backend runtime into unified adapter subsystem under `Sources/PharosRuntime/Adapters/`:
-    - `CodexAdapter`: Connects directly to the shared daemon via WebSocket-over-UDS (`~/.codex/app-server-control/app-server-control.sock`). Needs **no tmux** (the Codex daemon is self-managed). Implements `thread/start`, `thread/resume` multi-client subscription, `turn/start` + `turn/steer` (idle and mid-turn steering), streaming deltas (`item/agentMessage/delta`), and `thread/turns/list` backfill after reconnects. Never touches `ipc.sock`. Explicitly designates Pharos as the approval owner (`ApprovalBroker` single-lease coordinator) to resolve first-response-wins races.
-    - `AgyAdapter`: Held and supervised by the headless Pharos backend daemon as a long-running `agy acp` stdio child process (client UI quits/restarts do not affect it). Implements ACP 1.5.0 stdio JSON-RPC (`session/new`, `session/prompt`, `session/update`, `session/request_permission`, `session/set_config_option`). Retains Attached read-only supervisor (`flock` on `presence/<id>.lock` + `transcript.jsonl` tailing) and tmux TUI as external fallback.
+    - `CodexAdapter`: Connects directly to shared daemon via WebSocket-over-UDS (`~/.codex/app-server-control/app-server-control.sock`). Needs **no tmux**. Implements `thread/start`, `thread/resume`, `turn/start` + `turn/steer`, streaming deltas (`item/agentMessage/delta`, `item/reasoning/*Delta`), and `thread/turns/list` backfill. Designates Pharos as explicit approval owner.
+    - `AgyAdapter`: Held and supervised by headless Pharos backend daemon as a long-running `agy acp` stdio child process. Implements ACP 1.5.0 stdio JSON-RPC (`session/new`, `session/prompt`, `session/update`, `session/request_permission`, `session/set_config_option`). Retains Attached read-only supervisor (`flock` on `presence/<id>.lock` + `transcript.jsonl` tailing) and tmux TUI as fallback.
     - `DshAdapter` (Persistent `dsh web` Host HTTP/WS + in-process `dsh-plugin-pharos`):
       - *UI Chat Path (Session)*: Pharos spawns and owns a dedicated `dsh web` host running inside a tmux session (`dsh --profile web --no-open --port 0 --host 127.0.0.1`).
         - **Readiness & Token Discovery**: Captures stdout line `^dsh web: (http://127.0.0.1:(\d+)/\?token=(\S+))$` to discover dynamic port and raw token directly into volatile memory (token is never written to disk or logs; buffer cleared immediately).
@@ -347,12 +350,27 @@ flowchart TD
         - **Model Selection**: `POST /api/session/selectModel` with `{sessionId, provider, model}` validated against `session/modelCatalog`.
         - **Process Supervisor**: Managed process terminated via `SIGTERM` (exit code 0; avoids SIGINT exit 130).
       - *Threads Inter-Agent Path (Thread)*: `dsh-plugin-pharos 0.2.0` (in-process Cordis plugin) connects to Pharos Runtime socket and runs the `delivery.poll` -> `agent.followup()` -> `delivery.ack` loop. Used **strictly for dsh replying to and exchanging messages with other agents in Threads**—it is NOT the UI chat path.
+  - **Bidirectional Canonical Message Translation Layers** (`docs/MESSAGE-MODEL.md`):
+    - `DshMessageTranslator`: Maps dsh `turn/start|end`, `assistant/message`, `assistant-stream`, `tool/call`, `tool/result`, and `$events` into `CanonicalTurn`, `CanonicalStep`, and `CanonicalBlock` (99% fidelity; secondary JSON decode for stringified tool arguments).
+    - `CodexMessageTranslator`: Maps Codex `turn/started|completed`, `item/*` (`userMessage`, `agentMessage`, `reasoning`, `commandExecution`, `fileChange`), and active flags into `CanonicalTurn` and `CanonicalBlock` (preserves commentary phase in `rawVendorPayload`).
+    - `AgyMessageTranslator`: Maps ACP `session/update` chunks and `transcript.jsonl` steps into `CanonicalTurn` and `CanonicalBlock`, correlating decoupled tool results by `tool_call_id`.
+  - **Golden Fixture Test Suite**:
+    - Implement `Tests/PharosTests/CanonicalMessageMappingTests.swift` replaying recorded wire dumps for all three backends and asserting 100% block reconstruction fidelity and `rawVendorPayload` preservation.
   - Introduce `BackendCapabilityRegistry` mapping member types to declared capabilities.
   - Scope Exclusion: Headless modes (`dsh --profile headless`, `agy print stream-json`) are explicitly **OUT of M3** and deferred to post-M3.
   - Ensure all known CLI defects documented in `docs/PITFALLS.md` are handled with appropriate workarounds.
 - **Acceptance Criteria**:
-  - *Unit*: Mock-based protocol tests for all 3 adapters: JSON-RPC frame parsing, streaming delta assembly, approval lease management, non-blocking flock checks, and HTTP/WS mock endpoints.
+  - *Unit*: Golden fixture tests for all 3 translators pass with 100% assertions green; mock protocol tests for frame parsing, delta streaming, and approval lease management.
   - *Live (mini)*: Launch 3 distinct members under `~/personal/pharos-msg-test`:
+    1. `codex` member driven via shared daemon WebSocket (no tmux).
+    2. `agy` member driven via `agy acp` held by Pharos backend daemon.
+    3. `dsh` member driven via Pharos-owned `dsh web --no-open` in tmux + `dsh-plugin-pharos`.
+    Verify `pharos member list` displays all 3 with accurate `MODEL`, `MODE`, and liveness.
+  - *Cross-host (mini <-> Air)*: Issue `pharos member mode <name> safe|yolo` and `pharos send` across all 3 member types distributed between mini and Air.
+  - *Matrix Verification*: Flips all adapter and translation rows in [`docs/BACKEND-MATRIX.md`](file:///Users/baixianger/personal/pharos/docs/BACKEND-MATRIX.md) from `untested` to `supported` with test evidence.
+- **Risks & Mitigations**:
+  - *Risk*: `dsh` web host launch token leakage.
+  - *Mitigation*: Capture token from stdout stream directly into volatile memory; never log, serialize, or persist to disk.
     1. `codex` member driven via shared daemon WebSocket (no tmux).
     2. `agy` member driven via `agy acp` held by Pharos backend daemon.
     3. `dsh` member driven via Pharos-owned `dsh web --no-open` in tmux + `dsh-plugin-pharos`.
@@ -568,13 +586,24 @@ The legacy SwiftUI views (`DashboardView`, `ProjectDetailView`, `MeshRoomView`, 
 
 ### 5. Implementation Roadmap (Phased Execution)
 
-1. **Phase 1: Foundation & Boundary (`PharosClientKit`)**
-   - Package target creation, DTO definitions, `ArchitectureBoundaryTests`, `docs/CLIENT-API.md`.
-   - `MockPharosClientService` and `RealPharosClientService` implementation.
-2. **Phase 2: Tri-Backend Adapters & Capability Engine**
+1. **Phase 1: Foundation, Architecture Audit Remediation & Canonical Model (`PharosClientKit`)**
+   - Package target creation for `PharosClientKit` (strict Foundation-only dependency).
+   - Canonical Message Model definition (`CanonicalTurn`, `CanonicalStep`, `CanonicalBlock`, `CanonicalStreamingDelta`, `CanonicalApprovalRequest`, `rawVendorPayload`).
+   - Execute Ranked Audit Remediations from [`docs/ARCHITECTURE-AUDIT.md`](file:///Users/baixianger/personal/pharos/docs/ARCHITECTURE-AUDIT.md):
+     - Delete `MeshCoreExports.swift` (VIO-01).
+     - Relocate `Shell.run` and `RemoteLaunch` to backend runtime/adapters (VIO-02, VIO-03).
+     - Migrate project persistence to backend daemon (VIO-06, VIO-07).
+     - Relocate CLI entry points to `PharosMesh` target (VIO-08, VIO-09).
+     - Automated layering check in `ArchitectureBoundaryTests` asserting zero presentation imports across all backend targets.
+   - Implement `MockPharosClientService` and `RealPharosClientService` (UDS JSON-RPC 2.0).
+   - Document client contract in `docs/CLIENT-API.md`.
+
+2. **Phase 2: Tri-Backend Adapters, Translation Layers & Capability Engine**
    - `CodexAdapter` (WebSocket-over-UDS shared daemon client; no tmux needed; approval owner).
    - `AgyAdapter` (ACP stdio supervisor held by Pharos backend daemon; tmux TUI fallback).
    - `DshAdapter` (Pharos-managed persistent `dsh web --no-open` in tmux for UI chat using `/api/remote.mux` HTTP/WS + `dsh-plugin-pharos` delivery loop for Threads inter-agent chat).
+   - Bidirectional Canonical Translation Layers (`DshMessageTranslator`, `CodexMessageTranslator`, `AgyMessageTranslator`) adhering to [`docs/MESSAGE-MODEL.md`](file:///Users/baixianger/personal/pharos/docs/MESSAGE-MODEL.md).
+   - Golden Fixture test suite (`CanonicalMessageMappingTests`) validating replay fidelity and `rawVendorPayload` preservation.
    - Elevation of `dsh` as third first-class member type across CLI and mesh.
    - Headless modes (`dsh --profile headless`, `agy print stream-json`) deferred to post-M3.
 3. **Phase 3: Grok-Bot Client Shell & Design Tokens**

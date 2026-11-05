@@ -2,12 +2,47 @@ import Foundation
 import XCTest
 
 final class ArchitectureBoundaryTests: XCTestCase {
+    private let backendDirectories = [
+        "Sources/PharosMeshProtocol",
+        "Sources/PharosMeshIdentity",
+        "Sources/PharosMeshIroh",
+        "Sources/PharosMeshReplica",
+        "Sources/PharosMeshControl",
+        "Sources/PharosMeshLifecycle",
+        "Sources/PharosMeshCore",
+        "Sources/PharosAgentCore",
+        "Sources/PharosRuntime",
+        "Sources/PharosCodexAdapter",
+        "Sources/PharosMesh",
+    ]
+
     func testCoreModulesDoNotImportPresentationFrameworks() throws {
-        for directory in ["Sources/PharosMeshCore", "Sources/PharosRuntime"] {
-            for file in try swiftFiles(in: repositoryRoot.appendingPathComponent(directory)) {
+        let forbiddenImports = ["import SwiftUI", "import AppKit", "import Cocoa"]
+        for directory in backendDirectories {
+            let dirURL = repositoryRoot.appendingPathComponent(directory)
+            guard FileManager.default.fileExists(atPath: dirURL.path) else { continue }
+            for file in try swiftFiles(in: dirURL) {
                 let source = try String(contentsOf: file, encoding: .utf8)
-                XCTAssertFalse(source.contains("import SwiftUI"), "\(file.path) imports SwiftUI")
-                XCTAssertFalse(source.contains("import AppKit"), "\(file.path) imports AppKit")
+                for forbidden in forbiddenImports {
+                    XCTAssertFalse(
+                        source.contains(forbidden),
+                        "\(file.path) imports presentation framework '\(forbidden)' in backend module"
+                    )
+                }
+            }
+        }
+    }
+
+    func testBackendModulesDoNotImportAppTarget() throws {
+        for directory in backendDirectories {
+            let dirURL = repositoryRoot.appendingPathComponent(directory)
+            guard FileManager.default.fileExists(atPath: dirURL.path) else { continue }
+            for file in try swiftFiles(in: dirURL) {
+                let source = try String(contentsOf: file, encoding: .utf8)
+                XCTAssertFalse(
+                    source.contains("import Pharos\n") || source.contains("import Pharos;"),
+                    "\(file.path) imports presentation target 'Pharos' in backend module"
+                )
             }
         }
     }
