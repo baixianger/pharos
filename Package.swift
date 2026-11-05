@@ -84,7 +84,7 @@ let packageTargets: [Target] = {
         .target(name: "PharosAgentCore", path: "Sources/PharosAgentCore"),
         .target(
             name: "PharosRuntime",
-            dependencies: ["PharosMeshCore", "PharosAgentCore"],
+            dependencies: ["PharosMeshCore", "PharosAgentCore", "PharosClientKit"],
             path: "Sources/PharosRuntime"
         ),
         .target(

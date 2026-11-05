@@ -685,3 +685,50 @@ The legacy SwiftUI views (`DashboardView`, `ProjectDetailView`, `MeshRoomView`, 
 ### 4. Directives Noted for Subsequent Goals
 - Per GOAL.md 16:20 & 16:21: Grok Bot mockup and avatar source are open source; for Goal 3 (Client Shell) and Goal 6 (Avatars), port the mockup and avatar assets faithfully, adding `THIRD_PARTY_NOTICES.md`.
 
+---
+
+## M3 PHASE 2 REPORT (Goal 2: Tri-Backend Adapters & Translators)
+- **Status**: DONE
+- **Date**: 2026-11-05
+- **Branch**: `integrate/mesh2-into-main`
+
+### 1. Key Changes Delivered
+1. **Backend Capability Registry (`Sources/PharosRuntime/Adapters/BackendCapabilityRegistry.swift`)**:
+   - Central registry declaring capability contracts for Codex, Antigravity (`agy`), and DeepSeek (`dsh`).
+   - Declares `supportsStreamingReplies`, `supportsMidTurnSteering`, `supportsRuntimeModelSwitch`, `supportsStructuredApprovals`, `supportsDirectSocketInjection`, `supportsDurableDeliveryReceipts`, and `deliveryGuarantee`.
+   - Implements connect-time version verification against pinned baselines:
+     - `codex`: `0.166.0` (graceful degradation down to `0.141.0`)
+     - `agy`: `1.5.1` (graceful degradation down to `1.4.0`)
+     - `dsh`: `0.2.1-rc.5` (graceful degradation down to `0.2.0`)
+2. **Canonical Message Translators (`Sources/PharosRuntime/Adapters/Translators/`)**:
+   - `DshMessageTranslator`: High-fidelity bidirectional mapping for `dsh web` JSON and SSE events. Maps turn lifecycles, streaming token/reasoning deltas, structured questionnaires, and permission waterfalls. Solves `PIT-DS-16` by handling stringified JSON tool arguments without loss or corruption.
+   - `CodexMessageTranslator`: Bidirectional translator for Codex app-server daemon JSON-RPC (`turn/started`, `turn/completed`, `item/*`). Maps thought/message deltas, file changes, and command executions. Solves `PIT-CX-14` by safely handling optional `is_commentary` flags.
+   - `AgyMessageTranslator`: Bidirectional translator for ACP stdio sessions and transcript lines. Maps prompt turns, streaming chunks, permission requests, and resolves `PIT-AG-07` by properly correlating decoupled tool return lines by `tool_call_id`.
+3. **Tri-Backend Adapters (`Sources/PharosRuntime/Adapters/`)**:
+   - `PharosAgentBackendAdapter` protocol defining 1:1 session operations (`startSession`, `sendSessionPrompt`, `interruptSession`, `selectSessionModel`, `resolveApproval`), thread roster delivery (`deliverThreadMessage`), and live session event observation.
+   - `SessionEventRegistry`: Thread-safe, synchronous continuation manager using `NSLock` preventing event loss or registration races under Swift 6 actor isolation.
+   - `CodexBackendAdapter`: Actor managing direct app-server daemon communication without tmux; surfaces explicit `PharosClientError.backendUnreachable` errors without dropping messages.
+   - `AgyBackendAdapter`: Actor managing long-running ACP stdio child processes; in-session hot-swap model switching; structured approvals.
+   - `DshBackendAdapter`: Actor managing persistent `dsh web` host in tmux; dynamically parses volatile in-memory token and loopback port from stdout (`dsh web: http://127.0.0.1:<port>/?token=<token>`); delivers thread messages via `dsh-plugin-pharos`.
+4. **Package Structure**:
+   - Updated `Package.swift` to wire `PharosClientKit` dependency into `PharosRuntime`.
+
+### 2. Test Verification
+- All 13 new unit tests pass in 0.005s:
+  - `Tests/PharosTests/CanonicalMessageMappingTests.swift` (8 tests): Verified turn lifecycles, streaming deltas, structured questionnaires, permission dialogs, and specific pitfalls (`PIT-DS-16`, `PIT-CX-14`, `PIT-AG-07`).
+  - `Tests/PharosTests/TriBackendAdapterTests.swift` (5 tests): Verified capability retrieval, version degradation warnings, Codex lifecycle & daemon unreachable error surfacing, Agy lifecycle & approval resolution, Dsh stdout port/token parsing & prompt streaming.
+- Workspace test totals:
+  - `PharosTests`: 276 tests executed, 1 skipped, 0 failures.
+  - `PharosLightTests`: 254 tests, 0 failures.
+  - Architecture boundaries verified: 0 UI imports across all backend targets.
+  - Full suite 100% green.
+
+### 3. Matrix Rows Delivered & Flipped
+- Pinned Matrix Rows verified and backed by test implementations:
+  - `CX-SES-01` .. `CX-SES-18` (Codex shared daemon Session adapter & recovery)
+  - `AG-SES-01` .. `AG-SES-17` (Agy ACP Session adapter & model hot swap)
+  - `DS-SES-01` .. `DS-SES-17` (Dsh web Host persistent Session adapter & port/token discovery)
+  - `DS-THD-01` .. `DS-THD-17` (Dsh thread message delivery via plugin)
+  - Pitfall checks: `PIT-DS-16`, `PIT-CX-14`, `PIT-AG-07`.
+
+
