@@ -4,7 +4,7 @@ summary: Architecture decisions, conflict resolutions, and layering for merging 
 
 # Mesh 2.0 Integration & Architectural Layering (PR #2)
 
-This document records the architectural reconciliation between Pharos Milestone 2 (`main`, commit `baf17dc`) and Mesh 2.0 (`origin/feat/distributed-iroh`, 113 commits of P2P Iroh, MeshKit, stable identity, and iOS replica sync).
+This document records the architectural reconciliation between Pharos Milestone 2 (`main`, commit `baf17dc`) and Mesh 2.0 (`origin/feat/distributed-iroh`, 113 commits of P2P Iroh, MeshKit, stable identity, and iOS replica sync), successfully concluded in merge commit `28ba87a`.
 
 ## 1. Architectural Strategy: Two-Tier Mesh Coexistence
 
@@ -24,6 +24,9 @@ This document records the architectural reconciliation between Pharos Milestone 
    - Headless broker and CLI runtime defaults to the robust, low-latency LightBroker / HostNode architecture (`legacyBrokerEnabled`).
    - Distributed Mesh mode is activated via `PHAROS_DISTRIBUTED_MESH=1` or `PHAROS_DISTRIBUTED=1` (or via GUI distributed mesh preference), routing commands (`pair`, `distributed`, `unread`, etc.) through `DistributedMeshSupport`, `DistributedPairCLI`, and `MacMeshRuntimeCoordinator`.
    - Neither stack suppresses or breaks the other.
+4. **Old UI Deprecation & Transition (PM Decision 2026-11-05)**:
+   - The user decided to abandon the legacy macOS UI (Dashboard/ProjectDetail/MeshRoom/AgentSidebar/AgentWorkspaceShell) in favor of a new client modelled on the Grok Bot desktop app.
+   - Old SwiftUI views were kept building cleanly for Phase 0 release packaging, but no extra effort was spent reconciling legacy view behaviors. They will be superseded in M3 by a new isolated client target.
 
 ---
 
@@ -37,13 +40,16 @@ This document records the architectural reconciliation between Pharos Milestone 
     - Added test targets: `PharosLightTests`, `PharosTests`, `PharosMeshProtocolTests`, `PharosMeshIrohTests`, `PharosMeshIdentityTests`, `PharosMeshCoreTests`.
     - Added external dependencies: `swift-crypto`, `MeshKit` (0.2.1), and `Sparkle`.
 - **`Scripts/package_app.sh`**:
-  - Retained `cargo build` for `rust/Cargo.toml` across architectures (`arm64`, `x86_64`) to build bundled native helpers.
+  - Added cargo / local homebrew path resolution.
+  - Multi-path product resolver `build_product_path` supporting both modern Xcode SPM `.build/out/Products/Release` and classical `.build/${arch}-apple-macosx/$CONF`.
+  - Retained `cargo build` for `rust/Cargo.toml` across architectures (`arm64`, `x86_64`) to build bundled native helpers (`pharos-codex-adapter`, `pharos-meshd`).
 - **`Packaging/debian/pharos-mesh.service`**:
   - Maintained `EnvironmentFile` and `Environment=LD_LIBRARY_PATH=/opt/pharos-swift` for runtime compatibility while supporting distributed sync-serve.
 
 ### Core Mesh & Daemon
-- **`Sources/PharosMeshCore/MeshBroker.swift`**:
-  - Deduplicated wire structs (`MeshRequest`, `MeshEvent`, `MeshMsg`, `MeshMemberInfo`, `MeshResponse`, etc.): extracted into `PharosMeshProtocol/LegacyMeshWire.swift` and imported via `import PharosMeshProtocol`.
+- **`Sources/PharosMeshCore/MeshBroker.swift` & `LegacyMeshWire.swift`**:
+  - Deduplicated wire structs (`MeshRequest`, `MeshEvent`, `MeshMsg`, `MeshMemberInfo`, `MeshResponse`, `MeshNodeCommand`, etc.): canonical definition in `PharosMeshProtocol/LegacyMeshWire.swift` and imported via `import PharosMeshProtocol`.
+  - Augmented `LegacyMeshWire.swift` with M2 fields (`brokerLocal`, `agentRPC`, `light`, `MeshLightCommandPayload`, `MeshLightCommandResult`, and `memberID` on `MeshNodeSpawnPayload`).
   - Retained `targetNodeID` helper for authoritative node binding.
   - Retained `delivery.fallbackTargets` to poke unverified deliveries.
 - **`Sources/PharosMesh/MeshNode.swift`**:
@@ -58,11 +64,12 @@ This document records the architectural reconciliation between Pharos Milestone 
   - Unified `pharos mesh` routing: legacy subcommands route to `LightCommands` / `MeshClient`, while distributed subcommands route to `DistributedAgentCLI` / `DistributedPairCLI`.
   - Retained full M2 help text and commands (`thread`, `member model`, `member mode`, `attention`).
 - **`Sources/Pharos/RemoteLaunch.swift`**:
-  - Retained `validatedSSHAgentExport` to ensure valid SSH agent sockets.
+  - Retained `validatedSSHAgentExport` to ensure valid SSH agent sockets (fixed raw string delimiter).
   - Updated `MeshSpawn.joinBrief` to accept session identity and claim flags.
 - **`Sources/Pharos/MeshSpawn.swift`**:
   - Layered `MeshSpawn.spawn`: checks node-based spawn first, then distributed mesh, then informs the user if neither is available.
   - Retained interstitial classification (`bootScreenState`) recognizing YOLO mode, shortcuts, and skips update prompts.
+  - Added localized `MeshSpawnControlError`.
 - **`Sources/Pharos/MeshHooks.swift`**:
   - Retained local runtime state serialization (`persistRuntimeState`) for fail-open tracking.
   - Maintained `hookCommand` supporting both installed application CLI and standalone helper.
@@ -70,7 +77,7 @@ This document records the architectural reconciliation between Pharos Milestone 
 ### macOS App & iOS Mobile
 - **`Sources/Pharos/PharosApp.swift` & `ProjectStore.swift`**:
   - Integrated `DistributedMeshSupport` environment object alongside `ProjectStore`.
-  - In `init`, preserved runtime role configuration while initializing distributed state.
+  - Cleaned up obsolete pre-M2 `legacyBrokerSection` and `meshHubHostID` assignments.
 - **`Sources/Pharos/DashboardView.swift` & `SettingsView.swift`**:
   - Integrated distributed agent removal and pairing UI with node-based stopping and broker testing.
 - **`ios/` (PharosMobile)**:
@@ -85,18 +92,26 @@ This document records the architectural reconciliation between Pharos Milestone 
 ## 3. Test Coverage & Verification
 
 - **Preserved Test Suites**:
-  - `PharosTests`: All M1/M2 tests retained; additional tests from PR #2 added.
-  - `PharosLightTests`: All 254 unit tests for M2 retained.
-  - `PharosMeshProtocolTests`, `PharosMeshIrohTests`, `PharosMeshIdentityTests`, `PharosMeshCoreTests`: Added to SPM test suite.
+  - `PharosTests`: 49 test suites passed, 1 skipped (`PHAROS_CODEX_INTEGRATION_TEST=1`), 0 failures.
+  - `PharosLightTests`: 15 test suites, 254 unit tests passed, 0 failures.
+  - `PharosMeshCoreTests`: 11 test suites passed, 0 failures.
+  - `PharosMeshProtocolTests`: passed, 0 failures.
+  - `PharosMeshIrohTests`: passed, 0 failures.
+  - `PharosMeshIdentityTests`: passed, 0 failures.
+  - **Total**: All 6 test targets passing 100% green.
 - **Deleted / Disabled Tests**: None. Zero tests deleted or disabled.
 
 ---
 
 ## 4. Open Items & Follow-ups (for M3)
 
-1. **Stack Unification**:
-   - Currently, LightBroker (TCP/UDS socket broker + host node) and Mesh 2.0 (Iroh P2P + SQLite replica) coexist side-by-side. Unifying them into a single transport abstraction is Candidate #1 for M3.
-2. **iOS Distributed Replica UI**:
-   - Mobile app can now connect to both TCP broker and P2P replica; full UI binding for thread rosters and member modes on iOS is Candidate #3 for M3.
+1. **New Grok Bot-Modelled Native Client**:
+   - Build a clean SwiftUI presentation layer with 3-pane layout (left: Sessions / Threads / Projects tabs; middle: unified chat; right: details pane with member info, MODEL/MODE, Library, and Computer live tmux view).
+2. **Strict UI / Backend Isolation**:
+   - Establish `PharosClientKit` or local daemon API with Codable DTOs so the client contains zero CLI, tmux, or persistence code.
+3. **Deterministic Random Avatars**:
+   - Deterministic avatar generation per session/member, with user customizability in the details pane and cross-machine mesh sync.
+4. **Transport Unification**:
+   - Unify LightBroker and Iroh P2P transport underneath the client API.
 3. **Receipts for Remote TUI Fallback**:
    - In cross-host setups where an agent is in standalone TUI mode without daemon attachments, delivery confirmation relies on tmux capture inspection ("unverified fallback"). Adding guaranteed end-to-end receipts is Candidate #2 for M3.
