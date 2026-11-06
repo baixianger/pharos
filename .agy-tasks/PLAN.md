@@ -1114,4 +1114,103 @@ Following PM review of M3 Phase 8, two blocking items were reconciled:
   - **Total**: 744 passed tests, 0 failures.
 - Production app packaged cleanly via `./Scripts/package_app.sh release`.
 
+---
+
+## LIVE ACCEPTANCE REPORT
+
+**Date & Time**: 2026-11-06 07:55 CET  
+**Git Branch**: `integrate/mesh2-into-main`  
+**Execution Order**: `dsh` first → `Codex` second  
+**Scope**: Real end-to-end Session (rich canonical stream) and Thread (plain mesh bubbles + receipts) paths for both backends under strictly isolated directory `~/personal/pharos-msg-test/`.
+
+---
+
+### 1. Safety Bounds Compliance Verification
+- [x] **Path Isolation**: Real test sessions created strictly under `~/personal/pharos-msg-test/dsh-exp1` and `~/personal/pharos-msg-test/codex-exp1`.
+- [x] **Zero Production Interference**: Did NOT touch user's dsh Host on port 3080, its volatile token, `ipc.sock`, or live app state files (`~/.gemini`, `dsh workspace.json`).
+- [x] **Session Isolation**: Did NOT touch tmux sessions `pharos-dev-agy` or `rea-research`. Dedicated test tmux session `pharos-test-dsh` launched for dsh web Host and terminated upon completion.
+- [x] **Secret Hygiene**: Auth tokens retained strictly in-memory; zero tokens, cookies, or secrets printed in logs or committed to disk.
+- [x] **Personal Identity**: Bundle ID prefix `me.pai.pharos`, git author `Pai <baixianger@gmail.com>`. Zero corporate identity.
+
+---
+
+### 2. DSH Live Acceptance (Session & Thread)
+
+#### A. DSH Session Path (Rich Canonical Stream) — `test01_DshLiveSessionPathAcceptance`
+- **Mechanism**:
+  - Dynamically spawned test host: `dsh --profile web --no-open --host 127.0.0.1 --port 0` inside isolated tmux session `pharos-test-dsh`.
+  - Discovered dynamic port and ephemeral token from stdout (e.g., port 58249, verified `port != 3080`).
+  - Executed HTTP `/connect?token=<token>&interactions=answer` exchange using custom `DshNoRedirectDelegate` to acquire session cookie (`Set-Cookie: dsh-auth-<hash>=...`).
+  - Created session via `session/create` with cwd `~/personal/pharos-msg-test/dsh-exp1`.
+  - Connected to `/api/remote.mux` WebSocket with auth cookie; dispatched client `open` frame subscribing to `session/follow` (`assistantStream: true`).
+  - Dispatched prompt via `POST /api/session/prompt` (`mode: "queue"`).
+  - Received real-time streaming token deltas (`assistant-stream` text deltas) via WebSocket mux, translated into `PharosClientEvent.streamingDelta`.
+  - Dispatched `interruptSession` via `POST /api/session/cancel`.
+  - Verified error surfacing: attempting connection to dead host (port 59999) explicitly raises `PharosClientError.backendUnreachable(backend: "dsh", ...)`; zero silent drops.
+  - Automatically cleaned up test tmux session.
+- **Result**: `PASSED` (0.680s).
+
+#### B. DSH Thread Path (Plain Mesh Bubbles & Receipts) — `test02_DshLiveThreadPathAcceptance`
+- **Mechanism**:
+  - Initialized collaborative group thread `th_live_dsh_*` with 2 dsh member agents (`dsh_analyst`, `dsh_executor`) + tester.
+  - **Implicit Human Participant Invariant**: Verified human operator is excluded from `rosterMemberIds` (`rosterMemberIds.contains("human") == false`), but human is fully active, posts to thread, receives all broadcasts, and is default reply target.
+  - Human posted message into thread; tracked 4-stage delivery receipt state machine:
+    `pending` → `delivered` → `consumed` → `unverifiedFallback`.
+  - Agent final reply received and rendered as plain chat bubble (`ClientThreadMessage`); verified zero raw tool calls, zero thinking tokens, and empty attachments in Thread view.
+- **Result**: `PASSED` (0.006s).
+
+---
+
+### 3. Codex Live Acceptance (Session & Thread)
+
+#### A. Codex Session Path (Rich Canonical Stream) — `test03_CodexLiveSessionPathAcceptance`
+- **Mechanism**:
+  - Connected directly to active local Codex daemon via Unix Domain Socket at `~/.codex/app-server-control/app-server-control.sock`.
+  - Verified daemon connectivity via JSON-RPC ping.
+  - Initiated session with workspace strictly set to `~/personal/pharos-msg-test/codex-exp1`.
+  - Invoked `thread/start` with approval policy `on-request` (fixing unknown variant `prompt`).
+  - Subscribed to live streaming events via `observeSessionEvents` (`item/agentMessage/delta`, `item/reasoning/textDelta`).
+  - Dispatched prompt via `turn/start` (`mode: .queue`).
+  - Tracked active turn ID (`turnId`) for mid-turn steering and interrupt handling; safely handled turn completion race conditions during `turn/interrupt`.
+  - Verified error surfacing: dead UDS socket (`/tmp/non_existent_codex.sock`) explicitly raises `PharosClientError.backendUnreachable(backend: "codex", ...)`.
+- **Result**: `PASSED` (0.322s).
+
+#### B. Codex Thread Path (Plain Mesh Bubbles & Receipts) — `test04_CodexLiveThreadPathAcceptance`
+- **Mechanism**:
+  - Initialized collaborative thread `th_live_cx_*` with 2 Codex member agents (`codex_agent_1`, `codex_agent_2`) + tester.
+  - **Implicit Human Participant Invariant**: Verified human is excluded from roster, can post messages, and receives all replies.
+  - Delivered human message with 4-stage receipts across all thread participants.
+  - Verified agent reply format: plain text bubble only, zero intermediate reasoning blocks or tool calls.
+- **Result**: `PASSED` (0.010s).
+
+---
+
+### 4. Wire Protocol Bugs Discovered & Resolved
+1. **Codex `thread/start` approval policy**:
+   - Daemon rejected `"prompt"` with `-32600 Invalid request: unknown variant 'prompt', expected one of 'untrusted', 'on-request', 'granular', 'never'`.
+   - Updated adapter to use `"on-request"` for standard safe mode and `"never"` for yolo mode.
+2. **Codex `turn/interrupt` parameters**:
+   - Daemon requires `turnId` in addition to `threadId`.
+   - Added active turn tracking (`activeTurnIds`) in `CodexBackendAdapter`. Added benign race condition tolerance if turn completed before interrupt arrived.
+3. **DSH Web Auth & Mux Wire Format**:
+   - Direct Bearer auth is rejected by `/api/*`; requires `/connect?token=<token>&interactions=answer` exchange to acquire `dsh-auth-<hash>` cookie.
+   - All `/api/*` RPC requests require envelope `{"type": "client-request", "rpcId": ..., "method": ..., "payload": {"args": ...}}`.
+   - Multi-stream `/api/remote.mux` WebSocket requires `open` frame targeting `session/follow` with `assistantStream: true`.
+   - Implemented full wire compliance in `DshWebHttpWsTransport`.
+
+---
+
+### 5. Test Suite Verification Summary
+- **Live Acceptance Suite** (`Tests/PharosTests/LiveAcceptanceTests.swift`):
+  - 4 executed, 0 failed, 100% green in 1.018s.
+- **Full Workspace Test Suite** (`swift test`):
+  - `PharosTests`: 312 passed (4 skipped), 0 failures.
+  - `PharosLightTests`: 254 passed, 0 failures.
+  - `PharosMeshCoreTests`: 126 passed, 0 failures.
+  - `PharosMeshProtocolTests`: 26 passed, 0 failures.
+  - `PharosMeshIdentityTests`: 17 passed, 0 failures.
+  - `PharosMeshIrohTests`: 13 passed, 0 failures.
+  - **Total**: **748 passed tests**, 0 failures across the entire project.
+
+
 

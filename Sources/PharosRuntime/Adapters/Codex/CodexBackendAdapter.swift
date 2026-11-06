@@ -149,6 +149,7 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
 
     private let transport: CodexTransport
     private var activeSessions: [String: String] = [:] // sessionId -> threadId
+    private var activeTurnIds: [String: String] = [:] // sessionId -> activeTurnId
     private var notificationListenerTask: Task<Void, Never>?
 
     public init(
@@ -189,6 +190,7 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
         case "turn/started":
             if let turnObj = params?["turn"] as? [String: Any],
                let turnId = turnObj["id"] as? String {
+                activeTurnIds[sessionId] = turnId
                 let canonicalTurn = translator.translateTurnStarted(
                     turnId: turnId,
                     sessionId: sessionId,
@@ -227,6 +229,7 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
         case "turn/completed":
             if let turnObj = params?["turn"] as? [String: Any],
                let turnId = turnObj["id"] as? String {
+                activeTurnIds.removeValue(forKey: sessionId)
                 let status = turnObj["status"] as? String ?? "completed"
                 let initialTurn = CanonicalTurn(turnId: turnId, sessionId: sessionId, turnNumber: 1, status: .inProgress)
                 let canonicalTurn = translator.translateTurnCompleted(
@@ -262,7 +265,7 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
         let params: [String: Any] = [
             "cwd": workspacePath,
             "model": model ?? "default",
-            "approvalPolicy": (mode == "yolo") ? "never" : "prompt"
+            "approvalPolicy": (mode == "yolo") ? "never" : "on-request"
         ]
         let res = try await transport.call(method: "thread/start", params: params)
         let threadObj = res["thread"] as? [String: Any]
@@ -298,6 +301,7 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
         let res = try await transport.call(method: method, params: params)
         let turnObj = res["turn"] as? [String: Any]
         let turnId = (turnObj?["id"] as? String) ?? (res["id"] as? String) ?? "turn_\(UUID().uuidString.prefix(8))"
+        activeTurnIds[sessionId] = turnId
 
         let turn = translator.translateTurnStarted(
             turnId: turnId,
@@ -313,7 +317,21 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
         guard let threadId = activeSessions[sessionId] else {
             throw PharosClientError.sessionNotFound(sessionId)
         }
-        _ = try await transport.call(method: "turn/interrupt", params: ["threadId": threadId])
+        guard let turnId = activeTurnIds[sessionId] else {
+            // No active turn to interrupt; safe no-op
+            return
+        }
+        do {
+            _ = try await transport.call(method: "turn/interrupt", params: ["threadId": threadId, "turnId": turnId])
+        } catch let err as PharosClientError {
+            // If the turn finished before interrupt arrived, treat "no active turn to interrupt" as a benign race completion
+            if case .operationFailed(let msg) = err, msg.contains("no active turn to interrupt") {
+                // Benign race condition: turn already completed
+            } else {
+                throw err
+            }
+        }
+        activeTurnIds.removeValue(forKey: sessionId)
     }
 
     public func selectSessionModel(sessionId: String, model: String) async throws {
