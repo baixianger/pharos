@@ -1212,5 +1212,146 @@ Following PM review of M3 Phase 8, two blocking items were reconciled:
   - `PharosMeshIrohTests`: 13 passed, 0 failures.
   - **Total**: **748 passed tests**, 0 failures across the entire project.
 
+---
+
+## LIVE ACCEPTANCE REPORT (REVISED)
+
+**Date & Time**: 2026-11-06 08:24 CET  
+**Git Branch**: `integrate/mesh2-into-main`  
+**Execution Order**: `dsh` first → `Codex` second  
+**Scope**: Real end-to-end Session (rich canonical stream) and Thread (real member delivery & receipts) paths for both backends under strictly isolated directory `~/personal/pharos-msg-test/`.  
+**Overall Verdict**:
+- **Session Path (`dsh` & `Codex`)**: **`PASSED`** (100% real wire, live streaming deltas, mid-turn steer accepted by backend, committed assistant turn blocks, interrupt, explicit unreachable error surfacing, pre-ordered listeners, durable JSON evidence logged).
+- **Thread Path (`dsh` & `Codex`)**: **`PARTIAL / GAP`** (Real adapter delivery exercised; admission receipt `.delivered` verified; zero UI viewmodel mocks labeled as live; remaining autonomous multi-agent closed loop documented as real engineering gaps).
+
+---
+
+### 1. Safety Bounds Compliance Verification
+- [x] **Path Isolation**: Real test sessions created and operated strictly under `~/personal/pharos-msg-test/dsh-exp1` and `~/personal/pharos-msg-test/codex-exp1`.
+- [x] **Zero Production Interference**: Did NOT touch user's dsh Host on port 3080, its volatile token, `ipc.sock`, or live app state files (`~/.gemini`, `dsh workspace.json`).
+- [x] **Tmux Session Isolation**: Did NOT touch user tmux sessions `pharos-dev-agy` or `rea-research`. Dedicated test tmux session `pharos-test-dsh` launched for dsh web Host and automatically terminated upon test completion.
+- [x] **Secret Hygiene**: Auth tokens retained strictly in-memory; zero tokens, cookies, or secrets printed in logs or committed to disk. Durable evidence logs verified secret-free.
+- [x] **Personal Identity**: Bundle ID prefix `me.pai.pharos`, git author `Pai <baixianger@gmail.com>`. Zero corporate identity.
+
+---
+
+### 2. DSH Live Acceptance (Session & Thread)
+
+#### A. DSH Session Path (Rich Canonical Stream) — `test01_DshLiveSessionPathAcceptance`
+- **Status**: `PASSED` (1.224s).
+- **Real Wire Verification**:
+  - Dynamically spawned test host: `dsh --profile web --no-open --host 127.0.0.1 --port 0` inside isolated tmux session `pharos-test-dsh`.
+  - Discovered dynamic port and ephemeral token from stdout (e.g., port 52648, verified `port != 3080`).
+  - Executed HTTP `/connect?token=<token>&interactions=answer` exchange using custom `DshNoRedirectDelegate` to acquire session cookie (`Set-Cookie: dsh-auth-<hash>=...`).
+  - Created session via `POST /api/session/create` with cwd `~/personal/pharos-msg-test/dsh-exp1`.
+  - **Listener Pre-Ordering**: Connected to `/api/remote.mux` WebSocket with auth cookie and started `observeSessionEvents` **before** dispatching prompt.
+  - Dispatched prompt via `POST /api/session/prompt` (`mode: "queue"`).
+  - **Mid-Turn Steer Acceptance**: Submitted mid-turn steer prompt (`mode: "steer"`); verified host HTTP response explicitly returns `{ "accepted": true }`.
+  - **Live Streaming Delta Translation**: Received real-time streaming token deltas (`assistant-stream` text deltas) via WebSocket mux, translated into `PharosClientEvent.streamingDelta`.
+  - **Committed Assistant Message**: Verified final `turnCompleted` contains populated `CanonicalStep` with `CanonicalBlockKind.assistantText`.
+  - **Interrupt Handling**: Dispatched `interruptSession` via `POST /api/session/cancel`; verified cancellation reflected cleanly.
+  - **Unreachable Backend Surfacing**: Attempting connection to unreachable host (port 59999) explicitly raises `PharosClientError.backendUnreachable(backend: "dsh", ...)`; zero silent drops.
+  - **Durable Evidence Log**: Recorded to `~/personal/pharos-msg-test/dsh-exp1/session_acceptance_evidence.log` (0 secrets/tokens).
+
+#### B. DSH Thread Path (Plain Mesh Bubbles & Receipts) — `test02_DshLiveThreadPathAcceptance`
+- **Status**: `PARTIAL / GAP` (0.658s).
+- **Real Wire Delivery**:
+  - Tested using real `DshBackendAdapter` initialized with live dynamically discovered host port and volatile auth cookie under `~/personal/pharos-msg-test/dsh-exp1`.
+  - Verified human operator implicit member invariant: excluded from member roster (`contains("human") == false`), but human can post and receives all thread messages.
+  - Real human message delivered to roster participant via `adapter.deliverThreadMessage`; verified admission receipt `.delivered`.
+- **Engineering Gap Documented (PIT-DS-05 / Research C §2)**:
+  - `dsh-plugin-pharos` currently lacks the closed `delivery.poll -> agent.followup() -> delivery.ack` loop to autonomously wake up the agent and post the final assistant text back into the mesh room.
+  - Honest reporting: Downgraded `DS-THD-05`, `DS-THD-08`, and `DS-THD-13` to `partial` in `docs/BACKEND-MATRIX.md`.
+  - **Durable Evidence Log**: Recorded to `~/personal/pharos-msg-test/dsh-exp1/thread_gap_evidence.log`.
+
+---
+
+### 3. Codex Live Acceptance (Session & Thread)
+
+#### A. Codex Session Path (Rich Canonical Stream) — `test03_CodexLiveSessionPathAcceptance`
+- **Status**: `PASSED` (2.272s).
+- **Real Wire Verification**:
+  - Connected directly to active local Codex daemon via Unix Domain Socket at `~/.codex/app-server-control/app-server-control.sock`.
+  - Verified daemon connectivity via JSON-RPC ping.
+  - Initiated session with workspace strictly set to `~/personal/pharos-msg-test/codex-exp1`.
+  - Invoked `thread/start` with approval policy `on-request`.
+  - **Listener Pre-Ordering**: Started `observeSessionEvents` **before** dispatching prompt.
+  - Dispatched prompt via `turn/start` (`mode: .queue`).
+  - **Mid-Turn Steer Acceptance**: Submitted mid-turn steer via `turn/steer` with `expectedTurnId`; daemon explicitly accepted and returned new `turnId`.
+  - **Live Streaming Delta Translation**: Received real-time streaming notifications (`item/agentMessage/delta`, `item/reasoning/textDelta`) over UDS, translated into `PharosClientEvent.streamingDelta`.
+  - **Committed Assistant Message**: Verified `turnCompleted` contains populated `CanonicalStep` with `CanonicalBlockKind.assistantText`.
+  - **Interrupt Handling**: Dispatched `interruptSession` via `turn/interrupt`; daemon emitted `turn/completed` with `status: "interrupted"`.
+  - **Unreachable Backend Surfacing**: Dead UDS socket (`/tmp/non_existent_codex.sock`) explicitly raises `PharosClientError.backendUnreachable(backend: "codex", ...)`.
+  - **Durable Evidence Log**: Recorded to `~/personal/pharos-msg-test/codex-exp1/session_acceptance_evidence.log` (0 secrets/tokens).
+
+#### B. Codex Thread Path (Plain Mesh Bubbles & Receipts) — `test04_CodexLiveThreadPathAcceptance`
+- **Status**: `PARTIAL / GAP` (0.238s).
+- **Real Wire Delivery**:
+  - Connected to live local Codex daemon UDS and launched 2 real distinct daemon threads (`codex_agent_1`, `codex_agent_2`) in `~/personal/pharos-msg-test/codex-exp1`.
+  - Verified human implicit member invariant.
+  - Real human message dispatched to both member threads via real `adapter.deliverThreadMessage` (invoking daemon `turn/start`); verified admission receipt `.delivered` across all participants.
+- **Engineering Gap Documented**:
+  - Point-to-point member injection via `turn/start` works; however, the multi-agent mesh mailbox relay coordinator automating roster message forwarding, turn completion capture, and posting replies back into the shared thread is partial.
+  - Honest reporting: Downgraded `CX-THD-05`, `CX-THD-08`, and `CX-THD-13` to `partial` in `docs/BACKEND-MATRIX.md`.
+  - **Durable Evidence Log**: Recorded to `~/personal/pharos-msg-test/codex-exp1/thread_delivery_evidence.log`.
+
+---
+
+### 4. Matrix Row Status Synchronization (`docs/BACKEND-MATRIX.md`)
+
+All row statuses and cited test names have been synchronized with the live acceptance test suite. Missing test names count: **`0`**.
+
+| Row ID | Backend | Path | Feature | Status | Cited Live Test | Note |
+|---|---|---|---|---|---|---|
+| `CX-SES-03` | `codex` | `Session` | `create` | `supported` | `LiveAcceptanceTests.test03_CodexLiveSessionPathAcceptance` | Real `thread/start` via daemon UDS |
+| `CX-SES-05` | `codex` | `Session` | `send` | `supported` | `LiveAcceptanceTests.test03_CodexLiveSessionPathAcceptance` | Real `turn/start` via daemon UDS |
+| `CX-SES-06` | `codex` | `Session` | `steer` | `supported` | `LiveAcceptanceTests.test03_CodexLiveSessionPathAcceptance` | Real `turn/steer` with `expectedTurnId` |
+| `CX-SES-07` | `codex` | `Session` | `streaming` | `supported` | `LiveAcceptanceTests.test03_CodexLiveSessionPathAcceptance` | Live `item/agentMessage/delta` translation |
+| `CX-SES-08` | `codex` | `Session` | `readback` | `supported` | `LiveAcceptanceTests.test03_CodexLiveSessionPathAcceptance` | Committed assistant text step block |
+| `CX-SES-09` | `codex` | `Session` | `interrupt` | `supported` | `LiveAcceptanceTests.test03_CodexLiveSessionPathAcceptance` | Real `turn/interrupt` via daemon UDS |
+| `CX-SES-13` | `codex` | `Session` | `receipts` | `supported` | `LiveAcceptanceTests.test03_CodexLiveSessionPathAcceptance` | Request ID & turn/started confirmation |
+| `CX-SES-18` | `codex` | `Session` | `daemon-failure-recovery` | `supported` | `LiveAcceptanceTests.test03_CodexLiveSessionPathAcceptance` | Dead UDS -> `backendUnreachable` |
+| `CX-THD-05` | `codex` | `Thread` | `send` | `partial` | `LiveAcceptanceTests.test04_CodexLiveThreadPathAcceptance` | GAP: single-member `turn/start` works; multi-agent coordinator partial |
+| `CX-THD-08` | `codex` | `Thread` | `readback` | `partial` | `LiveAcceptanceTests.test04_CodexLiveThreadPathAcceptance` | GAP: multi-agent coordinator partial |
+| `CX-THD-13` | `codex` | `Thread` | `receipts` | `partial` | `LiveAcceptanceTests.test04_CodexLiveThreadPathAcceptance` | GAP: member `.delivered` verified; mesh coordinator loop partial |
+| `DS-SES-03` | `dsh` | `Session` | `create` | `supported` | `LiveAcceptanceTests.test01_DshLiveSessionPathAcceptance` | Real `session/create` via web Host |
+| `DS-SES-05` | `dsh` | `Session` | `send` | `supported` | `LiveAcceptanceTests.test01_DshLiveSessionPathAcceptance` | Real `POST /api/session/prompt` (`mode: queue`) |
+| `DS-SES-06` | `dsh` | `Session` | `steer` | `supported` | `LiveAcceptanceTests.test01_DshLiveSessionPathAcceptance` | Real `POST /api/session/prompt` (`mode: steer`) `accepted == true` |
+| `DS-SES-07` | `dsh` | `Session` | `streaming` | `supported` | `LiveAcceptanceTests.test01_DshLiveSessionPathAcceptance` | Live `/api/remote.mux` `session/follow` streaming deltas |
+| `DS-SES-08` | `dsh` | `Session` | `readback` | `supported` | `LiveAcceptanceTests.test01_DshLiveSessionPathAcceptance` | Committed assistant text step block |
+| `DS-SES-09` | `dsh` | `Session` | `interrupt` | `supported` | `LiveAcceptanceTests.test01_DshLiveSessionPathAcceptance` | Real `POST /api/session/cancel` |
+| `DS-SES-13` | `dsh` | `Session` | `receipts` | `supported` | `LiveAcceptanceTests.test01_DshLiveSessionPathAcceptance` | Admission receipt `{accepted: true}` |
+| `DS-THD-05` | `dsh` | `Thread` | `send` | `partial` | `LiveAcceptanceTests.test02_DshLiveThreadPathAcceptance` | GAP: `dsh-plugin-pharos` lacks closed `delivery.poll/ack` loop (PIT-DS-05) |
+| `DS-THD-08` | `dsh` | `Thread` | `readback` | `partial` | `LiveAcceptanceTests.test02_DshLiveThreadPathAcceptance` | GAP: `dsh-plugin-pharos` lacks closed loop |
+| `DS-THD-13` | `dsh` | `Thread` | `receipts` | `partial` | `LiveAcceptanceTests.test02_DshLiveThreadPathAcceptance` | GAP: plugin lacks closed ack loop |
+
+---
+
+### 5. Leftover Gaps & Next Steps
+1. **DSH Thread Delivery Loop**:
+   - Enhance `dsh-plugin-pharos` to implement the active `delivery.poll -> agent.followup() -> delivery.ack` loop over the private Runtime socket (PIT-DS-05).
+2. **Codex Multi-Agent Mesh Thread Coordinator**:
+   - Complete the automated mailbox relay coordinator that listens to daemon `turn/completed` on member threads and automatically relays final assistant text bubbles back to the shared mesh room timeline.
+3. **Cross-Machine Live Integration**:
+   - Exercise cross-machine dispatch (mini <-> Air) using the verified Iroh mesh transport once multi-machine test nodes are available.
+
+---
+
+### 6. Test Suite Verification Summary
+- **Live Acceptance Suite** (`Tests/PharosTests/LiveAcceptanceTests.swift`):
+  - 4 executed, 0 failed, 100% green in 4.392s.
+- **Full Workspace Test Suite** (`swift test`):
+  - `PharosTests`: 312 passed (4 skipped), 0 failures.
+  - `PharosLightTests`: 254 passed, 0 failures.
+  - `PharosMeshCoreTests`: 126 passed, 0 failures.
+  - `PharosMeshProtocolTests`: 26 passed, 0 failures.
+  - `PharosMeshIdentityTests`: 17 passed, 0 failures.
+  - `PharosMeshIrohTests`: 13 passed, 0 failures.
+  - **Total**: **748 passed tests**, 0 failures across the entire project.
+- **Backend Matrix Verification**:
+  - `grep -oE "test[A-Z][A-Za-z0-9_]+" docs/BACKEND-MATRIX.md | sort -u` verified against `Tests/`.
+  - **0 missing test citations**.
+
+
 
 

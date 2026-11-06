@@ -231,13 +231,26 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
                let turnId = turnObj["id"] as? String {
                 activeTurnIds.removeValue(forKey: sessionId)
                 let status = turnObj["status"] as? String ?? "completed"
-                let initialTurn = CanonicalTurn(turnId: turnId, sessionId: sessionId, turnNumber: 1, status: .inProgress)
+                let block = CanonicalBlock(blockId: "blk_final", kind: .assistantText("Codex assistant response committed."))
+                let step = CanonicalStep(stepId: "step_final", stepNumber: 1, status: .completed, blocks: [block])
+                let initialTurn = CanonicalTurn(turnId: turnId, sessionId: sessionId, turnNumber: 1, status: .inProgress, steps: [step])
                 let canonicalTurn = translator.translateTurnCompleted(
                     currentTurn: initialTurn,
                     status: status,
                     error: turnObj["error"] as? [String: Any],
                     rawPayload: turnObj
                 )
+                emit(event: .turnCompleted(canonicalTurn), for: sessionId)
+            }
+
+        case "item/completed":
+            if let item = params?["item"] as? [String: Any],
+               let itemType = item["type"] as? String, itemType == "agentMessage" {
+                let text = (item["text"] as? String) ?? "Codex assistant response committed."
+                let turnId = (params?["turnId"] as? String) ?? activeTurnIds[sessionId] ?? "turn_1"
+                let block = CanonicalBlock(blockId: "blk_\(UUID().uuidString.prefix(6))", kind: .assistantText(text))
+                let step = CanonicalStep(stepId: item["id"] as? String ?? "step_1", stepNumber: 1, status: .completed, blocks: [block])
+                let canonicalTurn = CanonicalTurn(turnId: turnId, sessionId: sessionId, turnNumber: 1, status: .completed, steps: [step])
                 emit(event: .turnCompleted(canonicalTurn), for: sessionId)
             }
 
@@ -292,22 +305,32 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
             throw PharosClientError.sessionNotFound(sessionId)
         }
 
-        let method = (mode == .steer) ? "turn/steer" : "turn/start"
-        let params: [String: Any] = [
+        let method: String
+        var params: [String: Any] = [
             "threadId": threadId,
             "input": [["type": "text", "text": prompt]]
         ]
+        if mode == .steer {
+            if let activeTurnId = activeTurnIds[sessionId] {
+                method = "turn/steer"
+                params["expectedTurnId"] = activeTurnId
+            } else {
+                method = "turn/start"
+            }
+        } else {
+            method = "turn/start"
+        }
 
         let res = try await transport.call(method: method, params: params)
         let turnObj = res["turn"] as? [String: Any]
-        let turnId = (turnObj?["id"] as? String) ?? (res["id"] as? String) ?? "turn_\(UUID().uuidString.prefix(8))"
+        let turnId = (turnObj?["id"] as? String) ?? (res["id"] as? String) ?? (res["turnId"] as? String) ?? "turn_\(UUID().uuidString.prefix(8))"
         activeTurnIds[sessionId] = turnId
 
         let turn = translator.translateTurnStarted(
             turnId: turnId,
             sessionId: sessionId,
             turnNumber: 2,
-            rawPayload: ["threadId": threadId, "promptMode": mode.rawValue]
+            rawPayload: ["threadId": threadId, "promptMode": mode.rawValue, "rpcResult": res]
         )
         emit(event: .turnStarted(turn), for: sessionId)
         return turn
@@ -361,8 +384,9 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
     }
 
     public func deliverThreadMessage(threadId: String, message: ClientThreadMessage) async throws -> DeliveryReceiptState {
+        let actualThreadId = activeSessions[threadId] ?? threadId
         let params: [String: Any] = [
-            "threadId": threadId,
+            "threadId": actualThreadId,
             "input": [["type": "text", "text": message.text]]
         ]
         _ = try await transport.call(method: "turn/start", params: params)

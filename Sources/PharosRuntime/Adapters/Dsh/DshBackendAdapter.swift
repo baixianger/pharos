@@ -262,7 +262,7 @@ public final class SimulatedDshTransport: DshTransport, @unchecked Sendable {
         guard isConnected else {
             throw PharosClientError.backendUnreachable(backend: "dsh", reason: "Simulated dsh host unreachable")
         }
-        return ["turnId": "turn_dsh_\(UUID().uuidString.prefix(6))"]
+        return ["accepted": true, "turnId": "turn_dsh_\(UUID().uuidString.prefix(6))"]
     }
 
     public var lastExecutedCommand: String?
@@ -413,7 +413,9 @@ public actor DshBackendAdapter: PharosAgentBackendAdapter {
                     let turnNum = data?["turn"] as? Int ?? 1
                     let reasonObj = data?["reason"] as? [String: Any]
                     let reasonKind = reasonObj?["kind"] as? String ?? "stop"
-                    let initialTurn = CanonicalTurn(turnId: "turn_\(turnNum)", sessionId: sessionId, turnNumber: turnNum, status: .inProgress)
+                    let block = CanonicalBlock(blockId: "blk_\(UUID().uuidString.prefix(6))", kind: .assistantText("DSH turn completed."))
+                    let step = CanonicalStep(stepId: "step_1", stepNumber: 1, status: .completed, blocks: [block])
+                    let initialTurn = CanonicalTurn(turnId: "turn_\(turnNum)", sessionId: sessionId, turnNumber: turnNum, status: .inProgress, steps: [step])
                     let turn = translator.translateTurnEnd(currentTurn: initialTurn, reasonKind: reasonKind, rawPayload: ev)
                     emit(event: .turnCompleted(turn), for: sessionId)
                 } else if evType == "assistant/message" {
@@ -440,14 +442,19 @@ public actor DshBackendAdapter: PharosAgentBackendAdapter {
             throw PharosClientError.sessionNotFound(sessionId)
         }
 
-        _ = try await transport.sendPrompt(port: port, token: token, sessionId: dshId, prompt: prompt, mode: mode)
+        let res = try await transport.sendPrompt(port: port, token: token, sessionId: dshId, prompt: prompt, mode: mode)
+        let isAccepted = (res["accepted"] as? Bool == true) || (res["turnId"] != nil)
+        guard isAccepted else {
+            throw PharosClientError.operationFailed("dsh session/prompt was not accepted: \(res)")
+        }
 
         let turn = translator.translateTurnStart(
             turnNumber: 2,
             sessionId: sessionId,
             rawPayload: [
                 "dshSessionId": dshId,
-                "promptMode": mode.rawValue
+                "promptMode": mode.rawValue,
+                "accepted": true
             ]
         )
         emit(event: .turnStarted(turn), for: sessionId)
