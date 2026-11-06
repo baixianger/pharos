@@ -231,9 +231,16 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
                let turnId = turnObj["id"] as? String {
                 activeTurnIds.removeValue(forKey: sessionId)
                 let status = turnObj["status"] as? String ?? "completed"
-                let block = CanonicalBlock(blockId: "blk_final", kind: .assistantText("Codex assistant response committed."))
-                let step = CanonicalStep(stepId: "step_final", stepNumber: 1, status: .completed, blocks: [block])
-                let initialTurn = CanonicalTurn(turnId: turnId, sessionId: sessionId, turnNumber: 1, status: .inProgress, steps: [step])
+                var steps: [CanonicalStep] = []
+                if let items = turnObj["items"] as? [[String: Any]] {
+                    for (idx, it) in items.enumerated() {
+                        if it["type"] as? String == "agentMessage", let text = it["text"] as? String, !text.isEmpty {
+                            let block = CanonicalBlock(blockId: it["id"] as? String ?? "blk_\(idx)", kind: .assistantText(text))
+                            steps.append(CanonicalStep(stepId: it["id"] as? String ?? "step_\(idx)", stepNumber: idx + 1, status: .completed, blocks: [block]))
+                        }
+                    }
+                }
+                let initialTurn = CanonicalTurn(turnId: turnId, sessionId: sessionId, turnNumber: 1, status: .inProgress, steps: steps)
                 let canonicalTurn = translator.translateTurnCompleted(
                     currentTurn: initialTurn,
                     status: status,
@@ -245,10 +252,10 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
 
         case "item/completed":
             if let item = params?["item"] as? [String: Any],
-               let itemType = item["type"] as? String, itemType == "agentMessage" {
-                let text = (item["text"] as? String) ?? "Codex assistant response committed."
+               let itemType = item["type"] as? String, itemType == "agentMessage",
+               let text = item["text"] as? String, !text.isEmpty {
                 let turnId = (params?["turnId"] as? String) ?? activeTurnIds[sessionId] ?? "turn_1"
-                let block = CanonicalBlock(blockId: "blk_\(UUID().uuidString.prefix(6))", kind: .assistantText(text))
+                let block = CanonicalBlock(blockId: item["id"] as? String ?? "blk_\(UUID().uuidString.prefix(6))", kind: .assistantText(text))
                 let step = CanonicalStep(stepId: item["id"] as? String ?? "step_1", stepNumber: 1, status: .completed, blocks: [block])
                 let canonicalTurn = CanonicalTurn(turnId: turnId, sessionId: sessionId, turnNumber: 1, status: .completed, steps: [step])
                 emit(event: .turnCompleted(canonicalTurn), for: sessionId)
@@ -275,26 +282,31 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
 
     public func startSession(sessionId: String, workspacePath: String, model: String?, mode: String?) async throws -> CanonicalTurn {
         ensureNotificationObserverStarted()
-        let params: [String: Any] = [
+        var params: [String: Any] = [
             "cwd": workspacePath,
-            "model": model ?? "default",
             "approvalPolicy": (mode == "yolo") ? "never" : "on-request"
         ]
+        if let model = model, !model.isEmpty, model != "default" {
+            params["model"] = model
+        }
         let res = try await transport.call(method: "thread/start", params: params)
         let threadObj = res["thread"] as? [String: Any]
         let threadId = (threadObj?["id"] as? String) ?? (res["id"] as? String) ?? "th_\(UUID().uuidString.prefix(8))"
         activeSessions[sessionId] = threadId
 
+        var rawPayload: [String: Any] = [
+            "threadId": threadId,
+            "cwd": workspacePath,
+            "mode": mode ?? "yolo"
+        ]
+        if let model = model, !model.isEmpty, model != "default" {
+            rawPayload["model"] = model
+        }
         let turn = translator.translateTurnStarted(
             turnId: "turn_init_\(sessionId)",
             sessionId: sessionId,
             turnNumber: 1,
-            rawPayload: [
-                "threadId": threadId,
-                "cwd": workspacePath,
-                "model": model ?? "default",
-                "mode": mode ?? "yolo"
-            ]
+            rawPayload: rawPayload
         )
         emit(event: .turnStarted(turn), for: sessionId)
         return turn

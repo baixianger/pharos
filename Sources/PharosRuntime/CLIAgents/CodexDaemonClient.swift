@@ -262,6 +262,10 @@ public final class CodexDaemonClient: @unchecked Sendable {
 
         let deadline = Date().addingTimeInterval(timeout)
         var newMessages: [[String: Any]] = []
+        if !_notifications.isEmpty {
+            newMessages.append(contentsOf: _notifications)
+            _notifications.removeAll()
+        }
 
         while Date() < deadline {
             guard let text = try connection.receiveText(deadline: deadline) else {

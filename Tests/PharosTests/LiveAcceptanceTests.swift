@@ -7,6 +7,81 @@ import PharosClientKit
 /// Live end-to-end message-flow acceptance tests covering both Session and Thread paths for dsh and Codex.
 /// Strictly restricted to isolated workspaces under `~/personal/pharos-msg-test/`.
 ///
+/// Event collector for asynchronous live acceptance testing without arbitrary sleep races.
+private final class LiveEventCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [PharosClientEvent] = []
+
+    func append(_ event: PharosClientEvent) {
+        lock.withLock { events.append(event) }
+    }
+
+    func allEvents() -> [PharosClientEvent] {
+        lock.withLock { events }
+    }
+
+    func waitForStreamingDelta(timeoutSec: Double) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSec)
+        while Date() < deadline {
+            let found = lock.withLock {
+                events.contains(where: {
+                    if case .streamingDelta = $0 { return true }
+                    return false
+                })
+            }
+            if found { return true }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return false
+    }
+
+    func waitForCompletedAssistant(timeoutSec: Double) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSec)
+        while Date() < deadline {
+            let found = lock.withLock {
+                events.contains(where: {
+                    if case .turnCompleted(let turn) = $0 {
+                        return turn.steps.contains(where: { step in
+                            step.blocks.contains(where: { block in
+                                switch block.kind {
+                                case .assistantText(let text):
+                                    return !text.isEmpty
+                                case .reasoning(let r):
+                                    return !r.thinking.isEmpty
+                                default:
+                                    return false
+                                }
+                            })
+                        })
+                    }
+                    return false
+                })
+            }
+            if found { return true }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return false
+    }
+
+    func waitForInterrupted(timeoutSec: Double) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSec)
+        while Date() < deadline {
+            let found = lock.withLock {
+                events.contains(where: {
+                    if case .turnCompleted(let turn) = $0 {
+                        if turn.status == .failed || turn.status == .cancelled { return true }
+                        if let raw = turn.rawVendorPayload, case .string(let st) = raw["status"], st == "interrupted" { return true }
+                    }
+                    return false
+                })
+            }
+            if found { return true }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return false
+    }
+}
+
 /// SAFETY INVARIANTS:
 /// 1. Real messages ONLY under `~/personal/pharos-msg-test/`.
 /// 2. Never touch user dsh Host on port 3080, its token, ipc.sock, or app state files (~/.gemini, dsh workspace.json).
@@ -137,17 +212,16 @@ final class LiveAcceptanceTests: XCTestCase {
         XCTAssertEqual(startTurn.sessionId, sessionId)
 
         // 2. Observe live streaming events BEFORE sending prompt
+        let collector = LiveEventCollector()
         let eventStream = adapter.observeSessionEvents(sessionId: sessionId)
-        let listenerTask = Task<[PharosClientEvent], Never> {
-            var events: [PharosClientEvent] = []
+        let listenerTask = Task<Void, Never> {
             for await ev in eventStream {
-                events.append(ev)
-                if events.count >= 4 { break }
+                collector.append(ev)
             }
-            return events
         }
+        defer { listenerTask.cancel() }
 
-        // 3. Send short prompt (queue mode)
+        // 3. Send short prompt (queue mode) and await real wire streaming deltas + committed assistant turn
         let promptTurn = try await adapter.sendSessionPrompt(
             sessionId: sessionId,
             prompt: "echo live session acceptance",
@@ -155,7 +229,18 @@ final class LiveAcceptanceTests: XCTestCase {
         )
         XCTAssertEqual(promptTurn.turnNumber, 2)
 
-        // 4. Mid-turn steering injection (steer mode)
+        let hasStreamingDelta = await collector.waitForStreamingDelta(timeoutSec: 10.0)
+        XCTAssertTrue(hasStreamingDelta, "observeSessionEvents must yield at least one real .streamingDelta from wire")
+
+        let hasCompletedAssistant = await collector.waitForCompletedAssistant(timeoutSec: 10.0)
+        XCTAssertTrue(hasCompletedAssistant, "A committed assistant message turn with real wire blocks must be received")
+
+        // 4. Send second prompt to test mid-turn steering and interrupt
+        _ = try await adapter.sendSessionPrompt(
+            sessionId: sessionId,
+            prompt: "second turn for steering test",
+            mode: .queue
+        )
         let steerTurn = try await adapter.sendSessionPrompt(
             sessionId: sessionId,
             prompt: "steer: verify receipt progression",
@@ -165,28 +250,29 @@ final class LiveAcceptanceTests: XCTestCase {
 
         // 5. Interrupt session
         try await adapter.interruptSession(sessionId: sessionId)
+        let hasInterrupted = await collector.waitForInterrupted(timeoutSec: 5.0)
+        XCTAssertTrue(hasInterrupted, "Interrupted turn must complete with failed or cancelled status")
 
-        // 6. Verify event stream received start/completion events
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        listenerTask.cancel()
-        let collectedEvents = await listenerTask.value
-
-
-
+        let collectedEvents = collector.allEvents()
         XCTAssertFalse(collectedEvents.isEmpty, "Session should emit live canonical events")
 
-        // (a) Live streaming delta capability verification
-        let delta = adapter.translator.translateStreamingDelta(sessionId: sessionId, turnId: "turn_1", deltaType: "text-delta", chunk: "acceptance token delta")
-        XCTAssertNotNil(delta, "Live streaming delta must be mapped to canonical delta")
-
-        // (b) Committed assistant message after prompt
-        let completedTurn = collectedEvents.first(where: {
+        // (b) Verify committed assistant message turn from real wire
+        let completedAssistantTurn = collectedEvents.first(where: {
             if case .turnCompleted(let turn) = $0 {
-                return !turn.steps.isEmpty
+                return turn.steps.contains(where: { step in
+                    step.blocks.contains(where: { block in
+                        switch block.kind {
+                        case .assistantText, .reasoning:
+                            return true
+                        default:
+                            return false
+                        }
+                    })
+                })
             }
             return false
         })
-        XCTAssertNotNil(completedTurn, "A committed assistant message turn must be received after prompt/interrupt")
+        XCTAssertNotNil(completedAssistantTurn, "A committed assistant message turn with real wire blocks must be received")
 
         // (c) Mid-turn steer actually accepted
         let steerEvent = collectedEvents.first(where: {
@@ -198,9 +284,13 @@ final class LiveAcceptanceTests: XCTestCase {
         XCTAssertNotNil(steerEvent, "Mid-turn steer event must be observed in session stream")
 
         // (d) Interrupt verified by aborted/interrupted status
-        if let completedTurn = completedTurn, case .turnCompleted(let turn) = completedTurn {
-            XCTAssertTrue(turn.status == .failed || turn.status == .cancelled, "Turn status must reflect interrupt cancellation")
-        }
+        let interruptedTurn = collectedEvents.first(where: {
+            if case .turnCompleted(let turn) = $0 {
+                return turn.status == .failed || turn.status == .cancelled
+            }
+            return false
+        })
+        XCTAssertNotNil(interruptedTurn, "Interrupted turn must complete with failed or cancelled status")
 
         // (e) On disconnect / unreachable: verify explicit error surfacing
         let deadTransport = DshWebHttpWsTransport()
@@ -223,10 +313,10 @@ final class LiveAcceptanceTests: XCTestCase {
             "port": port,
             "sessionId": sessionId,
             "events_count": collectedEvents.count,
-            "streaming_delta_supported": true,
-            "committed_assistant_message": true,
+            "streaming_delta_supported": hasStreamingDelta,
+            "committed_assistant_message": (completedAssistantTurn != nil),
             "steer_accepted": true,
-            "interrupt_verified": true,
+            "interrupt_verified": (interruptedTurn != nil),
             "unreachable_error_verified": true,
             "timestamp": ISO8601DateFormatter().string(from: Date())
         ]
@@ -241,14 +331,14 @@ final class LiveAcceptanceTests: XCTestCase {
         XCTAssertNotEqual(port, 3080, "Port 3080 must never be used for tests")
 
         let transport = DshWebHttpWsTransport()
-        let adapter = DshBackendAdapter(port: port, token: token, transport: transport)
+        let _ = DshBackendAdapter(port: port, token: token, transport: transport)
         defer { transport.close() }
 
         let workspace = URL(fileURLWithPath: testBaseDir).appendingPathComponent("dsh-exp1").path
         let threadId = "th_live_dsh_\(UUID().uuidString.prefix(6))"
 
         // 1. Implicit human participant composes thread message (human not in roster)
-        let humanMsg = ClientThreadMessage(
+        let _ = ClientThreadMessage(
             id: "msg_live_dsh_\(UUID().uuidString.prefix(6))",
             threadId: threadId,
             senderId: "human",
@@ -259,23 +349,20 @@ final class LiveAcceptanceTests: XCTestCase {
             receipt: .pending
         )
 
-        // 2. Real dispatch via DshBackendAdapter
-        let receipt = try await adapter.deliverThreadMessage(threadId: threadId, message: humanMsg)
-        XCTAssertEqual(receipt, .delivered, "DSH adapter delivers admission receipt")
-
-        // 3. Document and verify real GAP:
+        // 2. Document and verify real GAP:
         // dsh-plugin-pharos 0.2.0 connects to Runtime socket and implements tools and agent.followup(),
-        // but lacks the closed `delivery.poll -> agent.followup() -> delivery.ack` loop (PIT-DS-05, Research C).
+        // but lacks the closed `delivery.poll -> agent.followup() -> delivery.ack` loop (PIT-DS-05, Research C §2).
+        // DshBackendAdapter.deliverThreadMessage is currently an unverified local stub.
         // Therefore, automated multi-agent thread fan-out and 4-phase receipt progression cannot be driven live by dsh today.
-        let gapReason = "dsh-plugin-pharos lacks closed delivery.poll/ack loop (PIT-DS-05; Research C §2). Marked partial in BACKEND-MATRIX.md."
+        let gapReason = "dsh-plugin-pharos lacks closed delivery.poll/ack loop (PIT-DS-05; Research C §2); deliverThreadMessage is unverified stub. Marked partial in BACKEND-MATRIX.md."
 
-        // 4. Write durable evidence file under ~/personal/pharos-msg-test/dsh-exp1/
+        // 3. Write durable evidence file under ~/personal/pharos-msg-test/dsh-exp1/
         let evidence: [String: Any] = [
             "backend": "dsh",
             "path": "Thread",
             "threadId": threadId,
             "status": "partial",
-            "admission_receipt": receipt.rawValue,
+            "admission_receipt_verified": false,
             "gap_reason": gapReason,
             "timestamp": ISO8601DateFormatter().string(from: Date())
         ]
@@ -311,25 +398,35 @@ final class LiveAcceptanceTests: XCTestCase {
         XCTAssertEqual(startTurn.sessionId, sessionId)
 
         // 2. Observe live events BEFORE sending prompt
+        let collector = LiveEventCollector()
         let eventStream = adapter.observeSessionEvents(sessionId: sessionId)
-        let listenerTask = Task<[PharosClientEvent], Never> {
-            var events: [PharosClientEvent] = []
+        let listenerTask = Task<Void, Never> {
             for await ev in eventStream {
-                events.append(ev)
-                if events.count >= 4 { break }
+                collector.append(ev)
             }
-            return events
         }
+        defer { listenerTask.cancel() }
 
-        // 3. Send short prompt
+        // 3. Send prompt and wait for live streaming deltas and committed assistant reply
         let promptTurn = try await adapter.sendSessionPrompt(
             sessionId: sessionId,
-            prompt: "echo live codex acceptance",
+            prompt: "Respond: hello",
             mode: .queue
         )
         XCTAssertFalse(promptTurn.turnId.isEmpty)
 
-        // 4. Mid-turn steering injection
+        let hasStreamingDelta = await collector.waitForStreamingDelta(timeoutSec: 10.0)
+        XCTAssertTrue(hasStreamingDelta, "observeSessionEvents must yield at least one real .streamingDelta from live daemon")
+
+        let hasCompletedAssistant = await collector.waitForCompletedAssistant(timeoutSec: 10.0)
+        XCTAssertTrue(hasCompletedAssistant, "Codex turnCompleted must contain committed assistantText from real wire")
+
+        // 4. Send second prompt to test mid-turn steering and interrupt
+        _ = try await adapter.sendSessionPrompt(
+            sessionId: sessionId,
+            prompt: "second turn for steering test",
+            mode: .queue
+        )
         let steerTurn = try await adapter.sendSessionPrompt(
             sessionId: sessionId,
             prompt: "steer: verify codex steering",
@@ -337,32 +434,29 @@ final class LiveAcceptanceTests: XCTestCase {
         )
         XCTAssertEqual(steerTurn.sessionId, sessionId)
 
-        // Wait up to 2 seconds to observe any deltas before interrupt
-        try? await Task.sleep(nanoseconds: 1_500_000_000)
-
         // 5. Interrupt session
         try await adapter.interruptSession(sessionId: sessionId)
+        let hasInterrupted = await collector.waitForInterrupted(timeoutSec: 5.0)
+        XCTAssertTrue(hasInterrupted, "Codex turn status must reflect interrupt cancellation (cancelled/failed or interrupted)")
 
-        try? await Task.sleep(nanoseconds: 500_000_000)
-        listenerTask.cancel()
-        let collectedEvents = await listenerTask.value
-
-
-
+        let collectedEvents = collector.allEvents()
         XCTAssertFalse(collectedEvents.isEmpty)
 
-        // (a) Live streaming delta capability verification
-        let delta = adapter.translator.translateStreamingDelta(sessionId: sessionId, turnId: "turn_1", itemType: "agentMessage", deltaText: "live token delta")
-        XCTAssertNotNil(delta, "Live streaming delta must be mapped to canonical delta")
-
-        // (b) Committed assistant message after prompt
-        let completedTurn = collectedEvents.first(where: {
+        // (b) Committed assistant message from real wire
+        let completedAssistantTurn = collectedEvents.first(where: {
             if case .turnCompleted(let turn) = $0 {
-                return !turn.steps.isEmpty
+                return turn.steps.contains(where: { step in
+                    step.blocks.contains(where: { block in
+                        if case .assistantText(let text) = block.kind {
+                            return !text.isEmpty
+                        }
+                        return false
+                    })
+                })
             }
             return false
         })
-        XCTAssertNotNil(completedTurn, "A committed assistant message turn must be received after prompt/interrupt")
+        XCTAssertNotNil(completedAssistantTurn, "Codex turnCompleted must contain committed assistantText from real wire")
 
         // (c) Mid-turn steer actually accepted
         let steerEvent = collectedEvents.first(where: {
@@ -373,10 +467,15 @@ final class LiveAcceptanceTests: XCTestCase {
         })
         XCTAssertNotNil(steerEvent, "Mid-turn steer event must be observed in session stream")
 
-        // (d) Interrupt verified by cancelled/interrupted status
-        if let completedTurn = completedTurn, case .turnCompleted(let turn) = completedTurn {
-            XCTAssertTrue(turn.status == .cancelled || turn.status == .failed || turn.status == .completed, "Turn status must reflect interrupt completion")
-        }
+        // (d) Interrupt verified by cancelled/failed status or daemon interrupted payload
+        let interruptedTurn = collectedEvents.first(where: {
+            if case .turnCompleted(let turn) = $0 {
+                if turn.status == .cancelled || turn.status == .failed { return true }
+                if let raw = turn.rawVendorPayload, case .string(let st) = raw["status"], st == "interrupted" { return true }
+            }
+            return false
+        })
+        XCTAssertNotNil(interruptedTurn, "Codex turn status must reflect interrupt cancellation (cancelled/failed or interrupted)")
 
         // (e) On disconnect / unreachable: verify explicit error surfacing
         let deadTransport = CodexDaemonUdsTransport(socketPath: "/tmp/non_existent_codex_\(UUID().uuidString).sock")
@@ -401,10 +500,10 @@ final class LiveAcceptanceTests: XCTestCase {
             "socketPath": socketPath,
             "sessionId": sessionId,
             "events_count": collectedEvents.count,
-            "streaming_delta_supported": true,
-            "committed_assistant_message": true,
+            "streaming_delta_supported": hasStreamingDelta,
+            "committed_assistant_message": (completedAssistantTurn != nil),
             "steer_accepted": true,
-            "interrupt_verified": true,
+            "interrupt_verified": (interruptedTurn != nil),
             "unreachable_error_verified": true,
             "timestamp": ISO8601DateFormatter().string(from: Date())
         ]

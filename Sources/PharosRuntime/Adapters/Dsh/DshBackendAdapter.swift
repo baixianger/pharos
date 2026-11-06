@@ -403,7 +403,7 @@ public actor DshBackendAdapter: PharosAgentBackendAdapter {
         case "turn/end":
             let turnId = event["turnId"] as? String ?? "turn_1"
             let reason = event["reason"] as? String ?? "stop"
-            let initialTurn = CanonicalTurn(turnId: turnId, sessionId: sessionId, turnNumber: 1, status: .inProgress)
+            let initialTurn = CanonicalTurn(turnId: turnId, sessionId: sessionId, turnNumber: 1, status: .inProgress, steps: [])
             let turn = translator.translateTurnEnd(currentTurn: initialTurn, reasonKind: reason, rawPayload: event.payload)
             emit(event: .turnCompleted(turn), for: sessionId)
         case "event":
@@ -413,18 +413,44 @@ public actor DshBackendAdapter: PharosAgentBackendAdapter {
                     let turnNum = data?["turn"] as? Int ?? 1
                     let reasonObj = data?["reason"] as? [String: Any]
                     let reasonKind = reasonObj?["kind"] as? String ?? "stop"
-                    let block = CanonicalBlock(blockId: "blk_\(UUID().uuidString.prefix(6))", kind: .assistantText("DSH turn completed."))
-                    let step = CanonicalStep(stepId: "step_1", stepNumber: 1, status: .completed, blocks: [block])
-                    let initialTurn = CanonicalTurn(turnId: "turn_\(turnNum)", sessionId: sessionId, turnNumber: turnNum, status: .inProgress, steps: [step])
+                    let initialTurn = CanonicalTurn(turnId: "turn_\(turnNum)", sessionId: sessionId, turnNumber: turnNum, status: .inProgress, steps: [])
                     let turn = translator.translateTurnEnd(currentTurn: initialTurn, reasonKind: reasonKind, rawPayload: ev)
                     emit(event: .turnCompleted(turn), for: sessionId)
                 } else if evType == "assistant/message" {
-                    if let data = ev["data"] as? [String: Any],
-                       let msg = data["message"] as? [String: Any],
-                       let content = msg["content"] as? [[String: Any]] {
-                        let blocks = translator.translateAssistantMessage(blockId: "blk_\(UUID().uuidString.prefix(6))", contentArray: content, rawPayload: ev)
+                    if let data = ev["data"] as? [String: Any] {
+                        var blocks: [CanonicalBlock] = []
+                        if let msg = data["message"] as? [String: Any],
+                           let content = msg["content"] as? [[String: Any]] {
+                            blocks = translator.translateAssistantMessage(blockId: "blk_\(UUID().uuidString.prefix(6))", contentArray: content, rawPayload: ev)
+                        } else if let content = data["content"] as? [[String: Any]] {
+                            blocks = translator.translateAssistantMessage(blockId: "blk_\(UUID().uuidString.prefix(6))", contentArray: content, rawPayload: ev)
+                        } else if let stream = data["stream"] as? [[String: Any]] {
+                            for (idx, item) in stream.enumerated() {
+                                let itemType = item["type"] as? String ?? ""
+                                let subId = "blk_\(UUID().uuidString.prefix(6))_\(idx)"
+                                if itemType == "reasoning-chunks", let chunks = item["chunks"] as? [String] {
+                                    let thinking = chunks.joined()
+                                    if !thinking.isEmpty {
+                                        blocks.append(CanonicalBlock(blockId: subId, kind: .reasoning(CanonicalReasoningBlock(thinking: thinking))))
+                                    }
+                                } else if itemType == "text-chunks", let chunks = item["chunks"] as? [String] {
+                                    let text = chunks.joined()
+                                    if !text.isEmpty {
+                                        blocks.append(CanonicalBlock(blockId: subId, kind: .assistantText(text)))
+                                    }
+                                } else if itemType == "text", let text = item["text"] as? String {
+                                    if !text.isEmpty {
+                                        blocks.append(CanonicalBlock(blockId: subId, kind: .assistantText(text)))
+                                    }
+                                }
+                            }
+                        }
                         if !blocks.isEmpty {
-                            emit(event: .turnCompleted(CanonicalTurn(turnId: "turn_1", sessionId: sessionId, turnNumber: 1, status: .completed, steps: [CanonicalStep(stepId: "step_1", stepNumber: 1, status: .completed, blocks: blocks)])), for: sessionId)
+                            let turnNum = data["turn"] as? Int ?? 1
+                            let stepNum = data["step"] as? Int ?? 1
+                            let step = CanonicalStep(stepId: "step_\(stepNum)", stepNumber: stepNum, status: .completed, blocks: blocks)
+                            let turn = CanonicalTurn(turnId: "turn_\(turnNum)", sessionId: sessionId, turnNumber: turnNum, status: .completed, steps: [step])
+                            emit(event: .turnCompleted(turn), for: sessionId)
                         }
                     }
                 }

@@ -374,16 +374,20 @@ final class FakeCodexDaemonServer: @unchecked Sendable {
         isRunning.value = false
         if clientFd >= 0 {
             #if canImport(Darwin)
+            Darwin.shutdown(clientFd, SHUT_RDWR)
             Darwin.close(clientFd)
             #else
+            Glibc.shutdown(clientFd, Int32(SHUT_RDWR))
             Glibc.close(clientFd)
             #endif
             clientFd = -1
         }
         if serverFd >= 0 {
             #if canImport(Darwin)
+            Darwin.shutdown(serverFd, SHUT_RDWR)
             Darwin.close(serverFd)
             #else
+            Glibc.shutdown(serverFd, Int32(SHUT_RDWR))
             Glibc.close(serverFd)
             #endif
             serverFd = -1
