@@ -107,8 +107,9 @@ public struct SessionTurnListView: View {
         HStack {
             Spacer()
             Text(text)
-                .font(.system(size: 14))
-                .lineSpacing(4)
+                .font(.system(size: 14, weight: .regular))
+                .lineSpacing(8) // 22px line-height (14 + 8)
+                .tracking(-0.14) // -0.01em tracking
                 .foregroundStyle(Color.white)
                 .padding(.horizontal, PharosDesignTokens.Layout.bubblePaddingInline)
                 .padding(.vertical, PharosDesignTokens.Layout.bubblePaddingBlock)
@@ -129,8 +130,9 @@ public struct SessionTurnListView: View {
     private func assistantBubble(_ text: String) -> some View {
         HStack {
             Text(text)
-                .font(.system(size: 14))
-                .lineSpacing(4)
+                .font(.system(size: 14, weight: .regular))
+                .lineSpacing(8) // 22px line-height (14 + 8)
+                .tracking(-0.14) // -0.01em tracking
                 .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
                 .padding(.horizontal, PharosDesignTokens.Layout.bubblePaddingInline)
                 .padding(.vertical, PharosDesignTokens.Layout.bubblePaddingBlock)

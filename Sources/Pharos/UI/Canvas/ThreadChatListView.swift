@@ -61,8 +61,9 @@ public struct ThreadChatListView: View {
             VStack(alignment: .trailing, spacing: 4) {
                 // Bubble Body
                 Text(message.text)
-                    .font(.system(size: 14))
-                    .lineSpacing(4)
+                    .font(.system(size: 14, weight: .regular))
+                    .lineSpacing(8)
+                    .tracking(-0.14)
                     .foregroundStyle(.white)
                     .padding(.horizontal, PharosDesignTokens.Layout.bubblePaddingInline)
                     .padding(.vertical, PharosDesignTokens.Layout.bubblePaddingBlock)
@@ -125,8 +126,9 @@ public struct ThreadChatListView: View {
 
                 // Bubble Body
                 Text(message.text)
-                    .font(.system(size: 14))
-                    .lineSpacing(4)
+                    .font(.system(size: 14, weight: .regular))
+                    .lineSpacing(8)
+                    .tracking(-0.14)
                     .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
                     .padding(.horizontal, PharosDesignTokens.Layout.bubblePaddingInline)
                     .padding(.vertical, PharosDesignTokens.Layout.bubblePaddingBlock)

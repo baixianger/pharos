@@ -104,6 +104,10 @@ public struct NavigationRosterView: View {
 
     private var expandedTabHeader: some View {
         HStack(spacing: 6) {
+            // macOS traffic lights clearance (72px)
+            Spacer()
+                .frame(width: PharosDesignTokens.Layout.macControlsInset)
+
             // Custom Grok Bot Pill Tabs (.gb-tabs)
             HStack(spacing: 4) {
                 ForEach(NavigationTab.allCases) { tab in
@@ -142,6 +146,10 @@ public struct NavigationRosterView: View {
 
     private var compactTabHeader: some View {
         VStack(spacing: 6) {
+            // macOS traffic lights clearance in compact rail
+            Spacer()
+                .frame(height: 36)
+
             ForEach(NavigationTab.allCases) { tab in
                 Button {
                     selectedTab = tab
