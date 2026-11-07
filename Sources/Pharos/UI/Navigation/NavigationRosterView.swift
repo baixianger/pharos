@@ -64,12 +64,18 @@ public struct NavigationRosterView: View {
                 expandedTabHeader
             }
 
-            Divider()
-                .overlay(Color.primary.opacity(0.08))
+            Rectangle()
+                .fill(PharosDesignTokens.Colors.borderTranslucent)
+                .frame(height: PharosDesignTokens.Radii.hairline)
+
+            // Pinned Main Bot Header (Signature Grok Bot element)
+            if !isCompact {
+                pinnedMainBotSection
+            }
 
             // Roster List Content
             ScrollView {
-                LazyVStack(spacing: 2) {
+                LazyVStack(spacing: 4) {
                     switch selectedTab {
                     case .sessions:
                         sessionsList
@@ -80,37 +86,52 @@ public struct NavigationRosterView: View {
                     }
                 }
                 .padding(.vertical, 8)
-                .padding(.horizontal, isCompact ? 6 : 8)
+                .padding(.horizontal, isCompact ? 6 : 10)
             }
 
-            Divider()
-                .overlay(Color.primary.opacity(0.08))
+            Rectangle()
+                .fill(PharosDesignTokens.Colors.borderTranslucent)
+                .frame(height: PharosDesignTokens.Radii.hairline)
 
-            // Bottom Rail Controls
+            // Bottom Workspace & Rail Controls
             bottomControls
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(
-            Color(nsColor: .windowBackgroundColor)
-        )
+        .background(PharosDesignTokens.Colors.sidebar)
     }
 
     // MARK: - Headers
 
     private var expandedTabHeader: some View {
         HStack(spacing: 6) {
-            Picker("Navigation", selection: $selectedTab) {
+            // Custom Grok Bot Pill Tabs (.gb-tabs)
+            HStack(spacing: 4) {
                 ForEach(NavigationTab.allCases) { tab in
-                    Text(tab.rawValue).tag(tab)
+                    Button {
+                        selectedTab = tab
+                    } label: {
+                        Text(tab.rawValue)
+                            .font(.system(size: 12, weight: selectedTab == tab ? .semibold : .medium))
+                            .foregroundStyle(selectedTab == tab ? PharosDesignTokens.Colors.inkPrimary : PharosDesignTokens.Colors.inkSecondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(
+                                Capsule()
+                                    .fill(selectedTab == tab ? PharosDesignTokens.Colors.hoverNeutral : Color.clear)
+                            )
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+
+            Spacer()
 
             Button(action: onToggleCompact) {
                 Image(systemName: "sidebar.left")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(PharosDesignTokens.Colors.hoverNeutral))
             }
             .buttonStyle(.plain)
             .help("Collapse to 88px icon rail")
@@ -127,20 +148,46 @@ public struct NavigationRosterView: View {
                 } label: {
                     Image(systemName: tab.iconName)
                         .font(.system(size: 15, weight: selectedTab == tab ? .semibold : .regular))
-                        .frame(width: 40, height: 32)
+                        .frame(width: 44, height: 34)
                         .background(
                             selectedTab == tab
-                            ? Color.accentColor.opacity(0.12)
+                            ? PharosDesignTokens.Colors.hoverNeutral
                             : Color.clear
                         )
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .foregroundStyle(selectedTab == tab ? Color.accentColor : Color.secondary)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .foregroundStyle(selectedTab == tab ? PharosDesignTokens.Colors.accent : PharosDesignTokens.Colors.inkSecondary)
                 }
                 .buttonStyle(.plain)
                 .help(tab.rawValue)
             }
         }
         .padding(.vertical, 8)
+    }
+
+    // MARK: - Pinned Main Bot
+
+    private var pinnedMainBotSection: some View {
+        VStack(spacing: 6) {
+            PharosAvatarView(
+                seed: "Main Bot",
+                status: .working,
+                size: PharosDesignTokens.Layout.mainBotAvatarSize,
+                showRing: true
+            )
+            .padding(.top, 4)
+
+            VStack(spacing: 1) {
+                Text("Main Bot")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
+
+                Text("Active Mesh Orchestrator")
+                    .font(.system(size: 11))
+                    .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
     }
 
     // MARK: - Item Lists
@@ -232,46 +279,49 @@ public struct NavigationRosterView: View {
                 PharosAvatarView(
                     seed: session.title,
                     status: avatarStatus(from: session.status.rawValue),
-                    size: 34,
+                    size: PharosDesignTokens.Layout.sidebarAvatarSize,
                     showRing: isSelected
                 )
 
                 Circle()
                     .fill(statusColor(for: session.status.rawValue))
                     .frame(width: 8, height: 8)
-                    .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
+                    .overlay(Circle().stroke(PharosDesignTokens.Colors.sidebar, lineWidth: 1.5))
             }
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text(session.title)
                         .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
                         .lineLimit(1)
                     Spacer()
                     Text(session.agentType.uppercased())
                         .font(.system(size: 9, weight: .bold))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Color.primary.opacity(0.06))
-                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(PharosDesignTokens.Colors.hoverNeutral)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
                 }
 
                 if let preview = session.latestMessagePreview {
                     Text(preview)
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
                         .lineLimit(1)
                 }
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
         .frame(height: PharosDesignTokens.Layout.sidebarRowHeight)
         .background(
             isSelected
-            ? Color.accentColor.opacity(0.12)
+            ? PharosDesignTokens.Colors.selectedNeutral
             : Color.clear
         )
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: PharosDesignTokens.Radii.xl))
     }
 
     private func expandedThreadRow(_ thread: ClientThreadSummary, isSelected: Bool) -> some View {
@@ -279,7 +329,7 @@ public struct NavigationRosterView: View {
             PharosAvatarView(
                 seed: thread.title,
                 status: .idle,
-                size: 34,
+                size: PharosDesignTokens.Layout.sidebarAvatarSize,
                 showRing: isSelected
             )
 
@@ -287,22 +337,29 @@ public struct NavigationRosterView: View {
                 HStack {
                     Text(thread.title)
                         .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
                         .lineLimit(1)
                     Spacer()
                     Text("\(thread.memberIds.count)")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
                 }
+
+                Text("Multi-agent collaborative thread")
+                    .font(.system(size: 11))
+                    .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
+                    .lineLimit(1)
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
         .frame(height: PharosDesignTokens.Layout.sidebarRowHeight)
         .background(
             isSelected
-            ? Color.accentColor.opacity(0.12)
+            ? PharosDesignTokens.Colors.selectedNeutral
             : Color.clear
         )
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: PharosDesignTokens.Radii.xl))
     }
 
     private func avatarStatus(from str: String) -> AvatarActivityStatus {
@@ -316,66 +373,102 @@ public struct NavigationRosterView: View {
 
     private func expandedProjectRow(_ project: ClientProjectSummary, isSelected: Bool) -> some View {
         HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.primary.opacity(0.06))
+            RoundedRectangle(cornerRadius: 8)
+                .fill(PharosDesignTokens.Colors.hoverNeutral)
                 .frame(width: 36, height: 36)
                 .overlay(
                     Image(systemName: "folder")
                         .font(.system(size: 14))
+                        .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
                 )
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text(project.name)
                         .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
                         .lineLimit(1)
                     Spacer()
                     Text("\(project.activeSessionsCount)")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
                 }
 
                 Text(project.projectPath)
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(PharosDesignTokens.Colors.inkTertiary)
                     .lineLimit(1)
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
         .frame(height: PharosDesignTokens.Layout.sidebarRowHeight)
         .background(
             isSelected
-            ? Color.accentColor.opacity(0.12)
+            ? PharosDesignTokens.Colors.selectedNeutral
             : Color.clear
         )
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .clipShape(RoundedRectangle(cornerRadius: PharosDesignTokens.Radii.xl))
     }
 
     private var bottomControls: some View {
-        HStack {
+        HStack(spacing: 8) {
             if isCompact {
-                Button(action: onToggleCompact) {
-                    Image(systemName: "arrow.right.to.line")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Expand sidebar")
-            } else {
-                Button(action: onToggleCompact) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.left.to.line")
-                        Text("Collapse")
-                            .font(.system(size: 11))
+                VStack(spacing: 8) {
+                    Circle()
+                        .fill(PharosDesignTokens.Colors.hoverNeutral)
+                        .frame(width: 32, height: 32)
+                        .overlay(
+                            Text("P")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
+                        )
+
+                    Button(action: onToggleCompact) {
+                        Image(systemName: "arrow.right.to.line")
+                            .font(.system(size: 12))
+                            .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
                     }
-                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
+                    .help("Expand sidebar")
+                }
+                .padding(.vertical, 8)
+            } else {
+                // Monogram User / Workspace Card (.gb-user)
+                Circle()
+                    .fill(PharosDesignTokens.Colors.hoverNeutral)
+                    .frame(width: 28, height: 28)
+                    .overlay(
+                        Text("P")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
+                    )
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Pai's Workspace")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
+
+                    Text("Local mesh active")
+                        .font(.system(size: 10))
+                        .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
+                }
+
+                Spacer()
+
+                Button(action: onToggleCompact) {
+                    Image(systemName: "arrow.left.to.line")
+                        .font(.system(size: 12))
+                        .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
+                        .frame(width: 26, height: 26)
+                        .background(Circle().fill(PharosDesignTokens.Colors.hoverNeutral))
                 }
                 .buttonStyle(.plain)
-                Spacer()
+                .help("Collapse sidebar")
             }
         }
         .padding(.horizontal, 12)
-        .frame(height: 40)
+        .frame(height: 48)
     }
 
     private func statusColor(for status: String) -> Color {

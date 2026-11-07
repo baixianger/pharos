@@ -87,7 +87,7 @@ public struct ConversationCanvasView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Header
+            // Grok Bot Centered Floating Chat Header
             canvasHeader
 
             // Thread Roster Bar (Collaborative multi-agent roster)
@@ -96,39 +96,48 @@ public struct ConversationCanvasView: View {
                     members: threadMembers,
                     onMentionAgent: onMentionAgent
                 )
+                Rectangle()
+                    .fill(PharosDesignTokens.Colors.borderTranslucent)
+                    .frame(height: PharosDesignTokens.Radii.hairline)
             }
-
-            Divider()
-                .overlay(Color.primary.opacity(0.08))
 
             // Message Scroll Canvas
             ScrollViewReader { scrollProxy in
                 ScrollView {
-                    if isThreadMode {
-                        ThreadChatListView(
-                            messages: threadMessages,
-                            members: threadMembers,
-                            implicitHumanId: implicitHumanId,
-                            activeError: activeError,
-                            onDismissError: onDismissError,
-                            onMentionAgent: onMentionAgent
-                        )
-                        .id("thread_bottom_anchor")
-                    } else {
-                        if turns.isEmpty && liveStreamingText.isEmpty && liveReasoningText.isEmpty && activeApproval == nil {
-                            emptyState
-                        } else {
-                            SessionTurnListView(
-                                turns: turns,
-                                activeApproval: activeApproval,
+                    VStack(spacing: 0) {
+                        // Centered timestamp pill (.gb-timestamp)
+                        Text("Today • Active Session")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(PharosDesignTokens.Colors.inkTertiary)
+                            .padding(.top, 12)
+                            .padding(.bottom, 6)
+
+                        if isThreadMode {
+                            ThreadChatListView(
+                                messages: threadMessages,
+                                members: threadMembers,
+                                implicitHumanId: implicitHumanId,
                                 activeError: activeError,
-                                liveStreamingText: liveStreamingText,
-                                liveReasoningText: liveReasoningText,
-                                isTurnInProgress: isTurnInProgress,
-                                onResolveApproval: onResolveApproval,
-                                onDismissError: onDismissError
+                                onDismissError: onDismissError,
+                                onMentionAgent: onMentionAgent
                             )
-                            .id("bottom_anchor")
+                            .id("thread_bottom_anchor")
+                        } else {
+                            if turns.isEmpty && liveStreamingText.isEmpty && liveReasoningText.isEmpty && activeApproval == nil {
+                                emptyState
+                            } else {
+                                SessionTurnListView(
+                                    turns: turns,
+                                    activeApproval: activeApproval,
+                                    activeError: activeError,
+                                    liveStreamingText: liveStreamingText,
+                                    liveReasoningText: liveReasoningText,
+                                    isTurnInProgress: isTurnInProgress,
+                                    onResolveApproval: onResolveApproval,
+                                    onDismissError: onDismissError
+                                )
+                                .id("bottom_anchor")
+                            }
                         }
                     }
                 }
@@ -143,10 +152,7 @@ public struct ConversationCanvasView: View {
                 }
             }
 
-            Divider()
-                .overlay(Color.primary.opacity(0.08))
-
-            // Expandable Bottom Composer
+            // Floating Bottom Composer (.gb-composer-wrap)
             PharosComposerView(
                 text: $composerText,
                 placeholder: composerPlaceholder,
@@ -156,7 +162,7 @@ public struct ConversationCanvasView: View {
             )
         }
         .frame(minWidth: PharosDesignTokens.Layout.canvasMinChatWidth)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(PharosDesignTokens.Colors.pane)
     }
 
     private var composerPlaceholder: String {
@@ -172,70 +178,80 @@ public struct ConversationCanvasView: View {
     // MARK: - Header
 
     private var canvasHeader: some View {
-        HStack(spacing: 10) {
-            // Header Avatar (Clicking opens details inspector per Grok Bot design)
-            PharosAvatarView(
-                seed: title,
-                status: isTurnInProgress ? .working : .idle,
-                size: 32,
-                showRing: true
-            )
-            .onTapGesture {
-                onToggleDetails()
-            }
-            .help("Click to toggle details inspector")
-
-            // Title & Badges
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(title)
-                        .font(.system(size: 14, weight: .semibold))
-                        .lineLimit(1)
-
-                    if let kind = agentKind {
-                        Text(kind.uppercased())
-                            .font(.system(size: 9, weight: .bold))
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1.5)
-                            .background(Color.primary.opacity(0.06))
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
-                    }
-
-                    if let machine = machineName {
-                        Text(machine)
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Color.primary.opacity(0.04))
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
-                    }
-                }
-
-                if let sub = subtitle {
-                    Text(sub)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-
-            Spacer()
-
-            // Details Inspector Toggle
+        ZStack {
+            // Centered Signature Floating Chat Pill (.gb-chat-pill)
             Button(action: onToggleDetails) {
-                Image(systemName: "sidebar.right")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(isDetailsOpen ? Color.accentColor : Color.secondary)
-                    .frame(width: 30, height: 30)
-                    .background(isDetailsOpen ? Color.accentColor.opacity(0.12) : Color.clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                HStack(spacing: 8) {
+                    PharosAvatarView(
+                        seed: title,
+                        status: isTurnInProgress ? .working : .idle,
+                        size: 28,
+                        showRing: false
+                    )
+
+                    HStack(spacing: 5) {
+                        Text(title)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
+
+                        if let kind = agentKind {
+                            Text(kind.uppercased())
+                                .font(.system(size: 9, weight: .bold))
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(PharosDesignTokens.Colors.hoverNeutral)
+                                .clipShape(RoundedRectangle(cornerRadius: 3))
+                                .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
+                        }
+
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(PharosDesignTokens.Colors.inkTertiary)
+                    }
+                }
+                .padding(.vertical, 3)
+                .padding(.trailing, 12)
+                .padding(.leading, 4)
+                .background(
+                    Capsule()
+                        .fill(PharosDesignTokens.Colors.elevated)
+                )
+                .overlay(
+                    Capsule()
+                        .stroke(PharosDesignTokens.Colors.borderTranslucent, lineWidth: PharosDesignTokens.Radii.hairline)
+                )
+                .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 2)
             }
             .buttonStyle(.plain)
-            .help("Toggle Details Inspector")
+            .help("Click to view details inspector")
+
+            // Trailing Inspector Toggle Button
+            HStack {
+                Spacer()
+                Button(action: onToggleDetails) {
+                    Image(systemName: "sidebar.right")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(isDetailsOpen ? PharosDesignTokens.Colors.accent : PharosDesignTokens.Colors.inkSecondary)
+                        .frame(width: 30, height: 30)
+                        .background(
+                            Circle()
+                                .fill(isDetailsOpen ? PharosDesignTokens.Colors.selectedNeutral : PharosDesignTokens.Colors.hoverNeutral)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Toggle Details Inspector")
+                .padding(.trailing, 16)
+            }
         }
-        .padding(.horizontal, 16)
-        .frame(height: PharosDesignTokens.Layout.titlebarHeight)
+        .frame(height: 52)
+        .frame(maxWidth: .infinity)
+        .background(PharosDesignTokens.Colors.chrome)
+        .overlay(
+            Rectangle()
+                .fill(PharosDesignTokens.Colors.borderTranslucent)
+                .frame(height: PharosDesignTokens.Radii.hairline),
+            alignment: .bottom
+        )
     }
 
     // MARK: - Empty State

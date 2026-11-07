@@ -109,17 +109,18 @@ public struct SessionTurnListView: View {
             Text(text)
                 .font(.system(size: 14))
                 .lineSpacing(4)
-                .foregroundStyle(Color(nsColor: .controlTextColor))
+                .foregroundStyle(Color.white)
                 .padding(.horizontal, PharosDesignTokens.Layout.bubblePaddingInline)
                 .padding(.vertical, PharosDesignTokens.Layout.bubblePaddingBlock)
                 .background(
                     RoundedRectangle(cornerRadius: PharosDesignTokens.Layout.bubbleRadius)
-                        .fill(Color(nsColor: .selectedControlColor).opacity(0.2))
+                        .fill(PharosDesignTokens.Colors.bubbleUser)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: PharosDesignTokens.Layout.bubbleRadius)
-                        .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                        .stroke(Color.white.opacity(0.12), lineWidth: PharosDesignTokens.Radii.hairline)
                 )
+                .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 1)
                 .frame(maxWidth: PharosDesignTokens.Layout.bubbleMaxStandardWidth, alignment: .trailing)
         }
         .padding(.horizontal, 20)
@@ -130,16 +131,16 @@ public struct SessionTurnListView: View {
             Text(text)
                 .font(.system(size: 14))
                 .lineSpacing(4)
-                .foregroundStyle(Color.primary)
+                .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
                 .padding(.horizontal, PharosDesignTokens.Layout.bubblePaddingInline)
                 .padding(.vertical, PharosDesignTokens.Layout.bubblePaddingBlock)
                 .background(
                     RoundedRectangle(cornerRadius: PharosDesignTokens.Layout.bubbleRadius)
-                        .fill(Color(nsColor: .controlBackgroundColor))
+                        .fill(PharosDesignTokens.Colors.bubbleAgent)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: PharosDesignTokens.Layout.bubbleRadius)
-                        .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                        .stroke(PharosDesignTokens.Colors.borderTranslucent, lineWidth: PharosDesignTokens.Radii.hairline)
                 )
                 .frame(maxWidth: PharosDesignTokens.Layout.bubbleMaxStandardWidth, alignment: .leading)
             Spacer()
@@ -153,22 +154,26 @@ public struct SessionTurnListView: View {
         DisclosureGroup {
             Text(content)
                 .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
                 .padding(.top, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "brain")
                     .font(.system(size: 11))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(PharosDesignTokens.Colors.accent)
                 Text(title)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
             }
         }
         .padding(10)
-        .background(Color.primary.opacity(0.03))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(PharosDesignTokens.Colors.bubbleAgent)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(PharosDesignTokens.Colors.borderTranslucent, lineWidth: PharosDesignTokens.Radii.hairline)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10))
         .padding(.horizontal, 20)
     }
 
@@ -176,20 +181,25 @@ public struct SessionTurnListView: View {
         HStack(spacing: 8) {
             Image(systemName: "wrench.and.screwdriver")
                 .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PharosDesignTokens.Colors.accent)
 
             Text("TOOL:")
                 .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(PharosDesignTokens.Colors.inkTertiary)
 
             Text(call.toolName)
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
 
             Spacer()
         }
         .padding(8)
-        .background(Color.primary.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .background(PharosDesignTokens.Colors.hoverNeutral)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(PharosDesignTokens.Colors.borderTranslucent, lineWidth: PharosDesignTokens.Radii.hairline)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8))
         .padding(.horizontal, 20)
     }
 
@@ -198,17 +208,21 @@ public struct SessionTurnListView: View {
             HStack {
                 Text(res.isError ? "TOOL ERROR" : "TOOL OUTPUT")
                     .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(res.isError ? Color.red : Color.secondary)
+                    .foregroundStyle(res.isError ? PharosDesignTokens.Colors.statusDanger : PharosDesignTokens.Colors.inkSecondary)
                 Spacer()
             }
             Text(res.result.description)
                 .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
                 .lineLimit(4)
         }
         .padding(8)
-        .background(res.isError ? Color.red.opacity(0.06) : Color.primary.opacity(0.02))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .background(res.isError ? PharosDesignTokens.Colors.statusDanger.opacity(0.08) : PharosDesignTokens.Colors.bubbleAgent)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(PharosDesignTokens.Colors.borderTranslucent, lineWidth: PharosDesignTokens.Radii.hairline)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8))
         .padding(.horizontal, 20)
     }
 

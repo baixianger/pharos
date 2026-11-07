@@ -40,7 +40,7 @@ public struct PharosComposerView: View {
                         ? PharosDesignTokens.Layout.composerExpandedRadius
                         : PharosDesignTokens.Layout.composerCompactRadius
                 )
-                .fill(Color(nsColor: .controlBackgroundColor))
+                .fill(PharosDesignTokens.Colors.elevated)
                 .overlay(
                     RoundedRectangle(
                         cornerRadius: isExpanded
@@ -48,35 +48,57 @@ public struct PharosComposerView: View {
                             : PharosDesignTokens.Layout.composerCompactRadius
                     )
                     .stroke(
-                        isFocused ? Color.accentColor.opacity(0.6) : Color.primary.opacity(0.12),
+                        isFocused ? PharosDesignTokens.Colors.accent.opacity(0.6) : PharosDesignTokens.Colors.borderTranslucent,
                         lineWidth: PharosDesignTokens.Layout.composerBorderWidth
                     )
                 )
-                .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 2)
+                .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 3)
 
                 // Input & Controls
                 VStack(alignment: .leading, spacing: 0) {
-                    // Text Input field
                     if isExpanded {
                         TextEditor(text: $text)
                             .font(.system(size: 14))
                             .lineSpacing(4)
                             .focused($isFocused)
+                            .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
                             .frame(minHeight: 40, maxHeight: PharosDesignTokens.Layout.composerContentMaxHeight)
                             .scrollContentBackground(.hidden)
                             .padding(.top, 10)
                             .padding(.horizontal, 14)
                     } else {
-                        TextField(placeholder, text: $text)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 14))
-                            .focused($isFocused)
-                            .frame(height: PharosDesignTokens.Layout.composerCompactHeight)
-                            .padding(.leading, PharosDesignTokens.Layout.composerCompactRadius)
-                            .padding(.trailing, 80)
-                            .onSubmit {
-                                submitMessage()
+                        HStack(spacing: 8) {
+                            // Left Action / Mode Indicator Pill
+                            Button(action: onToggleSteering) {
+                                HStack(spacing: 4) {
+                                    Circle()
+                                        .fill(isSteeringMode ? PharosDesignTokens.Colors.statusAttention : PharosDesignTokens.Colors.statusWorking)
+                                        .frame(width: 6, height: 6)
+
+                                    Image(systemName: "slider.horizontal.3")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
+                                }
+                                .frame(width: 30, height: 30)
+                                .background(Circle().fill(PharosDesignTokens.Colors.hoverNeutral))
                             }
+                            .buttonStyle(.plain)
+                            .help(isSteeringMode ? "Steering Mode Active" : "Prompt Queue Mode")
+                            .padding(.leading, 6)
+
+                            TextField(placeholder, text: $text)
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 14))
+                                .focused($isFocused)
+                                .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
+                                .frame(height: PharosDesignTokens.Layout.composerCompactHeight)
+                                .onSubmit {
+                                    submitMessage()
+                                }
+
+                            sendButton
+                                .padding(.trailing, 6)
+                        }
                     }
 
                     // Bottom controls bar (visible when expanded)
@@ -86,14 +108,15 @@ public struct PharosComposerView: View {
                             Button(action: onToggleSteering) {
                                 HStack(spacing: 4) {
                                     Circle()
-                                        .fill(isSteeringMode ? PharosDesignTokens.Colors.statusAttention : Color.secondary)
+                                        .fill(isSteeringMode ? PharosDesignTokens.Colors.statusAttention : PharosDesignTokens.Colors.statusWorking)
                                         .frame(width: 6, height: 6)
                                     Text(isSteeringMode ? "STEER" : "QUEUE")
                                         .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
                                 }
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
-                                .background(Color.primary.opacity(0.06))
+                                .background(PharosDesignTokens.Colors.hoverNeutral)
                                 .clipShape(Capsule())
                             }
                             .buttonStyle(.plain)
@@ -109,30 +132,23 @@ public struct PharosComposerView: View {
                         .padding(.top, 4)
                     }
                 }
-
-                // Inline send button (when compact)
-                if !isExpanded {
-                    sendButton
-                        .padding(.trailing, 6)
-                        .padding(.bottom, 5)
-                }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 16)
         .animation(PharosDesignTokens.Springs.composerResize, value: isExpanded)
     }
 
     private var sendButton: some View {
         Button(action: submitMessage) {
             Image(systemName: "arrow.up")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.secondary.opacity(0.4) : Color.white)
-                .frame(width: 32, height: 32)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? PharosDesignTokens.Colors.inkTertiary : Color.white)
+                .frame(width: 30, height: 30)
                 .background(
                     text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? Color.primary.opacity(0.08)
-                        : Color.accentColor
+                    ? PharosDesignTokens.Colors.hoverNeutral
+                    : PharosDesignTokens.Colors.accent
                 )
                 .clipShape(Circle())
         }

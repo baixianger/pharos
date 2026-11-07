@@ -92,12 +92,13 @@ public struct ConversationDetailsView: View {
             // Header with sub-tabs & close button
             inspectorHeader
 
-            Divider()
-                .overlay(Color.primary.opacity(0.08))
+            Rectangle()
+                .fill(PharosDesignTokens.Colors.borderTranslucent)
+                .frame(height: PharosDesignTokens.Radii.hairline)
 
             // Sub-tab content
             ScrollView {
-                VStack(spacing: 14) {
+                VStack(spacing: 16) {
                     switch selectedSubTab {
                     case .details:
                         detailsSection
@@ -107,116 +108,210 @@ public struct ConversationDetailsView: View {
                         computerSection
                     }
                 }
-                .padding(14)
+                .padding(16)
             }
         }
         .frame(minWidth: PharosDesignTokens.Layout.detailsMinWidth)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(PharosDesignTokens.Colors.pane)
     }
 
     // MARK: - Header
 
     private var inspectorHeader: some View {
         HStack(spacing: 8) {
-            Picker("Inspector Tab", selection: $selectedSubTab) {
+            // Pill tabs (.gb-profile-tabs)
+            HStack(spacing: 4) {
                 ForEach(DetailsSubTab.allCases) { tab in
-                    Text(tab.rawValue).tag(tab)
+                    Button {
+                        selectedSubTab = tab
+                    } label: {
+                        Text(tab.rawValue)
+                            .font(.system(size: 11, weight: selectedSubTab == tab ? .semibold : .medium))
+                            .foregroundStyle(selectedSubTab == tab ? PharosDesignTokens.Colors.inkPrimary : PharosDesignTokens.Colors.inkSecondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(
+                                Capsule()
+                                    .fill(selectedSubTab == tab ? PharosDesignTokens.Colors.hoverNeutral : Color.clear)
+                            )
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
 
-            if isOverlay {
-                Button(action: onClose) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Close Inspector")
+            Spacer()
+
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(PharosDesignTokens.Colors.hoverNeutral))
             }
+            .buttonStyle(.plain)
+            .help("Close Inspector")
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 14)
         .frame(height: PharosDesignTokens.Layout.titlebarHeight)
     }
 
     // MARK: - Details Tab
 
     private var detailsSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            // Avatar Identity & Customizer Card
-            avatarCard
-
-            // Metadata Card
-            metadataCard
-
-            // Model & Mode Controls
-            controlsCard
-
-            // Lifecycle Operations
-            lifecycleCard
-        }
-    }
-
-    private var avatarCard: some View {
-        VStack(spacing: 12) {
-            Text("AVATAR IDENTITY")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
+            // Centered Profile Card (.gb-profile)
+            VStack(spacing: 8) {
                 PharosAvatarView(
                     seed: memberName,
                     customShape: selectedShape,
                     customColor: selectedColor,
                     status: .working,
-                    size: 56,
+                    size: PharosDesignTokens.Layout.detailsAvatarSize,
                     showRing: true
                 )
+                .shadow(color: PharosDesignTokens.Colors.accent.opacity(0.18), radius: 10, x: 0, y: 3)
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(spacing: 2) {
                     Text(memberName)
-                        .font(.system(size: 13, weight: .bold))
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
 
-                    Picker("Shape", selection: $selectedShape) {
+                    Text("\(agentKind.uppercased()) • \(machineName)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+
+            // Settings Group: Identity & Model
+            VStack(alignment: .leading, spacing: 6) {
+                Text("CONFIGURATION")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(PharosDesignTokens.Colors.inkTertiary)
+                    .padding(.leading, 4)
+
+                VStack(spacing: 0) {
+                    // Model Row
+                    HStack {
+                        Text("Model")
+                            .font(.system(size: 13))
+                            .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
+                        Spacer()
+                        Picker("", selection: Binding(
+                            get: { currentModel },
+                            set: { onModelChange($0) }
+                        )) {
+                            ForEach(availableModels, id: \.self) { model in
+                                Text(model).tag(model)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: 140)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+
+                    Rectangle()
+                        .fill(PharosDesignTokens.Colors.borderTranslucent)
+                        .frame(height: PharosDesignTokens.Radii.hairline)
+
+                    // Autonomy Mode Row with Custom Toggle
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("YOLO Autonomous")
+                                .font(.system(size: 13))
+                                .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
+                            Text("Bypass confirmation prompt")
+                                .font(.system(size: 10))
+                                .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
+                        }
+                        Spacer()
+                        Toggle("", isOn: Binding(
+                            get: { currentMode.lowercased() == "yolo" },
+                            set: { _ in onModeToggle() }
+                        ))
+                        .toggleStyle(GbToggleStyle())
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+                .background(PharosDesignTokens.Colors.elevated)
+                .overlay(
+                    RoundedRectangle(cornerRadius: PharosDesignTokens.Radii.xl)
+                        .stroke(PharosDesignTokens.Colors.borderTranslucent, lineWidth: PharosDesignTokens.Radii.hairline)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: PharosDesignTokens.Radii.xl))
+            }
+
+            // Avatar Customization Swatches
+            avatarCustomizerGroup
+
+            // Workspace & Lifecycle Operations
+            lifecycleCard
+        }
+    }
+
+    private var avatarCustomizerGroup: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("AVATAR STYLE")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(PharosDesignTokens.Colors.inkTertiary)
+                .padding(.leading, 4)
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Shape")
+                        .font(.system(size: 13))
+                        .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
+                    Spacer()
+                    Picker("", selection: $selectedShape) {
                         ForEach(AvatarShape.allCases) { shape in
                             Text(shape.displayName).tag(shape)
                         }
                     }
                     .pickerStyle(.menu)
+                    .frame(maxWidth: 130)
                     .onChange(of: selectedShape) { _, newShape in
                         onAvatarChange(newShape, selectedColor)
                     }
                 }
-            }
 
-            // Color Swatches
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(AvatarPaletteColor.allCases.filter { $0 != .black }) { color in
-                        Button(action: {
-                            selectedColor = color
-                            onAvatarChange(selectedShape, color)
-                        }) {
-                            Circle()
-                                .fill(color.color(isDark: false))
-                                .frame(width: 18, height: 18)
-                                .overlay(
-                                    Circle()
-                                        .stroke(Color.primary, lineWidth: selectedColor == color ? 2 : 0)
-                                )
+                Rectangle()
+                    .fill(PharosDesignTokens.Colors.borderTranslucent)
+                    .frame(height: PharosDesignTokens.Radii.hairline)
+
+                // Color Swatches
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(AvatarPaletteColor.allCases.filter { $0 != .black }) { color in
+                            Button(action: {
+                                selectedColor = color
+                                onAvatarChange(selectedShape, color)
+                            }) {
+                                Circle()
+                                    .fill(color.color(isDark: false))
+                                    .frame(width: 20, height: 20)
+                                    .overlay(
+                                        Circle()
+                                            .stroke(PharosDesignTokens.Colors.inkPrimary, lineWidth: selectedColor == color ? 2 : 0)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .help(color.rawValue.capitalized)
                         }
-                        .buttonStyle(.plain)
-                        .help(color.rawValue.capitalized)
                     }
+                    .padding(.vertical, 2)
                 }
-                .padding(.vertical, 4)
             }
+            .padding(12)
+            .background(PharosDesignTokens.Colors.elevated)
+            .overlay(
+                RoundedRectangle(cornerRadius: PharosDesignTokens.Radii.xl)
+                    .stroke(PharosDesignTokens.Colors.borderTranslucent, lineWidth: PharosDesignTokens.Radii.hairline)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: PharosDesignTokens.Radii.xl))
         }
-        .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private var metadataCard: some View {

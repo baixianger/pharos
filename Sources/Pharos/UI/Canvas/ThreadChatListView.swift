@@ -61,12 +61,18 @@ public struct ThreadChatListView: View {
             VStack(alignment: .trailing, spacing: 4) {
                 // Bubble Body
                 Text(message.text)
-                    .font(.system(size: 13.5))
+                    .font(.system(size: 14))
+                    .lineSpacing(4)
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(Color.accentColor)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .padding(.horizontal, PharosDesignTokens.Layout.bubblePaddingInline)
+                    .padding(.vertical, PharosDesignTokens.Layout.bubblePaddingBlock)
+                    .background(PharosDesignTokens.Colors.bubbleUser)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: PharosDesignTokens.Layout.bubbleRadius)
+                            .stroke(Color.white.opacity(0.12), lineWidth: PharosDesignTokens.Radii.hairline)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: PharosDesignTokens.Layout.bubbleRadius))
+                    .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 1)
 
                 // Attachments if any
                 if !message.attachments.isEmpty {
@@ -77,7 +83,7 @@ public struct ThreadChatListView: View {
                 HStack(spacing: 5) {
                     Text(formatTime(message.timestamp))
                         .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
 
                     deliveryReceiptBadge(message.receipt)
                 }
@@ -102,31 +108,34 @@ public struct ThreadChatListView: View {
                 HStack(spacing: 6) {
                     Text(message.senderName)
                         .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
 
                     Text("AGENT")
                         .font(.system(size: 8, weight: .bold))
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
-                        .background(Color.primary.opacity(0.06))
+                        .background(PharosDesignTokens.Colors.hoverNeutral)
                         .clipShape(RoundedRectangle(cornerRadius: 3))
+                        .foregroundStyle(PharosDesignTokens.Colors.inkSecondary)
 
                     Text(formatTime(message.timestamp))
                         .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PharosDesignTokens.Colors.inkTertiary)
                 }
 
                 // Bubble Body
                 Text(message.text)
-                    .font(.system(size: 13.5))
-                    .foregroundStyle(Color.primary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(Color(nsColor: .controlBackgroundColor))
+                    .font(.system(size: 14))
+                    .lineSpacing(4)
+                    .foregroundStyle(PharosDesignTokens.Colors.inkPrimary)
+                    .padding(.horizontal, PharosDesignTokens.Layout.bubblePaddingInline)
+                    .padding(.vertical, PharosDesignTokens.Layout.bubblePaddingBlock)
+                    .background(PharosDesignTokens.Colors.bubbleAgent)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 14)
-                            .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: PharosDesignTokens.Layout.bubbleRadius)
+                            .stroke(PharosDesignTokens.Colors.borderTranslucent, lineWidth: PharosDesignTokens.Radii.hairline)
                     )
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .clipShape(RoundedRectangle(cornerRadius: PharosDesignTokens.Layout.bubbleRadius))
 
                 // Attachments if any
                 if !message.attachments.isEmpty {

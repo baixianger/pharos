@@ -55,8 +55,9 @@ public struct PharosMainShellView: View {
 
                         // Right Pane: Docked Inspector (when space permits)
                         if layoutState.isDetailsDocked {
-                            Divider()
-                                .overlay(Color.primary.opacity(0.08))
+                            Rectangle()
+                                .fill(PharosDesignTokens.Colors.borderTranslucent)
+                                .frame(width: PharosDesignTokens.Radii.hairline)
 
                             rightDetailsPane
                                 .frame(width: layoutState.effectiveDetailsWidth)
@@ -141,8 +142,8 @@ public struct PharosMainShellView: View {
 
     private var sidebarResizeHandle: some View {
         Rectangle()
-            .fill(Color.primary.opacity(0.08))
-            .frame(width: 1)
+            .fill(PharosDesignTokens.Colors.borderTranslucent)
+            .frame(width: PharosDesignTokens.Radii.hairline)
             .overlay(
                 Rectangle()
                     .fill(Color.clear)
