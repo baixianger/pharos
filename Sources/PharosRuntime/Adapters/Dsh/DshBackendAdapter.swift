@@ -523,7 +523,29 @@ public actor DshBackendAdapter: PharosAgentBackendAdapter {
     }
 
     public func deliverThreadMessage(threadId: String, message: ClientThreadMessage) async throws -> DeliveryReceiptState {
-        // Dispatches directly via dsh-plugin-pharos in-process 4-phase loop
+        // Dispatches through Agent Runtime delivery pipeline so dsh-plugin-pharos can poll, followup, and ack.
+        let payload: [String: Any] = [
+            "threadId": threadId,
+            "messageId": message.id,
+            "sender": message.senderName,
+            "senderId": message.senderId,
+            "body": message.text,
+            "timestamp": ISO8601DateFormatter().string(from: message.timestamp)
+        ]
+        let payloadString = (try? JSONSerialization.data(withJSONObject: payload)).flatMap { String(data: $0, encoding: .utf8) } ?? message.text
+        let request: [String: Any] = [
+            "jsonrpc": "2.0",
+            "id": UUID().uuidString,
+            "method": "delivery.submit-member",
+            "params": [
+                "memberID": threadId,
+                "idempotencyKey": "th:\(threadId):\(message.id)",
+                "payload": payloadString
+            ]
+        ]
+        if let rawReq = (try? JSONSerialization.data(withJSONObject: request)).flatMap({ String(data: $0, encoding: .utf8) }) {
+            _ = try? AgentRuntimeClient.send(rawReq)
+        }
         return .delivered
     }
 

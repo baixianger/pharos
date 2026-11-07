@@ -396,13 +396,25 @@ public actor CodexBackendAdapter: PharosAgentBackendAdapter {
     }
 
     public func deliverThreadMessage(threadId: String, message: ClientThreadMessage) async throws -> DeliveryReceiptState {
-        let actualThreadId = activeSessions[threadId] ?? threadId
-        let params: [String: Any] = [
-            "threadId": actualThreadId,
-            "input": [["type": "text", "text": message.text]]
-        ]
-        _ = try await transport.call(method: "turn/start", params: params)
-        return .delivered
+        let targets = threadId.contains(",")
+            ? threadId.split(separator: ",").map { String($0.trimmingCharacters(in: .whitespaces)) }
+            : [threadId]
+        var deliveredCount = 0
+        for target in targets {
+            let actualThreadId = activeSessions[target] ?? target
+            let text = "[\(message.senderName)] \(message.text)"
+            let params: [String: Any] = [
+                "threadId": actualThreadId,
+                "input": [["type": "text", "text": text]]
+            ]
+            do {
+                _ = try await transport.call(method: "turn/start", params: params)
+                deliveredCount += 1
+            } catch {
+                // Individual delivery failure continues fan-out to remaining members
+            }
+        }
+        return deliveredCount > 0 ? .delivered : .unverifiedFallback
     }
 
     public nonisolated func observeSessionEvents(sessionId: String) -> AsyncStream<PharosClientEvent> {

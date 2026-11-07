@@ -226,6 +226,47 @@ final class AgentRuntimeRegistry: @unchecked Sendable {
             try persist()
             return try object(record)
 
+        case "delivery.submit-member":
+            let memberID = try required("memberID", params)
+            guard let index = snapshot.conversations.enumerated()
+                .filter({ $0.element.memberID == memberID || ($0.element.memberID == nil && $0.element.vendorSessionID == memberID) })
+                .max(by: { $0.element.updatedAt < $1.element.updatedAt })?
+                .offset else {
+                throw RegistryError.notFound("No managed conversation registered for member: \(memberID)")
+            }
+            if snapshot.conversations[index].memberID == nil {
+                snapshot.conversations[index].memberID = memberID
+            }
+            let conversationID = snapshot.conversations[index].id
+            let key = try required("idempotencyKey", params)
+            if let existing = snapshot.deliveries.first(where: { $0.idempotencyKey == key }) {
+                return [
+                    "submitted": true,
+                    "conversationID": conversationID,
+                    "deliveryID": existing.id,
+                    "delivery": try object(existing),
+                ]
+            }
+            let now = Date()
+            let record = AgentDeliveryRecord(
+                id: UUID().uuidString.lowercased(),
+                conversationID: conversationID,
+                idempotencyKey: key,
+                payload: try required("payload", params),
+                state: .queued,
+                createdAt: now,
+                updatedAt: now,
+                detail: nil
+            )
+            snapshot.deliveries.append(record)
+            try persist()
+            return [
+                "submitted": true,
+                "conversationID": conversationID,
+                "deliveryID": record.id,
+                "delivery": try object(record),
+            ]
+
         case "delivery.poll":
             let conversationID = try required("conversationID", params)
             let pending = snapshot.deliveries.filter {

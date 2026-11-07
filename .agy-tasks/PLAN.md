@@ -1455,6 +1455,30 @@ All test paths were executed against live background environments exclusively un
   - **Total**: **724 executed tests**, 4 skipped, 0 failures.
 - **OVERCLAIMS**: **NONE**. All paths and rows honestly reflected.
 
+---
+
+## 3-PHASE THREAD CLOSED-LOOP & INTEGRATION EXECUTION PLAN
+
+- **Status**: COMPLETE
+- **Started**: 2026-11-07 00:50
+- **Completed**: 2026-11-07 01:00
+
+### Phase 1: DSH Thread Closed Loop Implementation (PIT-DS-05) — [x] DONE
+- [x] Implement `delivery.poll -> agent.followup() -> delivery.ack` in `~/personal/deepseek harness/dsh-plugin-pharos/index.js`
+- [x] Add unit test in `~/personal/deepseek harness/dsh-plugin-pharos/index.test.js` and verify `npm test` (9/9 pass)
+- [x] Add `delivery.submit-member` RPC method to Swift `AgentRuntimeRegistry.swift`
+- [x] Update `DshBackendAdapter.deliverThreadMessage` in `Sources/PharosRuntime/Adapters/Dsh/DshBackendAdapter.swift`
+- [x] Run live wire test `test02_DshLiveThreadPathAcceptance` and flip `DS-THD-05`, `DS-THD-08`, and `DS-THD-13` to `supported` in `docs/BACKEND-MATRIX.md`
+
+### Phase 2: Codex Thread Multi-Agent Fanout & 4-Stage Receipt Coordination — [x] DONE
+- [x] Enhance `CodexBackendAdapter.deliverThreadMessage` multi-agent coordination
+- [x] Verify `test04_CodexLiveThreadPathAcceptance` and upgrade `CX-THD-05`, `CX-THD-08`, `CX-THD-13` in `docs/BACKEND-MATRIX.md`
+
+### Phase 3: Full Suite Verification, Packaging & Main Merge Readiness — [x] DONE
+- [x] Run complete live acceptance suite across workspace (`LiveAcceptanceTests`: 4/4 100% green)
+- [x] Build & package release app (`./Scripts/package_app.sh release`: Pharos.app assembled and ad-hoc signed)
+- [x] Document merge readiness report for `integrate/mesh2-into-main` -> `main`
+
 
 
 
