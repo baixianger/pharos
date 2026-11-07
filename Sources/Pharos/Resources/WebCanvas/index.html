@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pharos Session Stream</title>
+  <link rel="stylesheet" href="dsh-stream.css">
+</head>
+<body class="theme-dark">
+  <div id="stream-container">
+    <div id="turns-list"></div>
+    <div id="live-turn" class="turn-container" style="display: none;">
+      <div id="live-reasoning-card" class="dsh-card reasoning-card" style="display: none;">
+        <div class="card-header" onclick="toggleLiveReasoning()">
+          <span class="icon brain-icon">🧠</span>
+          <span class="title">Thinking Process</span>
+          <span id="live-reasoning-status" class="status-tag">thinking…</span>
+          <span class="chevron" id="live-reasoning-chevron">▼</span>
+        </div>
+        <div class="card-content" id="live-reasoning-content"></div>
+      </div>
+      <div id="live-assistant-bubble" class="message-bubble assistant-bubble" style="display: none;">
+        <div class="bubble-content" id="live-assistant-text"></div>
+        <span class="cursor-blink"></span>
+      </div>
+    </div>
+    <div id="live-approval-slot"></div>
+    <div id="scroll-anchor"></div>
+  </div>
+  <script src="dsh-stream.js"></script>
+</body>
+</html>

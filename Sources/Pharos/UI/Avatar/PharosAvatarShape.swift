@@ -14,30 +14,30 @@ public struct PharosAvatarShape {
 
         switch shape {
         case .blob:
-            // Organic smooth rounded sphere/squircle
+            // Organic smooth rounded sphere / squircle
+            let r = min(w, h) * 0.46
+            let center = CGPoint(x: x + w * 0.5, y: y + h * 0.5)
             return Path { p in
-                let r = min(w, h) * 0.48
-                let center = CGPoint(x: x + w * 0.5, y: y + h * 0.5)
                 p.addArc(center: center, radius: r, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
             }
 
         case .square:
+            let cr = min(w, h) * 0.28
             return Path { p in
-                let cr = min(w, h) * 0.24
-                p.addRoundedRect(in: rect, cornerSize: CGSize(width: cr, height: cr))
+                p.addRoundedRect(in: rect.insetBy(dx: w * 0.04, dy: h * 0.04), cornerSize: CGSize(width: cr, height: cr))
             }
 
         case .tablet:
+            let cr = min(w, h) * 0.42
             return Path { p in
-                let cr = min(w, h) * 0.4
-                p.addRoundedRect(in: rect.insetBy(dx: w * 0.08, dy: 0), cornerSize: CGSize(width: cr, height: cr))
+                p.addRoundedRect(in: rect.insetBy(dx: w * 0.10, dy: h * 0.02), cornerSize: CGSize(width: cr, height: cr))
             }
 
         case .hex:
             return Path { p in
                 let cx = x + w * 0.5
                 let cy = y + h * 0.5
-                let r = min(w, h) * 0.48
+                let r = min(w, h) * 0.46
                 for i in 0..<6 {
                     let angle = Double(i) * Double.pi / 3.0 - Double.pi / 6.0
                     let pt = CGPoint(x: cx + r * CGFloat(cos(angle)), y: cy + r * CGFloat(sin(angle)))
@@ -48,31 +48,25 @@ public struct PharosAvatarShape {
 
         case .cloud:
             return Path { p in
-                let b = rect.insetBy(dx: w * 0.05, dy: h * 0.1)
-                p.move(to: CGPoint(x: b.minX + b.width * 0.2, y: b.maxY - b.height * 0.2))
-                // Bottom left to top left lobe
-                p.addQuadCurve(to: CGPoint(x: b.minX + b.width * 0.35, y: b.minY + b.height * 0.25),
-                               control: CGPoint(x: b.minX, y: b.minY + b.height * 0.4))
-                // Top center lobe
-                p.addQuadCurve(to: CGPoint(x: b.minX + b.width * 0.7, y: b.minY + b.height * 0.2),
-                               control: CGPoint(x: b.minX + b.width * 0.5, y: b.minY))
-                // Top right lobe
-                p.addQuadCurve(to: CGPoint(x: b.maxX, y: b.maxY - b.height * 0.3),
-                               control: CGPoint(x: b.maxX, y: b.minY + b.height * 0.35))
-                // Bottom base curve
-                p.addQuadCurve(to: CGPoint(x: b.minX + b.width * 0.2, y: b.maxY - b.height * 0.2),
-                               control: CGPoint(x: b.minX + b.width * 0.5, y: b.maxY))
-                p.closeSubpath()
+                let b = rect.insetBy(dx: w * 0.04, dy: h * 0.08)
+                let cy = b.minY + b.height * 0.6
+                // Base puffy cloud lobes
+                let r1 = b.width * 0.22
+                let r2 = b.width * 0.28
+                let r3 = b.width * 0.22
+
+                p.addArc(center: CGPoint(x: b.minX + r1 + b.width * 0.05, y: cy), radius: r1, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
+                p.addArc(center: CGPoint(x: b.minX + b.width * 0.5, y: b.minY + r2 + b.height * 0.02), radius: r2, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
+                p.addArc(center: CGPoint(x: b.maxX - r3 - b.width * 0.05, y: cy), radius: r3, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
             }
 
         case .sparkle:
             return Path { p in
                 let cx = x + w * 0.5
                 let cy = y + h * 0.5
-                let r = min(w, h) * 0.48
-                let inner = r * 0.24
+                let r = min(w, h) * 0.46
+                let inner = r * 0.26
 
-                // Top tip
                 p.move(to: CGPoint(x: cx, y: cy - r))
                 p.addQuadCurve(to: CGPoint(x: cx + r, y: cy), control: CGPoint(x: cx + inner, y: cy - inner))
                 p.addQuadCurve(to: CGPoint(x: cx, y: cy + r), control: CGPoint(x: cx + inner, y: cy + inner))
@@ -85,9 +79,8 @@ public struct PharosAvatarShape {
             return Path { p in
                 let cx = x + w * 0.5
                 let cy = y + h * 0.5
-                let lobeR = min(w, h) * 0.24
-                let d = min(w, h) * 0.2
-                // 4 lobes
+                let lobeR = min(w, h) * 0.23
+                let d = min(w, h) * 0.19
                 p.addArc(center: CGPoint(x: cx, y: cy - d), radius: lobeR, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
                 p.addArc(center: CGPoint(x: cx + d, y: cy), radius: lobeR, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
                 p.addArc(center: CGPoint(x: cx, y: cy + d), radius: lobeR, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
@@ -98,16 +91,34 @@ public struct PharosAvatarShape {
             return Path { p in
                 let cx = x + w * 0.5
                 let topY = y + h * 0.28
-                let bottomY = y + h * 0.92
-                p.move(to: CGPoint(x: cx, y: bottomY))
-                p.addCurve(to: CGPoint(x: x + w * 0.08, y: topY),
-                           control1: CGPoint(x: x + w * 0.25, y: y + h * 0.7),
-                           control2: CGPoint(x: x + w * 0.05, y: y + h * 0.45))
-                p.addArc(center: CGPoint(x: x + w * 0.28, y: topY), radius: w * 0.2, startAngle: .degrees(180), endAngle: .zero, clockwise: false)
-                p.addArc(center: CGPoint(x: x + w * 0.72, y: topY), radius: w * 0.2, startAngle: .degrees(180), endAngle: .zero, clockwise: false)
-                p.addCurve(to: CGPoint(x: cx, y: bottomY),
-                           control1: CGPoint(x: x + w * 0.95, y: y + h * 0.45),
-                           control2: CGPoint(x: x + w * 0.75, y: y + h * 0.7))
+                let botY = y + h * 0.88
+                let r = min(w, h) * 0.24
+
+                p.move(to: CGPoint(x: cx, y: topY + r * 0.4))
+                // Left curve
+                p.addCurve(
+                    to: CGPoint(x: cx - r * 1.8, y: topY - r * 0.2),
+                    control1: CGPoint(x: cx - r * 0.4, y: topY - r * 0.4),
+                    control2: CGPoint(x: cx - r * 1.4, y: topY - r * 0.5)
+                )
+                // Left lobe to bottom
+                p.addCurve(
+                    to: CGPoint(x: cx, y: botY),
+                    control1: CGPoint(x: cx - r * 2.0, y: topY + r * 1.2),
+                    control2: CGPoint(x: cx - r * 0.6, y: botY - r * 0.4)
+                )
+                // Right lobe from bottom
+                p.addCurve(
+                    to: CGPoint(x: cx + r * 1.8, y: topY - r * 0.2),
+                    control1: CGPoint(x: cx + r * 0.6, y: botY - r * 0.4),
+                    control2: CGPoint(x: cx + r * 2.0, y: topY + r * 1.2)
+                )
+                // Right curve back to center top
+                p.addCurve(
+                    to: CGPoint(x: cx, y: topY + r * 0.4),
+                    control1: CGPoint(x: cx + r * 1.4, y: topY - r * 0.5),
+                    control2: CGPoint(x: cx + r * 0.4, y: topY - r * 0.4)
+                )
                 p.closeSubpath()
             }
 
@@ -115,57 +126,58 @@ public struct PharosAvatarShape {
             return Path { p in
                 let cx = x + w * 0.5
                 let cy = y + h * 0.5
-                let count = 6
-                let petalR = min(w, h) * 0.18
-                let dist = min(w, h) * 0.26
-                for i in 0..<count {
-                    let angle = Double(i) * Double.pi * 2.0 / Double(count)
-                    let px = cx + dist * CGFloat(cos(angle))
-                    let py = cy + dist * CGFloat(sin(angle))
-                    p.addArc(center: CGPoint(x: px, y: py), radius: petalR, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
+                let r = min(w, h) * 0.17
+                let d = min(w, h) * 0.24
+                let petals = 6
+                for i in 0..<petals {
+                    let angle = Double(i) * Double.pi * 2.0 / Double(petals)
+                    let px = cx + d * CGFloat(cos(angle))
+                    let py = cy + d * CGFloat(sin(angle))
+                    p.addArc(center: CGPoint(x: px, y: py), radius: r, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
                 }
-                p.addArc(center: CGPoint(x: cx, y: cy), radius: min(w, h) * 0.2, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
+                p.addArc(center: CGPoint(x: cx, y: cy), radius: r * 1.1, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
             }
 
         case .teardrop:
             return Path { p in
                 let cx = x + w * 0.5
-                let topY = y + h * 0.08
-                let botY = y + h * 0.62
                 let r = min(w, h) * 0.38
-                p.move(to: CGPoint(x: cx, y: topY))
-                p.addQuadCurve(to: CGPoint(x: cx + r, y: botY), control: CGPoint(x: cx + r * 0.9, y: topY + h * 0.3))
-                p.addArc(center: CGPoint(x: cx, y: botY), radius: r, startAngle: .zero, endAngle: .degrees(180), clockwise: false)
-                p.addQuadCurve(to: CGPoint(x: cx, y: topY), control: CGPoint(x: cx - r * 0.9, y: topY + h * 0.3))
+                let cy = y + h * 0.58
+
+                p.move(to: CGPoint(x: cx, y: y + h * 0.12))
+                p.addQuadCurve(to: CGPoint(x: cx + r, y: cy), control: CGPoint(x: cx + r * 0.9, y: y + h * 0.32))
+                p.addArc(center: CGPoint(x: cx, y: cy), radius: r, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: false)
+                p.addQuadCurve(to: CGPoint(x: cx, y: y + h * 0.12), control: CGPoint(x: cx - r * 0.9, y: y + h * 0.32))
                 p.closeSubpath()
             }
 
         case .wedge:
             return Path { p in
-                let topW = w * 0.55
-                let botW = w * 0.88
                 let cx = x + w * 0.5
-                let cr = min(w, h) * 0.16
-                p.move(to: CGPoint(x: cx - topW * 0.5 + cr, y: y + h * 0.1))
-                p.addLine(to: CGPoint(x: cx + topW * 0.5 - cr, y: y + h * 0.1))
-                p.addQuadCurve(to: CGPoint(x: cx + topW * 0.5, y: y + h * 0.1 + cr), control: CGPoint(x: cx + topW * 0.5, y: y + h * 0.1))
-                p.addLine(to: CGPoint(x: cx + botW * 0.5, y: y + h * 0.9 - cr))
-                p.addQuadCurve(to: CGPoint(x: cx + botW * 0.5 - cr, y: y + h * 0.9), control: CGPoint(x: cx + botW * 0.5, y: y + h * 0.9))
-                p.addLine(to: CGPoint(x: cx - botW * 0.5 + cr, y: y + h * 0.9))
-                p.addQuadCurve(to: CGPoint(x: cx - botW * 0.5, y: y + h * 0.9 - cr), control: CGPoint(x: cx - botW * 0.5, y: y + h * 0.9))
-                p.addLine(to: CGPoint(x: cx - topW * 0.5, y: y + h * 0.1 + cr))
-                p.addQuadCurve(to: CGPoint(x: cx - topW * 0.5 + cr, y: y + h * 0.1), control: CGPoint(x: cx - topW * 0.5, y: y + h * 0.1))
+                let topW = w * 0.56
+                let botW = w * 0.88
+                let cr = min(w, h) * 0.14
+
+                p.move(to: CGPoint(x: cx - topW * 0.5 + cr, y: y + h * 0.12))
+                p.addLine(to: CGPoint(x: cx + topW * 0.5 - cr, y: y + h * 0.12))
+                p.addQuadCurve(to: CGPoint(x: cx + topW * 0.5, y: y + h * 0.12 + cr), control: CGPoint(x: cx + topW * 0.5, y: y + h * 0.12))
+                p.addLine(to: CGPoint(x: cx + botW * 0.5, y: y + h * 0.88 - cr))
+                p.addQuadCurve(to: CGPoint(x: cx + botW * 0.5 - cr, y: y + h * 0.88), control: CGPoint(x: cx + botW * 0.5, y: y + h * 0.88))
+                p.addLine(to: CGPoint(x: cx - botW * 0.5 + cr, y: y + h * 0.88))
+                p.addQuadCurve(to: CGPoint(x: cx - botW * 0.5, y: y + h * 0.88 - cr), control: CGPoint(x: cx - botW * 0.5, y: y + h * 0.88))
+                p.addLine(to: CGPoint(x: cx - topW * 0.5, y: y + h * 0.12 + cr))
+                p.addQuadCurve(to: CGPoint(x: cx - topW * 0.5 + cr, y: y + h * 0.12), control: CGPoint(x: cx - topW * 0.5, y: y + h * 0.12))
                 p.closeSubpath()
             }
 
         case .house:
             return Path { p in
                 let cx = x + w * 0.5
-                let topY = y + h * 0.08
-                let eavesY = y + h * 0.42
-                let botY = y + h * 0.9
-                let leftX = x + w * 0.14
-                let rightX = x + w * 0.86
+                let topY = y + h * 0.10
+                let eavesY = y + h * 0.44
+                let botY = y + h * 0.88
+                let leftX = x + w * 0.16
+                let rightX = x + w * 0.84
                 let cr = min(w, h) * 0.12
 
                 p.move(to: CGPoint(x: cx, y: topY))
@@ -181,10 +193,10 @@ public struct PharosAvatarShape {
         case .star:
             return Path { p in
                 let cx = x + w * 0.5
-                let cy = y + h * 0.54
-                let rOut = min(w, h) * 0.48
-                let rIn = rOut * 0.45
-                let points = 5
+                let cy = y + h * 0.52
+                let rOut = min(w, h) * 0.46
+                let rIn = rOut * 0.48
+                let points = 6
                 for i in 0..<(points * 2) {
                     let r = (i % 2 == 0) ? rOut : rIn
                     let angle = Double(i) * Double.pi / Double(points) - Double.pi / 2.0
@@ -196,7 +208,7 @@ public struct PharosAvatarShape {
         }
     }
 
-    // MARK: - 2. Eye Expression Paths
+    // MARK: - 2. Eye Expression Paths (Closed Geometry Without Distortion)
 
     public static func eyePaths(for expression: AvatarExpression, in rect: CGRect, blinkProgress: CGFloat = 0.0) -> Path {
         let w = rect.width
@@ -204,73 +216,121 @@ public struct PharosAvatarShape {
         let x = rect.minX
         let y = rect.minY
 
-        let leftCenterX = x + w * 0.38
-        let rightCenterX = x + w * 0.62
+        let leftCenterX = x + w * 0.40
+        let rightCenterX = x + w * 0.60
         let centerY = y + h * 0.48
 
         // Effective eye height scales down during blink
-        let scaleY = max(0.08, 1.0 - blinkProgress)
-        let eyeW = w * 0.085
-        let eyeH = h * 0.16 * scaleY
+        let scaleY = max(0.06, 1.0 - blinkProgress)
+        let eyeW = w * 0.08
+        let eyeH = h * 0.18 * scaleY
+        let strokeWidth = max(2.0, w * 0.042)
 
-        return Path { p in
-            switch expression {
-            case .neutral, .calm:
-                // Symmetrical smooth rounded capsules
+        switch expression {
+        case .neutral, .calm:
+            // Symmetrical smooth rounded vertical capsules
+            return Path { p in
                 let leftRect = CGRect(x: leftCenterX - eyeW * 0.5, y: centerY - eyeH * 0.5, width: eyeW, height: eyeH)
                 let rightRect = CGRect(x: rightCenterX - eyeW * 0.5, y: centerY - eyeH * 0.5, width: eyeW, height: eyeH)
-                p.addRoundedRect(in: leftRect, cornerSize: CGSize(width: eyeW * 0.5, height: eyeW * 0.5))
-                p.addRoundedRect(in: rightRect, cornerSize: CGSize(width: eyeW * 0.5, height: eyeW * 0.5))
-
-            case .happy:
-                // Upward smiling arcs
-                let arcW = w * 0.11
-                p.move(to: CGPoint(x: leftCenterX - arcW * 0.5, y: centerY + eyeH * 0.2))
-                p.addQuadCurve(to: CGPoint(x: leftCenterX + arcW * 0.5, y: centerY + eyeH * 0.2),
-                               control: CGPoint(x: leftCenterX, y: centerY - eyeH * 0.6))
-                p.move(to: CGPoint(x: rightCenterX - arcW * 0.5, y: centerY + eyeH * 0.2))
-                p.addQuadCurve(to: CGPoint(x: rightCenterX + arcW * 0.5, y: centerY + eyeH * 0.2),
-                               control: CGPoint(x: rightCenterX, y: centerY - eyeH * 0.6))
-
-            case .surprised:
-                // Wide open circles
-                let r = min(eyeW, eyeH) * 0.95
-                p.addArc(center: CGPoint(x: leftCenterX, y: centerY), radius: r, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
-                p.addArc(center: CGPoint(x: rightCenterX, y: centerY), radius: r, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
-
-            case .sad:
-                // Downward droop arcs
-                let arcW = w * 0.11
-                p.move(to: CGPoint(x: leftCenterX - arcW * 0.5, y: centerY - eyeH * 0.2))
-                p.addQuadCurve(to: CGPoint(x: leftCenterX + arcW * 0.5, y: centerY - eyeH * 0.2),
-                               control: CGPoint(x: leftCenterX, y: centerY + eyeH * 0.6))
-                p.move(to: CGPoint(x: rightCenterX - arcW * 0.5, y: centerY - eyeH * 0.2))
-                p.addQuadCurve(to: CGPoint(x: rightCenterX + arcW * 0.5, y: centerY - eyeH * 0.2),
-                               control: CGPoint(x: rightCenterX, y: centerY + eyeH * 0.6))
-
-            case .sleepy, .squinted:
-                // Horizontal slits
-                let slitH = max(2.0, h * 0.03)
-                let leftRect = CGRect(x: leftCenterX - eyeW * 0.7, y: centerY - slitH * 0.5, width: eyeW * 1.4, height: slitH)
-                let rightRect = CGRect(x: rightCenterX - eyeW * 0.7, y: centerY - slitH * 0.5, width: eyeW * 1.4, height: slitH)
-                p.addRoundedRect(in: leftRect, cornerSize: CGSize(width: 1, height: 1))
-                p.addRoundedRect(in: rightRect, cornerSize: CGSize(width: 1, height: 1))
-
-            case .inspecting:
-                // Asymmetric eyes: left eye large and wide, right eye narrow/squinted
-                let leftR = min(eyeW, eyeH) * 1.05
-                p.addArc(center: CGPoint(x: leftCenterX, y: centerY), radius: leftR, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
-                let rightH = max(2.5, eyeH * 0.35)
-                let rightRect = CGRect(x: rightCenterX - eyeW * 0.5, y: centerY - rightH * 0.5, width: eyeW, height: rightH)
-                p.addRoundedRect(in: rightRect, cornerSize: CGSize(width: rightH * 0.5, height: rightH * 0.5))
-
-            case .confused:
-                // One eye higher and tilted
-                let leftRect = CGRect(x: leftCenterX - eyeW * 0.5, y: centerY - eyeH * 0.7, width: eyeW, height: eyeH * 0.8)
-                let rightRect = CGRect(x: rightCenterX - eyeW * 0.5, y: centerY - eyeH * 0.2, width: eyeW, height: eyeH)
-                p.addRoundedRect(in: leftRect, cornerSize: CGSize(width: eyeW * 0.5, height: eyeW * 0.5))
-                p.addRoundedRect(in: rightRect, cornerSize: CGSize(width: eyeW * 0.5, height: eyeW * 0.5))
+                let cr = eyeW * 0.5
+                p.addRoundedRect(in: leftRect, cornerSize: CGSize(width: cr, height: cr))
+                p.addRoundedRect(in: rightRect, cornerSize: CGSize(width: cr, height: cr))
             }
+
+        case .happy:
+            // Upward smiling arcs rendered as stroked round bands
+            let rawPath = Path { p in
+                let arcW = w * 0.11
+                let dip = h * 0.05 * scaleY
+                p.move(to: CGPoint(x: leftCenterX - arcW * 0.5, y: centerY + dip * 0.4))
+                p.addQuadCurve(
+                    to: CGPoint(x: leftCenterX + arcW * 0.5, y: centerY + dip * 0.4),
+                    control: CGPoint(x: leftCenterX, y: centerY - dip)
+                )
+                p.move(to: CGPoint(x: rightCenterX - arcW * 0.5, y: centerY + dip * 0.4))
+                p.addQuadCurve(
+                    to: CGPoint(x: rightCenterX + arcW * 0.5, y: centerY + dip * 0.4),
+                    control: CGPoint(x: rightCenterX, y: centerY - dip)
+                )
+            }
+            return rawPath.strokedPath(StrokeStyle(lineWidth: strokeWidth, lineCap: .round))
+
+        case .surprised:
+            // Wide open rounded circles/ovals
+            return Path { p in
+                let rW = eyeW * 1.3
+                let rH = eyeH * 1.1
+                let leftRect = CGRect(x: leftCenterX - rW * 0.5, y: centerY - rH * 0.5, width: rW, height: rH)
+                let rightRect = CGRect(x: rightCenterX - rW * 0.5, y: centerY - rH * 0.5, width: rW, height: rH)
+                p.addEllipse(in: leftRect)
+                p.addEllipse(in: rightRect)
+            }
+
+        case .sad:
+            // Downward droop arcs rendered as stroked round bands
+            let rawPath = Path { p in
+                let arcW = w * 0.11
+                let droop = h * 0.05 * scaleY
+                p.move(to: CGPoint(x: leftCenterX - arcW * 0.5, y: centerY - droop * 0.3))
+                p.addQuadCurve(
+                    to: CGPoint(x: leftCenterX + arcW * 0.5, y: centerY - droop * 0.3),
+                    control: CGPoint(x: leftCenterX, y: centerY + droop)
+                )
+                p.move(to: CGPoint(x: rightCenterX - arcW * 0.5, y: centerY - droop * 0.3))
+                p.addQuadCurve(
+                    to: CGPoint(x: rightCenterX + arcW * 0.5, y: centerY - droop * 0.3),
+                    control: CGPoint(x: rightCenterX, y: centerY + droop)
+                )
+            }
+            return rawPath.strokedPath(StrokeStyle(lineWidth: strokeWidth, lineCap: .round))
+
+        case .sleepy:
+            // Gentle resting horizontal slits
+            let rawPath = Path { p in
+                let slitW = w * 0.10
+                p.move(to: CGPoint(x: leftCenterX - slitW * 0.5, y: centerY))
+                p.addLine(to: CGPoint(x: leftCenterX + slitW * 0.5, y: centerY))
+                p.move(to: CGPoint(x: rightCenterX - slitW * 0.5, y: centerY))
+                p.addLine(to: CGPoint(x: rightCenterX + slitW * 0.5, y: centerY))
+            }
+            return rawPath.strokedPath(StrokeStyle(lineWidth: strokeWidth, lineCap: .round))
+
+        case .squinted:
+            // Narrow horizontal capsules
+            return Path { p in
+                let sw = w * 0.10
+                let sh = max(3.0, eyeW * 0.45 * scaleY)
+                let leftRect = CGRect(x: leftCenterX - sw * 0.5, y: centerY - sh * 0.5, width: sw, height: sh)
+                let rightRect = CGRect(x: rightCenterX - sw * 0.5, y: centerY - sh * 0.5, width: sw, height: sh)
+                p.addRoundedRect(in: leftRect, cornerSize: CGSize(width: sh * 0.5, height: sh * 0.5))
+                p.addRoundedRect(in: rightRect, cornerSize: CGSize(width: sh * 0.5, height: sh * 0.5))
+            }
+
+        case .inspecting:
+            // Asymmetric eyes: one curious, one attentive
+            return Path { p in
+                let leftH = eyeH * 1.2
+                let leftW = eyeW * 1.2
+                let rightH = eyeH * 0.75
+                let rightW = eyeW * 0.75
+
+                let leftRect = CGRect(x: leftCenterX - leftW * 0.5, y: centerY - leftH * 0.5, width: leftW, height: leftH)
+                let rightRect = CGRect(x: rightCenterX - rightW * 0.5, y: centerY - rightH * 0.5, width: rightW, height: rightH)
+
+                p.addRoundedRect(in: leftRect, cornerSize: CGSize(width: leftW * 0.5, height: leftW * 0.5))
+                p.addRoundedRect(in: rightRect, cornerSize: CGSize(width: rightW * 0.5, height: rightW * 0.5))
+            }
+
+        case .confused:
+            // Asymmetric tilt eyes
+            let rawPath = Path { p in
+                let arcW = w * 0.10
+                p.move(to: CGPoint(x: leftCenterX - arcW * 0.5, y: centerY + h * 0.02))
+                p.addLine(to: CGPoint(x: leftCenterX + arcW * 0.5, y: centerY - h * 0.02))
+                p.move(to: CGPoint(x: rightCenterX - arcW * 0.5, y: centerY - h * 0.02))
+                p.addLine(to: CGPoint(x: rightCenterX + arcW * 0.5, y: centerY + h * 0.02))
+            }
+            return rawPath.strokedPath(StrokeStyle(lineWidth: strokeWidth, lineCap: .round))
         }
     }
 }

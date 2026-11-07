@@ -101,18 +101,19 @@ public struct ConversationCanvasView: View {
                     .frame(height: PharosDesignTokens.Radii.hairline)
             }
 
-            // Message Scroll Canvas
-            ScrollViewReader { scrollProxy in
-                ScrollView {
-                    VStack(spacing: 0) {
-                        // Centered timestamp pill (.gb-timestamp)
-                        Text("Today • Active Session")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(PharosDesignTokens.Colors.inkTertiary)
-                            .padding(.top, 12)
-                            .padding(.bottom, 6)
+            // Message Canvas Area
+            if isThreadMode {
+                // Thread Mode: Grok Bot reference conversational message stream
+                ScrollViewReader { scrollProxy in
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            // Centered timestamp pill (.gb-timestamp)
+                            Text("Today • Active Thread")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(PharosDesignTokens.Colors.inkTertiary)
+                                .padding(.top, 12)
+                                .padding(.bottom, 6)
 
-                        if isThreadMode {
                             ThreadChatListView(
                                 messages: threadMessages,
                                 members: threadMembers,
@@ -122,33 +123,25 @@ public struct ConversationCanvasView: View {
                                 onMentionAgent: onMentionAgent
                             )
                             .id("thread_bottom_anchor")
-                        } else {
-                            if turns.isEmpty && liveStreamingText.isEmpty && liveReasoningText.isEmpty && activeApproval == nil {
-                                emptyState
-                            } else {
-                                SessionTurnListView(
-                                    turns: turns,
-                                    activeApproval: activeApproval,
-                                    activeError: activeError,
-                                    liveStreamingText: liveStreamingText,
-                                    liveReasoningText: liveReasoningText,
-                                    isTurnInProgress: isTurnInProgress,
-                                    onResolveApproval: onResolveApproval,
-                                    onDismissError: onDismissError
-                                )
-                                .id("bottom_anchor")
-                            }
                         }
                     }
+                    .onChange(of: threadMessages.count) { _, _ in
+                        scrollProxy.scrollTo("thread_bottom_anchor", anchor: .bottom)
+                    }
                 }
-                .onChange(of: liveStreamingText) { _, _ in
-                    scrollProxy.scrollTo("bottom_anchor", anchor: .bottom)
-                }
-                .onChange(of: turns.count) { _, _ in
-                    scrollProxy.scrollTo("bottom_anchor", anchor: .bottom)
-                }
-                .onChange(of: threadMessages.count) { _, _ in
-                    scrollProxy.scrollTo("thread_bottom_anchor", anchor: .bottom)
+            } else {
+                // 1:1 Session Mode: DeepSeek Harness (DSH) WebKit Canvas
+                if turns.isEmpty && liveStreamingText.isEmpty && liveReasoningText.isEmpty && activeApproval == nil {
+                    emptyState
+                } else {
+                    PharosWebCanvasView(
+                        turns: turns,
+                        liveStreamingText: liveStreamingText,
+                        liveReasoningText: liveReasoningText,
+                        activeApproval: activeApproval,
+                        isTurnInProgress: isTurnInProgress,
+                        onResolveApproval: onResolveApproval
+                    )
                 }
             }
 
