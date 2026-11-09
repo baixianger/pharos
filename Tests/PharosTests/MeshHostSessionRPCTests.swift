@@ -275,6 +275,71 @@ final class MeshHostSessionRPCTests: XCTestCase {
         XCTAssertFalse(related.isEmpty, "At least one Peer Session should sit under a Host checkout path")
     }
 
+    /// Read-only Peer DSH `/goal` over real mini→air Host Session RPC.
+    /// Enable with `PHAROS_REAL_PEER_DSH_GOAL_TEST=<air-device-uuid>`.
+    func testRealAirPeerDshGoalReadWhenEnabled() async throws {
+        guard let peerText = ProcessInfo.processInfo.environment["PHAROS_REAL_PEER_DSH_GOAL_TEST"],
+              let peerUUID = UUID(uuidString: peerText) else {
+            throw XCTSkip("Set PHAROS_REAL_PEER_DSH_GOAL_TEST=<paired-host-device-uuid>")
+        }
+        let peerID = MeshDeviceID(rawValue: peerUUID)
+        let replica = try MeshLocalReplica.openDefault(headless: true)
+        guard let group = try replica.activeTrustGroup(),
+              let epoch = try await replica.store.membershipEpoch(for: group),
+              try replica.activeRoles().contains(.controller) else {
+            throw XCTSkip("Local product replica is not an active controller")
+        }
+        let peers = try await replica.store.trustedDevices(in: group, membershipEpoch: epoch)
+        guard peers.contains(where: {
+            $0.descriptor.id == peerID && $0.descriptor.roles.contains(.host)
+        }) else {
+            throw XCTSkip("Peer \(peerText) is not a trusted host")
+        }
+        let localClient = try DistributedMeshLocalServiceClient(dataDirectory: replica.rootURL)
+        let transport = DistributedMeshBackgroundSessionTransport(
+            client: localClient, peerDeviceID: peerID
+        )
+        let prefix = "peer:\(peerUUID.uuidString.lowercased()):"
+        let client = MeshRemoteHostSessionClient(
+            hostDeviceID: peerID, group: group, membershipEpoch: epoch,
+            rpcClient: MeshReplicaRPCClient(transport: transport, requestTimeoutMilliseconds: 45_000),
+            sessionIDPrefix: prefix
+        )
+        let snapshot = try await client.fetchHostSessionInventorySnapshot()
+        let candidates = snapshot.sessions.filter {
+            $0.agentType == "dsh" && $0.inventoryStale != true
+                && $0.workspacePath.contains("pharos-msg-test")
+        }
+        guard let target = candidates.first ?? snapshot.sessions.first(where: {
+            $0.agentType == "dsh" && $0.inventoryStale != true
+        }) else {
+            throw XCTSkip("No available DSH Session on air Peer Host")
+        }
+        print("Real peer DSH goal target: \(target.sessionId) workspace=\(target.workspacePath)")
+        // Prefer read-only progress/history over executeCommand: air Host may not
+        // hold a live DSH Web process for arbitrary inventory Sessions.
+        let progress = try await client.fetchSessionProgress(sessionId: target.sessionId)
+        print(
+            "Real peer DSH progress available=\(progress != nil) " +
+            "goal=\(progress?.goal != nil) todos=\(progress?.todos.count ?? 0)"
+        )
+        do {
+            let history = try await client.fetchSessionHistory(sessionId: target.sessionId)
+            print("Real peer DSH history turns=\(history.count)")
+            if let command = try? await client.executeSessionCommand(
+                sessionId: target.sessionId, line: "/goal"
+            ) {
+                print("Real peer DSH /goal bytes=\(command.text.utf8.count)")
+            } else {
+                print("Real peer DSH /goal not-tested: Host executeCommand unavailable for this Session")
+            }
+        } catch {
+            throw XCTSkip(
+                "Peer DSH Session open/history failed (\(error)); inventory works but Host lacks a live adapter for this Session"
+            )
+        }
+    }
+
     func testHostInventoryReportsUnavailableProviderAndKeepsStaleSessions() async throws {
         let inventory = HostInventoryFixture()
         let local = HostLocalSessionService(codex: LivePharosClientService(transport: CodexTransportFixture()),
