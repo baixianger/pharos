@@ -6,6 +6,8 @@ summary: Phase (b2) DSH/Codex product 投递桥已落地（受控通过）；真
 
 **持续推进目标（2026-11-09，用户授权）**：按 [本地 Cursor 持续目标](2026-11-09_cursor-local-continuous-goal.md) 分阶段继续真实 DSH / Antigravity / 远程 Host Session、Thread、Projects 及各家 HITL / Goal / Todo 验证；阶段完成后自动继续安全工作，不可得数据如实记录。Cursor CLI 适配为核心目标后的可选项；既有安全、远程部署许可及不 push/PR 边界保留。
 
+**Phase (e2) Cursor CLI thin 封装（2026-11-09 20:55 Europe/Copenhagen）**：`CursorAgentCLI` 仅走公开 CLI：`create-chat` 在 `~/personal/pharos-msg-test/cursor-cli-probe` 返回 UUID；`agent ls` 无 TTY 失败（Ink raw mode）→ 清单 **unsupported**。不读 `~/.cursor` 私有库。Host Session/Thread 适配仍未实现；HITL/Goal/Todo **unsupported**。grok-bot：`tailscale status` 仍不可见 → **not-tested**。证据：`internal/evidence/2026-11-09_phase-e2-cursor-cli-ls.log`、`...create-chat.log`。门控测试 `PHAROS_CURSOR_AGENT_CLI_TEST=1`。
+
 **Phase (b2) DSH/Codex product 投递桥（2026-11-09 20:52 Europe/Copenhagen）**：对齐已证明的 Agy Host binder→Runtime→`replyOnce` 路径。
 - **DSH**：新增 `DshThreadRuntimeBridge`；`DshLiveSessionService.send` 接受显式 `turnID`；桌面 product mode 对本机显式绑定的 DSH 启动 Host 桥（`replyOnceChatMessage`）；legacy 仍留给插件/Broker。受控 fixture：`testDshHostProductPathUsesReplyOnceWithoutBroker` **通过**（binder→poll→submit envelope→replyOnce，runtime completed）。桌面绑定选择：`testDshThreadBindingRequiresExactLocalSessionAndMember` **通过**。
 - **Codex**：`MeshHostThreadBinder` 对 Codex **固定** `codex:app-server`，不再 `driver.register` 以免覆盖 builtin 能力；`pharos-mesh host-reply` 在 `PHAROS_DISTRIBUTED_MESH=1` 下改为 `MeshDistributedHostReply`→`replyOnce`（stdin 仍为 say-once JSON，兼容 Rust worker）。`testDistributedHostReplyMapsSayOnceOntoReplyOnce` **通过**；legacy `testHostReplyCLIReadsRequestToEOF` **仍通过**。

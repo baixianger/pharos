@@ -9,7 +9,7 @@ summary: Agent 文档按 Codex、Antigravity、DSH 分为 Session 协议和 Thre
 | Codex | [Session](codex/sessions/2026-11-07_protocol.md) | [Thread](codex/threads/2026-11-07_protocol.md) |
 | Antigravity | [Session](antigravity/sessions/2026-11-07_protocol.md) | [Thread](antigravity/threads/2026-11-07_protocol.md) |
 | DSH | [Session](dsh/sessions/2026-11-07_protocol.md) | [Thread](dsh/threads/2026-11-07_protocol.md) |
-| Cursor CLI | [Session](cursor/sessions/2026-11-09_protocol.md) | （未接入 Thread） |
+| Cursor CLI | [Session](cursor/sessions/2026-11-09_protocol.md)（thin `create-chat`；`ls` 无 TTY → unsupported） | （未接入 Thread） |
 
 这些页面区分当前源码路径和真实验证结果；详细测试及未取得数据以各家的验证记录为准。不要将设计稿或模拟测试当成生产闭环。
 
