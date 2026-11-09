@@ -245,9 +245,9 @@ final class MeshHostSessionRPCTests: XCTestCase {
         let snapshot = try await client.fetchHostSessionInventorySnapshot()
         let sessions = snapshot.sessions
         let report = snapshot.status
-        let checkouts = try? await client.fetchHostProjectCheckouts()
+        let checkouts = try await client.fetchHostProjectCheckouts()
         print("Real peer \(peer.descriptor.displayName) device=\(peerText)")
-        print("Real peer project checkouts: count=\(checkouts?.count ?? 0), unavailable=\(checkouts == nil)")
+        print("Real peer project checkouts: count=\(checkouts.count), unavailable=false")
         for kind in report.supportedAgents {
             let count = sessions.filter { $0.agentType == kind }.count
             print("Real peer inventory \(kind): count=\(count), unavailable=\(report.unavailableAgents.contains(kind))")
@@ -258,6 +258,21 @@ final class MeshHostSessionRPCTests: XCTestCase {
             "Every agent unavailable on real air Host"
         )
         XCTAssertTrue(sessions.allSatisfy { $0.sessionId.hasPrefix(prefix) })
+        XCTAssertFalse(checkouts.isEmpty, "Peer Host project checkout map must not be empty")
+        let checkoutPaths = Set(checkouts.values.map { ($0 as NSString).standardizingPath })
+        let related = sessions.filter { session in
+            let workspace = (session.workspacePath as NSString).standardizingPath
+            guard !workspace.isEmpty else { return false }
+            return checkoutPaths.contains(where: { workspace == $0 || workspace.hasPrefix($0 + "/") })
+        }
+        print("Real peer project↔session matches: \(related.count)")
+        if let sample = checkouts.sorted(by: { $0.key.uuidString < $1.key.uuidString }).first {
+            print("Real peer sample checkout: \(sample.key.uuidString.lowercased()) -> \(sample.value)")
+        }
+        if let match = related.first {
+            print("Real peer sample related session: \(match.agentType) \(match.sessionId) workspace=\(match.workspacePath)")
+        }
+        XCTAssertFalse(related.isEmpty, "At least one Peer Session should sit under a Host checkout path")
     }
 
     func testHostInventoryReportsUnavailableProviderAndKeepsStaleSessions() async throws {
