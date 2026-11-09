@@ -196,6 +196,8 @@ final class MeshHostThreadBindingTests: XCTestCase {
         )
         XCTAssertEqual(bound.memberID, "codex-thread-1")
         XCTAssertEqual(bound.vendorSessionID, "codex-thread-1")
+        XCTAssertEqual(runtime.lastDriverID, "codex:app-server")
+        XCTAssertFalse(runtime.registeredDrivers.contains("rpc-driver"))
 
         let inspect = try await host.handleQuery(
             MeshHostSessionQueryRequest(
@@ -425,6 +427,342 @@ final class MeshHostThreadBindingTests: XCTestCase {
         let history = try await chat.history(room: "host-product", limit: 20)
         XCTAssertEqual(history.filter { $0.authorMemberID == String(memberID) }.count, 1)
     }
+
+    /// Controlled Host binder → Runtime submit → DSH bridge → product replyOnce.
+    func testDshHostProductPathUsesReplyOnceWithoutBroker() async throws {
+        let runtime = DshProductPathRuntime()
+        let host = DshProductPathHost()
+        let memberID = "session-dsh-product"
+        let providerID = memberID
+        let hostSessionID = "dsh:" + providerID
+        let inventory: [ClientSessionSummary] = [
+            ClientSessionSummary(
+                sessionId: hostSessionID, machineId: "mini", agentType: "dsh",
+                workspacePath: "/tmp/pharos-msg-test", title: "dsh-product",
+                status: .idle, avatarSeed: hostSessionID
+            ),
+        ]
+        let binder = MeshHostThreadBinder(
+            inventory: { inventory },
+            runtime: { method, params in try runtime.handle(method, params) },
+            driverID: "host-dsh-product-test"
+        )
+        let bound = try await binder.bind(
+            hostSessionID: hostSessionID, agentKind: "dsh", memberID: memberID
+        )
+        XCTAssertEqual(bound.memberID, memberID)
+        XCTAssertEqual(bound.vendorSessionID, providerID)
+
+        let fixture = try ChatFixture()
+        defer { fixture.remove() }
+        let replica = try fixture.replica(named: "dsh-product-path")
+        try await replica.store.setMembershipEpoch(1, for: fixture.group)
+        let registry = DistributedChatRegistry(replica: replica, group: fixture.group)
+        let chat = DistributedAgentChat(replica: replica, group: fixture.group)
+        _ = try await registry.createRoom(named: "dsh-product")
+        _ = try await chat.join(room: "dsh-product", nick: "agent", memberID: memberID)
+        let room = try await registry.rooms()[0]
+        let human = try await registry.localHumanMember(in: room)
+        let router = DshProductPathEventRouter()
+        let service = DshLiveSessionService(host: host, publish: { await router.publish($0) })
+        let bridge = DshThreadRuntimeBridge(
+            binding: .init(
+                memberID: memberID, sessionID: hostSessionID, providerSessionID: providerID
+            ),
+            send: { session, text, turn in
+                _ = try await service.send(sessionId: session, text: text, turnID: turn)
+            },
+            runtime: { method, params in try runtime.handle(method, params) },
+            reply: { delivery, text in
+                _ = try await binder.commitReply(
+                    chat: chat, room: delivery.room, memberID: delivery.memberID,
+                    originalMessageID: delivery.messageID, text: text
+                )
+            }
+        )
+        await router.set(bridge)
+        try await bridge.poll()
+
+        let original = try await registry.send(
+            room: room, fromMemberID: human.id,
+            text: "@agent Reply exactly PHAROS_DSH_PRODUCT_DONE. Do not use tools.",
+            toMemberIDs: [memberID]
+        )
+        let envelope: [String: Any] = [
+            "meshMessage": [
+                "id": original.stableID, "room": "dsh-product",
+                "text": original.text, "targetMemberIDs": [memberID],
+            ],
+            "room": "dsh-product", "messageID": original.stableID, "body": original.text,
+        ]
+        let payload = String(decoding: try JSONSerialization.data(withJSONObject: envelope), as: UTF8.self)
+        runtime.enqueueDelivery(id: "delivery-dsh-1", payload: payload)
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        var reply: MeshMsg?
+        while ContinuousClock.now < deadline {
+            try await bridge.poll()
+            let history = try await chat.history(room: "dsh-product", limit: 20)
+            reply = history.first {
+                $0.authorMemberID == memberID
+                    && $0.replyTo?.messageID == original.stableID
+                    && $0.text.contains("PHAROS_DSH_PRODUCT_DONE")
+            }
+            if reply != nil { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertNotNil(reply)
+        XCTAssertEqual(runtime.completedDeliveryIDs, ["delivery-dsh-1"])
+        let phase = MeshHostThreadBinder.phase(
+            runtimeDeliveryState: "completed", hasLocalReceipt: true, hasRoomReply: true
+        )
+        XCTAssertEqual(phase, .replied)
+    }
+
+    func testDistributedHostReplyMapsSayOnceOntoReplyOnce() async throws {
+        let fixture = try ChatFixture()
+        defer { fixture.remove() }
+        let replica = try fixture.replica(named: "host-reply-product")
+        try await replica.store.setMembershipEpoch(1, for: fixture.group)
+        let registry = DistributedChatRegistry(replica: replica, group: fixture.group)
+        let chat = DistributedAgentChat(replica: replica, group: fixture.group)
+        _ = try await registry.createRoom(named: "codex-reply")
+        _ = try await chat.join(room: "codex-reply", nick: "agent", memberID: "codex-member")
+        let room = try await registry.rooms()[0]
+        let human = try await registry.localHumanMember(in: room)
+        let original = try await registry.send(
+            room: room, fromMemberID: human.id, text: "@agent finish",
+            toMemberIDs: ["codex-member"]
+        )
+        let request = MeshRequest(
+            cmd: "say-once", room: "codex-reply", memberID: "codex-member",
+            text: "PHAROS_CODEX_PRODUCT_DONE", replyToID: original.stableID,
+            idempotencyKey: "codex-delivery-1"
+        )
+        let first = try await MeshDistributedHostReply.apply(request, using: chat)
+        let second = try await MeshDistributedHostReply.apply(request, using: chat)
+        XCTAssertEqual(first.stableID, second.stableID)
+        XCTAssertEqual(first.replyTo?.messageID, original.stableID)
+        XCTAssertTrue(first.text.contains("PHAROS_CODEX_PRODUCT_DONE"))
+        do {
+            _ = try await MeshDistributedHostReply.apply(
+                MeshRequest(
+                    cmd: "say-once", room: "codex-reply", memberID: "codex-member",
+                    text: "different", replyToID: original.stableID
+                ),
+                using: chat
+            )
+            XCTFail("Divergent host-reply content must conflict")
+        } catch {
+            // Expected: replyOnce conflict on divergent text.
+        }
+    }
+
+    /// Real Host binder → Runtime submit → DSH bridge → product replyOnce.
+    /// Requires an isolated DSH Host under ~/personal/pharos-msg-test.
+    func testRealDshHostBinderRuntimeSubmitReplyOnceWhenEnabled() async throws {
+        guard ProcessInfo.processInfo.environment["PHAROS_HOST_THREAD_DSH_PRODUCT_PATH_TEST"] == "1" else {
+            throw XCTSkip("Set PHAROS_HOST_THREAD_DSH_PRODUCT_PATH_TEST=1 for real DSH product path")
+        }
+        let repo = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let binary = repo.appendingPathComponent("rust/target/debug/pharos-meshd")
+        guard FileManager.default.isExecutableFile(atPath: binary.path) else {
+            throw XCTSkip("Build rust/target/debug/pharos-meshd first")
+        }
+        let base = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "personal/pharos-msg-test/peer-phase-a/phase-b-dsh-\(UUID().uuidString.prefix(8))",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let work = base.appendingPathComponent("dsh-work", isDirectory: true)
+        let home = base.appendingPathComponent("dsh-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let socket = base.appendingPathComponent("agent-runtime.sock")
+        let previousRuntime = getenv("PHAROS_AGENT_RUNTIME_SOCKET").map { String(cString: $0) }
+        setenv("PHAROS_AGENT_RUNTIME_SOCKET", socket.path, 1)
+        defer {
+            if let previousRuntime {
+                setenv("PHAROS_AGENT_RUNTIME_SOCKET", previousRuntime, 1)
+            } else {
+                unsetenv("PHAROS_AGENT_RUNTIME_SOCKET")
+            }
+            try? FileManager.default.removeItem(at: base)
+        }
+
+        let runtime = Process()
+        runtime.executableURL = binary
+        runtime.arguments = [
+            "--socket", socket.path,
+            "--data-dir", base.appendingPathComponent("runtime").path,
+        ]
+        runtime.standardOutput = FileHandle.nullDevice
+        runtime.standardError = FileHandle.nullDevice
+        try runtime.run()
+        defer {
+            if runtime.isRunning {
+                runtime.terminate()
+                runtime.waitUntilExit()
+            }
+        }
+        for _ in 0..<100 {
+            if FileManager.default.fileExists(atPath: socket.path) { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: socket.path))
+
+        // Host-owned product bridge prompts DSH directly; no plugin / Broker.
+        // Isolate DSH_HOME so this never touches the user's 3080 Host.
+        var environment = ProcessInfo.processInfo.environment
+        environment["PHAROS_AGENT_RUNTIME_SOCKET"] = socket.path
+        environment["DSH_HOME"] = home.path
+        environment.removeValue(forKey: "PHAROS_RUNTIME_SOCKET")
+        let host = DshWebHost(environment: environment, workspace: work)
+        let providerID = try await host.createSession(workspacePath: work.path)
+        print("Host product-path DSH Session: \(providerID)")
+        // Warm the isolated Session before Thread delivery, matching the Agy path.
+        try await host.prompt(
+            sessionId: providerID,
+            text: "Reply PHAROS_DSH_HOST_PRODUCT_SEED. Do not use tools or access files.",
+            mode: .queue
+        )
+        let seedDeadline = ContinuousClock.now.advanced(by: .seconds(90))
+        var seeded = false
+        while ContinuousClock.now < seedDeadline {
+            let records = try await host.history(sessionId: providerID)
+            let turns = DshSessionHistoryReader.turns(from: records, sessionId: "dsh:" + providerID)
+            if turns.contains(where: { turn in
+                turn.status == .completed && turn.steps.flatMap(\.blocks).contains {
+                    if case .assistantText(let text) = $0.kind {
+                        return text.contains("PHAROS_DSH_HOST_PRODUCT_SEED")
+                    }
+                    return false
+                }
+            }) {
+                seeded = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        guard seeded else {
+            throw XCTSkip("Isolated DSH Session did not complete the seed turn; live product path not-tested")
+        }
+
+        let hostSessionID = "dsh:" + providerID
+        let memberID = providerID
+        let inventory: [ClientSessionSummary] = [
+            ClientSessionSummary(
+                sessionId: hostSessionID, machineId: "mini", agentType: "dsh",
+                workspacePath: work.path, title: "phase-b-dsh", status: .idle,
+                avatarSeed: hostSessionID
+            ),
+        ]
+        let binder = MeshHostThreadBinder(
+            inventory: { inventory },
+            runtime: AgyThreadRuntimeBridge.localRuntime,
+            driverID: "host-dsh-product-path-live"
+        )
+        let bound = try await binder.bind(
+            hostSessionID: hostSessionID, agentKind: "dsh", memberID: memberID
+        )
+        print("Host DSH product-path bind conversation=\(bound.conversationID)")
+
+        let fixture = try ChatFixture()
+        defer { fixture.remove() }
+        let replica = try fixture.replica(named: "host-dsh-product-path")
+        try await replica.store.setMembershipEpoch(1, for: fixture.group)
+        let registry = DistributedChatRegistry(replica: replica, group: fixture.group)
+        let chat = DistributedAgentChat(replica: replica, group: fixture.group)
+        _ = try await registry.createRoom(named: "host-dsh-product")
+        _ = try await chat.join(room: "host-dsh-product", nick: "agent", memberID: memberID)
+        let room = try await registry.rooms()[0]
+        let human = try await registry.localHumanMember(in: room)
+        let router = DshProductPathEventRouter()
+        let service = DshLiveSessionService(host: host, publish: { await router.publish($0) })
+        let bridge = DshThreadRuntimeBridge(
+            binding: .init(
+                memberID: memberID, sessionID: hostSessionID, providerSessionID: providerID
+            ),
+            send: { session, text, turn in
+                _ = try await service.send(sessionId: session, text: text, turnID: turn)
+            },
+            reply: { delivery, text in
+                _ = try await binder.commitReply(
+                    chat: chat, room: delivery.room, memberID: delivery.memberID,
+                    originalMessageID: delivery.messageID, text: text
+                )
+            }
+        )
+        await router.set(bridge)
+        try await bridge.poll()
+
+        let original = try await registry.send(
+            room: room, fromMemberID: human.id,
+            text: "@agent Reply exactly PHAROS_DSH_HOST_PRODUCT_DONE. Do not use tools or access files.",
+            toMemberIDs: [memberID]
+        )
+        let target = MeshMemberInfo(
+            id: memberID, nick: "agent", session: providerID,
+            kind: "dsh", rooms: ["host-dsh-product"],
+            lastSeen: Date().timeIntervalSince1970,
+            runtimeOwnerIsLocal: true
+        )
+        let route = MeshRuntimeDeliveryBridge.submit(message: original, target: target)
+        guard case .accepted = route else {
+            return XCTFail("Runtime must accept Host-bound DSH delivery.submit-member, got \(route)")
+        }
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(120))
+        var reply: MeshMsg?
+        var consumed: MeshHostThreadDeliveryPhase = .unknown
+        var lastDeliveryStates: [String] = []
+        while ContinuousClock.now < deadline {
+            do { try await bridge.poll() }
+            catch { print("Host DSH product-path poll error: \(error.localizedDescription)") }
+            let snapshot = try AgyThreadRuntimeBridge.localRuntime("runtime.snapshot", [:]) as? [String: Any]
+            let deliveries = snapshot?["deliveries"] as? [[String: Any]] ?? []
+            lastDeliveryStates = deliveries.map {
+                "\($0["id"] as? String ?? "?"):\($0["state"] as? String ?? "?"):\($0["detail"] as? String ?? "")"
+            }
+            if let row = deliveries.first(where: { $0["id"] != nil }),
+               let state = row["state"] as? String {
+                consumed = try await binder.advanceConsumption(
+                    chat: chat, memberID: memberID, messageID: original.stableID,
+                    runtimeDeliveryState: state
+                )
+            }
+            let history = try await chat.history(room: "host-dsh-product", limit: 20)
+            reply = history.first {
+                $0.authorMemberID == memberID
+                    && $0.replyTo?.messageID == original.stableID
+                    && $0.text.contains("PHAROS_DSH_HOST_PRODUCT_DONE")
+            }
+            if reply != nil { break }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+
+        let snapshot = try XCTUnwrap(
+            AgyThreadRuntimeBridge.localRuntime("runtime.snapshot", [:]) as? [String: Any]
+        )
+        let deliveries = try XCTUnwrap(snapshot["deliveries"] as? [[String: Any]])
+        let completed = deliveries.filter { $0["state"] as? String == "completed" }.count
+        let phase = MeshHostThreadBinder.phase(
+            runtimeDeliveryState: deliveries.first?["state"] as? String,
+            hasLocalReceipt: consumed == .consumed || consumed == .replied,
+            hasRoomReply: reply != nil
+        )
+        let journal = try await host.history(sessionId: providerID)
+        let turns = DshSessionHistoryReader.turns(from: journal, sessionId: hostSessionID)
+        print(
+            "Host DSH product-path: route=\(route) consumed=\(consumed) phase=\(phase) " +
+            "room-reply=\(reply != nil) runtime-completed=\(completed) " +
+            "deliveries=\(lastDeliveryStates) turns=\(turns.count)"
+        )
+        XCTAssertNotNil(reply)
+        XCTAssertEqual(completed, 1)
+        XCTAssertEqual(phase, .replied)
+    }
 }
 
 private actor ProductPathEventRouter {
@@ -433,9 +771,101 @@ private actor ProductPathEventRouter {
     func publish(_ event: PharosClientEvent) async { await bridge?.handle(event) }
 }
 
+private actor DshProductPathEventRouter {
+    var bridge: DshThreadRuntimeBridge?
+    func set(_ value: DshThreadRuntimeBridge) { bridge = value }
+    func publish(_ event: PharosClientEvent) async { await bridge?.handle(event) }
+}
+
+private actor DshProductPathHost: DshSessionHosting, DshInteractionHosting {
+    private var records: [BackendWireEvent] = []
+    private var seq = 0
+
+    func history(sessionId: String) async throws -> [BackendWireEvent] { records }
+    func follow(sessionId: String) async throws -> AsyncStream<BackendWireEvent> {
+        AsyncStream { continuation in
+            continuation.yield(BackendWireEvent(["type": "snapshot"]))
+            continuation.finish()
+        }
+    }
+    func prompt(sessionId: String, text: String, mode: PromptMode) async throws {
+        seq += 1
+        let turn = 1
+        func event(_ type: String, _ data: [String: Any], _ n: Int) -> BackendWireEvent {
+            BackendWireEvent(["type": "event", "event": ["type": type, "seq": n, "data": data]])
+        }
+        records = [
+            event("turn/start", ["turn": turn], seq),
+            event("user/message", ["source": ["kind": "user"], "content": [["type": "text", "text": text]]], seq + 1),
+            event("assistant/message", ["message": ["content": [["type": "text", "text": "PHAROS_DSH_PRODUCT_DONE"]]]], seq + 2),
+            event("turn/end", ["reason": ["kind": "completed"]], seq + 3),
+        ]
+        seq += 3
+    }
+    func interactions() async throws -> (String, AsyncStream<BackendWireEvent>) {
+        ("fixture", AsyncStream { $0.finish() })
+    }
+    func resolveInteraction(clientID: String, eventID: String, outcomeData: Data) async throws {}
+}
+
+private final class DshProductPathRuntime: @unchecked Sendable {
+    private let lock = NSLock()
+    private var conversations: [[String: Any]] = []
+    private var queued: [[String: Any]] = []
+    private(set) var completedDeliveryIDs: [String] = []
+
+    func enqueueDelivery(id: String, payload: String) {
+        lock.lock(); defer { lock.unlock() }
+        queued.append(["id": id, "payload": payload, "state": "queued"])
+    }
+
+    func handle(_ method: String, _ params: [String: Any]) throws -> Any {
+        lock.lock(); defer { lock.unlock() }
+        switch method {
+        case "driver.register":
+            return ["ok": true]
+        case "conversation.register":
+            let kind = params["kind"] as? String ?? ""
+            let vendor = params["vendorSessionID"] as? String ?? ""
+            let member = params["memberID"] as? String ?? ""
+            if let existing = conversations.first(where: {
+                $0["vendorSessionID"] as? String == vendor && $0["kind"] as? String == kind
+            }) {
+                return existing
+            }
+            let row: [String: Any] = [
+                "id": "conv-" + UUID().uuidString.lowercased(),
+                "kind": kind, "vendorSessionID": vendor, "memberID": member,
+                "driverID": params["driverID"] as? String ?? "", "ownership": "managed",
+            ]
+            conversations.append(row)
+            return row
+        case "conversation.state":
+            return ["ok": true]
+        case "delivery.poll":
+            let next = queued
+            queued = []
+            return next
+        case "delivery.ack":
+            let id = params["deliveryID"] as? String ?? ""
+            let state = params["state"] as? String ?? ""
+            if state == "completed" { completedDeliveryIDs.append(id) }
+            return ["ok": true]
+        case "runtime.snapshot":
+            return ["conversations": conversations, "deliveries": completedDeliveryIDs.map {
+                ["id": $0, "state": "completed"] as [String: Any]
+            }]
+        default:
+            throw PharosClientError.operationFailed("Unexpected Runtime method \(method)")
+        }
+    }
+}
+
 private final class FakeThreadRuntime: @unchecked Sendable {
     private let lock = NSLock()
     private var conversations: [[String: Any]] = []
+    private(set) var lastDriverID = ""
+    private(set) var registeredDrivers: [String] = []
 
     func seedConversation(
         id: String, kind: String, vendorSessionID: String, memberID: String
@@ -453,11 +883,14 @@ private final class FakeThreadRuntime: @unchecked Sendable {
         defer { lock.unlock() }
         switch method {
         case "driver.register":
+            let id = params["driverID"] as? String ?? ""
+            registeredDrivers.append(id)
             return ["ok": true]
         case "conversation.register":
             let kind = params["kind"] as? String ?? ""
             let vendor = params["vendorSessionID"] as? String ?? ""
             let member = params["memberID"] as? String ?? ""
+            lastDriverID = params["driverID"] as? String ?? ""
             if let existing = conversations.first(where: {
                 $0["vendorSessionID"] as? String == vendor && $0["kind"] as? String == kind
             }) {
@@ -466,7 +899,7 @@ private final class FakeThreadRuntime: @unchecked Sendable {
             let row: [String: Any] = [
                 "id": "conv-" + UUID().uuidString.lowercased(),
                 "kind": kind, "vendorSessionID": vendor, "memberID": member,
-                "driverID": params["driverID"] as? String ?? "", "ownership": "managed",
+                "driverID": lastDriverID, "ownership": "managed",
             ]
             conversations.append(row)
             return row

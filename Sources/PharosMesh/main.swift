@@ -122,11 +122,11 @@ private enum MeshHeadlessCLI {
 
         case "join":
             guard args.count >= 3, let session = option("--session", in: args), !session.isEmpty else {
-                return usageError("join <room> <nick> --session <id> [--kind codex|claude]")
+                return usageError("join <room> <nick> --session <id> [--member <id>] [--kind codex|claude|agy]")
             }
             var request = MeshRequest(cmd: "join", room: args[1], nick: args[2])
             request.session = session
-            request.memberID = session
+            request.memberID = option("--member", in: args) ?? session
             request.nodeID = MeshNodeIdentity.current
             request.project = FileManager.default.currentDirectoryPath
             request.host = ProcessInfo.processInfo.hostName
@@ -136,6 +136,32 @@ private enum MeshHeadlessCLI {
             print("joined \(args[1]) as \(args[2])")
             printMessages(response.messages ?? [])
             return 0
+
+        case "host-reply":
+            // Message text may be private: read the bounded request from stdin,
+            // never from argv, and never start a Broker merely to send a reply.
+            let limit = 4 * 1024 * 1024
+            var data = Data()
+            while data.count <= limit {
+                let part: Data
+                do { part = try FileHandle.standardInput.read(upToCount: min(65_536, limit + 1 - data.count)) ?? Data() }
+                catch { return usageError("could not read host-reply request") }
+                if part.isEmpty { break }
+                data.append(part)
+            }
+            guard data.count <= limit,
+                  let request = try? JSONDecoder().decode(MeshRequest.self, from: data),
+                  request.cmd == "say-once" else {
+                return usageError("host-reply requires a say-once JSON request on stdin")
+            }
+            if !legacyBrokerEnabled {
+                return await runDistributedHostReply(request, args: args)
+            }
+            guard let response = MeshClient.sendIfUp(request) else {
+                FileHandle.standardError.write(Data("error: Mesh broker is unavailable\n".utf8))
+                return 1
+            }
+            return printResponse(response)
 
         case "say":
             guard args.count >= 4 else { return usageError("say <room> <nick> <text> [--reply ID] [--attach FILE]") }
@@ -274,7 +300,7 @@ private enum MeshHeadlessCLI {
             "room-list", "room-create", "room-rename", "room-delete",
             "room-send", "room-history", "attachment-put", "attachment-get",
             "host-resource-register", "host-resource-replace", "host-resource-retire",
-            "host-resource-show", "host-presence", "host-command-send",
+            "host-resource-show", "host-presence", "host-runtime-hello", "host-command-send",
             "host-command-replay",
         ]
         let legacyImportCommand = "legacy-import"
@@ -286,7 +312,7 @@ private enum MeshHeadlessCLI {
                 "device-list|device-roles-set|sync-serve|sync|entity-set|entity-dump|" +
                 "room-list|room-create|room-rename|room-delete|room-send|room-history|" +
                 "attachment-put|attachment-get|host-resource-register|host-resource-replace|" +
-                "host-resource-retire|host-resource-show|host-presence|" +
+                "host-resource-retire|host-resource-show|host-presence|host-runtime-hello|" +
                 "host-command-send|host-command-replay|" +
                 "probe-serve|probe|migration-status|" +
                 "migration-prepare|cutover|rollback …"
@@ -575,6 +601,20 @@ private enum MeshHeadlessCLI {
                     replica: replica, group: group, executor: executor
                 )
                 let hostEndpointID = try replica.identity.endpointID()
+                let localSessions = HostLocalSessionService()
+                let threadBinder = MeshHostThreadBinder(
+                    inventory: { try await localSessions.fetchSessions() },
+                    runtime: { method, params in
+                        try AgyThreadRuntimeBridge.localRuntime(method, params)
+                    }
+                )
+                let hostSessions = MeshHostSessionServer(
+                    hostDeviceID: replica.identity.deviceID,
+                    service: localSessions,
+                    actionJournalURL: replica.rootURL.appendingPathComponent("host-session-actions.json"),
+                    threadBinder: threadBinder
+                )
+                await hostSessions.start()
                 router = MeshReplicaRPCServer(
                     store: replica.store, hostIdentity: replica.identity,
                     localAuthorRoles: try replica.activeRoles(),
@@ -598,6 +638,9 @@ private enum MeshHeadlessCLI {
                             )
                         }()
                     },
+                    hostRuntimeHelloProvider: {
+                        try await MeshHostRuntimeBridge.hello(hostDeviceID: replica.identity.deviceID)
+                    },
                     hostCommandHandler: { command in
                         let outcome = await executor.execute(command)
                         if command.action == .stop,
@@ -610,7 +653,10 @@ private enum MeshHeadlessCLI {
                             )
                         }
                         return outcome
-                    }
+                    },
+                    hostSessionQueryHandler: { try await hostSessions.handleQuery($0) },
+                    hostSessionActionHandler: { try await hostSessions.handleAction($0) },
+                    hostSessionEventsHandler: { try await hostSessions.handleEvents($0) }
                 )
             } else {
                 hostCommandRecoveryCount = 0
@@ -710,7 +756,7 @@ private enum MeshHeadlessCLI {
                     await syncHintRelay.receiveFullSync()
                     return response
                 case .locateAgent, .stopAgent,
-                     .issueInvitation, .revokeDevice, .fetchAttachment:
+                     .issueInvitation, .revokeDevice, .fetchAttachment, .sessionRPC:
                     return await localRuntimeCommands.response(to: request)
                 }
             }
@@ -1112,6 +1158,37 @@ private enum MeshHeadlessCLI {
             ) else { throw DistributedDeviceCommandError.hostResourceNotFound }
             print(String(decoding: try sortedJSON(resource), as: UTF8.self))
             return 0
+
+        case "host-runtime-hello":
+            guard let peerText = option("--peer", in: args),
+                  let peerUUID = UUID(uuidString: peerText) else {
+                return usageError("distributed host-runtime-hello --peer DEVICE-UUID --data-dir ABSOLUTE-PATH")
+            }
+            let (group, epoch) = try await activeMembership(replica)
+            guard let peer = try await replica.store.trustedDevice(
+                in: group, id: MeshDeviceID(rawValue: peerUUID)
+            ), peer.descriptor.roles.contains(.host) else {
+                throw DistributedDeviceCommandError.peerNotFound
+            }
+            let runtime = try await distributedRuntime(args, replica: replica)
+            do {
+                let transport = IrohMeshTransport(
+                    runtime: runtime,
+                    remote: MeshIrohEndpointAddress(
+                        endpointID: peer.descriptor.endpointID,
+                        ticket: option("--peer-ticket", in: args) ?? peer.addressTicket
+                    )
+                )
+                let hello = try await MeshReplicaRPCClient(transport: transport)
+                    .hostRuntimeHello(group: group, membershipEpoch: epoch,
+                                      expectedHostDeviceID: peer.descriptor.id)
+                try await runtime.close()
+                print(String(decoding: try sortedJSON(hello), as: UTF8.self))
+                return 0
+            } catch {
+                try? await runtime.close()
+                throw error
+            }
 
         case "host-presence":
             guard let peerText = option("--peer", in: args),
@@ -2016,6 +2093,37 @@ private enum MeshHeadlessCLI {
         process.waitUntilExit()
     }
 
+    /// Product Mesh path for Codex (and other) host-owned replies: map the
+    /// legacy say-once stdin envelope onto DistributedAgentChat.replyOnce.
+    private static func runDistributedHostReply(
+        _ request: MeshRequest, args: [String]
+    ) async -> Int32 {
+        do {
+            let replica: MeshLocalReplica
+            if let path = option("--data-dir", in: args)
+                ?? ProcessInfo.processInfo.environment["PHAROS_DISTRIBUTED_DATA_DIR"] {
+                guard path.hasPrefix("/") else {
+                    return usageError("host-reply --data-dir requires an absolute path")
+                }
+                replica = try MeshLocalReplica.openHeadless(
+                    dataDirectory: URL(fileURLWithPath: path, isDirectory: true)
+                )
+            } else {
+                replica = try MeshLocalReplica.openDefault(headless: true)
+            }
+            let group = try await replica.ensureActiveTrustGroup()
+            let agent = DistributedAgentChat(replica: replica, group: group)
+            let reply = try await MeshDistributedHostReply.apply(request, using: agent)
+            print("ok \(reply.stableID)")
+            return 0
+        } catch {
+            FileHandle.standardError.write(
+                Data("error: \(error.localizedDescription)\n".utf8)
+            )
+            return 1
+        }
+    }
+
     private static func usageError(_ detail: String) -> Int32 {
         FileHandle.standardError.write(Data("usage: pharos-mesh \(detail)\n".utf8))
         return 2
@@ -2035,7 +2143,7 @@ private enum MeshHeadlessCLI {
       create <room>
       list
       history <room> [--limit N]
-      join <room> <nick> --session <id> [--kind codex|claude]
+      join <room> <nick> --session <id> [--member <id>] [--kind codex|claude|agy]
       send <text> [@target ...] [--room ROOM] [--member SESSION] [--reply ID] [--attach FILE]
       say <room> <nick> <text> [--member SESSION] [--reply ID] [--attach FILE]
       recv [<nick>] [--member <session-id>]
@@ -2066,6 +2174,7 @@ private enum MeshHeadlessCLI {
       distributed host-resource-retire --resource ID --data-dir ABSOLUTE-PATH
       distributed host-resource-show --resource ID --data-dir ABSOLUTE-PATH
       distributed host-presence --peer DEVICE-UUID [--peer-ticket CURRENT-TICKET] --data-dir ABSOLUTE-PATH
+      distributed host-runtime-hello --peer DEVICE-UUID [--peer-ticket CURRENT-TICKET] --data-dir ABSOLUTE-PATH
       distributed host-command-send --peer DEVICE-UUID --resource ID --generation N --action poke|stop [--text TEXT] [--idempotency-key KEY] [--envelope-out ABSOLUTE-PATH] [--peer-ticket CURRENT-TICKET] --data-dir ABSOLUTE-PATH
       distributed host-command-replay ABSOLUTE-ENVELOPE-PATH --peer DEVICE-UUID [--peer-ticket CURRENT-TICKET] --data-dir ABSOLUTE-PATH
       distributed probe-serve --data-dir ABSOLUTE-PATH [--relay production|disabled] [--bind HOST:PORT]
