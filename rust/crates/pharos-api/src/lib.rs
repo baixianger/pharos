@@ -541,15 +541,17 @@ mod tests {
     #[test]
     fn openapi_lists_thread_reply() {
         let doc = openapi_stub_json();
-        assert!(doc["paths"].get("/api/v1/threads/{threadId}/reply").is_some());
+        assert!(
+            doc["paths"]
+                .get("/api/v1/threads/{threadId}/reply")
+                .is_some()
+        );
         assert_eq!(doc["info"]["version"], "0.1.0");
     }
 
     #[test]
     fn api_error_roundtrip() {
-        let body = ErrorBody::new(PharosApiError::ThreadNotFound {
-            id: "t1".into(),
-        });
+        let body = ErrorBody::new(PharosApiError::ThreadNotFound { id: "t1".into() });
         let raw = serde_json::to_string(&body).unwrap();
         let back: ErrorBody = serde_json::from_str(&raw).unwrap();
         assert_eq!(back, body);

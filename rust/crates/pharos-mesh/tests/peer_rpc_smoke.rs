@@ -72,13 +72,9 @@ async fn peer_hello_sync_and_runtime_call() {
     )
     .unwrap();
 
-    let host = open_handle(
-        PathBuf::from(&host_dir),
-        Some(runtime_sock.clone()),
-        true,
-    )
-    .await
-    .expect("host open");
+    let host = open_handle(PathBuf::from(&host_dir), Some(runtime_sock.clone()), true)
+        .await
+        .expect("host open");
     let client = open_handle(PathBuf::from(&client_dir), None, true)
         .await
         .expect("client open");
