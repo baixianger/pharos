@@ -1,10 +1,15 @@
 ---
-summary: 2026-11-10 PM 队列推进中。Peer HITL 审批路径已证实，human-proxy .done.md 超时 → blocked/not-tested。隔离 DSH 种子凭据修复后重跑。
+summary: 2026-11-10 PM：Peer HITL blocked(proxy)；隔离 DSH product live 通过；Codex/跨机/桌面待续。
 ---
 
 # 活跃任务交接
 
 **STATUS: peer-hitl blocked human-proxy .done.md timeout (approval path proved mini→air)**
+
+**STATUS: isolated-dsh-product done**
+
+**Phase (2) 隔离 DSH 真实产品往返（2026-11-10 12:17）**：**done / real**。空 `DSH_HOME` 会种子失败；现复制 `~/.dsh/.credentials.yaml` + 注入 `OPENCODE_GO_API_KEY` + model patch（不共享 sessions、不碰 3080 Host/`ipc.sock`）。`PHAROS_HOST_THREAD_DSH_PRODUCT_PATH_TEST=1` → Session `session-0be5de80-…`：seed→bind→Runtime submit `.accepted`→`consumed`→`replied`，runtime-completed=1，房间关联回复。证据：`internal/evidence/2026-11-10_phase-b2-dsh-live-product-path-retry.log`。
+
 
 **PM 队列（2026-11-10 11:45 Europe/Copenhagen）**：grok-bot 已回 tailnet（`tailscale status | grep grok-bot`）；`ssh box@grok-bot` 可用；human=pharos-proxy。顺序：(1) Peer HITL E2E → (2) 隔离 DSH 真实产品往返 → (3) 隔离 Codex app-server → (4) 跨机 Runtime mini↔air(+box) → (5) 桌面 DSH 接线测试后提交。真实消息仅 `pharos-msg-test`；不碰 mac-pro / 3080 Host `ipc.sock`；不把 `DshBackendAdapter` 改成假投递；不 push / 不 force。
 
@@ -303,3 +308,5 @@ summary: 2026-11-10 PM 队列推进中。Peer HITL 审批路径已证实，human
 123. 另两个 mac-air 专用 DSH Session 经程序操作生产 WebKit 分别创建 Goal，验证会话切换后展示各自目标、清除第一目标不影响第二目标，并通过输入框清除两者；独立 Host 重放确认各自完成、无交叉和清除。物理操作、多主机、并发写入和真实断网仍待验收，见 [DSH 验证记录](2026-11-07_dsh-session-validation.md)。
 
 STATUS: peer-hitl blocked human-proxy .done.md timeout (approval path proved mini→air)
+
+STATUS: isolated-dsh-product done

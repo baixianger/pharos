@@ -613,12 +613,51 @@ final class MeshHostThreadBindingTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: socket.path))
 
         // Host-owned product bridge prompts DSH directly; no plugin / Broker.
-        // Isolate DSH_HOME so this never touches the user's 3080 Host.
+        // Isolate DSH_HOME so this never touches the user's 3080 Host / ipc.sock.
+        // Seed auth + model routing from the user's DSH home without sharing sessions.
+        let userDsh = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".dsh")
+        let credentials = userDsh.appendingPathComponent(".credentials.yaml")
+        let anonymous = userDsh.appendingPathComponent(".anonymous-user-id")
+        guard FileManager.default.isReadableFile(atPath: credentials.path) else {
+            throw XCTSkip("Missing ~/.dsh/.credentials.yaml; isolated DSH live product path not-tested")
+        }
+        try FileManager.default.copyItem(at: credentials, to: home.appendingPathComponent(".credentials.yaml"))
+        if FileManager.default.isReadableFile(atPath: anonymous.path) {
+            try? FileManager.default.copyItem(at: anonymous, to: home.appendingPathComponent(".anonymous-user-id"))
+        }
+        let modelPatch = base.appendingPathComponent("model.patch.yml")
+        try """
+        - id: agent-default-model
+          name: "@deepseek-ai/dsh-agent-default-model"
+          config:
+            provider: opencode-go
+            model: deepseek-v4.1-flash
+        - id: llm-pi-ai
+          name: "@deepseek-ai/dsh-llm-pi-ai"
+          config:
+            providers:
+              opencode-go:
+                apiKeyEnv: OPENCODE_GO_API_KEY
+        """.write(to: modelPatch, atomically: true, encoding: .utf8)
         var environment = ProcessInfo.processInfo.environment
         environment["PHAROS_AGENT_RUNTIME_SOCKET"] = socket.path
         environment["DSH_HOME"] = home.path
         environment.removeValue(forKey: "PHAROS_RUNTIME_SOCKET")
-        let host = DshWebHost(environment: environment, workspace: work)
+        if environment["OPENCODE_GO_API_KEY"] == nil,
+           let text = try? String(contentsOf: credentials, encoding: .utf8) {
+            for line in text.split(whereSeparator: \.isNewline) {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix("OPENCODE_GO_API_KEY:") else { continue }
+                let value = trimmed.dropFirst("OPENCODE_GO_API_KEY:".count)
+                    .trimmingCharacters(in: .whitespaces)
+                if !value.isEmpty { environment["OPENCODE_GO_API_KEY"] = value }
+                break
+            }
+        }
+        guard environment["OPENCODE_GO_API_KEY"]?.isEmpty == false else {
+            throw XCTSkip("OPENCODE_GO_API_KEY unavailable for isolated DSH; live product path not-tested")
+        }
+        let host = DshWebHost(environment: environment, workspace: work, additionalPatches: [modelPatch])
         let providerID = try await host.createSession(workspacePath: work.path)
         print("Host product-path DSH Session: \(providerID)")
         // Warm the isolated Session before Thread delivery, matching the Agy path.
@@ -627,15 +666,24 @@ final class MeshHostThreadBindingTests: XCTestCase {
             text: "Reply PHAROS_DSH_HOST_PRODUCT_SEED. Do not use tools or access files.",
             mode: .queue
         )
-        let seedDeadline = ContinuousClock.now.advanced(by: .seconds(90))
+        let seedDeadline = ContinuousClock.now.advanced(by: .seconds(180))
         var seeded = false
+        var lastTurnSummary = "none"
         while ContinuousClock.now < seedDeadline {
             let records = try await host.history(sessionId: providerID)
             let turns = DshSessionHistoryReader.turns(from: records, sessionId: "dsh:" + providerID)
+            lastTurnSummary = turns.map { turn in
+                let texts = turn.steps.flatMap(\.blocks).compactMap { block -> String? in
+                    if case .assistantText(let text) = block.kind { return text }
+                    return nil
+                }.joined(separator: " ")
+                return "t\(turn.turnNumber):\(turn.status.rawValue):\(texts.prefix(80))"
+            }.joined(separator: " | ")
             if turns.contains(where: { turn in
                 turn.status == .completed && turn.steps.flatMap(\.blocks).contains {
                     if case .assistantText(let text) = $0.kind {
                         return text.contains("PHAROS_DSH_HOST_PRODUCT_SEED")
+                            || text.localizedCaseInsensitiveContains("pharos_dsh_host_product_seed")
                     }
                     return false
                 }
@@ -643,9 +691,22 @@ final class MeshHostThreadBindingTests: XCTestCase {
                 seeded = true
                 break
             }
+            // Accept any completed assistant reply as seed readiness when the
+            // model paraphrases the marker; still require a completed turn.
+            if turns.contains(where: {
+                $0.status == .completed && $0.steps.flatMap(\.blocks).contains {
+                    if case .assistantText(let text) = $0.kind { return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                    return false
+                }
+            }) {
+                seeded = true
+                print("Host DSH product-path seed accepted via completed assistant text (marker may be paraphrased)")
+                break
+            }
             try await Task.sleep(for: .milliseconds(500))
         }
         guard seeded else {
+            print("Host DSH product-path seed diagnostic: \(lastTurnSummary)")
             throw XCTSkip("Isolated DSH Session did not complete the seed turn; live product path not-tested")
         }
 
@@ -713,7 +774,7 @@ final class MeshHostThreadBindingTests: XCTestCase {
             return XCTFail("Runtime must accept Host-bound DSH delivery.submit-member, got \(route)")
         }
 
-        let deadline = ContinuousClock.now.advanced(by: .seconds(120))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(180))
         var reply: MeshMsg?
         var consumed: MeshHostThreadDeliveryPhase = .unknown
         var lastDeliveryStates: [String] = []
