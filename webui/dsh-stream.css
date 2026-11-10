@@ -1,0 +1,292 @@
+/* DSH (DeepSeek Harness) Web Stream Design Tokens */
+:root {
+  --dsh-accent: #4176E6;
+  --dsh-accent-hover: #3361C9;
+  --dsh-success: #22C55E;
+  --dsh-warning: #F59E0B;
+  --dsh-danger: #EC1313;
+
+  /* Dark Theme Tokens (Default) */
+  --bg-canvas: #161616;
+  --bg-card: #1f1f1f;
+  --bg-card-subtle: rgba(255, 255, 255, 0.04);
+  --bg-bubble-agent: rgba(255, 255, 255, 0.05);
+  --bg-bubble-user: #4176E6;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-focus: rgba(65, 118, 230, 0.5);
+  --text-primary: #f5f5f5;
+  --text-secondary: rgba(245, 245, 245, 0.65);
+  --text-tertiary: rgba(245, 245, 245, 0.45);
+  --code-bg: #121212;
+}
+
+body.theme-light {
+  --bg-canvas: #ffffff;
+  --bg-card: #ffffff;
+  --bg-card-subtle: rgba(0, 0, 0, 0.03);
+  --bg-bubble-agent: rgba(0, 0, 0, 0.05);
+  --bg-bubble-user: #4176E6;
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-focus: rgba(65, 118, 230, 0.4);
+  --text-primary: #1c1c1c;
+  --text-secondary: rgba(28, 28, 28, 0.65);
+  --text-tertiary: rgba(28, 28, 28, 0.45);
+  --code-bg: #f6f8fa;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.57;
+  overflow-x: hidden;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+#stream-container {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px 24px 80px 24px;
+  min-height: 100%;
+}
+
+/* Turns Container */
+.turn-container {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+}
+
+/* User Message Bubble */
+.user-row {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.message-bubble.user-bubble {
+  background: var(--bg-bubble-user);
+  color: #ffffff;
+  border-radius: 18px;
+  padding: 8px 14px;
+  max-width: min(80%, 580px);
+  word-break: break-word;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  font-size: 14px;
+  line-height: 1.57;
+  letter-spacing: -0.01em;
+}
+
+/* Assistant Message Bubble */
+.assistant-row {
+  display: flex;
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.message-bubble.assistant-bubble {
+  background: var(--bg-bubble-agent);
+  color: var(--text-primary);
+  border: 0.5px solid var(--border-subtle);
+  border-radius: 18px;
+  padding: 10px 16px;
+  max-width: min(85%, 620px);
+  word-break: break-word;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* DeepSeek Signature Reasoning Card */
+.dsh-card.reasoning-card {
+  background: var(--bg-card-subtle);
+  border: 0.5px solid var(--border-subtle);
+  border-radius: 12px;
+  overflow: hidden;
+  max-width: min(90%, 650px);
+  transition: all 0.2s ease;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.card-header:hover {
+  background: var(--border-subtle);
+}
+
+.brain-icon {
+  font-size: 13px;
+}
+
+.card-header .title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsh-accent);
+}
+
+.card-header .status-tag {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-left: 4px;
+}
+
+.card-header .chevron {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  transition: transform 0.2s ease;
+}
+
+.card-content {
+  padding: 10px 14px;
+  border-top: 0.5px solid var(--border-subtle);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* DSH Tool Call Card */
+.dsh-card.tool-card {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-subtle);
+  border-radius: 10px;
+  overflow: hidden;
+  max-width: min(90%, 650px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+}
+
+.tool-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  background: var(--bg-card-subtle);
+  border-bottom: 0.5px solid var(--border-subtle);
+  font-size: 11px;
+}
+
+.tool-name {
+  font-family: ui-monospace, monospace;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tool-status {
+  margin-left: auto;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--dsh-success);
+}
+
+.tool-body {
+  padding: 10px 12px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  background: var(--code-bg);
+  overflow-x: auto;
+}
+
+/* DSH Approval Dialog Card */
+.dsh-approval-card {
+  background: var(--bg-card);
+  border: 1px solid var(--dsh-warning);
+  border-radius: 14px;
+  padding: 14px 16px;
+  max-width: min(90%, 600px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.approval-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dsh-warning);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.approval-command {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  padding: 8px 10px;
+  background: var(--code-bg);
+  border-radius: 6px;
+  border: 0.5px solid var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.btn {
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.btn-reject {
+  background: var(--bg-card-subtle);
+  color: var(--text-secondary);
+}
+
+.btn-reject:hover {
+  background: rgba(236, 19, 19, 0.15);
+  color: var(--dsh-danger);
+}
+
+.btn-approve {
+  background: var(--dsh-accent);
+  color: #ffffff;
+}
+
+.btn-approve:hover {
+  background: var(--dsh-accent-hover);
+}
+
+/* Live Blinking Cursor */
+.cursor-blink {
+  display: inline-block;
+  width: 6px;
+  height: 14px;
+  background: var(--dsh-accent);
+  margin-left: 4px;
+  vertical-align: middle;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
