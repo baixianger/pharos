@@ -6,6 +6,9 @@ members = [
     "crates/pharos-protocol",
     "crates/pharos-store-schema",
     "crates/pharos-api",
+    "crates/pharos-thread",
+    "crates/pharos-grokbot",
+    "crates/pharos-cli",
 ]
 resolver = "3"
 
@@ -19,6 +22,8 @@ pharos-agent-core = { path = "crates/agent-core" }
 pharos-protocol = { path = "crates/pharos-protocol" }
 pharos-store-schema = { path = "crates/pharos-store-schema" }
 pharos-api = { path = "crates/pharos-api" }
+pharos-thread = { path = "crates/pharos-thread" }
+pharos-grokbot = { path = "crates/pharos-grokbot" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 time = { version = "0.3", features = ["formatting", "parsing"] }
