@@ -1,5 +1,5 @@
 ---
-summary: 2026-11-10 PM 队列完成：HITL blocked(proxy)；DSH/Codex product live 通过；跨机 Runtime hello mini→air；桌面 DSH 接线已测并提交。
+summary: 2026-11-10 PM+：human-proxy webhook 通道已加；Peer HITL 超时改 45m；复跑进行中。
 ---
 
 # 活跃任务交接
@@ -337,3 +337,5 @@ STATUS: desktop-dsh-wiring done
 STATUS: ALL-DONE
 
 STATUS: peer-hitl-rerun blocked human-proxy .done.md timeout again
+
+STATUS: human-proxy-webhook landed; peer-hitl-rerun-45m pending

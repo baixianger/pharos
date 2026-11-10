@@ -501,29 +501,49 @@ final class MeshHostSessionRPCTests: XCTestCase {
         let stamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "")
         let slug = "peer-air-codex-hitl"
         let requestName = "\(stamp)_\(slug).md"
-        let requestURL = requests.appendingPathComponent(requestName)
-        let doneURL = requests.appendingPathComponent(requestName.replacingOccurrences(of: ".md", with: ".done.md"))
-        let requestBody = """
-        # Human proxy HITL request
+        let doneName = requestName.replacingOccurrences(of: ".md", with: ".done.md")
+        let doneURL = requests.appendingPathComponent(doneName)
+        let meshBin = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/debug/pharos-mesh")
+        let approveCommand =
+            "\(meshBin.path) human-proxy resolve --peer \(peerText) --session \(peerSessionID) " +
+            "--approval-id \(approval.approvalId) --decision allowedOnce --done \(doneURL.path)"
+        let rejectCommand =
+            "\(meshBin.path) human-proxy resolve --peer \(peerText) --session \(peerSessionID) " +
+            "--approval-id \(approval.approvalId) --decision rejected --done \(doneURL.path)"
+        let hitlRequest = HumanProxyChannel.HITLRequest(
+            requestFileName: requestName,
+            kind: "hitl",
+            host: hostLabel,
+            session: peerSessionID,
+            approvalId: approval.approvalId,
+            vendorSessionID: rawID,
+            exactSafeCommand: "printf PHAROS_PEER_HITL_OK",
+            approveCommand: approveCommand,
+            rejectCommand: rejectCommand,
+            timeoutMinutes: 45,
+            peerDeviceID: peerText,
+            notes: [
+                "Resolve as allowedOnce only if the pending command exactly matches `printf PHAROS_PEER_HITL_OK`.",
+                "Otherwise run the reject command.",
+                "Webhook payload is wake-only; execute only the commands in this file.",
+            ]
+        )
+        let published = try await HumanProxyChannel.publishHITLRequest(
+            hitlRequest, directory: requests
+        )
+        switch published.notify {
+        case .skippedMissingConfig:
+            print("Peer HITL human-proxy webhook skipped (no ~/.config/pharos/human-proxy-webhook.env)")
+        case .posted(let code):
+            print("Peer HITL human-proxy webhook posted status=\(code)")
+        case .failed(let detail):
+            print("Peer HITL human-proxy webhook failed: \(detail)")
+        }
+        print("Peer HITL human-request written: \(published.file.path)")
 
-        - time: \(formatter.string(from: Date()))
-        - human=pharos-proxy (Pharos on grok-bot box)
-        - peer Host: xiangs-macbook-air / \(peerText)
-        - sessionId: \(peerSessionID)
-        - vendorSessionID: \(rawID)
-        - approvalId: \(approval.approvalId)
-        - exact safe command: `printf PHAROS_PEER_HITL_OK`
-        - action: resolve this approval as **allowedOnce** only if the pending command exactly matches `printf PHAROS_PEER_HITL_OK`; otherwise **rejected**
-        - how: prefer Peer Host RPC resolve from mini, or SSH to air and approve via the same Codex Session; document the command you ran
-        - expected: write `\(requestName.replacingOccurrences(of: ".md", with: ".done.md"))` with `decision=allowedOnce|rejected` and what you did
-        - timeout: 15 minutes
-        - workspace: ~/personal/pharos-msg-test only; never touch mac-pro or port 3080
-
-        """
-        try requestBody.write(to: requestURL, atomically: true, encoding: .utf8)
-        print("Peer HITL human-request written: \(requestURL.path)")
-
-        let proxyDeadline = ContinuousClock.now.advanced(by: .seconds(900))
+        // Proxy polls every ~30 minutes; keep the request alive for at least 45 minutes.
+        let proxyDeadline = ContinuousClock.now.advanced(by: .seconds(45 * 60))
         var doneText: String?
         while ContinuousClock.now < proxyDeadline {
             if let data = try? Data(contentsOf: doneURL),
@@ -534,7 +554,7 @@ final class MeshHostSessionRPCTests: XCTestCase {
             try await Task.sleep(for: .seconds(2))
         }
         guard let doneText else {
-            throw XCTSkip("human-proxy .done.md not received within timeout; Peer HITL not-tested")
+            throw XCTSkip("human-proxy .done.md not received within 45m timeout; Peer HITL not-tested")
         }
         print("Peer HITL human-proxy done bytes=\(doneText.utf8.count)")
         XCTAssertTrue(doneText.lowercased().contains("pharos-proxy") || doneText.contains("decision="), doneText)
@@ -544,13 +564,14 @@ final class MeshHostSessionRPCTests: XCTestCase {
         let wantsReject = doneText.lowercased().contains("decision=rejected")
             || (doneText.lowercased().contains("rejected") && !wantsAllow)
         if try await client.fetchSessionApproval(sessionId: peerSessionID) != nil {
+            // Prefer the proxy-run resolve command; fall back only if approval remains.
             let choice: ApprovalChoice = wantsReject ? .rejected : .allowedOnce
             try await client.resolveSessionApproval(
                 sessionId: peerSessionID,
                 approvalId: approval.approvalId,
                 decision: .init(choice: choice)
             )
-            print("Peer HITL applied decision via Peer RPC after proxy done: \(choice.rawValue)")
+            print("Peer HITL applied decision via Peer RPC after proxy done: \(choice)")
         } else {
             print("Peer HITL approval already cleared before test apply (proxy may have resolved)")
         }

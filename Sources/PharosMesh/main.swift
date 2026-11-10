@@ -1,5 +1,9 @@
 import Foundation
+import PharosClientKit
 import PharosMeshCore
+import PharosMeshIdentity
+import PharosMeshProtocol
+import PharosMeshReplica
 import PharosRuntime
 import PharosMeshLifecycle
 #if canImport(Darwin)
@@ -66,6 +70,9 @@ private enum MeshHeadlessCLI {
 
         case "node":
             return runNode(Array(args.dropFirst()))
+
+        case "human-proxy":
+            return await runHumanProxy(Array(args.dropFirst()))
 
         case "capabilities":
             return printResponse(MeshClient.send(MeshRequest(cmd: "capabilities")))
@@ -2124,6 +2131,108 @@ private enum MeshHeadlessCLI {
         }
     }
 
+    /// Resolve a Peer Host HITL approval for human=pharos-proxy and write `.done.md`.
+    /// Exact approve/reject commands in request files should invoke this entrypoint.
+    private static func runHumanProxy(_ args: [String]) async -> Int32 {
+        guard let sub = args.first, sub == "resolve" else {
+            return usageError(
+                "human-proxy resolve --peer DEVICE-UUID --session SESSION-ID " +
+                "--approval-id ID --decision allowedOnce|rejected --done ABSOLUTE-PATH.md"
+            )
+        }
+        guard let peerText = option("--peer", in: args),
+              let peerUUID = UUID(uuidString: peerText),
+              let sessionID = option("--session", in: args), !sessionID.isEmpty,
+              let approvalID = option("--approval-id", in: args), !approvalID.isEmpty,
+              let decisionText = option("--decision", in: args),
+              let donePath = option("--done", in: args), donePath.hasPrefix("/") else {
+            return usageError(
+                "human-proxy resolve --peer DEVICE-UUID --session SESSION-ID " +
+                "--approval-id ID --decision allowedOnce|rejected --done ABSOLUTE-PATH.md"
+            )
+        }
+        let choice: ApprovalChoice
+        switch decisionText {
+        case "allowedOnce": choice = .allowedOnce
+        case "rejected": choice = .rejected
+        default:
+            return usageError("human-proxy resolve --decision must be allowedOnce or rejected")
+        }
+        do {
+            let replica: MeshLocalReplica
+            if let path = option("--data-dir", in: args) {
+                guard path.hasPrefix("/") else {
+                    return usageError("human-proxy resolve --data-dir requires an absolute path")
+                }
+                replica = try MeshLocalReplica.openHeadless(
+                    dataDirectory: URL(fileURLWithPath: path, isDirectory: true)
+                )
+            } else {
+                replica = try MeshLocalReplica.openDefault(headless: true)
+            }
+            guard let group = try replica.activeTrustGroup(),
+                  let epoch = try await replica.store.membershipEpoch(for: group),
+                  try replica.activeRoles().contains(.controller) else {
+                FileHandle.standardError.write(
+                    Data("error: local product replica is not an active controller\n".utf8)
+                )
+                return 1
+            }
+            let peerID = MeshDeviceID(rawValue: peerUUID)
+            let peers = try await replica.store.trustedDevices(in: group, membershipEpoch: epoch)
+            guard peers.contains(where: {
+                $0.descriptor.id == peerID && $0.descriptor.roles.contains(.host)
+            }) else {
+                FileHandle.standardError.write(
+                    Data("error: peer is not a trusted host in the active trust group\n".utf8)
+                )
+                return 1
+            }
+            let localClient = try DistributedMeshLocalServiceClient(dataDirectory: replica.rootURL)
+            let transport = DistributedMeshBackgroundSessionTransport(
+                client: localClient, peerDeviceID: peerID
+            )
+            let prefix = "peer:\(peerUUID.uuidString.lowercased()):"
+            let client = MeshRemoteHostSessionClient(
+                hostDeviceID: peerID, group: group, membershipEpoch: epoch,
+                rpcClient: MeshReplicaRPCClient(transport: transport, requestTimeoutMilliseconds: 60_000),
+                sessionIDPrefix: prefix
+            )
+            if try await client.fetchSessionApproval(sessionId: sessionID) != nil {
+                try await client.resolveSessionApproval(
+                    sessionId: sessionID,
+                    approvalId: approvalID,
+                    decision: .init(choice: choice)
+                )
+            }
+            let doneURL = URL(fileURLWithPath: donePath)
+            try FileManager.default.createDirectory(
+                at: doneURL.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            let decisionLabel = choice == .allowedOnce ? "allowedOnce" : "rejected"
+            let body = """
+            # Done: \(decisionLabel)
+
+            - time: \(ISO8601DateFormatter().string(from: Date()))
+            - human=pharos-proxy
+            - decision=\(decisionLabel)
+            - peer: \(peerText)
+            - sessionId: \(sessionID)
+            - approvalId: \(approvalID)
+            - via: pharos-mesh human-proxy resolve
+
+            """
+            try body.write(to: doneURL, atomically: true, encoding: .utf8)
+            print("ok human-proxy \(decisionLabel)")
+            return 0
+        } catch {
+            FileHandle.standardError.write(
+                Data("error: \(error.localizedDescription)\n".utf8)
+            )
+            return 1
+        }
+    }
+
     private static func usageError(_ detail: String) -> Int32 {
         FileHandle.standardError.write(Data("usage: pharos-mesh \(detail)\n".utf8))
         return 2
@@ -2137,6 +2246,7 @@ private enum MeshHeadlessCLI {
       node install [--endpoint HOST:PORT]
       node uninstall
       node status
+      human-proxy resolve --peer DEVICE-UUID --session SESSION-ID --approval-id ID --decision allowedOnce|rejected --done ABSOLUTE-PATH.md
       capabilities [--endpoint HOST:PORT]
       pair --endpoint HOST:PORT
       pair invite|accept|redeem|list|revoke (signed distributed trust)

@@ -96,7 +96,11 @@ let packageTargets: [Target] = {
             name: "PharosMesh",
             dependencies: [
                 "PharosMeshCore",
+                "PharosMeshIdentity",
+                "PharosMeshProtocol",
+                "PharosMeshReplica",
                 "PharosAgentCore",
+                "PharosClientKit",
                 "PharosRuntime",
                 "PharosCodexAdapter",
                 "PharosMeshLifecycle",
