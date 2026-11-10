@@ -17,6 +17,8 @@ members = [
     # S4 web-api
     "crates/pharos-http",
     "crates/pharos-web",
+    # S5c adapter-agy (wiring-local — captain owns permanent member list)
+    "crates/pharos-adapter-agy",
 ]
 resolver = "3"
 
