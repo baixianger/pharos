@@ -28,7 +28,7 @@ public final class DshWebHttpWsTransport: DshTransport, @unchecked Sendable {
 
     public init() {}
 
-    private func getCookie(port: Int, token: String) async throws -> String {
+    func getCookie(port: Int, token: String) async throws -> String {
         let existing = lock.withLock { cachedCookie[port] }
         if let existing = existing {
             return existing
@@ -116,17 +116,24 @@ public final class DshWebHttpWsTransport: DshTransport, @unchecked Sendable {
         if let sid = res["sessionId"] as? String {
             return sid
         }
-        return "session-\(UUID().uuidString.prefix(8))"
+        throw PharosClientError.operationFailed("dsh session/create returned no session ID")
     }
 
     public func sendPrompt(port: Int, token: String, sessionId: String, prompt: String, mode: PromptMode) async throws -> [String: Any] {
-        let reqArgs: [String: Any] = [
-            "requestId": UUID().uuidString,
-            "sessionId": sessionId,
-            "mode": mode.rawValue,
-            "content": [["type": "text", "text": prompt]]
-        ]
+        try await sendPromptContent(port: port, token: token, sessionId: sessionId, requestId: UUID().uuidString,
+                                    content: [["type": "text", "text": prompt]], mode: mode)
+    }
+
+    public func sendPromptContent(port: Int, token: String, sessionId: String, requestId: String,
+                                  content: [[String: Any]], mode: PromptMode) async throws -> [String: Any] {
+        let reqArgs: [String: Any] = ["requestId": requestId, "sessionId": sessionId, "mode": mode.rawValue, "content": content]
         return try await rpcCall(port: port, token: token, method: "session/prompt", args: ["request": reqArgs])
+    }
+
+    public func stageFile(port: Int, token: String, sessionId: String, data: Data, name: String) async throws -> [String: Any] {
+        try await rpcCall(port: port, token: token, method: "fileUploads/upload", args: [
+            "agentId": sessionId, "request": ["data": data.base64EncodedString(), "name": name]
+        ])
     }
 
     public func selectModel(port: Int, token: String, sessionId: String, model: String) async throws {
@@ -139,18 +146,125 @@ public final class DshWebHttpWsTransport: DshTransport, @unchecked Sendable {
         ])
     }
 
+    public func selectSessionModel(port: Int, token: String, sessionId: String, provider: String, model: String) async throws -> [String: Any] {
+        let result = try await rpcCall(port: port, token: token, method: "session/selectModel", args: [
+            "request": ["sessionId": sessionId, "provider": provider, "model": model]
+        ])
+        guard let selected = result["selected"] as? [String: Any],
+              selected["provider"] as? String == provider, selected["model"] as? String == model else {
+            throw PharosClientError.operationFailed("DSH did not confirm the selected model")
+        }
+        return selected
+    }
+
     public func executeCommand(port: Int, token: String, sessionId: String, command: String) async throws {
-        _ = try await rpcCall(port: port, token: token, method: "commands/execute", args: [
+        _ = try await executeCommandResponse(port: port, token: token, sessionId: sessionId, command: command)
+    }
+
+    public func executeCommandResponse(port: Int, token: String, sessionId: String, command: String) async throws -> [String: Any] {
+        let response = try await rpcCall(port: port, token: token, method: "commands/execute", args: [
             "agentId": sessionId,
             "line": command,
             "submittedAttachments": []
         ])
+        guard let result = response["result"] as? [String: Any], let kind = result["kind"] as? String else {
+            throw PharosClientError.operationFailed("DSH command returned an invalid result")
+        }
+        guard kind == "success" else {
+            throw PharosClientError.operationFailed((result["text"] as? String) ?? "DSH command failed (\(kind))")
+        }
+        return response
     }
 
     public func cancelSession(port: Int, token: String, sessionId: String) async throws {
         _ = try await rpcCall(port: port, token: token, method: "session/cancel", args: [
             "request": ["sessionId": sessionId]
         ])
+    }
+
+    /// Read the Host's advertised provider/model directory without changing selection.
+    public func modelCatalog(port: Int, token: String) async throws -> [String: Any] {
+        try await rpcCall(port: port, token: token, method: "session/modelCatalog", args: [:])
+    }
+
+    public func permissionCatalog(port: Int, token: String) async throws -> [String: Any] {
+        try await rpcCall(port: port, token: token, method: "permissionPresets/catalog", args: [:])
+    }
+
+    /// Read Session summaries and their projections; no Agent prompt is started.
+    public func sessionList(port: Int, token: String) async throws -> [String: Any] {
+        try await rpcCall(port: port, token: token, method: "session/list", args: ["_request": [String: Any]()])
+    }
+
+    public func sessionPage(port: Int, token: String, sessionId: String, beforeSeq: Int? = nil, throughSeq: Int? = nil) async throws -> [String: Any] {
+        var request: [String: Any] = [
+            "address": ["kind": "session", "sessionId": sessionId],
+            "maxMessages": 100
+        ]
+        if let beforeSeq { request["beforeSeq"] = beforeSeq }
+        if let throughSeq { request["throughSeq"] = throughSeq }
+        return try await rpcCall(port: port, token: token, method: "session/page", args: ["request": request])
+    }
+
+    /// Open the Host-wide interaction stream and wait for its ownership handshake.
+    public func observeInteractions(port: Int, token: String) async throws -> (String, AsyncStream<BackendWireEvent>) {
+        let cookie = try await getCookie(port: port, token: token)
+        guard let url = URL(string: "ws://127.0.0.1:\(port)/api/remote.mux") else {
+            throw PharosClientError.operationFailed("Invalid DSH interaction URL")
+        }
+        var request = URLRequest(url: url)
+        request.setValue(cookie, forHTTPHeaderField: "Cookie")
+        let socket = URLSession.shared.webSocketTask(with: request)
+        socket.resume()
+        let open: [String: Any] = ["type": "open", "streamId": "interactions", "endpoint": "$events", "payload": ["args": [:]]]
+        do {
+            let data = try JSONSerialization.data(withJSONObject: open)
+            try await socket.send(.string(String(decoding: data, as: UTF8.self)))
+            let first = try await socket.receive()
+            guard let envelope = Self.decodeWebSocket(first), envelope["type"] as? String == "item",
+                  let value = envelope["value"] as? [String: Any], value["type"] as? String == "ready",
+                  let clientID = value["clientId"] as? String, !clientID.isEmpty else {
+                throw PharosClientError.operationFailed("DSH interaction stream did not become ready")
+            }
+            let stream = AsyncStream<BackendWireEvent> { continuation in
+                let reader = Task {
+                    do {
+                        while !Task.isCancelled {
+                            let message = try await socket.receive()
+                            guard let envelope = Self.decodeWebSocket(message) else { continue }
+                            if envelope["type"] as? String == "item", let value = envelope["value"] as? [String: Any] {
+                                continuation.yield(BackendWireEvent(value))
+                            } else if envelope["type"] as? String == "end" || envelope["type"] as? String == "error" { break }
+                        }
+                    } catch { }
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in reader.cancel(); socket.cancel(with: .normalClosure, reason: nil) }
+            }
+            return (clientID, stream)
+        } catch {
+            socket.cancel(with: .goingAway, reason: nil)
+            throw error
+        }
+    }
+
+    public func interactionResult(port: Int, token: String, clientID: String, eventID: String,
+                                  outcomeData: Data) async throws {
+        guard let outcome = try JSONSerialization.jsonObject(with: outcomeData) as? [String: Any] else {
+            throw PharosClientError.operationFailed("Invalid DSH interaction outcome")
+        }
+        _ = try await rpcCall(port: port, token: token, method: "$events/result",
+                              args: ["clientId": clientID, "eventId": eventID, "outcome": outcome])
+    }
+
+    private static func decodeWebSocket(_ message: URLSessionWebSocketTask.Message) -> [String: Any]? {
+        let data: Data
+        switch message {
+        case .string(let value): data = Data(value.utf8)
+        case .data(let value): data = value
+        @unknown default: return nil
+        }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
     public func observeMuxStream(port: Int, token: String, sessionId: String) -> AsyncStream<BackendWireEvent> {
@@ -408,7 +522,20 @@ public actor DshBackendAdapter: PharosAgentBackendAdapter {
             emit(event: .turnCompleted(turn), for: sessionId)
         case "event":
             if let ev = event["event"] as? [String: Any], let evType = ev["type"] as? String {
-                if evType == "turn/end" {
+                if evType == "goal/change", let data = ev["data"] as? [String: Any] {
+                    if data["operation"] as? String == "clear" {
+                        emit(event: .sessionGoalUpdated(sessionId: sessionId, goal: nil), for: sessionId)
+                    } else if let goal = SessionProgressMapping.goal(data["goal"] as? [String: Any], statusKey: "phase") {
+                        emit(event: .sessionGoalUpdated(sessionId: sessionId, goal: goal), for: sessionId)
+                    }
+                } else if evType == "todo/write" {
+                    let data = ev["data"] as? [String: Any]
+                    if let todos = SessionProgressMapping.todos(data?["todos"], textKey: "content") {
+                        emit(event: .sessionTodosUpdated(sessionId: sessionId, todos: todos), for: sessionId)
+                    }
+                } else if evType == "turn/start" {
+                    emit(event: .sessionTodosUpdated(sessionId: sessionId, todos: []), for: sessionId)
+                } else if evType == "turn/end" {
                     let data = ev["data"] as? [String: Any]
                     let turnNum = data?["turn"] as? Int ?? 1
                     let reasonObj = data?["reason"] as? [String: Any]
@@ -519,7 +646,10 @@ public actor DshBackendAdapter: PharosAgentBackendAdapter {
     }
 
     public func resolveApproval(sessionId: String, approvalId: String, decision: ApprovalDecision) async throws {
-        emit(event: .approvalResolved(approvalId: approvalId, decision: decision), for: sessionId)
+        guard activeSessions[sessionId] != nil else {
+            throw PharosClientError.sessionNotFound(sessionId)
+        }
+        throw PharosClientError.operationFailed("dsh approval response is not connected")
     }
 
     public func deliverThreadMessage(threadId: String, message: ClientThreadMessage) async throws -> DeliveryReceiptState {

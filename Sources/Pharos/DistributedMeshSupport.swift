@@ -3,6 +3,7 @@ import Observation
 import PharosMeshControl
 import PharosMeshCore
 import PharosMeshLifecycle
+import PharosRuntime
 
 /// Product builds use the proven Tailscale + Broker/SSH path by default. The
 /// signed device-to-device replica remains available as an explicit opt-in so
@@ -333,6 +334,20 @@ final class DistributedMeshSupport {
                 )
             }
             let hostEndpointID = try replica.identity.endpointID()
+            let localSessions = HostLocalSessionService()
+            let threadBinder = MeshHostThreadBinder(
+                inventory: { try await localSessions.fetchSessions() },
+                runtime: { method, params in
+                    try AgyThreadRuntimeBridge.localRuntime(method, params)
+                }
+            )
+            let hostSessions = MeshHostSessionServer(
+                hostDeviceID: replica.identity.deviceID,
+                service: localSessions,
+                actionJournalURL: replica.rootURL.appendingPathComponent("host-session-actions.json"),
+                threadBinder: threadBinder
+            )
+            await hostSessions.start()
             let router = MeshReplicaRPCServer(
                 store: replica.store, hostIdentity: replica.identity,
                 localAuthorRoles: try replica.activeRoles(),
@@ -368,6 +383,9 @@ final class DistributedMeshSupport {
                         )
                     }()
                 },
+                hostRuntimeHelloProvider: {
+                    try await MeshHostRuntimeBridge.hello(hostDeviceID: replica.identity.deviceID)
+                },
                 hostCommandHandler: { command in
                     let outcome = await executor.execute(command)
                     if command.action == .stop,
@@ -380,7 +398,10 @@ final class DistributedMeshSupport {
                         )
                     }
                     return outcome
-                }
+                },
+                hostSessionQueryHandler: { try await hostSessions.handleQuery($0) },
+                hostSessionActionHandler: { try await hostSessions.handleAction($0) },
+                hostSessionEventsHandler: { try await hostSessions.handleEvents($0) }
             )
             await endpoint.startServing { request, remoteEndpointID in
                 if let pairing = try? MeshTrustPairingRPCRequest.decode(
@@ -730,10 +751,36 @@ final class DistributedMeshSupport {
         let registry = try requireChatRegistry()
         let author = try await registry.localHumanMember(in: room)
         let targetMemberIDs = try await registry.memberIDs(in: room, matching: to)
-        return try await registry.send(
+        let message = try await registry.send(
             room: room, fromMemberID: author.id, text: text,
             toMemberIDs: targetMemberIDs,
             replyTo: replyTo, attachments: attachments
+        )
+        // Host-owned Runtime enqueue for local bound members. Unknown /
+        // rejected routes stay visible via message target metadata; this path
+        // never opens a legacy Broker mailbox or poke wakeup.
+        if !targetMemberIDs.isEmpty {
+            let members = Dictionary(
+                uniqueKeysWithValues: try await chatMemberInfos(in: room).map { ($0.id, $0) }
+            )
+            for targetID in targetMemberIDs {
+                guard let target = members[targetID] else { continue }
+                _ = MeshRuntimeDeliveryBridge.submit(message: message, target: target)
+            }
+        }
+        return message
+    }
+
+    func replyOnceChatMessage(
+        room name: String, memberID: String, originalMessageID: String, text: String
+    ) async throws -> MeshMsg {
+        guard let replica = localReplica, let group = activeTrustGroupID else {
+            throw DistributedMeshSupportError.noActiveTrustGroup
+        }
+        let agent = DistributedAgentChat(replica: replica, group: group)
+        return try await agent.replyOnce(
+            room: name, memberID: memberID,
+            originalMessageID: originalMessageID, text: text
         )
     }
 
@@ -742,6 +789,17 @@ final class DistributedMeshSupport {
     ) async throws {
         try await requireChatRegistry().renameMember(
             room: room, memberID: memberID, to: nick
+        )
+    }
+
+    /// Join an explicitly Host-bound member into a distributed room. Kind /
+    /// host / Session metadata remain Host-local observations; this only
+    /// writes the durable nick + memberID membership.
+    func joinChatMember(
+        _ memberID: String, nick: String, in room: MeshRoomInfo
+    ) async throws {
+        try await requireChatRegistry().join(
+            room: room, nick: nick, memberID: memberID
         )
     }
 
@@ -1170,6 +1228,30 @@ final class DistributedMeshSupport {
         return try DistributedMeshLocalServiceClient(
             dataDirectory: replica.rootURL
         )
+    }
+
+    /// Construct a Session client only for an explicitly selected, currently
+    /// trusted Host. Display names and SSH aliases are not device identities.
+    func remoteSessionClient(for deviceID: MeshDeviceID,
+                             sessionIDPrefix: String) async throws -> MeshRemoteHostSessionClient {
+        guard let replica = localReplica, let group = activeTrustGroupID,
+              let epoch = try await replica.store.membershipEpoch(for: group),
+              try replica.activeRoles().contains(.controller),
+              let peer = try await replica.store.trustedDevices(in: group, membershipEpoch: epoch)
+                .first(where: { $0.descriptor.id == deviceID && $0.descriptor.roles.contains(.host) }) else {
+            throw DistributedMeshSupportError.networkNotReady
+        }
+        let transport: any MeshTransport
+        if let runtime {
+            transport = IrohMeshTransport(runtime: runtime, remote: MeshIrohEndpointAddress(
+                endpointID: peer.descriptor.endpointID, ticket: peer.addressTicket))
+        } else {
+            transport = try DistributedMeshBackgroundSessionTransport(
+                client: requireBackgroundServiceClient(), peerDeviceID: deviceID)
+        }
+        return MeshRemoteHostSessionClient(hostDeviceID: deviceID, group: group,
+            membershipEpoch: epoch, rpcClient: MeshReplicaRPCClient(transport: transport, requestTimeoutMilliseconds: 45_000),
+            sessionIDPrefix: sessionIDPrefix)
     }
 
     private func pruneExpiredRemotePresence() {

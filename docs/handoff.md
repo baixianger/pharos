@@ -1,5 +1,5 @@
 ---
-summary: 2026-11-10 PM：Peer HITL blocked；DSH/Codex product live 通过；跨机 Runtime hello mini→air 通过；桌面 DSH 待提交。
+summary: 2026-11-10 PM 队列完成：HITL blocked(proxy)；DSH/Codex product live 通过；跨机 Runtime hello mini→air；桌面 DSH 接线已测并提交。
 ---
 
 # 活跃任务交接
@@ -11,6 +11,11 @@ summary: 2026-11-10 PM：Peer HITL blocked；DSH/Codex product live 通过；跨
 **STATUS: isolated-codex-product done**
 
 **STATUS: cross-host-runtime done hello mini→air; submit Peer RPC not-tested; box not-tested**
+
+**STATUS: desktop-dsh-wiring done**
+
+**Phase (5) 桌面 DSH 接线（2026-11-10 12:25）**：**done**（受控测试）。`DesktopPharosClientService.startExplicitLocalDshThreadBridges` 在 product mode 对本机显式绑定的 DSH 启动 `DshThreadRuntimeBridge`→`replyOnceChatMessage`；`testDshThreadBindingRequiresExactLocalSessionAndMember` 与 `testDshHostProductPathUsesReplyOnceWithoutBroker` **通过**。未改 `DshBackendAdapter` 为假投递（反而去掉伪造 session ID）。证据：`internal/evidence/2026-11-10_phase-e-desktop-dsh-wiring.log`。
+
 
 **Phase (4) 跨机 Runtime（2026-11-10 12:24）**：在 air `peer-phase-a` 部署 `pharos-meshd` 并让 `sync-serve --host` 指向其 socket 后，`distributed host-runtime-hello --peer 24C6F9B2-…` **mini→air 成功**（service=`me.pai.pharos.agent-runtime`，含 delivery-queue / member-routed-delivery）。air→mini CLI 探测因 Iroh `duplicate connection` 失败（与已有 sync-serve 连接冲突）→ 反向 **not-tested**。Peer 协议目前仅有 `host.runtime.hello.v1`，**无**跨机 `delivery.submit` RPC → 真实跨机投递 **not-tested**。box/grok-bot：Linux 无 `pharos-meshd`/Swift Host → **not-tested**。证据：`internal/evidence/2026-11-10_phase-c-cross-host-runtime.log`。
 
@@ -324,3 +329,7 @@ STATUS: isolated-dsh-product done
 STATUS: isolated-codex-product done
 
 STATUS: cross-host-runtime done hello mini→air; submit Peer RPC not-tested; box not-tested
+
+STATUS: desktop-dsh-wiring done
+
+STATUS: ALL-DONE
