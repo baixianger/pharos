@@ -2466,6 +2466,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "pharos-goals"
+version = "0.1.0"
+dependencies = [
+ "pharos-api",
+ "pharos-protocol",
+ "pharos-store-schema",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "uuid",
+]
+
+[[package]]
 name = "pharos-grokbot"
 version = "0.1.0"
 dependencies = [
@@ -2477,6 +2493,23 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "ureq",
+ "uuid",
+]
+
+[[package]]
+name = "pharos-hitl"
+version = "0.1.0"
+dependencies = [
+ "pharos-api",
+ "pharos-codex-adapter",
+ "pharos-protocol",
+ "pharos-store-schema",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
  "ureq",
  "uuid",
 ]
@@ -2558,6 +2591,24 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "pharos-session"
+version = "0.1.0"
+dependencies = [
+ "pharos-api",
+ "pharos-codex-adapter",
+ "pharos-goals",
+ "pharos-hitl",
+ "pharos-protocol",
+ "pharos-store-schema",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
  "uuid",
 ]
 
