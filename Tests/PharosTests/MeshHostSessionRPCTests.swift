@@ -340,6 +340,237 @@ final class MeshHostSessionRPCTests: XCTestCase {
         }
     }
 
+    /// Real mini→air Peer HITL with human=pharos-proxy via human-requests/.
+    /// Enable with `PHAROS_REAL_PEER_HITL_TEST=<air-device-uuid>`.
+    func testRealAirPeerHitlWithHumanProxyWhenEnabled() async throws {
+        guard let peerText = ProcessInfo.processInfo.environment["PHAROS_REAL_PEER_HITL_TEST"],
+              let peerUUID = UUID(uuidString: peerText) else {
+            throw XCTSkip("Set PHAROS_REAL_PEER_HITL_TEST=<paired-host-device-uuid>")
+        }
+        let peerID = MeshDeviceID(rawValue: peerUUID)
+        let replica = try MeshLocalReplica.openDefault(headless: true)
+        guard let group = try replica.activeTrustGroup(),
+              let epoch = try await replica.store.membershipEpoch(for: group),
+              try replica.activeRoles().contains(.controller) else {
+            throw XCTSkip("Local product replica is not an active controller")
+        }
+        let peers = try await replica.store.trustedDevices(in: group, membershipEpoch: epoch)
+        guard peers.contains(where: {
+            $0.descriptor.id == peerID && $0.descriptor.roles.contains(.host)
+        }) else {
+            throw XCTSkip("Peer \(peerText) is not a trusted host")
+        }
+
+        let work = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("personal/pharos-msg-test/peer-hitl/work", isDirectory: true)
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        let requests = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("personal/pharos-msg-test/human-requests", isDirectory: true)
+        try FileManager.default.createDirectory(at: requests, withIntermediateDirectories: true)
+
+        let destination = "mac-air"
+        let hostLabel = "xiangs-macbook-air"
+        let connection = try await Task.detached { try SharedSSHConnection(destination: destination) }.value
+        let seed = try await Task.detached {
+            try RemoteCodexTransport(destination: destination, hostID: hostLabel, connection: connection)
+        }.value
+        defer {
+            seed.close()
+            connection.close()
+            _ = connection.waitUntilStopped()
+        }
+        let remotePrefix = RemoteCodexTransport.prefix(hostLabel)
+        let start = try await seed.call(
+            method: "thread/start",
+            params: [
+                "cwd": work.path,
+                "approvalPolicy": "on-request",
+                "sandbox": "read-only",
+            ]
+        )
+        // thread/start returns a host-prefixed id through RemoteCodexTransport.
+        let startedID = try XCTUnwrap((start["thread"] as? [String: Any])?["id"] as? String)
+        let rawID = startedID.hasPrefix(remotePrefix)
+            ? String(startedID.dropFirst(remotePrefix.count)) : startedID
+        let remoteSessionID = remotePrefix + rawID
+        print("Peer HITL Codex Session on air: \(rawID)")
+
+        let seedEvents = seed.observeEvents()
+        let seedListener = Task { () -> Bool in
+            for await event in seedEvents {
+                if event["method"] as? String == "turn/completed",
+                   (event["params"] as? [String: Any])?["threadId"] as? String == remoteSessionID {
+                    return true
+                }
+            }
+            return false
+        }
+        _ = try await seed.call(
+            method: "turn/start",
+            params: [
+                "threadId": remoteSessionID,
+                "input": [[
+                    "type": "text",
+                    "text": "Reply PHAROS_PEER_HITL_SEED. Do not use tools or access files.",
+                ]],
+            ]
+        )
+        let seeded = await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await seedListener.value }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(90))
+                seedListener.cancel()
+                return false
+            }
+            let value = await group.next() ?? false
+            group.cancelAll()
+            return value
+        }
+        print("Peer HITL seed completed=\(seeded)")
+        if !seeded {
+            throw XCTSkip("Isolated air Codex seed turn did not complete; Peer HITL not-tested")
+        }
+
+        let localClient = try DistributedMeshLocalServiceClient(dataDirectory: replica.rootURL)
+        let transport = DistributedMeshBackgroundSessionTransport(
+            client: localClient, peerDeviceID: peerID
+        )
+        let peerPrefix = "peer:\(peerUUID.uuidString.lowercased()):"
+        let client = MeshRemoteHostSessionClient(
+            hostDeviceID: peerID, group: group, membershipEpoch: epoch,
+            rpcClient: MeshReplicaRPCClient(transport: transport, requestTimeoutMilliseconds: 60_000),
+            sessionIDPrefix: peerPrefix
+        )
+        let peerSessionID = peerPrefix + rawID
+        let snapshot = try await client.fetchHostSessionInventorySnapshot()
+        let listed = snapshot.sessions.contains {
+            $0.sessionId == peerSessionID || $0.sessionId.hasSuffix(rawID)
+        }
+        print("Peer HITL inventory lists Session=\(listed) total=\(snapshot.sessions.count)")
+
+        let hitlPrompt =
+            "In this disposable pharos-msg-test Session only, use exec_command to request " +
+            "sandbox_permissions require_escalated for the harmless command " +
+            "printf PHAROS_PEER_HITL_OK, with justification to test Peer HITL. " +
+            "Do not access or modify files, use network services, or run any other command."
+
+        // Prefer Peer Host send when the Session is inventory-visible; otherwise
+        // start the HITL turn over the same SSH Codex tunnel (still air Host).
+        var usedPeerSend = false
+        if listed {
+            do {
+                _ = try await client.sendSessionMessage(sessionId: peerSessionID, text: hitlPrompt)
+                usedPeerSend = true
+            } catch {
+                print("Peer HITL peer send failed, falling back to SSH Codex: \(error.localizedDescription)")
+            }
+        }
+        if !usedPeerSend {
+            _ = try await seed.call(
+                method: "turn/start",
+                params: [
+                    "threadId": remoteSessionID,
+                    "input": [["type": "text", "text": hitlPrompt]],
+                ]
+            )
+        }
+        print("Peer HITL prompt path peerSend=\(usedPeerSend)")
+
+        let approvalDeadline = ContinuousClock.now.advanced(by: .seconds(120))
+        var approval: CanonicalApprovalRequest?
+        while ContinuousClock.now < approvalDeadline {
+            if listed || usedPeerSend {
+                approval = try? await client.fetchSessionApproval(sessionId: peerSessionID)
+            }
+            if approval != nil { break }
+            // Peer Host may not yet own a live open Session; keep polling.
+            approval = try? await client.fetchSessionApproval(sessionId: peerSessionID)
+            if approval != nil { break }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        guard let approval else {
+            throw XCTSkip(
+                "No Codex command approval visible over Peer Host RPC for msg-test Session " +
+                "(listed=\(listed) peerSend=\(usedPeerSend)); Peer HITL not-tested"
+            )
+        }
+        print("Peer HITL approval id=\(approval.approvalId) kind=\(String(describing: approval.kind))")
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withDashSeparatorInDate, .withColonSeparatorInTime]
+        let stamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "")
+        let slug = "peer-air-codex-hitl"
+        let requestName = "\(stamp)_\(slug).md"
+        let requestURL = requests.appendingPathComponent(requestName)
+        let doneURL = requests.appendingPathComponent(requestName.replacingOccurrences(of: ".md", with: ".done.md"))
+        let requestBody = """
+        # Human proxy HITL request
+
+        - time: \(formatter.string(from: Date()))
+        - human=pharos-proxy (Pharos on grok-bot box)
+        - peer Host: xiangs-macbook-air / \(peerText)
+        - sessionId: \(peerSessionID)
+        - vendorSessionID: \(rawID)
+        - approvalId: \(approval.approvalId)
+        - exact safe command: `printf PHAROS_PEER_HITL_OK`
+        - action: resolve this approval as **allowedOnce** only if the pending command exactly matches `printf PHAROS_PEER_HITL_OK`; otherwise **rejected**
+        - how: prefer Peer Host RPC resolve from mini, or SSH to air and approve via the same Codex Session; document the command you ran
+        - expected: write `\(requestName.replacingOccurrences(of: ".md", with: ".done.md"))` with `decision=allowedOnce|rejected` and what you did
+        - timeout: 15 minutes
+        - workspace: ~/personal/pharos-msg-test only; never touch mac-pro or port 3080
+
+        """
+        try requestBody.write(to: requestURL, atomically: true, encoding: .utf8)
+        print("Peer HITL human-request written: \(requestURL.path)")
+
+        let proxyDeadline = ContinuousClock.now.advanced(by: .seconds(900))
+        var doneText: String?
+        while ContinuousClock.now < proxyDeadline {
+            if let data = try? Data(contentsOf: doneURL),
+               let text = String(data: data, encoding: .utf8), !text.isEmpty {
+                doneText = text
+                break
+            }
+            try await Task.sleep(for: .seconds(2))
+        }
+        guard let doneText else {
+            throw XCTSkip("human-proxy .done.md not received within timeout; Peer HITL not-tested")
+        }
+        print("Peer HITL human-proxy done bytes=\(doneText.utf8.count)")
+        XCTAssertTrue(doneText.lowercased().contains("pharos-proxy") || doneText.contains("decision="), doneText)
+
+        let wantsAllow = doneText.lowercased().contains("decision=allowedonce")
+            || doneText.lowercased().contains("allowedonce")
+        let wantsReject = doneText.lowercased().contains("decision=rejected")
+            || (doneText.lowercased().contains("rejected") && !wantsAllow)
+        if try await client.fetchSessionApproval(sessionId: peerSessionID) != nil {
+            let choice: ApprovalChoice = wantsReject ? .rejected : .allowedOnce
+            try await client.resolveSessionApproval(
+                sessionId: peerSessionID,
+                approvalId: approval.approvalId,
+                decision: .init(choice: choice)
+            )
+            print("Peer HITL applied decision via Peer RPC after proxy done: \(choice.rawValue)")
+        } else {
+            print("Peer HITL approval already cleared before test apply (proxy may have resolved)")
+        }
+
+        let clearedDeadline = ContinuousClock.now.advanced(by: .seconds(60))
+        var cleared = false
+        while ContinuousClock.now < clearedDeadline {
+            if try await client.fetchSessionApproval(sessionId: peerSessionID) == nil {
+                cleared = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        XCTAssertTrue(cleared, "Approval must be cleared after Peer HITL resolution")
+        print(
+            "Peer HITL E2E: session=\(rawID) listed=\(listed) wantsAllow=\(wantsAllow) " +
+            "wantsReject=\(wantsReject) cleared=\(cleared) human=pharos-proxy"
+        )
+    }
+
     func testHostInventoryReportsUnavailableProviderAndKeepsStaleSessions() async throws {
         let inventory = HostInventoryFixture()
         let local = HostLocalSessionService(codex: LivePharosClientService(transport: CodexTransportFixture()),

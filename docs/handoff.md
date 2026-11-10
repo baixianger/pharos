@@ -1,8 +1,14 @@
 ---
-summary: Phase (b2) DSH/Codex product 投递桥已落地（受控通过）；真实隔离 DSH 种子回合未完成 → live not-tested。下一阶段继续持续目标中其他独立安全工作。
+summary: 2026-11-10 PM 队列推进中。Peer HITL 审批路径已证实，human-proxy .done.md 超时 → blocked/not-tested。隔离 DSH 种子凭据修复后重跑。
 ---
 
 # 活跃任务交接
+
+**STATUS: peer-hitl blocked human-proxy .done.md timeout (approval path proved mini→air)**
+
+**PM 队列（2026-11-10 11:45 Europe/Copenhagen）**：grok-bot 已回 tailnet（`tailscale status | grep grok-bot`）；`ssh box@grok-bot` 可用；human=pharos-proxy。顺序：(1) Peer HITL E2E → (2) 隔离 DSH 真实产品往返 → (3) 隔离 Codex app-server → (4) 跨机 Runtime mini↔air(+box) → (5) 桌面 DSH 接线测试后提交。真实消息仅 `pharos-msg-test`；不碰 mac-pro / 3080 Host `ipc.sock`；不把 `DshBackendAdapter` 改成假投递；不 push / 不 force。
+
+**Phase (1) Peer HITL E2E（2026-11-10 12:07）**：**blocked / not-tested**（human-proxy）。真实路径已证明到审批：air Codex Session `01a1c515-…` 种子完成、peer inventory listed、peer sendSessionMessage、peer fetchSessionApproval 命中精确命令 `printf PHAROS_PEER_HITL_OK`；请求写入 `~/personal/pharos-msg-test/human-requests/2026-11-10T105159Z_peer-air-codex-hitl.md`，900s 内无同名 `.done.md`。证据：`internal/evidence/2026-11-09_phase-d2-peer-hitl.log`、`.../2026-11-10_phase-d2-peer-hitl-summary.log`。门控：`PHAROS_REAL_PEER_HITL_TEST=<air-uuid>`。
 
 **持续推进目标（2026-11-09，用户授权）**：按 [本地 Cursor 持续目标](2026-11-09_cursor-local-continuous-goal.md) 分阶段继续真实 DSH / Antigravity / 远程 Host Session、Thread、Projects 及各家 HITL / Goal / Todo 验证；阶段完成后自动继续安全工作，不可得数据如实记录。Cursor CLI 适配为核心目标后的可选项；既有安全、远程部署许可及不 push/PR 边界保留。
 
@@ -295,3 +301,5 @@ summary: Phase (b2) DSH/Codex product 投递桥已落地（受控通过）；真
 122. 同一生产 DSH 服务同时观察 mac-air 两个专用 Session：真实 Agent 分别创建并完成不同 Goal，状态和事件未串用，清除第一个不影响第二个；最后两个 Goal 均清除，独立 Host 重放核对各自完成、无交叉内容及清除。桌面会话切换、多主机、并发写入和真实断网仍待验收，见 [DSH 验证记录](2026-11-07_dsh-session-validation.md)。
 
 123. 另两个 mac-air 专用 DSH Session 经程序操作生产 WebKit 分别创建 Goal，验证会话切换后展示各自目标、清除第一目标不影响第二目标，并通过输入框清除两者；独立 Host 重放确认各自完成、无交叉和清除。物理操作、多主机、并发写入和真实断网仍待验收，见 [DSH 验证记录](2026-11-07_dsh-session-validation.md)。
+
+STATUS: peer-hitl blocked human-proxy .done.md timeout (approval path proved mini→air)
