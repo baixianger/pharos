@@ -1,0 +1,24 @@
+[package]
+name = "pharos-adapter-dsh"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "DSH (DeepSeek Harness) SessionAdapter / DeliveryWorker — RFC-007 S5b"
+
+[lib]
+name = "pharos_adapter_dsh"
+path = "src/lib.rs"
+
+[dependencies]
+pharos-api.workspace = true
+pharos-codex-adapter = { path = "../adapter-codex" }
+pharos-protocol.workspace = true
+reqwest = { workspace = true, default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { workspace = true }
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+uuid.workspace = true
