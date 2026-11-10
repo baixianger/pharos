@@ -6,6 +6,8 @@ members = [
     "crates/pharos-protocol",
     "crates/pharos-store-schema",
     "crates/pharos-api",
+    "crates/pharos-http",
+    "crates/pharos-web",
 ]
 resolver = "3"
 
@@ -19,7 +21,21 @@ pharos-agent-core = { path = "crates/agent-core" }
 pharos-protocol = { path = "crates/pharos-protocol" }
 pharos-store-schema = { path = "crates/pharos-store-schema" }
 pharos-api = { path = "crates/pharos-api" }
+pharos-http = { path = "crates/pharos-http" }
+pharos-web = { path = "crates/pharos-web" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 uuid = { version = "1.0", features = ["v4"] }
+async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query", "ws"] }
+clap = { version = "4", features = ["derive", "env"] }
+futures-util = "0.3"
+http-body-util = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "signal"] }
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
