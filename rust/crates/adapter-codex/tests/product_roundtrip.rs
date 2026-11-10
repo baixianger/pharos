@@ -27,7 +27,7 @@ fn gated() -> bool {
 fn unique_base() -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_nanos())
         .unwrap_or(0);
     msg_test_root()
         .join("peer-phase-a")
@@ -99,7 +99,23 @@ fn product_roundtrip_and_interrupt_never_completed() {
             std::time::Duration::from_secs(180),
         )
         .expect("seed wait");
-    assert_eq!(seed_outcome.status, TurnStatus::Completed);
+    println!(
+        "Host Codex product-path seed outcome: status={:?} raw={} error={:?} preview={:?}",
+        seed_outcome.status,
+        seed_outcome.raw_status,
+        seed_outcome.vendor_error,
+        seed_outcome
+            .assistant_text
+            .chars()
+            .take(80)
+            .collect::<String>()
+    );
+    assert_eq!(
+        seed_outcome.status,
+        TurnStatus::Completed,
+        "seed not completed: {}",
+        seed_outcome.failure_detail()
+    );
     assert!(
         seed_outcome
             .assistant_text
@@ -109,9 +125,14 @@ fn product_roundtrip_and_interrupt_never_completed() {
                 .to_ascii_lowercase()
                 .contains("pharos_rust_adapter_codex_seed")
             || !seed_outcome.assistant_text.trim().is_empty(),
-        "seed reply empty/missing marker: {:?}",
-        seed_outcome.assistant_text
+        "seed reply empty/missing marker: {}",
+        seed_outcome.failure_detail()
     );
+
+    // Explicit idle wait before delivery (also done inside send_prompt/dispatch).
+    adapter
+        .wait_until_idle(&started.session_id, std::time::Duration::from_secs(45))
+        .expect("idle after seed");
 
     // Product delivery round-trip via DeliveryWorker.
     let delivery_id = uuid::Uuid::new_v4().to_string();
@@ -129,20 +150,52 @@ fn product_roundtrip_and_interrupt_never_completed() {
             session_id: started.session_id.clone(),
             payload,
         })
-        .expect("delivery dispatch");
+        .expect("delivery dispatch Result::Err");
+    let turns_snapshot = adapter
+        .read_turns(&started.session_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|turn| {
+            format!(
+                "{}:{}:err={}:preview={:?}",
+                turn.turn_id,
+                turn.raw_status,
+                turn.vendor_error.as_deref().unwrap_or("-"),
+                turn.assistant_text.chars().take(60).collect::<String>()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
     println!(
-        "Host Codex product-path delivery: state={:?} detail={} turn={:?}",
-        dispatch.state, dispatch.detail, dispatch.turn_id
+        "Host Codex product-path delivery: state={:?} detail={} turn={:?} assistant={:?}",
+        dispatch.state,
+        dispatch.detail,
+        dispatch.turn_id,
+        dispatch
+            .assistant_text
+            .as_ref()
+            .map(|text| text.chars().take(80).collect::<String>())
     );
-    assert_eq!(dispatch.state, DeliveryState::Completed);
-    let reply = dispatch.assistant_text.expect("assistant text");
+    println!("Host Codex product-path turns snapshot: {turns_snapshot}");
+    assert_eq!(
+        dispatch.state,
+        DeliveryState::Completed,
+        "delivery not Completed; detail={} turn={:?} turns=[{turns_snapshot}]",
+        dispatch.detail,
+        dispatch.turn_id
+    );
+    let reply = dispatch
+        .assistant_text
+        .clone()
+        .expect("assistant text present on Completed");
     assert!(
         reply.contains("PHAROS_RUST_ADAPTER_CODEX_DONE")
             || reply
                 .to_ascii_lowercase()
                 .contains("pharos_rust_adapter_codex_done")
             || !reply.trim().is_empty(),
-        "product reply missing marker: {reply:?}"
+        "product reply missing marker: detail={} reply={reply:?}",
+        dispatch.detail
     );
 
     // Interrupt must not report Completed.
@@ -202,7 +255,10 @@ fn product_roundtrip_and_interrupt_never_completed() {
         pharos_codex_adapter::DeliveryDispatchResult::interrupted(
             interrupt_delivery.delivery_id,
             mid.turn_id,
-            "Codex turn interrupted",
+            format!(
+                "Codex turn interrupted; status={:?}",
+                mid_interrupt.turn_status
+            ),
         )
     } else {
         // If the turn finished racing the interrupt, still forbid Completed on
@@ -223,6 +279,7 @@ fn product_roundtrip_and_interrupt_never_completed() {
          seed_preview={}\n\
          delivery_id={delivery_id}\n\
          delivery_state={:?}\n\
+         delivery_detail={}\n\
          delivery_reply_preview={}\n\
          interrupt_status={:?}\n\
          interrupt_not_completed={}\n\
@@ -237,6 +294,7 @@ fn product_roundtrip_and_interrupt_never_completed() {
             .take(80)
             .collect::<String>(),
         dispatch.state,
+        dispatch.detail,
         reply.chars().take(80).collect::<String>(),
         interrupted.turn_status,
         interrupted.turn_status != Some(TurnStatus::Completed),

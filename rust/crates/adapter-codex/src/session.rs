@@ -64,7 +64,24 @@ impl TurnStatus {
 pub struct TurnOutcome {
     pub turn_id: String,
     pub status: TurnStatus,
+    /// Raw vendor status string (e.g. `"failed"`, `"interrupted"`).
+    pub raw_status: String,
     pub assistant_text: String,
+    /// Vendor turn error payload when present (message or JSON).
+    pub vendor_error: Option<String>,
+}
+
+impl TurnOutcome {
+    pub fn failure_detail(&self) -> String {
+        format!(
+            "turn_id={} status={:?} raw_status={} error={} assistant_preview={:?}",
+            self.turn_id,
+            self.status,
+            self.raw_status,
+            self.vendor_error.as_deref().unwrap_or("<none>"),
+            self.assistant_text.chars().take(160).collect::<String>()
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

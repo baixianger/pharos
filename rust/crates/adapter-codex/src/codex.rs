@@ -9,7 +9,7 @@ use crate::session::{
 };
 use crate::transport::{AppServerTransport, CodexTransport, DaemonProxyAppServer, StdioAppServer};
 use pharos_api::AdapterManifest;
-use pharos_protocol::{AdapterKind, DeliveryState};
+use pharos_protocol::AdapterKind;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -91,8 +91,12 @@ impl CodexSessionAdapter {
             .iter()
             .filter_map(|turn| {
                 let turn_id = turn.get("id")?.as_str()?.to_owned();
-                let status =
-                    TurnStatus::parse(turn.get("status").and_then(Value::as_str).unwrap_or(""));
+                let raw_status = turn
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
+                let status = TurnStatus::parse(&raw_status);
                 let items = turn
                     .get("items")
                     .and_then(Value::as_array)
@@ -109,23 +113,97 @@ impl CodexSessionAdapter {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
+                let vendor_error = turn.get("error").and_then(extract_vendor_error);
                 Some(TurnOutcome {
                     turn_id,
                     status,
+                    raw_status,
                     assistant_text,
+                    vendor_error,
                 })
             })
             .collect()
     }
 
-    fn read_thread(&mut self, thread_id: &str) -> Result<Value, AdapterError> {
+    fn read_thread(&mut self, thread_id: &str, include_turns: bool) -> Result<Value, AdapterError> {
         let result = self.transport.request(
-            Value::from(format!("read-{thread_id}")),
+            Value::from(format!("read-{thread_id}-{include_turns}")),
             "thread/read",
-            json!({"threadId": thread_id, "includeTurns": true}),
+            json!({"threadId": thread_id, "includeTurns": include_turns}),
         )?;
         Ok(result.get("thread").cloned().unwrap_or(result))
     }
+
+    /// Wait until the vendor thread reports idle.
+    ///
+    /// Uses `includeTurns: false` — Codex 0.167 can reject `includeTurns: true`
+    /// with `list_turns is not supported yet` on a fresh/empty thread, which is
+    /// exactly when we need idle checks before the first follow-up turn.
+    pub fn wait_until_idle(
+        &mut self,
+        session_id: &str,
+        timeout: Duration,
+    ) -> Result<(), AdapterError> {
+        let thread_id = self.thread_id(session_id)?;
+        let deadline = Instant::now() + timeout;
+        let mut last_status = String::from("<unread>");
+        let mut last_error: Option<String> = None;
+        let mut saw_readable = false;
+        while Instant::now() < deadline {
+            match self.read_thread(&thread_id, false) {
+                Ok(thread) => {
+                    saw_readable = true;
+                    let status_type = thread
+                        .pointer("/status/type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    last_status = status_type.to_owned();
+                    if status_type == "idle" || status_type.is_empty() {
+                        let _ = self.transport.take_notifications();
+                        return Ok(());
+                    }
+                }
+                Err(error) => {
+                    last_error = Some(error.message.clone());
+                    // Empty-rollout / list_turns races: if we have no local active
+                    // turn, allow progress instead of spinning for the full timeout.
+                    if !self.active_turns.contains_key(session_id)
+                        && is_benign_thread_read_race(&error.message)
+                    {
+                        let _ = self.transport.take_notifications();
+                        return Ok(());
+                    }
+                }
+            }
+            let _ = self.transport.take_notifications();
+            thread::sleep(Duration::from_millis(250));
+        }
+        Err(AdapterError::new(format!(
+            "timed out waiting for Codex thread idle (last status={last_status}; readable={saw_readable}{})",
+            last_error
+                .map(|e| format!("; last read error: {e}"))
+                .unwrap_or_default()
+        )))
+    }
+}
+
+fn is_benign_thread_read_race(message: &str) -> bool {
+    message.contains("list_turns is not supported yet")
+        || (message.contains("rollout") && message.contains("empty"))
+        || message.contains("failed to read session metadata")
+}
+
+fn extract_vendor_error(error: &Value) -> Option<String> {
+    if error.is_null() {
+        return None;
+    }
+    if let Some(message) = error.as_str() {
+        return Some(message.to_owned());
+    }
+    if let Some(message) = error.get("message").and_then(Value::as_str) {
+        return Some(message.to_owned());
+    }
+    Some(error.to_string())
 }
 
 impl SessionAdapter for CodexSessionAdapter {
@@ -192,13 +270,18 @@ impl SessionAdapter for CodexSessionAdapter {
     ) -> Result<StartedTurn, AdapterError> {
         let thread_id = self.thread_id(session_id)?;
         let (method, params) = match mode {
-            PromptMode::Queue => (
-                "turn/start",
-                json!({
-                    "threadId": thread_id,
-                    "input": [{"type": "text", "text": prompt}],
-                }),
-            ),
+            PromptMode::Queue => {
+                // Queue turns require an idle thread; starting while active is a
+                // known Codex race (empty rollout / immediate failed turn).
+                self.wait_until_idle(session_id, Duration::from_secs(45))?;
+                (
+                    "turn/start",
+                    json!({
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": prompt}],
+                    }),
+                )
+            }
             PromptMode::Steer => {
                 if let Some(active) = self.active_turns.get(session_id).cloned() {
                     (
@@ -210,6 +293,7 @@ impl SessionAdapter for CodexSessionAdapter {
                         }),
                     )
                 } else {
+                    self.wait_until_idle(session_id, Duration::from_secs(45))?;
                     (
                         "turn/start",
                         json!({
@@ -285,7 +369,7 @@ impl SessionAdapter for CodexSessionAdapter {
         let deadline = Instant::now() + timeout;
         let mut last_error: Option<String> = None;
         while Instant::now() < deadline {
-            match self.read_thread(&thread_id) {
+            match self.read_thread(&thread_id, true) {
                 Ok(thread) => {
                     let turns = Self::parse_turns(&thread);
                     if let Some(found) = turns.into_iter().find(|t| t.turn_id == turn_id)
@@ -298,7 +382,8 @@ impl SessionAdapter for CodexSessionAdapter {
                     }
                 }
                 Err(error) => {
-                    // Codex can race an empty rollout right after thread/start.
+                    // Codex can race an empty rollout right after thread/start /
+                    // turn/start; keep polling.
                     last_error = Some(error.message);
                 }
             }
@@ -316,7 +401,7 @@ impl SessionAdapter for CodexSessionAdapter {
 
     fn read_turns(&mut self, session_id: &str) -> Result<Vec<TurnOutcome>, AdapterError> {
         let thread_id = self.thread_id(session_id)?;
-        let thread = self.read_thread(&thread_id)?;
+        let thread = self.read_thread(&thread_id, true)?;
         Ok(Self::parse_turns(&thread))
     }
 
@@ -335,15 +420,34 @@ impl DeliveryWorker for CodexSessionAdapter {
                 .insert(job.session_id.clone(), job.session_id.clone());
         }
         let prompt = format_delivery_prompt(&job.payload, &job.session_id);
-        let started = self.send_prompt(&job.session_id, &prompt, PromptMode::Queue)?;
+        let started = match self.send_prompt(&job.session_id, &prompt, PromptMode::Queue) {
+            Ok(started) => started,
+            Err(error) => {
+                return Ok(DeliveryDispatchResult::failed(
+                    job.delivery_id,
+                    format!("Codex turn/start failed before dispatch: {error}"),
+                ));
+            }
+        };
         let outcome =
-            self.wait_turn(&job.session_id, &started.turn_id, Duration::from_secs(180))?;
+            match self.wait_turn(&job.session_id, &started.turn_id, Duration::from_secs(180)) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    return Ok(DeliveryDispatchResult::failed_turn(
+                        job.delivery_id,
+                        started.turn_id,
+                        format!("Codex wait_turn failed: {error}"),
+                    ));
+                }
+            };
+        let detail = outcome.failure_detail();
         match outcome.status {
             TurnStatus::Completed => {
                 if outcome.assistant_text.trim().is_empty() {
-                    Ok(DeliveryDispatchResult::failed(
+                    Ok(DeliveryDispatchResult::failed_turn(
                         job.delivery_id,
-                        "Codex turn completed without assistant text",
+                        outcome.turn_id,
+                        format!("Codex turn completed without assistant text; {detail}"),
                     ))
                 } else {
                     Ok(DeliveryDispatchResult::completed(
@@ -356,19 +460,18 @@ impl DeliveryWorker for CodexSessionAdapter {
             TurnStatus::Interrupted => Ok(DeliveryDispatchResult::interrupted(
                 job.delivery_id,
                 outcome.turn_id,
-                "Codex turn interrupted",
+                format!("Codex turn interrupted; {detail}"),
             )),
-            TurnStatus::Failed => Ok(DeliveryDispatchResult::failed(
+            TurnStatus::Failed => Ok(DeliveryDispatchResult::failed_turn(
                 job.delivery_id,
-                "Codex turn failed",
+                outcome.turn_id,
+                format!("Codex turn failed; {detail}"),
             )),
-            other => Ok(DeliveryDispatchResult {
-                delivery_id: job.delivery_id,
-                state: DeliveryState::Failed,
-                detail: format!("Codex turn ended in non-success status: {other:?}"),
-                assistant_text: None,
-                turn_id: Some(outcome.turn_id),
-            }),
+            other => Ok(DeliveryDispatchResult::failed_turn(
+                job.delivery_id,
+                outcome.turn_id,
+                format!("Codex turn ended in non-success status {other:?}; {detail}"),
+            )),
         }
     }
 }

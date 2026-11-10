@@ -50,6 +50,20 @@ impl DeliveryDispatchResult {
         }
     }
 
+    pub fn failed_turn(
+        delivery_id: impl Into<String>,
+        turn_id: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            delivery_id: delivery_id.into(),
+            state: DeliveryState::Failed,
+            detail: detail.into(),
+            assistant_text: None,
+            turn_id: Some(turn_id.into()),
+        }
+    }
+
     pub fn interrupted(
         delivery_id: impl Into<String>,
         turn_id: impl Into<String>,
