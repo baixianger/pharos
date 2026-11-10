@@ -14,6 +14,9 @@ members = [
     "crates/pharos-thread",
     "crates/pharos-grokbot",
     "crates/pharos-cli",
+    # S4 web-api
+    "crates/pharos-http",
+    "crates/pharos-web",
 ]
 resolver = "3"
 
@@ -29,14 +32,27 @@ pharos-store-schema = { path = "crates/pharos-store-schema" }
 pharos-api = { path = "crates/pharos-api" }
 pharos-thread = { path = "crates/pharos-thread" }
 pharos-grokbot = { path = "crates/pharos-grokbot" }
+pharos-http = { path = "crates/pharos-http" }
+pharos-web = { path = "crates/pharos-web" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
-# S3 mesh-iroh workspace deps
+# S3 mesh-iroh
 iroh = "1.4"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "net", "signal"] }
 thiserror = "2"
-tracing = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 rand = "0.8"
+# S4 web-api (+ shared async)
+async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query", "ws"] }
+clap = { version = "4", features = ["derive", "env"] }
+futures-util = "0.3"
+http-body-util = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "net", "signal"] }
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

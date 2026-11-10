@@ -1,0 +1,24 @@
+[package]
+name = "pharos-http"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "RFC-007 S4: HTTP/WS API router mounting pharos-api contracts over S1/S2 service traits"
+
+[dependencies]
+pharos-api = { workspace = true }
+pharos-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true, features = ["ws"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tower = { workspace = true }
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "net"] }
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }
