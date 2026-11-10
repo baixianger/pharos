@@ -2415,6 +2415,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pharos-adapter-cursor"
+version = "0.1.0"
+dependencies = [
+ "pharos-api",
+ "pharos-codex-adapter",
+ "pharos-protocol",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "pharos-agent-core"
 version = "0.1.0"
 dependencies = [

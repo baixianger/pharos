@@ -17,6 +17,8 @@ members = [
     # S4 web-api
     "crates/pharos-http",
     "crates/pharos-web",
+    # S5d adapter-cursor (wiring-local — captain may re-apply on integrate)
+    "crates/pharos-adapter-cursor",
 ]
 resolver = "3"
 
