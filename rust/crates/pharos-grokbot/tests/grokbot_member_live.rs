@@ -233,7 +233,7 @@ fn rust_grokbot_member_thread_mention_reply_when_enabled() {
     let read_json: Value = serde_json::from_slice(&read_out.stdout).expect("read json");
     assert_eq!(read_json["member"], "grokbot");
     assert_eq!(read_json["nick"], "Pharos");
-    assert!(read_json["messages"].as_array().unwrap().len() >= 1);
+    assert!(!read_json["messages"].as_array().unwrap().is_empty());
 
     let reply_out = Command::new(&cli)
         .args([

@@ -26,8 +26,8 @@ Contracts: CONTRACTS_VERSION=0.1.0 (`rust-contracts-0.1.0` / `88f4c22`) — **no
 ```sh
 cd rust
 cargo fmt -p pharos-thread -p pharos-grokbot -p pharos-cli
-cargo clippy -p pharos-thread -p pharos-grokbot -p pharos-cli -- -D warnings
-# → Finished, no warnings
+cargo clippy -p pharos-thread -p pharos-grokbot -p pharos-cli --all-targets -- -D warnings
+# → Finished, no warnings (includes integration tests)
 
 cargo test -p pharos-thread -p pharos-grokbot -p pharos-cli
 # → pharos-thread 5 passed; pharos-grokbot 4 unit + 1 live (skipped without gate)

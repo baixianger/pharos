@@ -36,7 +36,7 @@ Reply was performed by the **Rust CLI inside the test** (not an external 45-minu
 source "$HOME/.cargo/env"
 cd rust
 cargo fmt -p pharos-thread -p pharos-grokbot -p pharos-cli
-cargo clippy -p pharos-thread -p pharos-grokbot -p pharos-cli -- -D warnings
+cargo clippy -p pharos-thread -p pharos-grokbot -p pharos-cli --all-targets -- -D warnings
 cargo test  -p pharos-thread -p pharos-grokbot -p pharos-cli
 cargo build -p pharos-agent-runtime -p pharos-cli
 PHAROS_GROKBOT_MEMBER_TEST=1 \
