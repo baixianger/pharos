@@ -5,7 +5,7 @@ summary: 2026-11-10 18:01：Rust 后端收敛盘点与 RFC-007 计划完成；�
 # 活跃任务交接
 
 **STATUS: RUST-PLAN-DONE**
-**Rust backend plan（2026-11-10 18:01）**：架构决定——全部后端收敛为独立 Rust 服务；Swift 只留 SwiftUI+WebKit 客户端。已盘点 `Sources/` 各模块与 `rust/`（agent-core / adapter-codex / pharos-meshd）及 MeshKit→iroh 现状；写出 `docs/RFC-007-rust-backend.md`（目标架构、API 边界、存储迁移、阶段 A CLI/Thread/grokbot → B Session/HITL → C mesh/sync → D Web UI/thin app → E 删 Swift 后端；验收复用 XHOST / Peer HITL / grokbot / DSH·Codex；Linux box 目标；风险与 Q1–Q8）。`BACKEND-MATRIX` 仅加注 `planned-rust`，未改 Status。**未开始搬代码；等审。**
+**Rust backend plan（2026-11-10 18:01 + 18:02 并行补充）**：架构决定——全部后端收敛为独立 Rust 服务；Swift 只留 SwiftUI+WebKit 客户端。盘点 + `docs/RFC-007-rust-backend.md`：阶段门禁 A–E；**§6.1 并行工作流**（Phase 0 共享契约 → 流 S1 CLI/Thread/grokbot、S2 Session/HITL/Goal、S3 mesh/iroh、S4 web+API+UI、S5a–d 适配器、S6 Swift 客户端；每流独立 worktree `~/personal/pharos-wt/<stream>` + 分支 `rust/<stream>` + tmux `pharos-rust-<stream>`；合并顺序与冲突规则；mini 2–3 / 全局 3–5 并发，Air/box 可分担）。`BACKEND-MATRIX` 仅 `planned-rust`。**未开始搬代码或建 worktree；等审。**
 
 **STATUS: GROKBOT-MEMBER-DONE**
 **Grokbot Thread member（2026-11-10 14:20）**：成员 `grokbot` / nick `Pharos`（webhook 型，非本地 CLI）。`@Pharos` 定向投递 → Runtime `delivery.submit-member` → `GrokbotThreadBridge` POST ID-only `thread-mention`（human-proxy webhook）→ state=`injected`；`pharos-mesh thread reply --as grokbot` → `replyOnce` → state=`completed`；45m 无回复=`failed`。E2E Thread `grokbot-41349f97`（含 `agy-stub`），marker `PHAROS_GROKBOT_MEMBER_DONE_41349f97`，delivery `4f6afe55-…` → reply `reply-4c10d3ec…`，runtime-completed=1。协议：`docs/agents/grokbot/threads/2026-11-10_protocol.md`。证据：`internal/evidence/2026-11-10_grokbot-member-summary.md`、`..._grokbot-member-e2e.log`、`..._grokbot-unit.log`。矩阵 `GB-THD-01`…`05`。

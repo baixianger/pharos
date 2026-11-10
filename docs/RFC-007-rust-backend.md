@@ -1,7 +1,8 @@
 ---
-summary: Converge all Pharos backends into one Rust service; Swift keeps only Apple clients (SwiftUI + WebKit). Inventory + staged migration plan only — no code move in this RFC.
+summary: Converge all Pharos backends into one Rust service; Swift keeps only Apple clients (SwiftUI + WebKit). Inventory + staged migration plan with parallel multi-agent workstreams — no code move in this RFC.
 status: draft-for-review
 date: 2026-11-10
+updated: 2026-11-10T18:02
 supersedes_partially: RFC-004 (Runtime-only Rust); complements RFC-005/006
 ---
 
@@ -297,6 +298,149 @@ End state: `ssh box@grok-bot` runs the **same** Rust backend binary as macOS
 Hosts (mesh + Runtime + API + CLI + optional headless Web UI), without Swift.
 Phases A–C are the critical path for box; D is macOS-client-specific.
 
+Phases A–E above are **capability gates** (what must pass before claiming
+progress). Implementation is intended to run as **parallel streams** once
+Phase 0 contracts land — see §6.1.
+
+---
+
+## 6.1 Parallel multi-agent workflow
+
+Goal: maximize concurrent Cursor CLI agents without two agents editing the
+same files. Sequential **Phase 0** lands shared contracts; then streams run in
+isolated git worktrees / tmux sessions and merge in a fixed order.
+
+### Phase 0 — Shared contracts (single agent, blocking)
+
+One agent only. No parallel streams start until this merges to
+`integrate/mesh2-into-main` (or the agreed rust integration branch).
+
+**Owns exclusively:**
+
+| Path | Contents |
+|---|---|
+| `rust/Cargo.toml` workspace members list (initial) | crate graph only |
+| `rust/crates/pharos-api/` (new) | HTTP/WS route constants, request/response DTOs, error codes (`PharosApiError`), OpenAPI stub |
+| `rust/crates/pharos-protocol/` (new) | mesh/replica/RPC/event type IDs mirroring `PharosMeshProtocol` + Runtime delivery states |
+| `rust/crates/pharos-store-schema/` (new) | SQLite / JSON on-disk schema version, migrations table, path conventions |
+| `docs/rfc-007-contracts.md` (optional sibling) | freeze notes + semver for contract crates |
+| `rust/crates/agent-core/` | expand only as re-exports / shared primitives used by contracts |
+
+**Does not implement** CLI, adapters, HTTP server body, mesh, or Swift changes
+beyond docs.
+
+**Accept Phase 0:**
+
+- `cargo check -p pharos-api -p pharos-protocol -p pharos-store-schema`
+- Contract crates compile with **no** dependency on adapter/CLI/web crates
+- Documented version: `CONTRACTS_VERSION=0.1.0`; streams pin this tag/commit
+
+After merge, tag `rust-contracts-0.1.0` (local tag OK; no push required until
+owner asks).
+
+### Parallel streams (post–Phase 0)
+
+Each stream = one Cursor CLI agent + one worktree + one tmux session.
+**File ownership is exclusive** for the duration of the stream’s open PR/branch.
+Cross-stream needs go through contract crates or integration branch only.
+
+| ID | Stream | Branch | Worktree | tmux | Exclusive dirs / crates | Depends on contracts | Interfaces to other streams | Acceptance |
+|---|---|---|---|---|---|---|---|---|
+| **S1** | CLI + Thread R/W + grokbot | `rust/cli-thread` | `~/personal/pharos-wt/cli-thread` | `pharos-rust-cli-thread` | `rust/crates/pharos-cli/`, `rust/crates/pharos-thread/`, `rust/crates/pharos-grokbot/`; may add thin hooks in `agent-runtime` **only** under `src/thread_*.rs` / `src/grokbot_*.rs` (named files reserved) | `pharos-api` thread DTOs, `pharos-protocol` delivery states, `pharos-store-schema` thread tables | Calls store via `pharos-thread` traits; does **not** own HTTP router or iroh | Grokbot E2E + `thread read/reply` CLI parity (`GB-THD-*`, protocol doc) |
+| **S2** | Session + HITL + Goal/Todo | `rust/session-hitl` | `~/personal/pharos-wt/session-hitl` | `pharos-rust-session-hitl` | `rust/crates/pharos-session/`, `rust/crates/pharos-hitl/`, `rust/crates/pharos-goals/`; `agent-runtime` files `src/session_*.rs`, `src/hitl_*.rs` only | `pharos-api` session/approval/progress DTOs, protocol events | Consumes adapter traits from S5 (`dyn SessionAdapter`); emits events S4 will WS-bridge | Peer HITL webhook+45m; session progress/approval WS shapes; Goal/Todo smoke on msg-test |
+| **S3** | Mesh / iroh + sync | `rust/mesh-iroh` | `~/personal/pharos-wt/mesh-iroh` | `pharos-rust-mesh-iroh` | `rust/crates/pharos-mesh/`, `rust/crates/pharos-iroh/`, `rust/crates/pharos-replica/`; `agent-runtime` files `src/mesh_*.rs`, `src/replica_*.rs` only | `pharos-protocol` wire + `pharos-store-schema` replica SQLite | Exposes `ReplicaHandle` / Peer RPC used by S1 delivery + S2 host.runtime.call | XHOST mini↔air; box headless mesh/runtime; trust pairing smoke |
+| **S4** | Web server + API + static Web UI | `rust/web-api` | `~/personal/pharos-wt/web-api` | `pharos-rust-web-api` | `rust/crates/pharos-web/`, `rust/crates/pharos-http/`, `webui/` (moved/copied static assets); **no** adapter logic | `pharos-api` OpenAPI + error types | Mounts handlers that call S1/S2 service traits; serves assets for S6 WebKit | `GET /health`, OpenAPI serve, static UI load, WS event pump against fake services |
+| **S5a** | Adapter Codex | `rust/adapter-codex` | `~/personal/pharos-wt/adapter-codex` | `pharos-rust-adapter-codex` | `rust/crates/adapter-codex/` (expand), `rust/crates/pharos-adapter-codex/` if split | protocol session + delivery | Implements `SessionAdapter` / delivery worker for S2 | Codex product round-trip gate |
+| **S5b** | Adapter DSH | `rust/adapter-dsh` | `~/personal/pharos-wt/adapter-dsh` | `pharos-rust-adapter-dsh` | `rust/crates/pharos-adapter-dsh/` only | same | same trait | DSH product round-trip gate |
+| **S5c** | Adapter Agy | `rust/adapter-agy` | `~/personal/pharos-wt/adapter-agy` | `pharos-rust-adapter-agy` | `rust/crates/pharos-adapter-agy/` only | same | same trait | Agy Host binder / ACP smoke on msg-test |
+| **S5d** | Adapter Cursor CLI | `rust/adapter-cursor` | `~/personal/pharos-wt/adapter-cursor` | `pharos-rust-adapter-cursor` | `rust/crates/pharos-adapter-cursor/` only | same | same trait; may be **unsupported** stubs first | Cursor CLI probe parity (`docs/agents/cursor/…`); no private `~/.cursor` DB |
+| **S6** | Swift client → API | `rust/swift-client` | `~/personal/pharos-wt/swift-client` | `pharos-rust-swift-client` | `Sources/PharosClientKit/` (HTTP/WS impl), `Sources/Pharos/UI/**`, `Sources/Pharos/Resources/WebCanvas/**` (bridge→fetch only); **must not** edit `Sources/PharosMesh*`, `Sources/PharosRuntime`, `rust/` | published `pharos-api` OpenAPI | Talks only to S4 base URL; feature-flag old DesktopMesh path | ArchitectureBoundary; WebKit loads daemon UI; msg-test desktop smoke |
+
+**Reserved integration surface (merge captain only):**
+`rust/crates/agent-runtime/src/main.rs`, `rust/Cargo.toml` workspace member
+appends after Phase 0, `Package.swift`, packaging scripts. Streams send a
+short “wiring PR note”; captain applies hooks so streams never fight over
+`main.rs`.
+
+### Agent / worktree / tmux recipe
+
+```sh
+# Example for stream S1 (repeat per stream id)
+STREAM=cli-thread
+git -C ~/personal/pharos fetch
+git worktree add -b rust/$STREAM ~/personal/pharos-wt/$STREAM integrate/mesh2-into-main
+tmux new-session -d -s pharos-rust-$STREAM -c ~/personal/pharos-wt/$STREAM
+# Inside tmux: run Cursor CLI agent bound to that worktree only
+```
+
+Rules for each agent:
+
+1. Work **only** in its worktree; never edit `~/personal/pharos` main checkout
+   for stream code.
+2. Commit on `rust/<stream>` only; **no push** unless owner explicitly asks.
+3. Live tests: `pharos-msg-test` data-dirs only; never mac-pro / 3080 `ipc.sock`.
+4. If a change needs another stream’s file: open an interface issue / extend
+   Phase 0 contracts — do not cross-edit.
+5. Keep `.agy-tasks/PLAN.md` staged policy: streams do not touch PLAN unless
+   owner directs.
+
+### Merge order and conflict rules
+
+**Merge captain** (human or one designated agent) merges to integration branch:
+
+1. Phase 0 contracts (already landed)
+2. **S3** mesh/replica foundations (store + Peer RPC) — unblocks real Thread/XHOST
+3. **S1** CLI/Thread/grokbot
+4. **S5a → S5b → S5c → S5d** adapters (order: Codex first — already partial Rust —
+   then DSH, Agy, Cursor)
+5. **S2** Session/HITL/Goals (needs adapter traits + Runtime wiring)
+6. **S4** HTTP/WS + static UI (can merge earlier as stubs behind features, but
+   full accept after S1/S2 services exist)
+7. **S6** Swift client cutover last among product streams
+8. Phase E deletions only after gates green
+
+**Conflict rules:**
+
+| Conflict | Resolution |
+|---|---|
+| Two streams touch same path | **Reject** later PR; move code to the owning stream’s crate or to contracts |
+| `Cargo.toml` / `main.rs` | Captain-only rebase; streams ship `wiring.md` snippets |
+| Contract change needed mid-flight | Stop parallel merges; run **Phase 0.x** bump (`CONTRACTS_VERSION`); streams rebase onto new tag before continuing |
+| Evidence / docs paths | Prefer `internal/evidence/2026-*-rust-<stream>-*.md` unique prefixes |
+| Swift vs Rust same feature | Rust stream wins for backend; Swift stream only deletes/redirects callers |
+
+Rebase preferred over merge commits within a stream. Integration branch uses
+merge commits for stream landings so bisect keeps stream boundaries.
+
+### Suggested concurrency (mini = 10 cores / 16 GiB)
+
+| Host | Role | Suggested concurrent streams |
+|---|---|---|
+| **mac-mini** (primary) | Phase 0; merge captain; S1 + S4 + S6 (needs SwiftUI/WebKit/Xcode) | **2–3** heavy agents max (Rust compile + `swift build` contend on RAM). Prefer S1\|\|S4, then S6 alone |
+| **mac-air** (`mac-air`) | S5a Codex + S2 HITL session work against local vendors; pair for XHOST peer | **1–2** streams (`adapter-codex`, `session-hitl`) |
+| **box** (`grok-bot`, Linux 8 CPU / ~15 GiB) | S3 mesh/iroh Linux bring-up; S5b/S5c headless adapter builds; no Swift | **1–2** streams (`mesh-iroh`, `adapter-dsh` or `adapter-agy`) |
+
+**Do not** run 6+ compile-heavy agents on mini alone — thrashing erases
+parallelism. Practical steady state: **3–5 global concurrent streams**
+(e.g. mini: S1+S4, air: S5a, box: S3), others idle/rebase.
+
+**Placement cheat-sheet:**
+
+- Must stay on **mini**: S6 (Xcode), merge captain, packaging/codesign
+- Good on **air**: S5a, S2 (Codex/HITL realism), XHOST peer half
+- Good on **box**: S3 Linux, S5b/S5c, headless `pharos-meshd` + CLI tests
+- S5d Cursor: mini or air (CLI availability), never box unless `agent` exists there
+
+### Mapping streams → capability phases
+
+| Capability phase | Primary streams |
+|---|---|
+| A (CLI/Thread/grokbot) | S1 (+ S3 store bits, S4 health optional) |
+| B (Session/HITL/Goal) | S2 + S5a/b/c |
+| C (Mesh/XHOST/box) | S3 |
+| D (Web UI + thin app) | S4 + S6 |
+| E (delete Swift backends) | captain after all gates |
+
 ---
 
 ## 7. Acceptance test map (reuse existing E2E)
@@ -374,5 +518,6 @@ when Rust cutover evidence lands.
 
 **STATUS: RUST-PLAN-DONE**
 
-Await review of architecture, phase order, Q1–Q8, and risks before any
-migration commit.
+Await review of architecture, phase order, **§6.1 parallel streams / merge
+rules / host placement**, Q1–Q8, and risks before any migration commit or
+worktree spawn.
