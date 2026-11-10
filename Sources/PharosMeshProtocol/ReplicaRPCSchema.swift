@@ -11,10 +11,99 @@ public enum MeshReplicaRPCOperation: String, Codable, CaseIterable, Sendable {
     case blobChunk = "blob.chunk.v1"
     case hostResource = "host.resource.v1"
     case hostPresence = "host.presence.v1"
+    case hostRuntimeHello = "host.runtime.hello.v1"
+    /// Controller asks a Host to forward one allowlisted Runtime JSON-RPC call
+    /// (currently `delivery.submit-member`) onto that Host's own agent-runtime.
+    case hostRuntimeCall = "host.runtime.call.v1"
     case hostCommand = "host.command.v1"
+    case hostSessionQuery = "host.session.query.v1"
+    case hostSessionAction = "host.session.action.v1"
+    case hostSessionEvents = "host.session.events.v2"
     case membershipTransition = "membership.transition.v1"
     case membershipTransitionNext = "membership.transition.next.v1"
     case membershipVote = "membership.vote.v2"
+}
+
+/// Capabilities observed from the host's own runtime, not from a vendor CLI
+/// launched by the requesting device.
+public struct MeshHostRuntimeHello: Codable, Equatable, Sendable {
+    public let hostDeviceID: MeshDeviceID
+    public let service: String
+    public let protocolVersion: Int
+    public let capabilities: [String]
+
+    public init(hostDeviceID: MeshDeviceID, service: String,
+                protocolVersion: Int, capabilities: [String]) {
+        self.hostDeviceID = hostDeviceID
+        self.service = service
+        self.protocolVersion = protocolVersion
+        self.capabilities = capabilities
+    }
+
+    public func validate() throws {
+        guard !service.isEmpty, service.utf8.count <= 128,
+              protocolVersion > 0, capabilities.count <= 128,
+              capabilities.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 128 }),
+              Set(capabilities).count == capabilities.count else {
+            throw MeshReplicaRPCValidationError.invalidHostRuntimeHello
+        }
+    }
+}
+
+/// Cross-host Runtime call: the requesting controller supplies a full JSON-RPC
+/// request; the Host runs it against its own same-user Runtime socket.
+public struct MeshHostRuntimeCallRequest: Codable, Equatable, Sendable {
+    public static let allowedMethods: Set<String> = ["delivery.submit-member"]
+    public static let maximumRequestBytes = 1024 * 1024
+
+    public let hostDeviceID: MeshDeviceID
+    public let jsonrpcRequest: String
+
+    public init(hostDeviceID: MeshDeviceID, jsonrpcRequest: String) {
+        self.hostDeviceID = hostDeviceID
+        self.jsonrpcRequest = jsonrpcRequest
+    }
+
+    public func validate() throws {
+        guard !jsonrpcRequest.isEmpty,
+              jsonrpcRequest.utf8.count <= Self.maximumRequestBytes,
+              let data = jsonrpcRequest.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["jsonrpc"] as? String == "2.0",
+              object["id"] != nil,
+              let method = object["method"] as? String,
+              Self.allowedMethods.contains(method),
+              let params = object["params"] as? [String: Any],
+              let memberID = params["memberID"] as? String, !memberID.isEmpty,
+              memberID.utf8.count <= 256,
+              let key = params["idempotencyKey"] as? String, !key.isEmpty,
+              key.utf8.count <= 512 else {
+            throw MeshReplicaRPCValidationError.invalidHostRuntimeCall
+        }
+    }
+}
+
+public struct MeshHostRuntimeCallResponse: Codable, Equatable, Sendable {
+    public static let maximumResponseBytes = 4 * 1024 * 1024
+
+    public let hostDeviceID: MeshDeviceID
+    public let jsonrpcResponse: String
+
+    public init(hostDeviceID: MeshDeviceID, jsonrpcResponse: String) {
+        self.hostDeviceID = hostDeviceID
+        self.jsonrpcResponse = jsonrpcResponse
+    }
+
+    public func validate() throws {
+        guard !jsonrpcResponse.isEmpty,
+              jsonrpcResponse.utf8.count <= Self.maximumResponseBytes,
+              let data = jsonrpcResponse.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["jsonrpc"] as? String == "2.0",
+              object["id"] != nil else {
+            throw MeshReplicaRPCValidationError.invalidHostRuntimeCall
+        }
+    }
 }
 
 public enum MeshReplicaRPCDisposition: String, Codable, Sendable {
@@ -268,6 +357,11 @@ public enum MeshReplicaRPCValidationError: Error, Equatable, Sendable {
     case invalidBlobChunk
     case invalidAddressTicket
     case invalidAgentPresence
+    case invalidHostRuntimeHello
+    case invalidHostRuntimeCall
+    case invalidHostSessionQuery
+    case invalidHostSessionAction
+    case invalidHostSessionEvents
 }
 
 private enum MeshReplicaRPCJSON {

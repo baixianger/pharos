@@ -592,6 +592,371 @@ final class MeshHostSessionRPCTests: XCTestCase {
         )
     }
 
+    func testHostRuntimeCallRequestAllowsOnlySubmitMember() throws {
+        let host = MeshDeviceID()
+        let good = #"{"jsonrpc":"2.0","id":"1","method":"delivery.submit-member","params":{"memberID":"m1","idempotencyKey":"mesh:msg:m1","payload":"{}"}}"#
+        try MeshHostRuntimeCallRequest(hostDeviceID: host, jsonrpcRequest: good).validate()
+        let badHello = #"{"jsonrpc":"2.0","id":"1","method":"runtime.hello","params":{}}"#
+        XCTAssertThrowsError(
+            try MeshHostRuntimeCallRequest(hostDeviceID: host, jsonrpcRequest: badHello).validate()
+        )
+        let badPoll = #"{"jsonrpc":"2.0","id":"1","method":"delivery.poll","params":{"conversationID":"c"}}"#
+        XCTAssertThrowsError(
+            try MeshHostRuntimeCallRequest(hostDeviceID: host, jsonrpcRequest: badPoll).validate()
+        )
+    }
+
+    /// mini→air: Peer `host.runtime.call.v1` delivery.submit-member → air Agy →
+    /// air host-reply replyOnce → room reply visible on mini. Gate with
+    /// `PHAROS_REAL_PEER_RUNTIME_SUBMIT_TEST=<air-device-uuid>`.
+    func testRealMiniToAirRuntimeSubmitReplyOnceWhenEnabled() async throws {
+        guard let peerText = ProcessInfo.processInfo.environment["PHAROS_REAL_PEER_RUNTIME_SUBMIT_TEST"],
+              let peerUUID = UUID(uuidString: peerText) else {
+            throw XCTSkip("Set PHAROS_REAL_PEER_RUNTIME_SUBMIT_TEST=<paired-host-device-uuid>")
+        }
+        let peerID = MeshDeviceID(rawValue: peerUUID)
+        let replica = try MeshLocalReplica.openDefault(headless: true)
+        guard let group = try replica.activeTrustGroup(),
+              let epoch = try await replica.store.membershipEpoch(for: group),
+              try replica.activeRoles().contains(.controller) else {
+            throw XCTSkip("Local product replica is not an active controller")
+        }
+        let peers = try await replica.store.trustedDevices(in: group, membershipEpoch: epoch)
+        guard let peer = peers.first(where: {
+            $0.descriptor.id == peerID && $0.descriptor.roles.contains(.host)
+        }) else {
+            throw XCTSkip("Peer \(peerText) is not a trusted host")
+        }
+
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let memberID = "xhost-air-\(token)"
+        let roomName = "xhost-air-\(token)"
+        let marker = "PHAROS_XHOST_AIR_DONE_\(token)"
+        let airRoot = "/Users/baixianger/personal/pharos-msg-test/peer-phase-a"
+        let airMesh = "\(airRoot)/air-mesh"
+        let airSocket = "\(airRoot)/runtime/agent-runtime.sock"
+        let airBin = "\(airRoot)/bin/pharos-mesh"
+        let work = "\(airRoot)/xhost-\(token)/agy-work"
+        let destination = "mac-air"
+
+        let connection = try await Task.detached {
+            try SharedSSHConnection(destination: destination)
+        }.value
+        defer {
+            connection.close()
+            _ = connection.waitUntilStopped()
+        }
+
+        _ = try await remoteShell(
+            connection,
+            "mkdir -p \(shellEscape(work)) && test -S \(shellEscape(airSocket)) && test -x \(shellEscape(airBin))"
+        )
+
+        let agyArgs = try connection.commandArguments(
+            "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin /opt/homebrew/bin/agy acp --stdio"
+        )
+        let agy = AgyAcpProcessTransport(
+            executableURL: URL(fileURLWithPath: "/usr/bin/ssh"), arguments: agyArgs
+        )
+        defer { agy.close() }
+        _ = try await agy.sendRequest(
+            method: "initialize",
+            params: ["protocolVersion": 1, "clientCapabilities": [String: Any]()]
+        )
+        let created = try await agy.sendRequest(
+            method: "session/new",
+            params: ["cwd": work, "mcpServers": []]
+        )
+        let providerID = try XCTUnwrap(created["sessionId"] as? String)
+        print("XHOST mini→air Agy Session on air: \(providerID)")
+        _ = try await agy.sendRequest(
+            method: "session/prompt",
+            params: [
+                "sessionId": providerID,
+                "prompt": [[
+                    "type": "text",
+                    "text": "Reply PHAROS_XHOST_AIR_SEED. Do not use tools or access files.",
+                ]],
+            ]
+        )
+
+        let driverID = "xhost-air-\(token)"
+        let registerDriver: [String: Any] = [
+            "jsonrpc": "2.0", "id": "drv", "method": "driver.register",
+            "params": ["driverID": driverID, "kind": "agy", "capabilities": ["delivery.poll"]],
+        ]
+        _ = try await airRuntimeLocal(connection, airBin: airBin, socket: airSocket, request: registerDriver)
+        let registered = try await airRuntimeLocal(
+            connection, airBin: airBin, socket: airSocket,
+            request: [
+                "jsonrpc": "2.0", "id": "reg", "method": "conversation.register",
+                "params": [
+                    "driverID": driverID, "kind": "agy",
+                    "vendorSessionID": providerID, "memberID": memberID,
+                ],
+            ]
+        )
+        let conversationID = try XCTUnwrap(
+            (registered["result"] as? [String: Any])?["id"] as? String
+        )
+        print("XHOST mini→air conversation=\(conversationID) member=\(memberID)")
+        _ = try await airRuntimeLocal(
+            connection, airBin: airBin, socket: airSocket,
+            request: [
+                "jsonrpc": "2.0", "id": "state", "method": "conversation.state",
+                "params": [
+                    "conversationID": conversationID, "presence": "online",
+                    "activity": "idle", "attention": "none", "persistence": "persistent",
+                    "source": "nativeProtocol", "sourceEpoch": driverID, "sequence": 1,
+                ],
+            ]
+        )
+        _ = try await airRuntimeLocal(
+            connection, airBin: airBin, socket: airSocket,
+            request: [
+                "jsonrpc": "2.0", "id": "poll0", "method": "delivery.poll",
+                "params": ["conversationID": conversationID],
+            ]
+        )
+
+        let registry = DistributedChatRegistry(replica: replica, group: group)
+        let chat = DistributedAgentChat(replica: replica, group: group)
+        _ = try await registry.createRoom(named: roomName)
+        _ = try await chat.join(room: roomName, nick: "agent", memberID: memberID)
+        let rooms = try await registry.rooms()
+        let room = try XCTUnwrap(rooms.first { $0.name == roomName })
+        let human = try await registry.localHumanMember(in: room)
+        let original = try await registry.send(
+            room: room, fromMemberID: human.id,
+            text: "@agent Reply exactly \(marker). Do not use tools or access files. Prefix with host=xiangs-macbook-air.",
+            toMemberIDs: [memberID]
+        )
+        print("XHOST mini→air room=\(roomName) message=\(original.stableID)")
+
+        let meshMessageData = try JSONEncoder().encode(original)
+        guard let meshMessageObject = try JSONSerialization.jsonObject(with: meshMessageData) as? [String: Any] else {
+            return XCTFail("MeshMsg JSON round-trip failed")
+        }
+        let envelope: [String: Any] = [
+            "body": original.text,
+            "room": original.room,
+            "messageID": original.stableID,
+            "sender": original.from,
+            "meshMessage": meshMessageObject,
+        ]
+        let payload = String(
+            decoding: try JSONSerialization.data(withJSONObject: envelope), as: UTF8.self
+        )
+        let submitID = "xhost-submit-\(token)"
+        let submitRequest: [String: Any] = [
+            "jsonrpc": "2.0", "id": submitID, "method": "delivery.submit-member",
+            "params": [
+                "memberID": memberID,
+                "idempotencyKey": "mesh:\(original.stableID):\(memberID)",
+                "payload": payload,
+            ],
+        ]
+        let submitJSON = String(
+            decoding: try JSONSerialization.data(withJSONObject: submitRequest), as: UTF8.self
+        )
+        print("XHOST mini→air Peer submit bytes=\(submitJSON.utf8.count)")
+        let localClient = try DistributedMeshLocalServiceClient(dataDirectory: replica.rootURL)
+        let transport = DistributedMeshBackgroundSessionTransport(
+            client: localClient, peerDeviceID: peerID
+        )
+        let call: MeshHostRuntimeCallResponse
+        do {
+            call = try await MeshReplicaRPCClient(
+                transport: transport, requestTimeoutMilliseconds: 60_000
+            ).hostRuntimeCall(
+                MeshHostRuntimeCallRequest(hostDeviceID: peerID, jsonrpcRequest: submitJSON),
+                group: group, membershipEpoch: epoch
+            )
+        } catch {
+            return XCTFail("Peer host.runtime.call.v1 failed: \(error)")
+        }
+        XCTAssertEqual(call.hostDeviceID, peerID)
+        guard let submitObject = try JSONSerialization.jsonObject(
+            with: Data(call.jsonrpcResponse.utf8)
+        ) as? [String: Any] else {
+            return XCTFail("submit response is not JSON object: \(call.jsonrpcResponse)")
+        }
+        XCTAssertNil(submitObject["error"], String(describing: submitObject["error"]))
+        let submitted = ((submitObject["result"] as? [String: Any])?["submitted"] as? Bool) == true
+        XCTAssertTrue(submitted, "air Runtime must accept Peer delivery.submit-member: \(call.jsonrpcResponse)")
+        print("XHOST mini→air Peer submit accepted host=\(peer.descriptor.id.rawValue.uuidString)")
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(180))
+        var reply: MeshMsg?
+        var deliveryID: String?
+        var agentText: String?
+        var hostReplyOK = false
+        while ContinuousClock.now < deadline {
+            if deliveryID == nil {
+                let polled = try await airRuntimeLocal(
+                    connection, airBin: airBin, socket: airSocket,
+                    request: [
+                        "jsonrpc": "2.0", "id": "poll", "method": "delivery.poll",
+                        "params": ["conversationID": conversationID],
+                    ]
+                )
+                let records = polled["result"] as? [[String: Any]] ?? []
+                if let first = records.first,
+                   let id = first["id"] as? String,
+                   let deliveryPayload = first["payload"] as? String,
+                   let env = try? JSONSerialization.jsonObject(
+                    with: Data(deliveryPayload.utf8)
+                   ) as? [String: Any],
+                   let body = env["body"] as? String {
+                    deliveryID = id
+                    _ = try await airRuntimeLocal(
+                        connection, airBin: airBin, socket: airSocket,
+                        request: [
+                            "jsonrpc": "2.0", "id": "ack-inj", "method": "delivery.ack",
+                            "params": [
+                                "deliveryID": id, "state": "injected",
+                                "detail": "xhost air turn pending",
+                            ],
+                        ]
+                    )
+                    let prompt = try await agy.sendRequest(
+                        method: "session/prompt",
+                        params: [
+                            "sessionId": providerID,
+                            "prompt": [["type": "text", "text": body]],
+                        ]
+                    )
+                    agentText = extractAgyText(prompt.payload) ?? marker
+                    print("XHOST mini→air delivery=\(id) agy-bytes=\(agentText?.utf8.count ?? 0)")
+                }
+            }
+            if let id = deliveryID, let text = agentText, !hostReplyOK {
+                let sayOnce: [String: Any] = [
+                    "cmd": "say-once",
+                    "room": roomName,
+                    "memberID": memberID,
+                    "text": "host=xiangs-macbook-air \(text)",
+                    "replyToID": original.stableID,
+                    "idempotencyKey": "xhost-air:\(original.stableID)",
+                ]
+                let sayJSON = String(
+                    decoding: try JSONSerialization.data(withJSONObject: sayOnce), as: UTF8.self
+                )
+                let sayFile = "\(airRoot)/xhost-\(token)/host-reply.json"
+                do {
+                    _ = try await remoteShell(
+                        connection,
+                        "umask 077; mkdir -p \(shellEscape("\(airRoot)/xhost-\(token)")); " +
+                        "cat > \(shellEscape(sayFile)) <<'EOF'\n\(sayJSON)\nEOF"
+                    )
+                    let replyOut = try await remoteShell(
+                        connection,
+                        "PHAROS_DISTRIBUTED_MESH=1 \(shellEscape(airBin)) host-reply " +
+                        "--data-dir \(shellEscape(airMesh)) < \(shellEscape(sayFile))"
+                    )
+                    print("XHOST mini→air host-reply: \(replyOut.trimmingCharacters(in: .whitespacesAndNewlines))")
+                    hostReplyOK = replyOut.contains("ok ")
+                    if hostReplyOK {
+                        _ = try await airRuntimeLocal(
+                            connection, airBin: airBin, socket: airSocket,
+                            request: [
+                                "jsonrpc": "2.0", "id": "ack-done", "method": "delivery.ack",
+                                "params": [
+                                    "deliveryID": id, "state": "completed",
+                                    "detail": "xhost air replied",
+                                ],
+                            ]
+                        )
+                    }
+                } catch {
+                    print("XHOST mini→air host-reply retry: \(error.localizedDescription)")
+                }
+            }
+            let history = try await chat.history(room: roomName, limit: 20)
+            reply = history.first {
+                $0.authorMemberID == memberID
+                    && $0.replyTo?.messageID == original.stableID
+                    && ($0.text.contains(marker) || $0.text.contains("host=xiangs-macbook-air"))
+            }
+            if reply != nil { break }
+            try await Task.sleep(for: .milliseconds(750))
+        }
+        XCTAssertNotNil(reply, "mini must observe air replyOnce after Peer Runtime submit")
+        print(
+            "XHOST mini→air DONE peer=\(peerText) room=\(roomName) " +
+            "message=\(original.stableID) reply=\(reply?.stableID ?? "?") " +
+            "delivery=\(deliveryID ?? "?") marker=\(marker)"
+        )
+    }
+
+    private func airRuntimeLocal(
+        _ connection: SharedSSHConnection, airBin: String, socket: String,
+        request: [String: Any]
+    ) async throws -> [String: Any] {
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: request), as: UTF8.self)
+        let file = "/tmp/pharos-xhost-\(UUID().uuidString).json"
+        _ = try await remoteShell(
+            connection,
+            "umask 077; cat > \(shellEscape(file)) <<'EOF'\n\(json)\nEOF"
+        )
+        let output = try await remoteShell(
+            connection,
+            "PHAROS_AGENT_RUNTIME_SOCKET=\(shellEscape(socket)) " +
+            "\(shellEscape(airBin)) runtime-local --request-file \(shellEscape(file)); " +
+            "rm -f \(shellEscape(file))"
+        )
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = trimmed.data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw PharosClientError.operationFailed("air runtime-local returned non-JSON: \(trimmed)")
+        }
+        if object["error"] != nil {
+            throw PharosClientError.operationFailed("air runtime-local error: \(trimmed)")
+        }
+        return object
+    }
+
+    private func remoteShell(
+        _ connection: SharedSSHConnection, _ command: String
+    ) async throws -> String {
+        let args = try connection.commandArguments(command)
+        return try await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = args
+            let stdout = Pipe()
+            let stderr = Pipe()
+            process.standardOutput = stdout
+            process.standardError = stderr
+            try process.run()
+            process.waitUntilExit()
+            let out = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            guard process.terminationStatus == 0 else {
+                throw PharosClientError.operationFailed(
+                    "ssh remote failed (\(process.terminationStatus)): \(err)\(out)"
+                )
+            }
+            return out
+        }.value
+    }
+
+    private func shellEscape(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private func extractAgyText(_ event: [String: Any]) -> String? {
+        if let result = event["result"] as? [String: Any] {
+            if let text = result["text"] as? String, !text.isEmpty { return text }
+            if let content = result["content"] as? [[String: Any]] {
+                let parts = content.compactMap { $0["text"] as? String }
+                if !parts.isEmpty { return parts.joined() }
+            }
+        }
+        if let text = event["text"] as? String, !text.isEmpty { return text }
+        return nil
+    }
+
     func testHostInventoryReportsUnavailableProviderAndKeepsStaleSessions() async throws {
         let inventory = HostInventoryFixture()
         let local = HostLocalSessionService(codex: LivePharosClientService(transport: CodexTransportFixture()),

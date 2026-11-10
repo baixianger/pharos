@@ -156,6 +156,15 @@ public struct MeshReplicaRPCServer: Sendable {
     private let timestamp: @Sendable () -> MeshHybridTimestamp
     private let hostCommandHandler: (@Sendable (MeshHostCommand) async -> MeshHostCommandExecutionOutcome)?
     private let hostPresenceProvider: (@Sendable () async -> MeshAgentPresenceSnapshot)?
+    private let hostRuntimeHelloProvider: (@Sendable () async throws -> MeshHostRuntimeHello)?
+    private let hostRuntimeCallHandler:
+        (@Sendable (MeshHostRuntimeCallRequest) async throws -> MeshHostRuntimeCallResponse)?
+    private let hostSessionQueryHandler:
+        (@Sendable (MeshHostSessionQueryRequest) async throws -> MeshHostSessionQueryResponse)?
+    private let hostSessionActionHandler:
+        (@Sendable (MeshHostSessionActionRequest) async throws -> MeshHostSessionActionResponse)?
+    private let hostSessionEventsHandler:
+        (@Sendable (MeshHostSessionEventsRequest) async throws -> MeshHostSessionEventsResponse)?
     private let syncHintHandler:
         (@Sendable (MeshEndpointID) async -> Void)?
     private let membershipTransitionObserver:
@@ -171,6 +180,15 @@ public struct MeshReplicaRPCServer: Sendable {
         syncHintHandler:
             (@Sendable (MeshEndpointID) async -> Void)? = nil,
         hostPresenceProvider: (@Sendable () async -> MeshAgentPresenceSnapshot)? = nil,
+        hostRuntimeHelloProvider: (@Sendable () async throws -> MeshHostRuntimeHello)? = nil,
+        hostRuntimeCallHandler:
+            (@Sendable (MeshHostRuntimeCallRequest) async throws -> MeshHostRuntimeCallResponse)? = nil,
+        hostSessionQueryHandler:
+            (@Sendable (MeshHostSessionQueryRequest) async throws -> MeshHostSessionQueryResponse)? = nil,
+        hostSessionActionHandler:
+            (@Sendable (MeshHostSessionActionRequest) async throws -> MeshHostSessionActionResponse)? = nil,
+        hostSessionEventsHandler:
+            (@Sendable (MeshHostSessionEventsRequest) async throws -> MeshHostSessionEventsResponse)? = nil,
         timestamp: @escaping @Sendable () -> MeshHybridTimestamp = {
             MeshHybridTimestamp(
                 wallTimeMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
@@ -184,6 +202,11 @@ public struct MeshReplicaRPCServer: Sendable {
         self.restrictToAllowedTrustGroup = restrictToAllowedTrustGroup
         self.hostCommandHandler = nil
         self.hostPresenceProvider = hostPresenceProvider
+        self.hostRuntimeHelloProvider = hostRuntimeHelloProvider
+        self.hostRuntimeCallHandler = hostRuntimeCallHandler
+        self.hostSessionQueryHandler = hostSessionQueryHandler
+        self.hostSessionActionHandler = hostSessionActionHandler
+        self.hostSessionEventsHandler = hostSessionEventsHandler
         self.syncHintHandler = syncHintHandler
         self.membershipTransitionObserver = membershipTransitionObserver
         self.timestamp = timestamp
@@ -199,8 +222,17 @@ public struct MeshReplicaRPCServer: Sendable {
         syncHintHandler:
             (@Sendable (MeshEndpointID) async -> Void)? = nil,
         hostPresenceProvider: (@Sendable () async -> MeshAgentPresenceSnapshot)? = nil,
+        hostRuntimeHelloProvider: (@Sendable () async throws -> MeshHostRuntimeHello)? = nil,
+        hostRuntimeCallHandler:
+            (@Sendable (MeshHostRuntimeCallRequest) async throws -> MeshHostRuntimeCallResponse)? = nil,
         hostCommandHandler: @escaping @Sendable (MeshHostCommand) async
             -> MeshHostCommandExecutionOutcome,
+        hostSessionQueryHandler:
+            (@Sendable (MeshHostSessionQueryRequest) async throws -> MeshHostSessionQueryResponse)? = nil,
+        hostSessionActionHandler:
+            (@Sendable (MeshHostSessionActionRequest) async throws -> MeshHostSessionActionResponse)? = nil,
+        hostSessionEventsHandler:
+            (@Sendable (MeshHostSessionEventsRequest) async throws -> MeshHostSessionEventsResponse)? = nil,
         timestamp: @escaping @Sendable () -> MeshHybridTimestamp = {
             MeshHybridTimestamp(
                 wallTimeMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
@@ -214,6 +246,11 @@ public struct MeshReplicaRPCServer: Sendable {
         self.restrictToAllowedTrustGroup = restrictToAllowedTrustGroup
         self.hostCommandHandler = hostCommandHandler
         self.hostPresenceProvider = hostPresenceProvider
+        self.hostRuntimeHelloProvider = hostRuntimeHelloProvider
+        self.hostRuntimeCallHandler = hostRuntimeCallHandler
+        self.hostSessionQueryHandler = hostSessionQueryHandler
+        self.hostSessionActionHandler = hostSessionActionHandler
+        self.hostSessionEventsHandler = hostSessionEventsHandler
         self.syncHintHandler = syncHintHandler
         self.membershipTransitionObserver = membershipTransitionObserver
         self.timestamp = timestamp
@@ -487,6 +524,50 @@ public struct MeshReplicaRPCServer: Sendable {
                     for: header, body: try MeshReplicaRPCJSON.encode(snapshot)
                 )
 
+            case .hostRuntimeHello:
+                guard request.body == nil, let hostIdentity,
+                      let hostRuntimeHelloProvider else {
+                    return try failure(for: header, code: "host-unavailable")
+                }
+                guard authorizedPeer.descriptor.roles.contains(.controller) else {
+                    return try failure(for: header, code: "controller-required")
+                }
+                let hello: MeshHostRuntimeHello
+                do { hello = try await hostRuntimeHelloProvider() }
+                catch { return try failure(for: header, code: "runtime-unavailable") }
+                try hello.validate()
+                guard hello.hostDeviceID == hostIdentity.deviceID else {
+                    return try failure(for: header, code: "runtime-identity-mismatch")
+                }
+                return try success(for: header, body: try MeshReplicaRPCJSON.encode(hello))
+
+            case .hostRuntimeCall:
+                guard let hostIdentity, let hostRuntimeCallHandler else {
+                    return try failure(for: header, code: "host-unavailable")
+                }
+                guard authorizedPeer.descriptor.roles.contains(.controller) else {
+                    return try failure(for: header, code: "controller-required")
+                }
+                let callRequest: MeshHostRuntimeCallRequest
+                do { callRequest = try decodeBody(request.body) }
+                catch { return try failure(for: header, code: "invalid-runtime-call") }
+                do { try callRequest.validate() }
+                catch { return try failure(for: header, code: "invalid-runtime-call") }
+                guard callRequest.hostDeviceID == hostIdentity.deviceID else {
+                    return try failure(for: header, code: "runtime-identity-mismatch")
+                }
+                let callResponse: MeshHostRuntimeCallResponse
+                do { callResponse = try await hostRuntimeCallHandler(callRequest) }
+                catch { return try failure(for: header, code: "runtime-unavailable") }
+                do { try callResponse.validate() }
+                catch { return try failure(for: header, code: "runtime-unavailable") }
+                guard callResponse.hostDeviceID == hostIdentity.deviceID else {
+                    return try failure(for: header, code: "runtime-identity-mismatch")
+                }
+                return try success(
+                    for: header, body: try MeshReplicaRPCJSON.encode(callResponse)
+                )
+
             case .hostCommand:
                 guard let hostIdentity else {
                     return try failure(for: header, code: "host-unavailable")
@@ -526,6 +607,73 @@ public struct MeshReplicaRPCServer: Sendable {
                     }
                 }
                 return try success(for: header, body: try MeshReplicaRPCJSON.encode(receipt))
+
+            case .hostSessionQuery:
+                guard let hostIdentity, let hostSessionQueryHandler else {
+                    return try failure(for: header, code: "host-unavailable")
+                }
+                guard authorizedPeer.descriptor.roles.contains(.controller) else {
+                    return try failure(for: header, code: "controller-required")
+                }
+                let query: MeshHostSessionQueryRequest = try decodeBody(request.body)
+                try query.validate()
+                guard query.hostDeviceID == hostIdentity.deviceID else {
+                    return try failure(for: header, code: "host-identity-mismatch")
+                }
+                let response: MeshHostSessionQueryResponse
+                do { response = try await hostSessionQueryHandler(query) }
+                catch { return try failure(for: header, code: "session-query-failed") }
+                try response.validate()
+                guard response.hostDeviceID == hostIdentity.deviceID,
+                      response.queryKind == query.queryKind else {
+                    return try failure(for: header, code: "session-response-mismatch")
+                }
+                return try success(for: header, body: try MeshReplicaRPCJSON.encode(response))
+
+            case .hostSessionAction:
+                guard let hostIdentity, let hostSessionActionHandler else {
+                    return try failure(for: header, code: "host-unavailable")
+                }
+                guard authorizedPeer.descriptor.roles.contains(.controller) else {
+                    return try failure(for: header, code: "controller-required")
+                }
+                let action: MeshHostSessionActionRequest = try decodeBody(request.body)
+                try action.validate()
+                guard action.hostDeviceID == hostIdentity.deviceID else {
+                    return try failure(for: header, code: "host-identity-mismatch")
+                }
+                let response: MeshHostSessionActionResponse
+                do { response = try await hostSessionActionHandler(action) }
+                catch { return try failure(for: header, code: "session-action-failed") }
+                try response.validate()
+                guard response.hostDeviceID == hostIdentity.deviceID,
+                      response.actionID == action.actionID,
+                      response.sessionID == action.sessionID else {
+                    return try failure(for: header, code: "session-response-mismatch")
+                }
+                return try success(for: header, body: try MeshReplicaRPCJSON.encode(response))
+
+            case .hostSessionEvents:
+                guard let hostIdentity, let hostSessionEventsHandler else {
+                    return try failure(for: header, code: "host-unavailable")
+                }
+                guard authorizedPeer.descriptor.roles.contains(.controller) else {
+                    return try failure(for: header, code: "controller-required")
+                }
+                let eventsReq: MeshHostSessionEventsRequest = try decodeBody(request.body)
+                try eventsReq.validate()
+                guard eventsReq.hostDeviceID == hostIdentity.deviceID else {
+                    return try failure(for: header, code: "host-identity-mismatch")
+                }
+                let response: MeshHostSessionEventsResponse
+                do { response = try await hostSessionEventsHandler(eventsReq) }
+                catch { return try failure(for: header, code: "session-events-failed") }
+                try response.validate()
+                guard response.hostDeviceID == hostIdentity.deviceID else {
+                    return try failure(for: header, code: "session-response-mismatch")
+                }
+                return try success(for: header, body: try MeshReplicaRPCJSON.encode(response))
+
             case .membershipVote:
                 guard let hostIdentity,
                       authorizedPeer.descriptor.roles.contains(.controller) else {
@@ -897,6 +1045,106 @@ public struct MeshReplicaRPCClient: Sendable {
         do { try snapshot.validate() }
         catch { throw MeshReplicaRPCError.responseMismatch }
         return snapshot
+    }
+
+    public func hostRuntimeHello(
+        group: MeshTrustGroupID, membershipEpoch: UInt64,
+        expectedHostDeviceID: MeshDeviceID
+    ) async throws -> MeshHostRuntimeHello {
+        let response = try await exchange(
+            operation: .hostRuntimeHello, group: group,
+            membershipEpoch: membershipEpoch
+        )
+        let hello: MeshHostRuntimeHello = try decodeBody(response.body)
+        do { try hello.validate() }
+        catch { throw MeshReplicaRPCError.responseMismatch }
+        guard hello.hostDeviceID == expectedHostDeviceID else {
+            throw MeshReplicaRPCError.responseMismatch
+        }
+        return hello
+    }
+
+    public func hostRuntimeCall(
+        _ request: MeshHostRuntimeCallRequest,
+        group: MeshTrustGroupID,
+        membershipEpoch: UInt64
+    ) async throws -> MeshHostRuntimeCallResponse {
+        try request.validate()
+        let response = try await exchange(
+            operation: .hostRuntimeCall, group: group,
+            membershipEpoch: membershipEpoch,
+            body: try MeshReplicaRPCJSON.encode(request)
+        )
+        let callResponse: MeshHostRuntimeCallResponse = try decodeBody(response.body)
+        do { try callResponse.validate() }
+        catch { throw MeshReplicaRPCError.responseMismatch }
+        guard callResponse.hostDeviceID == request.hostDeviceID else {
+            throw MeshReplicaRPCError.responseMismatch
+        }
+        return callResponse
+    }
+
+    public func hostSessionQuery(
+        _ request: MeshHostSessionQueryRequest,
+        group: MeshTrustGroupID,
+        membershipEpoch: UInt64
+    ) async throws -> MeshHostSessionQueryResponse {
+        try request.validate()
+        let response = try await exchange(
+            operation: .hostSessionQuery, group: group,
+            membershipEpoch: membershipEpoch,
+            body: try MeshReplicaRPCJSON.encode(request)
+        )
+        let queryResponse: MeshHostSessionQueryResponse = try decodeBody(response.body)
+        do { try queryResponse.validate() }
+        catch { throw MeshReplicaRPCError.responseMismatch }
+        guard queryResponse.hostDeviceID == request.hostDeviceID,
+              queryResponse.queryKind == request.queryKind else {
+            throw MeshReplicaRPCError.responseMismatch
+        }
+        return queryResponse
+    }
+
+    public func hostSessionAction(
+        _ request: MeshHostSessionActionRequest,
+        group: MeshTrustGroupID,
+        membershipEpoch: UInt64
+    ) async throws -> MeshHostSessionActionResponse {
+        try request.validate()
+        let response = try await exchange(
+            operation: .hostSessionAction, group: group,
+            membershipEpoch: membershipEpoch,
+            body: try MeshReplicaRPCJSON.encode(request)
+        )
+        let actionResponse: MeshHostSessionActionResponse = try decodeBody(response.body)
+        do { try actionResponse.validate() }
+        catch { throw MeshReplicaRPCError.responseMismatch }
+        guard actionResponse.hostDeviceID == request.hostDeviceID,
+              actionResponse.actionID == request.actionID,
+              actionResponse.sessionID == request.sessionID else {
+            throw MeshReplicaRPCError.responseMismatch
+        }
+        return actionResponse
+    }
+
+    public func hostSessionEvents(
+        _ request: MeshHostSessionEventsRequest,
+        group: MeshTrustGroupID,
+        membershipEpoch: UInt64
+    ) async throws -> MeshHostSessionEventsResponse {
+        try request.validate()
+        let response = try await exchange(
+            operation: .hostSessionEvents, group: group,
+            membershipEpoch: membershipEpoch,
+            body: try MeshReplicaRPCJSON.encode(request)
+        )
+        let eventsResponse: MeshHostSessionEventsResponse = try decodeBody(response.body)
+        do { try eventsResponse.validate() }
+        catch { throw MeshReplicaRPCError.responseMismatch }
+        guard eventsResponse.hostDeviceID == request.hostDeviceID else {
+            throw MeshReplicaRPCError.responseMismatch
+        }
+        return eventsResponse
     }
 
     public func applyMembershipTransition(

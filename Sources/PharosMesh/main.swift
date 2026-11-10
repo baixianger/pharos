@@ -74,6 +74,26 @@ private enum MeshHeadlessCLI {
         case "human-proxy":
             return await runHumanProxy(Array(args.dropFirst()))
 
+        case "runtime-local":
+            // Local-driver Runtime methods (register/poll/ack) stay Host-local.
+            guard let requestText = option("--request", in: args)
+                ?? readFileOption("--request-file", in: args),
+                  !requestText.isEmpty else {
+                return usageError(
+                    "runtime-local --request JSON|--request-file ABSOLUTE-PATH"
+                )
+            }
+            do {
+                let response = try AgentRuntimeClient.sendLocalDriverRequest(requestText)
+                print(response)
+                return 0
+            } catch {
+                FileHandle.standardError.write(
+                    Data("error: \(error.localizedDescription)\n".utf8)
+                )
+                return 1
+            }
+
         case "capabilities":
             return printResponse(MeshClient.send(MeshRequest(cmd: "capabilities")))
 
@@ -307,7 +327,8 @@ private enum MeshHeadlessCLI {
             "room-list", "room-create", "room-rename", "room-delete",
             "room-send", "room-history", "attachment-put", "attachment-get",
             "host-resource-register", "host-resource-replace", "host-resource-retire",
-            "host-resource-show", "host-presence", "host-runtime-hello", "host-command-send",
+            "host-resource-show", "host-presence", "host-runtime-hello",
+            "host-runtime-submit", "host-command-send",
             "host-command-replay",
         ]
         let legacyImportCommand = "legacy-import"
@@ -320,7 +341,7 @@ private enum MeshHeadlessCLI {
                 "room-list|room-create|room-rename|room-delete|room-send|room-history|" +
                 "attachment-put|attachment-get|host-resource-register|host-resource-replace|" +
                 "host-resource-retire|host-resource-show|host-presence|host-runtime-hello|" +
-                "host-command-send|host-command-replay|" +
+                "host-runtime-submit|host-command-send|host-command-replay|" +
                 "probe-serve|probe|migration-status|" +
                 "migration-prepare|cutover|rollback …"
             )
@@ -647,6 +668,9 @@ private enum MeshHeadlessCLI {
                     },
                     hostRuntimeHelloProvider: {
                         try await MeshHostRuntimeBridge.hello(hostDeviceID: replica.identity.deviceID)
+                    },
+                    hostRuntimeCallHandler: { request in
+                        try await MeshHostRuntimeBridge.call(request)
                     },
                     hostCommandHandler: { command in
                         let outcome = await executor.execute(command)
@@ -1169,7 +1193,10 @@ private enum MeshHeadlessCLI {
         case "host-runtime-hello":
             guard let peerText = option("--peer", in: args),
                   let peerUUID = UUID(uuidString: peerText) else {
-                return usageError("distributed host-runtime-hello --peer DEVICE-UUID --data-dir ABSOLUTE-PATH")
+                return usageError(
+                    "distributed host-runtime-hello --peer DEVICE-UUID " +
+                    "[--via-local] --data-dir ABSOLUTE-PATH"
+                )
             }
             let (group, epoch) = try await activeMembership(replica)
             guard let peer = try await replica.store.trustedDevice(
@@ -1177,24 +1204,46 @@ private enum MeshHeadlessCLI {
             ), peer.descriptor.roles.contains(.host) else {
                 throw DistributedDeviceCommandError.peerNotFound
             }
-            let runtime = try await distributedRuntime(args, replica: replica)
-            do {
-                let transport = IrohMeshTransport(
-                    runtime: runtime,
-                    remote: MeshIrohEndpointAddress(
-                        endpointID: peer.descriptor.endpointID,
-                        ticket: option("--peer-ticket", in: args) ?? peer.addressTicket
-                    )
-                )
+            return try await withDistributedPeerTransport(
+                args, replica: replica, peer: peer
+            ) { transport, cleanup in
+                defer { cleanup() }
                 let hello = try await MeshReplicaRPCClient(transport: transport)
                     .hostRuntimeHello(group: group, membershipEpoch: epoch,
                                       expectedHostDeviceID: peer.descriptor.id)
-                try await runtime.close()
                 print(String(decoding: try sortedJSON(hello), as: UTF8.self))
                 return 0
-            } catch {
-                try? await runtime.close()
-                throw error
+            }
+
+        case "host-runtime-submit":
+            guard let peerText = option("--peer", in: args),
+                  let peerUUID = UUID(uuidString: peerText),
+                  let requestText = option("--request", in: args) ?? readFileOption("--request-file", in: args),
+                  !requestText.isEmpty else {
+                return usageError(
+                    "distributed host-runtime-submit --peer DEVICE-UUID " +
+                    "--request JSON|--request-file ABSOLUTE-PATH [--via-local] " +
+                    "--data-dir ABSOLUTE-PATH"
+                )
+            }
+            let (group, epoch) = try await activeMembership(replica)
+            guard let peer = try await replica.store.trustedDevice(
+                in: group, id: MeshDeviceID(rawValue: peerUUID)
+            ), peer.descriptor.roles.contains(.host) else {
+                throw DistributedDeviceCommandError.peerNotFound
+            }
+            let callRequest = MeshHostRuntimeCallRequest(
+                hostDeviceID: peer.descriptor.id, jsonrpcRequest: requestText
+            )
+            try callRequest.validate()
+            return try await withDistributedPeerTransport(
+                args, replica: replica, peer: peer
+            ) { transport, cleanup in
+                defer { cleanup() }
+                let response = try await MeshReplicaRPCClient(transport: transport)
+                    .hostRuntimeCall(callRequest, group: group, membershipEpoch: epoch)
+                print(response.jsonrpcResponse)
+                return 0
             }
 
         case "host-presence":
@@ -1360,6 +1409,35 @@ private enum MeshHeadlessCLI {
         )
         await runtime.waitUntilOnline()
         return runtime
+    }
+
+    /// Prefer `--via-local` when the device already has `sync-serve` owning the
+    /// Iroh endpoint; opening a second endpoint races with "duplicate connection".
+    private static func withDistributedPeerTransport<T>(
+        _ args: [String], replica: MeshLocalReplica,
+        peer: MeshPairedDevice,
+        body: (any MeshTransport, @escaping () -> Void) async throws -> T
+    ) async throws -> T {
+        if args.contains("--via-local") {
+            let client = try DistributedMeshLocalServiceClient(
+                dataDirectory: replica.rootURL
+            )
+            let transport = DistributedMeshBackgroundSessionTransport(
+                client: client, peerDeviceID: peer.descriptor.id
+            )
+            return try await body(transport, {})
+        }
+        let runtime = try await distributedRuntime(args, replica: replica)
+        let transport = IrohMeshTransport(
+            runtime: runtime,
+            remote: MeshIrohEndpointAddress(
+                endpointID: peer.descriptor.endpointID,
+                ticket: option("--peer-ticket", in: args) ?? peer.addressTicket
+            )
+        )
+        return try await body(transport) {
+            Task { try? await runtime.close() }
+        }
     }
 
     private static func activeMembership(
@@ -2041,6 +2119,11 @@ private enum MeshHeadlessCLI {
         return args[index + 1]
     }
 
+    private static func readFileOption(_ name: String, in args: [String]) -> String? {
+        guard let path = option(name, in: args), path.hasPrefix("/") else { return nil }
+        return try? String(contentsOfFile: path, encoding: .utf8)
+    }
+
     private static func mentions(in text: String) -> [String]? {
         guard let expression = try? NSRegularExpression(pattern: #"(?<![A-Za-z0-9._-])@([A-Za-z0-9._-]+)"#) else {
             return nil
@@ -2247,6 +2330,7 @@ private enum MeshHeadlessCLI {
       node uninstall
       node status
       human-proxy resolve --peer DEVICE-UUID --session SESSION-ID --approval-id ID --decision allowedOnce|rejected --done ABSOLUTE-PATH.md
+      runtime-local --request JSON|--request-file ABSOLUTE-PATH
       capabilities [--endpoint HOST:PORT]
       pair --endpoint HOST:PORT
       pair invite|accept|redeem|list|revoke (signed distributed trust)
@@ -2285,6 +2369,7 @@ private enum MeshHeadlessCLI {
       distributed host-resource-show --resource ID --data-dir ABSOLUTE-PATH
       distributed host-presence --peer DEVICE-UUID [--peer-ticket CURRENT-TICKET] --data-dir ABSOLUTE-PATH
       distributed host-runtime-hello --peer DEVICE-UUID [--peer-ticket CURRENT-TICKET] --data-dir ABSOLUTE-PATH
+      distributed host-runtime-submit --peer DEVICE-UUID --request JSON|--request-file ABSOLUTE-PATH [--peer-ticket CURRENT-TICKET] --data-dir ABSOLUTE-PATH
       distributed host-command-send --peer DEVICE-UUID --resource ID --generation N --action poke|stop [--text TEXT] [--idempotency-key KEY] [--envelope-out ABSOLUTE-PATH] [--peer-ticket CURRENT-TICKET] --data-dir ABSOLUTE-PATH
       distributed host-command-replay ABSOLUTE-ENVELOPE-PATH --peer DEVICE-UUID [--peer-ticket CURRENT-TICKET] --data-dir ABSOLUTE-PATH
       distributed probe-serve --data-dir ABSOLUTE-PATH [--relay production|disabled] [--bind HOST:PORT]

@@ -87,6 +87,29 @@ public struct DistributedMeshLocalRuntimeCommands: Sendable {
                 )
                 try await fetchAttachment(attachment)
                 return .init(requestID: request.requestID)
+            case .sessionRPC:
+                let value = try decode(DistributedMeshSessionRPCRequest.self, from: request.payload)
+                guard try replica.activeRoles().contains(.controller),
+                      let epoch = try await replica.store.membershipEpoch(for: group),
+                      let peer = try await replica.store.trustedDevices(in: group, membershipEpoch: epoch)
+                        .first(where: { $0.descriptor.id == value.peerDeviceID }),
+                      peer.descriptor.roles.contains(.host),
+                      value.timeoutMilliseconds > 0, value.timeoutMilliseconds <= 60_000 else {
+                    throw DistributedMeshLocalRuntimeCommandError.invalidPayload
+                }
+                let header = try MeshReplicaRPCHeader.decode(value.header)
+                guard header.disposition == .request, header.trustGroupID == group,
+                      header.membershipEpoch == epoch,
+                      [.hostRuntimeHello, .hostRuntimeCall, .hostSessionQuery, .hostSessionAction, .hostSessionEvents].contains(header.operation),
+                      request.deadlineMilliseconds > Int64(Date().timeIntervalSince1970 * 1_000) else {
+                    throw DistributedMeshLocalRuntimeCommandError.invalidPayload
+                }
+                let transport = IrohMeshTransport(runtime: runtime,
+                    remote: MeshIrohEndpointAddress(endpointID: peer.descriptor.endpointID, ticket: peer.addressTicket))
+                let result = try await transport.exchange(MeshTransportRequest(
+                    header: value.header, body: value.body, timeoutMilliseconds: value.timeoutMilliseconds))
+                return .init(requestID: request.requestID, payload: try JSONEncoder().encode(
+                    DistributedMeshSessionRPCResponse(header: result.header, body: result.body)))
             case .health, .status, .syncNow:
                 return .init(
                     requestID: request.requestID, accepted: false,

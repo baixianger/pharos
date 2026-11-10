@@ -386,6 +386,9 @@ final class DistributedMeshSupport {
                 hostRuntimeHelloProvider: {
                     try await MeshHostRuntimeBridge.hello(hostDeviceID: replica.identity.deviceID)
                 },
+                hostRuntimeCallHandler: { request in
+                    try await MeshHostRuntimeBridge.call(request)
+                },
                 hostCommandHandler: { command in
                     let outcome = await executor.execute(command)
                     if command.action == .stop,
