@@ -17,11 +17,20 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
+mod mesh_bridge;
+mod replica_bridge;
+
 const PROTOCOL_VERSION: u64 = 1;
 const SERVICE: &str = "me.pai.pharos.agent-runtime";
 const REFERENCE_DATE_OFFSET: f64 = 978_307_200.0;
 
 fn main() {
+    // Keep Batch-1 bridge modules linked for merge-captain wiring hooks.
+    let _ = (
+        mesh_bridge::describe_wiring(),
+        replica_bridge::describe_wiring(),
+        replica_bridge::HOST_RUNTIME_ALLOWED_METHODS,
+    );
     if let Err(error) = run() {
         eprintln!("pharos-agent-runtime: {error}");
         std::process::exit(1);
