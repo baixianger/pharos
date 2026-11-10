@@ -1,11 +1,14 @@
 ---
-summary: 2026-11-10 18:01：Rust 后端收敛盘点与 RFC-007 计划完成；等待审阅，未开始迁移。
+summary: 2026-11-10 19:07：RFC-007 Batch 0 / Phase 0 共享契约已落地；等验收后开并行流。
 ---
 
 # 活跃任务交接
 
+**STATUS: RUST-P0-DONE**
+**Phase 0 contracts（2026-11-10 19:07）**：`pharos-protocol` / `pharos-store-schema` / `pharos-api`（CONTRACTS_VERSION=0.1.0，SCHEMA_VERSION=1）。`cargo check`+`test` 三 crate 通过；无 adapter/CLI/web 依赖。文档：`docs/GOAL-RUST-BACKEND.md`、`docs/rfc-007-contracts.md`。本地 tag `rust-contracts-0.1.0`。未做 CLI/适配器/HTTP/mesh。**等用户验收后开 Batch 1 并行流；本 agent 任 merge captain。**
+
 **STATUS: RUST-PLAN-DONE**
-**Rust backend plan（2026-11-10 18:01 + 18:02 并行补充）**：架构决定——全部后端收敛为独立 Rust 服务；Swift 只留 SwiftUI+WebKit 客户端。盘点 + `docs/RFC-007-rust-backend.md`：阶段门禁 A–E；**§6.1 并行工作流**（Phase 0 共享契约 → 流 S1 CLI/Thread/grokbot、S2 Session/HITL/Goal、S3 mesh/iroh、S4 web+API+UI、S5a–d 适配器、S6 Swift 客户端；每流独立 worktree `~/personal/pharos-wt/<stream>` + 分支 `rust/<stream>` + tmux `pharos-rust-<stream>`；合并顺序与冲突规则；mini 2–3 / 全局 3–5 并发，Air/box 可分担）。`BACKEND-MATRIX` 仅 `planned-rust`。**未开始搬代码或建 worktree；等审。**
+**Rust backend plan（2026-11-10 18:01 + 18:02 并行补充）**：架构决定——全部后端收敛为独立 Rust 服务；Swift 只留 SwiftUI+WebKit 客户端。盘点 + `docs/RFC-007-rust-backend.md`：阶段门禁 A–E；**§6.1 并行工作流**（Phase 0 共享契约 → 流 S1–S6；worktree/tmux/合并规则）。`BACKEND-MATRIX` 仅 `planned-rust`。
 
 **STATUS: GROKBOT-MEMBER-DONE**
 **Grokbot Thread member（2026-11-10 14:20）**：成员 `grokbot` / nick `Pharos`（webhook 型，非本地 CLI）。`@Pharos` 定向投递 → Runtime `delivery.submit-member` → `GrokbotThreadBridge` POST ID-only `thread-mention`（human-proxy webhook）→ state=`injected`；`pharos-mesh thread reply --as grokbot` → `replyOnce` → state=`completed`；45m 无回复=`failed`。E2E Thread `grokbot-41349f97`（含 `agy-stub`），marker `PHAROS_GROKBOT_MEMBER_DONE_41349f97`，delivery `4f6afe55-…` → reply `reply-4c10d3ec…`，runtime-completed=1。协议：`docs/agents/grokbot/threads/2026-11-10_protocol.md`。证据：`internal/evidence/2026-11-10_grokbot-member-summary.md`、`..._grokbot-member-e2e.log`、`..._grokbot-unit.log`。矩阵 `GB-THD-01`…`05`。
@@ -353,4 +356,5 @@ STATUS: xhost-mini-to-air done Peer submit+Agy+replyOnce real
 STATUS: xhost-box headless Runtime done; Swift Host/Peer not-tested
 STATUS: GROKBOT-MEMBER-DONE
 STATUS: RUST-PLAN-DONE
+STATUS: RUST-P0-DONE
 
