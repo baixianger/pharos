@@ -1,0 +1,22 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (target/debug/deps/pharos_grokbot-ac93cc3e73f8e6c2)
+
+running 4 tests
+test bridge::tests::missing_webhook_fails_delivery ... ok
+test bridge::tests::webhook_success_is_injected_not_replied ... ok
+test webhook::tests::missing_env_is_skipped ... ok
+test webhook::tests::loads_webhook_config ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_thread-4c3d9f4863fa5382)
+
+running 5 tests
+test reply::tests::reply_once_id_is_stable ... ok
+test reply::tests::reply_once_id_changes_with_inputs ... ok
+test store::tests::cli_read_respects_since_and_limit ... ok
+test store::tests::unreplied_directed_auto_select ... ok
+test store::tests::send_and_reply_once_idempotent ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

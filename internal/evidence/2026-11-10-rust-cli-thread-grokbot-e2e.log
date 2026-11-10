@@ -1,0 +1,12 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests/grokbot_member_live.rs (target/debug/deps/grokbot_member_live-bc30a532185b8d61)
+
+running 1 test
+Grokbot member Thread=grokbot-0c3b6b37 message=436a40ff-9ac0-4322-b604-1a7808a6180e
+Grokbot human-request written: 2026-11-10T1794336102Z_grokbot-thread-mention-rust.md
+Grokbot injected delivery=97b6e84c-edb7-4b47-a5de-0cc55e8e1024 thread=grokbot-0c3b6b37
+Grokbot member DONE thread=grokbot-0c3b6b37 message=436a40ff-9ac0-4322-b604-1a7808a6180e reply=reply-b8d37385cdffed5a9949e5d28423023b49f0db90d8e0a8d8a51b68cc993521ea completed=1 marker=PHAROS_GROKBOT_MEMBER_DONE_0c3b6b37 webhook_configured=true
+test rust_grokbot_member_thread_mention_reply_when_enabled ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.86s
+
