@@ -163,6 +163,51 @@ public enum HumanProxyChannel {
         envFile: URL = defaultWebhookEnvURL(),
         sessionConfiguration: URLSessionConfiguration = .ephemeral
     ) async -> NotifyResult {
+        await postWebhookJSON(
+            [
+                "request": requestFileName,
+                "kind": kind,
+                "host": host,
+                "session": session,
+            ],
+            envFile: envFile,
+            sessionConfiguration: sessionConfiguration
+        )
+    }
+
+    /// Wake-only Thread mention for member `grokbot` / nick `Pharos`.
+    /// Payload carries IDs only — never message text or secrets.
+    public static func notifyThreadMention(
+        thread: String,
+        messageID: String,
+        from: String,
+        host: String,
+        envFile: URL = defaultWebhookEnvURL(),
+        sessionConfiguration: URLSessionConfiguration = .ephemeral
+    ) async -> NotifyResult {
+        guard !thread.isEmpty, !messageID.isEmpty, !from.isEmpty, !host.isEmpty,
+              thread.utf8.count <= 256, messageID.utf8.count <= 256,
+              from.utf8.count <= 256, host.utf8.count <= 256 else {
+            return .failed("invalid thread-mention ids")
+        }
+        return await postWebhookJSON(
+            [
+                "kind": "thread-mention",
+                "thread": thread,
+                "message": messageID,
+                "from": from,
+                "host": host,
+            ],
+            envFile: envFile,
+            sessionConfiguration: sessionConfiguration
+        )
+    }
+
+    private static func postWebhookJSON(
+        _ body: [String: String],
+        envFile: URL,
+        sessionConfiguration: URLSessionConfiguration
+    ) async -> NotifyResult {
         guard let config = loadWebhookConfig(from: envFile) else {
             return .skippedMissingConfig
         }
@@ -171,14 +216,10 @@ public enum HumanProxyChannel {
         urlRequest.timeoutInterval = 15
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("Bearer \(config.key)", forHTTPHeaderField: "Authorization")
-        let body: [String: String] = [
-            "request": requestFileName,
-            "kind": kind,
-            "host": host,
-            "session": session,
-        ]
         do {
-            urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+            urlRequest.httpBody = try JSONSerialization.data(
+                withJSONObject: body, options: [.sortedKeys]
+            )
             let session = URLSession(configuration: sessionConfiguration)
             let (_, response) = try await session.data(for: urlRequest)
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1

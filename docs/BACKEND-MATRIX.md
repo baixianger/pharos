@@ -1,12 +1,12 @@
 ---
-summary: Version-pinned capability matrix for Codex, Antigravity, and DeepSeek Harness across Session (1:1) and Thread (group chat) paths, mapping exact RPC methods, evidence, status, tasks, tests, and pitfalls.
+summary: Historical provider capability research; current desktop behavior and verified limitations are tracked separately for Codex, Antigravity, and DSH.
 ---
 
 # Pharos Backend Integration Matrix
 
 - Authority & Design Reference: [RFC-006: Unified Client and Backend Integration](RFC-006-UNIFIED-CLIENT-AND-BACKEND-INTEGRATION.md)
 
-This document is the authoritative specification and capability checklist for integrating agent CLIs into Pharos Milestone 3. Every backend capability is explicitly pinned to tested CLI versions, research evidence, implementation tasks, and automated tests.
+This matrix preserves the 2026-11-05 research and planned capabilities. Its historical `supported` labels describe earlier research or fixtures and do **not** prove current desktop implementation or end-to-end behavior. The current evidence and open limitations are in [Codex](2026-11-07_codex-session-validation.md), [Antigravity](2026-11-07_antigravity-session-validation.md), [DSH](2026-11-07_dsh-session-validation.md), and the [cross-provider validation log](2026-11-07_session-surfaces.md). In particular, the desktop currently uses direct local processes and SSH for configured remote hosts; a uniform host-node Mesh session path is a design target, not the implemented route.
 
 ---
 
@@ -183,6 +183,16 @@ Status definitions:
 | `DS-THD-15` | `dsh` | `Thread` | `cross-machine` | Mesh packet sent to remote host Pharos node; remote node delivers to local dsh plugin | `untested` | `0.2.1-rc.5` | `GOAL.md Added 13:36` | Goal 5 | `BackendIntegrationTests.testDshRealWebHostIntegration` |
 | `DS-THD-16` | `dsh` | `Thread` | `project-cwd` | Single-writer `workspace.json` registered via host node | `supported` | `0.2.1-rc.5` | `antigravity-cli/2026-11-05_integration-matrix.md §4` | Goal 5 | `TriBackendAdapterTests.testDshBackendAdapterStartupParsingAndLifecycle` |
 | `DS-THD-17` | `dsh` | `Thread` | `avatars-identity` | Sender avatar seed + member name rendered in thread message bubble | `supported` | `0.2.1-rc.5` | `GOAL.md Added 11:47` | Goal 5, Goal 6 | `ThreadChatAndReceiptTests.testPlainChatBubbleInvariant` |
+
+### 3.4 Grokbot webhook member (`grokbot` / nick `Pharos`)
+
+| Row ID | Backend | Path | Feature | Mechanism | Status | Researched Version | Evidence | Pharos Task ID | Test That Will Prove It |
+|---|---|---|---|---|---|---|---|---|---|
+| `GB-THD-01` | `grokbot` | `Thread` | `send` | Directed `@Pharos`/`grokbot` → Runtime `delivery.submit-member` → `GrokbotThreadBridge` | `supported` | `2026-11-10` | `internal/evidence/2026-11-10_grokbot-member-summary.md` | Goal 5 | `GrokbotThreadBridgeTests.testWebhookSuccessIsInjectedNotReplied` |
+| `GB-THD-02` | `grokbot` | `Thread` | `wake` | POST ID-only `thread-mention` to human-proxy webhook (`Authorization: Bearer`) | `supported` | `2026-11-10` | `internal/evidence/2026-11-10_grokbot-member-e2e.log` | Goal 5 | `GrokbotMemberLiveTests.testRealGrokbotThreadMentionReplyWhenEnabled` |
+| `GB-THD-03` | `grokbot` | `Thread` | `receipts` | Honest states: webhook 2xx=`injected`; `thread reply`/`replyOnce`=`completed`; 45m=`failed` | `supported` | `2026-11-10` | `internal/evidence/2026-11-10_grokbot-unit.log` | Goal 5 | `GrokbotThreadBridgeTests.testWebhookSuccessIsInjectedNotReplied` |
+| `GB-THD-04` | `grokbot` | `Thread` | `readback` | `pharos-mesh thread read --thread` JSON context for SSH proxy | `supported` | `2026-11-10` | `docs/agents/grokbot/threads/2026-11-10_protocol.md` | Goal 5 | `GrokbotMemberLiveTests.testRealGrokbotThreadMentionReplyWhenEnabled` |
+| `GB-THD-05` | `grokbot` | `Thread` | `reply` | `pharos-mesh thread reply --as grokbot --text-file` → product `replyOnce` | `supported` | `2026-11-10` | `internal/evidence/2026-11-10_grokbot-member-e2e.log` | Goal 5 | `GrokbotMemberLiveTests.testRealGrokbotThreadMentionReplyWhenEnabled` |
 
 ---
 

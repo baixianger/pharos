@@ -1,8 +1,11 @@
 ---
-summary: 2026-11-10 PM+：human-proxy webhook + 45m HITL 已通；Peer HITL E2E real（webhook 200 → allowedOnce）。
+summary: 2026-11-10 PM+：grokbot Thread 成员（webhook wake + CLI replyOnce）E2E 已通。
 ---
 
 # 活跃任务交接
+
+**STATUS: GROKBOT-MEMBER-DONE**
+**Grokbot Thread member（2026-11-10 14:20）**：成员 `grokbot` / nick `Pharos`（webhook 型，非本地 CLI）。`@Pharos` 定向投递 → Runtime `delivery.submit-member` → `GrokbotThreadBridge` POST ID-only `thread-mention`（human-proxy webhook）→ state=`injected`；`pharos-mesh thread reply --as grokbot` → `replyOnce` → state=`completed`；45m 无回复=`failed`。E2E Thread `grokbot-41349f97`（含 `agy-stub`），marker `PHAROS_GROKBOT_MEMBER_DONE_41349f97`，delivery `4f6afe55-…` → reply `reply-4c10d3ec…`，runtime-completed=1。协议：`docs/agents/grokbot/threads/2026-11-10_protocol.md`。证据：`internal/evidence/2026-11-10_grokbot-member-summary.md`、`..._grokbot-member-e2e.log`、`..._grokbot-unit.log`。矩阵 `GB-THD-01`…`05`。
 
 **STATUS: peer-hitl blocked human-proxy .done.md timeout (approval path proved mini→air)
 **Peer HITL re-run (2026-11-10 12:41)**：新鲜请求 `2026-11-10T112654Z_peer-air-codex-hitl.md` 再次 seed/peerSend/approval 成功，但 900s 内无 `.done.md` → 仍 **blocked/not-tested**。证据：`internal/evidence/2026-11-10_phase-d2-peer-hitl-rerun.log`。
@@ -345,3 +348,5 @@ STATUS: peer-hitl done webhook+45m real
 STATUS: ALL-DONE
 STATUS: xhost-mini-to-air done Peer submit+Agy+replyOnce real
 STATUS: xhost-box headless Runtime done; Swift Host/Peer not-tested
+STATUS: GROKBOT-MEMBER-DONE
+

@@ -1,0 +1,89 @@
+Building for debugging...
+[Computing dependencies]
+[Using on-disk description]
+[2 / 13] PharosTests-product
+[4 / 25]
+[14 / 25] PharosTests-product
+[18 / 24] PharosTests-product
+/Users/baixianger/personal/pharos/Tests/PharosTests/DshSessionHistoryReaderTests.swift:1006:18: warning: weak variable 'weakService' was never mutated; consider changing to 'let' constant [#VariableNeverMutated::WeakMutability]
+1004 |         let host = DshJournalFixture()
+1005 |         var service: DshLiveSessionService? = DshLiveSessionService(host: host) { _ in }
+1006 |         weak var weakService = service
+     |                  `- warning: weak variable 'weakService' was never mutated; consider changing to 'let' constant [#VariableNeverMutated::WeakMutability]
+1007 |         _ = try await service!.send(sessionId: "fixture", text: "Pending test")
+1008 |         service = nil
+
+/Users/baixianger/personal/pharos/Tests/PharosTests/DshSessionHistoryReaderTests.swift:1086:18: warning: weak variable 'releasedHost' was never mutated; consider changing to 'let' constant [#VariableNeverMutated::WeakMutability]
+1084 |         environment["DSH_HOME"] = home.path; environment["PHAROS_DSH_TEST_DUMMY"] = "local-test-only"
+1085 |         var host: DshWebHost? = DshWebHost(environment: environment, workspace: work, additionalPatches: [patch])
+1086 |         weak var releasedHost = host
+     |                  `- warning: weak variable 'releasedHost' was never mutated; consider changing to 'let' constant [#VariableNeverMutated::WeakMutability]
+1087 |         let id = try await host!.createSession(workspacePath: work.path)
+1088 |         owned = try childPIDs().subtracting(baseline)
+
+/Users/baixianger/personal/pharos/Tests/PharosTests/DshSessionHistoryReaderTests.swift:1092:18: warning: weak variable 'releasedService' was never mutated; consider changing to 'let' constant [#VariableNeverMutated::WeakMutability]
+1090 |         XCTAssertNotEqual(id, otherID)
+1091 |         var service: DshLiveSessionService? = DshLiveSessionService(host: host!) { _ in }
+1092 |         weak var releasedService = service
+     |                  `- warning: weak variable 'releasedService' was never mutated; consider changing to 'let' constant [#VariableNeverMutated::WeakMutability]
+1093 |         let content = Data("PHAROS_FIXTURE_DOCUMENT".utf8)
+1094 |         let png = try XCTUnwrap(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a14AAAAASUVORK5CYII="))
+
+/Users/baixianger/personal/pharos/Tests/PharosTests/DshSessionHistoryReaderTests.swift:1179:18: warning: weak variable 'releasedReopened' was never mutated; consider changing to 'let' constant [#VariableNeverMutated::WeakMutability]
+1177 |         XCTAssertTrue(remaining.isEmpty, "A pending attachment turn must not leave its Host running")
+1178 |         var reopened: DshWebHost? = DshWebHost(environment: environment, workspace: work, additionalPatches: [patch])
+1179 |         weak var releasedReopened = reopened
+     |                  `- warning: weak variable 'releasedReopened' was never mutated; consider changing to 'let' constant [#VariableNeverMutated::WeakMutability]
+1180 |         let reopenedRecords = try await reopened!.history(sessionId: id)
+1181 |         let restored = DshSessionHistoryReader.turns(from: reopenedRecords, sessionId: id).flatMap(\.steps).flatMap(\.blocks).compactMap { block -> CanonicalAttachment? in
+
+[#VariableNeverMutated]: <https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated>
+[#WeakMutability]: <https://docs.swift.org/compiler/documentation/diagnostics/weak-mutability>
+[20 / 24] PharosTests-product
+[22 / 24] PharosTests-product
+Build complete! (5,75 secs)
+Test Suite 'Selected tests' started at 2026-11-10 14:18:45.496.
+Test Suite 'PharosTests.xctest' started at 2026-11-10 14:18:45.498.
+Test Suite 'GrokbotThreadBridgeTests' started at 2026-11-10 14:18:45.498.
+Test Case '-[PharosTests.GrokbotThreadBridgeTests testMissingWebhookFailsDelivery]' started.
+Test Case '-[PharosTests.GrokbotThreadBridgeTests testMissingWebhookFailsDelivery]' passed (0.002 seconds).
+Test Case '-[PharosTests.GrokbotThreadBridgeTests testThreadMentionPayloadIsIDOnly]' started.
+Test Case '-[PharosTests.GrokbotThreadBridgeTests testThreadMentionPayloadIsIDOnly]' passed (0.003 seconds).
+Test Case '-[PharosTests.GrokbotThreadBridgeTests testWebhookSuccessIsInjectedNotReplied]' started.
+Test Case '-[PharosTests.GrokbotThreadBridgeTests testWebhookSuccessIsInjectedNotReplied]' passed (0.000 seconds).
+Test Suite 'GrokbotThreadBridgeTests' passed at 2026-11-10 14:18:45.503.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.005 (0.005) seconds
+Test Suite 'PharosTests.xctest' passed at 2026-11-10 14:18:45.503.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.005 (0.005) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:18:45.503.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.005 (0.007) seconds
+Test Suite 'Selected tests' started at 2026-11-10 14:18:45.568.
+Test Suite 'PharosMeshProtocolTests.xctest' started at 2026-11-10 14:18:45.569.
+Test Suite 'PharosMeshProtocolTests.xctest' passed at 2026-11-10 14:18:45.569.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:18:45.569.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 14:18:45.632.
+Test Suite 'PharosMeshIrohTests.xctest' started at 2026-11-10 14:18:45.632.
+Test Suite 'PharosMeshIrohTests.xctest' passed at 2026-11-10 14:18:45.632.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:18:45.632.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 14:18:45.697.
+Test Suite 'PharosMeshIdentityTests.xctest' started at 2026-11-10 14:18:45.698.
+Test Suite 'PharosMeshIdentityTests.xctest' passed at 2026-11-10 14:18:45.698.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:18:45.698.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 14:18:45.765.
+Test Suite 'PharosMeshCoreTests.xctest' started at 2026-11-10 14:18:45.765.
+Test Suite 'PharosMeshCoreTests.xctest' passed at 2026-11-10 14:18:45.765.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:18:45.766.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 14:18:45.831.
+Test Suite 'PharosLightTests.xctest' started at 2026-11-10 14:18:45.832.
+Test Suite 'PharosLightTests.xctest' passed at 2026-11-10 14:18:45.832.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:18:45.832.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds

@@ -94,6 +94,12 @@ private enum MeshHeadlessCLI {
                 return 1
             }
 
+        case "thread":
+            return await runThreadCommands(Array(args.dropFirst()))
+
+        case "grokbot":
+            return await runGrokbotCommands(Array(args.dropFirst()))
+
         case "capabilities":
             return printResponse(MeshClient.send(MeshRequest(cmd: "capabilities")))
 
@@ -2316,6 +2322,191 @@ private enum MeshHeadlessCLI {
         }
     }
 
+    /// Thread helpers for the webhook-backed `grokbot` / nick `Pharos` member.
+    private static func runThreadCommands(_ args: [String]) async -> Int32 {
+        guard let sub = args.first else {
+            return usageError(
+                "thread read --thread ID [--since MESSAGE-ID] [--limit N] [--data-dir PATH] | " +
+                "thread reply --thread ID --as grokbot --text-file ABSOLUTE-PATH " +
+                "[--message MESSAGE-ID] [--data-dir PATH]"
+            )
+        }
+        do {
+            let replica: MeshLocalReplica
+            if let path = option("--data-dir", in: args) {
+                guard path.hasPrefix("/") else {
+                    return usageError("--data-dir requires an absolute path")
+                }
+                replica = try MeshLocalReplica.openHeadless(
+                    dataDirectory: URL(fileURLWithPath: path, isDirectory: true)
+                )
+            } else {
+                replica = try MeshLocalReplica.openDefault(headless: true)
+            }
+            let group = try await replica.ensureActiveTrustGroup()
+            let chat = DistributedAgentChat(replica: replica, group: group)
+            switch sub {
+            case "read":
+                guard let thread = option("--thread", in: args), !thread.isEmpty else {
+                    return usageError(
+                        "thread read --thread ID [--since MESSAGE-ID] [--limit N] [--data-dir PATH]"
+                    )
+                }
+                let limit = option("--limit", in: args).flatMap(Int.init) ?? 40
+                let since = option("--since", in: args)
+                var history = try await chat.history(room: thread, limit: max(1, min(limit, 200)))
+                if let since, !since.isEmpty {
+                    if let index = history.firstIndex(where: { $0.stableID == since }) {
+                        history = Array(history.suffix(from: index + 1))
+                    }
+                }
+                let rows: [[String: Any]] = history.map { message in
+                    var row: [String: Any] = [
+                        "id": message.stableID,
+                        "thread": message.room,
+                        "from": message.from,
+                        "memberID": message.authorMemberID ?? "",
+                        "text": message.text,
+                        "ts": message.ts,
+                        "to": message.to,
+                        "targetMemberIDs": message.targetMemberIDs,
+                    ]
+                    if let reply = message.replyTo {
+                        row["replyTo"] = [
+                            "messageID": reply.messageID,
+                            "from": reply.from,
+                            "preview": reply.preview,
+                        ] as [String: Any]
+                    }
+                    return row
+                }
+                let payload: [String: Any] = [
+                    "thread": thread,
+                    "member": GrokbotThreadBridge.memberID,
+                    "nick": GrokbotThreadBridge.displayNick,
+                    "messages": rows,
+                ]
+                let data = try JSONSerialization.data(
+                    withJSONObject: payload, options: [.sortedKeys, .prettyPrinted]
+                )
+                print(String(decoding: data, as: UTF8.self))
+                return 0
+
+            case "reply":
+                guard let thread = option("--thread", in: args), !thread.isEmpty,
+                      let asMember = option("--as", in: args),
+                      asMember == GrokbotThreadBridge.memberID,
+                      let textPath = option("--text-file", in: args),
+                      textPath.hasPrefix("/") else {
+                    return usageError(
+                        "thread reply --thread ID --as grokbot --text-file ABSOLUTE-PATH " +
+                        "[--message MESSAGE-ID] [--data-dir PATH]"
+                    )
+                }
+                let text = try String(contentsOfFile: textPath, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else {
+                    return usageError("thread reply --text-file must be non-empty UTF-8")
+                }
+                let history = try await chat.history(room: thread, limit: 80)
+                let originalID: String
+                if let explicit = option("--message", in: args), !explicit.isEmpty {
+                    originalID = explicit
+                } else {
+                    // Newest directed message that still lacks a grokbot replyOnce.
+                    let unreplied = history.reversed().first { message in
+                        message.targetMemberIDs.contains(GrokbotThreadBridge.memberID)
+                            && !history.contains {
+                                $0.authorMemberID == GrokbotThreadBridge.memberID
+                                    && $0.replyTo?.messageID == message.stableID
+                            }
+                    }
+                    guard let unreplied else {
+                        return usageError(
+                            "thread reply: no unreplied directed message for grokbot; pass --message"
+                        )
+                    }
+                    originalID = unreplied.stableID
+                }
+                let reply = try await chat.replyOnce(
+                    room: thread,
+                    memberID: GrokbotThreadBridge.memberID,
+                    originalMessageID: originalID,
+                    text: text
+                )
+                print(
+                    String(
+                        decoding: try JSONSerialization.data(
+                            withJSONObject: [
+                                "ok": true,
+                                "thread": thread,
+                                "as": GrokbotThreadBridge.memberID,
+                                "replyID": reply.stableID,
+                                "replyTo": originalID,
+                            ],
+                            options: [.sortedKeys]
+                        ),
+                        as: UTF8.self
+                    )
+                )
+                return 0
+
+            default:
+                return usageError(
+                    "thread read --thread ID [--since MESSAGE-ID] [--limit N] [--data-dir PATH] | " +
+                    "thread reply --thread ID --as grokbot --text-file ABSOLUTE-PATH " +
+                    "[--message MESSAGE-ID] [--data-dir PATH]"
+                )
+            }
+        } catch {
+            FileHandle.standardError.write(
+                Data("error: \(error.localizedDescription)\n".utf8)
+            )
+            return 1
+        }
+    }
+
+    /// Poll loop that registers `grokbot` on the local Runtime and wakes the proxy.
+    private static func runGrokbotCommands(_ args: [String]) async -> Int32 {
+        guard let sub = args.first, sub == "serve" else {
+            return usageError("grokbot serve [--data-dir PATH] [--host LABEL]")
+        }
+        do {
+            let replica: MeshLocalReplica
+            if let path = option("--data-dir", in: args) {
+                guard path.hasPrefix("/") else {
+                    return usageError("--data-dir requires an absolute path")
+                }
+                replica = try MeshLocalReplica.openHeadless(
+                    dataDirectory: URL(fileURLWithPath: path, isDirectory: true)
+                )
+            } else {
+                replica = try MeshLocalReplica.openDefault(headless: true)
+            }
+            let group = try await replica.ensureActiveTrustGroup()
+            let chat = DistributedAgentChat(replica: replica, group: group)
+            let host = option("--host", in: args) ?? ProcessInfo.processInfo.hostName
+            let bridge = GrokbotThreadBridge(
+                history: { room in try await chat.history(room: room, limit: 40) },
+                hostLabel: host
+            )
+            try await bridge.ensureRegistered()
+            print(
+                "grokbot serving member=\(GrokbotThreadBridge.memberID) " +
+                "nick=\(GrokbotThreadBridge.displayNick) host=\(host)"
+            )
+            while true {
+                try await bridge.poll()
+                try await Task.sleep(for: .milliseconds(750))
+            }
+        } catch {
+            FileHandle.standardError.write(
+                Data("error: \(error.localizedDescription)\n".utf8)
+            )
+            return 1
+        }
+    }
+
     private static func usageError(_ detail: String) -> Int32 {
         FileHandle.standardError.write(Data("usage: pharos-mesh \(detail)\n".utf8))
         return 2
@@ -2331,6 +2522,9 @@ private enum MeshHeadlessCLI {
       node status
       human-proxy resolve --peer DEVICE-UUID --session SESSION-ID --approval-id ID --decision allowedOnce|rejected --done ABSOLUTE-PATH.md
       runtime-local --request JSON|--request-file ABSOLUTE-PATH
+      thread read --thread ID [--since MESSAGE-ID] [--limit N] [--data-dir PATH]
+      thread reply --thread ID --as grokbot --text-file ABSOLUTE-PATH [--message MESSAGE-ID] [--data-dir PATH]
+      grokbot serve [--data-dir PATH] [--host LABEL]
       capabilities [--endpoint HOST:PORT]
       pair --endpoint HOST:PORT
       pair invite|accept|redeem|list|revoke (signed distributed trust)
