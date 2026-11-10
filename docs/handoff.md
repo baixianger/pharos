@@ -12,14 +12,14 @@ summary: 2026-11-10 PM+：human-proxy webhook + 45m HITL 已通；Peer HITL E2E 
 
 **STATUS: isolated-codex-product done**
 
-**STATUS: xhost-air-to-mini done via-local Peer submit+Agy+replyOnce real; box pending**
+**STATUS: XHOST-DONE mini↔air Peer real; box headless Runtime real (Swift Host/Peer not-tested)**
 
 **STATUS: desktop-dsh-wiring done**
 
 **Phase (5) 桌面 DSH 接线（2026-11-10 12:25）**：**done**（受控测试）。`DesktopPharosClientService.startExplicitLocalDshThreadBridges` 在 product mode 对本机显式绑定的 DSH 启动 `DshThreadRuntimeBridge`→`replyOnceChatMessage`；`testDshThreadBindingRequiresExactLocalSessionAndMember` 与 `testDshHostProductPathUsesReplyOnceWithoutBroker` **通过**。未改 `DshBackendAdapter` 为假投递（反而去掉伪造 session ID）。证据：`internal/evidence/2026-11-10_phase-e-desktop-dsh-wiring.log`。
 
 
-**Phase (4) 跨机 Runtime（更新 2026-11-10 14:02）**：落地 Peer `host.runtime.call.v1`（allowlist=`delivery.submit-member`）+ `runtime-local` / `host-runtime-submit` CLI。mini→air 真实投递 E2E：**Peer submit → air Runtime 入队 → air Agy 回复 → air `host-reply` replyOnce → mini 房间可见**（marker `PHAROS_XHOST_AIR_DONE_*`，host=`xiangs-macbook-air`）。证据：`internal/evidence/2026-11-10_xhost-mini-to-air-runtime-submit.log`。air→mini / box 仍 pending。
+**Phase (4) 跨机 Runtime（更新 2026-11-10 14:02）**：落地 Peer `host.runtime.call.v1`（allowlist=`delivery.submit-member`）+ `runtime-local` / `host-runtime-submit` CLI。mini→air 真实投递 E2E：**Peer submit → air Runtime 入队 → air Agy 回复 → air `host-reply` replyOnce → mini 房间可见**（marker `PHAROS_XHOST_AIR_DONE_*`，host=`xiangs-macbook-air`）。证据：`internal/evidence/2026-11-10_xhost-mini-to-air-runtime-submit.log`。air→mini 经 `--via-local` Peer submit 成功（证据 `...xhost-air-to-mini-runtime-submit.log`）。box(grok-bot Linux)：从最新 commit 构建 `pharos-meshd`，SSH 头less Runtime submit→Agy→completed 成功；无 Swift → sync-serve --host / Peer Host **not-tested**（证据 `...xhost-mini-to-box-runtime-submit.log` / `...xhost-box-meshd-build.log`）。
 
 
 **Phase (3) 隔离 Codex app-server 真实产品往返（2026-11-10 12:22）**：**done / real**。`CodexStdioTransport` 独立 `codex app-server`（禁用共享 adapter 以免抢 delivery）；Host binder→`conversation.state`→Runtime submit `.accepted`→turn→`replyOnce`；Session `01a1c532-…`，phase=replied，runtime-completed=1。门控：`PHAROS_HOST_THREAD_CODEX_PRODUCT_PATH_TEST=1`。证据：`internal/evidence/2026-11-10_phase-b3-codex-live-product-path.log`。
@@ -344,3 +344,4 @@ STATUS: peer-hitl done webhook+45m real
 
 STATUS: ALL-DONE
 STATUS: xhost-mini-to-air done Peer submit+Agy+replyOnce real
+STATUS: xhost-box headless Runtime done; Swift Host/Peer not-tested
