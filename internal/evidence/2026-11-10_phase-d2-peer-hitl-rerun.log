@@ -1,0 +1,54 @@
+Building for debugging...
+[Computing dependencies]
+[Using on-disk description]
+[1 / 2] swift-crypto_Crypto
+[1 / 39] Pharos-product
+Build complete! (0,71 secs)
+Test Suite 'Selected tests' started at 2026-11-10 12:26:27.670.
+Test Suite 'PharosTests.xctest' started at 2026-11-10 12:26:27.670.
+Test Suite 'MeshHostSessionRPCTests' started at 2026-11-10 12:26:27.670.
+Test Case '-[PharosTests.MeshHostSessionRPCTests testRealAirPeerHitlWithHumanProxyWhenEnabled]' started.
+Peer HITL Codex Session on air: 01a1c535-a016-7040-a4a1-8e8d412b2341
+Peer HITL seed completed=true
+Peer HITL inventory lists Session=true total=238
+Peer HITL prompt path peerSend=true
+Peer HITL approval id=peer:24c6f9b2-4cbc-4a03-8379-cf72de5ffcdf:01a1c535-a016-7040-a4a1-8e8d412b2341:approval:n:11 kind=toolPermission(toolName: "commandExecution", params: ["cwd": /Users/baixianger/personal/pharos-msg-test/peer-hitl/work, "command": /bin/zsh -lc 'printf PHAROS_PEER_HITL_OK'], explanation: Optional("Do you want to allow this harmless command to test Peer HITL?"))
+Peer HITL human-request written: /Users/baixianger/personal/pharos-msg-test/human-requests/2026-11-10T112654Z_peer-air-codex-hitl.md
+/Users/baixianger/personal/pharos/Tests/PharosTests/MeshHostSessionRPCTests.swift:537: -[PharosTests.MeshHostSessionRPCTests testRealAirPeerHitlWithHumanProxyWhenEnabled] : Test skipped - human-proxy .done.md not received within timeout; Peer HITL not-tested
+Test Case '-[PharosTests.MeshHostSessionRPCTests testRealAirPeerHitlWithHumanProxyWhenEnabled]' skipped (928.010 seconds).
+Test Suite 'MeshHostSessionRPCTests' passed at 2026-11-10 12:41:55.681.
+	 Executed 1 test, with 1 test skipped and 0 failures (0 unexpected) in 928.010 (928.010) seconds
+Test Suite 'PharosTests.xctest' passed at 2026-11-10 12:41:55.681.
+	 Executed 1 test, with 1 test skipped and 0 failures (0 unexpected) in 928.010 (928.010) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:41:55.681.
+	 Executed 1 test, with 1 test skipped and 0 failures (0 unexpected) in 928.010 (928.011) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:41:56.374.
+Test Suite 'PharosMeshProtocolTests.xctest' started at 2026-11-10 12:41:56.376.
+Test Suite 'PharosMeshProtocolTests.xctest' passed at 2026-11-10 12:41:56.376.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:41:56.376.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.002) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:41:56.449.
+Test Suite 'PharosMeshIrohTests.xctest' started at 2026-11-10 12:41:56.449.
+Test Suite 'PharosMeshIrohTests.xctest' passed at 2026-11-10 12:41:56.449.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:41:56.449.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:41:56.521.
+Test Suite 'PharosMeshIdentityTests.xctest' started at 2026-11-10 12:41:56.521.
+Test Suite 'PharosMeshIdentityTests.xctest' passed at 2026-11-10 12:41:56.521.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:41:56.522.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:41:56.603.
+Test Suite 'PharosMeshCoreTests.xctest' started at 2026-11-10 12:41:56.604.
+Test Suite 'PharosMeshCoreTests.xctest' passed at 2026-11-10 12:41:56.604.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:41:56.604.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:41:56.685.
+Test Suite 'PharosLightTests.xctest' started at 2026-11-10 12:41:56.685.
+Test Suite 'PharosLightTests.xctest' passed at 2026-11-10 12:41:56.685.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:41:56.685.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds

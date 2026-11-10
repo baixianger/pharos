@@ -4,7 +4,9 @@ summary: 2026-11-10 PM 队列完成：HITL blocked(proxy)；DSH/Codex product li
 
 # 活跃任务交接
 
-**STATUS: peer-hitl blocked human-proxy .done.md timeout (approval path proved mini→air)**
+**STATUS: peer-hitl blocked human-proxy .done.md timeout (approval path proved mini→air)
+**Peer HITL re-run (2026-11-10 12:41)**：新鲜请求 `2026-11-10T112654Z_peer-air-codex-hitl.md` 再次 seed/peerSend/approval 成功，但 900s 内无 `.done.md` → 仍 **blocked/not-tested**。证据：`internal/evidence/2026-11-10_phase-d2-peer-hitl-rerun.log`。
+**
 
 **STATUS: isolated-dsh-product done**
 
@@ -333,3 +335,5 @@ STATUS: cross-host-runtime done hello mini→air; submit Peer RPC not-tested; bo
 STATUS: desktop-dsh-wiring done
 
 STATUS: ALL-DONE
+
+STATUS: peer-hitl-rerun blocked human-proxy .done.md timeout again
