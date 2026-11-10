@@ -12,7 +12,7 @@ summary: 2026-11-10 PM+：human-proxy webhook + 45m HITL 已通；Peer HITL E2E 
 
 **STATUS: isolated-codex-product done**
 
-**STATUS: xhost-mini-to-air done Peer submit+Agy+replyOnce real; air→mini / box pending**
+**STATUS: xhost-air-to-mini done via-local Peer submit+Agy+replyOnce real; box pending**
 
 **STATUS: desktop-dsh-wiring done**
 

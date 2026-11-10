@@ -889,6 +889,265 @@ final class MeshHostSessionRPCTests: XCTestCase {
         )
     }
 
+    /// air→mini reverse: air Peer `--via-local` host.runtime.call → mini Runtime
+    /// → mini Agy → mini host-reply → air room history. Gate with
+    /// `PHAROS_REAL_PEER_RUNTIME_REVERSE_TEST=<mini-device-uuid>`.
+    func testRealAirToMiniRuntimeSubmitReplyOnceWhenEnabled() async throws {
+        guard let miniText = ProcessInfo.processInfo.environment["PHAROS_REAL_PEER_RUNTIME_REVERSE_TEST"],
+              let miniUUID = UUID(uuidString: miniText) else {
+            throw XCTSkip("Set PHAROS_REAL_PEER_RUNTIME_REVERSE_TEST=<mini-host-device-uuid>")
+        }
+        _ = MeshDeviceID(rawValue: miniUUID)
+        let replica = try MeshLocalReplica.openDefault(headless: true)
+        guard let group = try replica.activeTrustGroup(),
+              try replica.activeRoles().contains(.controller) else {
+            throw XCTSkip("Local product replica is not an active controller")
+        }
+
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let memberID = "xhost-mini-\(token)"
+        let roomName = "xhost-mini-\(token)"
+        let marker = "PHAROS_XHOST_MINI_DONE_\(token)"
+        let airRoot = "/Users/baixianger/personal/pharos-msg-test/peer-phase-a"
+        let airMesh = "\(airRoot)/air-mesh"
+        let airBin = "\(airRoot)/bin/pharos-mesh"
+        let miniSocket = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "personal/pharos-msg-test/peer-phase-a/mini-runtime/agent-runtime.sock"
+            ).path
+        let miniMeshBin = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".build/debug/pharos-mesh").path
+        let work = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "personal/pharos-msg-test/peer-phase-a/xhost-mini-\(token)/agy-work",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        setenv("PHAROS_AGENT_RUNTIME_SOCKET", miniSocket, 1)
+        defer { unsetenv("PHAROS_AGENT_RUNTIME_SOCKET") }
+
+        let hello = try AgyThreadRuntimeBridge.localRuntime("runtime.hello", [:]) as? [String: Any]
+        XCTAssertEqual(hello?["service"] as? String, "me.pai.pharos.agent-runtime")
+
+        let agy = AgyAcpProcessTransport()
+        defer { agy.close() }
+        _ = try await agy.sendRequest(
+            method: "initialize",
+            params: ["protocolVersion": 1, "clientCapabilities": [String: Any]()]
+        )
+        let created = try await agy.sendRequest(
+            method: "session/new",
+            params: ["cwd": work.path, "mcpServers": []]
+        )
+        let providerID = try XCTUnwrap(created["sessionId"] as? String)
+        print("XHOST air→mini Agy Session on mini: \(providerID)")
+        _ = try await agy.sendRequest(
+            method: "session/prompt",
+            params: [
+                "sessionId": providerID,
+                "prompt": [[
+                    "type": "text",
+                    "text": "Reply PHAROS_XHOST_MINI_SEED. Do not use tools or access files.",
+                ]],
+            ]
+        )
+
+        let driverID = "xhost-mini-\(token)"
+        _ = try AgyThreadRuntimeBridge.localRuntime(
+            "driver.register",
+            ["driverID": driverID, "kind": "agy", "capabilities": ["delivery.poll"]]
+        )
+        let registered = try AgyThreadRuntimeBridge.localRuntime(
+            "conversation.register",
+            [
+                "driverID": driverID, "kind": "agy",
+                "vendorSessionID": providerID, "memberID": memberID,
+            ]
+        ) as? [String: Any]
+        let conversationID = try XCTUnwrap(registered?["id"] as? String)
+        _ = try AgyThreadRuntimeBridge.localRuntime(
+            "conversation.state",
+            [
+                "conversationID": conversationID, "presence": "online",
+                "activity": "idle", "attention": "none", "persistence": "persistent",
+                "source": "nativeProtocol", "sourceEpoch": driverID, "sequence": 1,
+            ]
+        )
+        _ = try AgyThreadRuntimeBridge.localRuntime(
+            "delivery.poll", ["conversationID": conversationID]
+        )
+        print("XHOST air→mini conversation=\(conversationID) member=\(memberID)")
+
+        let registry = DistributedChatRegistry(replica: replica, group: group)
+        let chat = DistributedAgentChat(replica: replica, group: group)
+        _ = try await registry.createRoom(named: roomName)
+        _ = try await chat.join(room: roomName, nick: "agent", memberID: memberID)
+        let rooms = try await registry.rooms()
+        let room = try XCTUnwrap(rooms.first { $0.name == roomName })
+        let human = try await registry.localHumanMember(in: room)
+        let original = try await registry.send(
+            room: room, fromMemberID: human.id,
+            text: "@agent Reply exactly \(marker). Do not use tools or access files. Prefix with host=xiang-mac-mini.",
+            toMemberIDs: [memberID]
+        )
+        print("XHOST air→mini room=\(roomName) message=\(original.stableID)")
+
+        let meshMessageData = try JSONEncoder().encode(original)
+        guard let meshMessageObject = try JSONSerialization.jsonObject(with: meshMessageData) as? [String: Any] else {
+            return XCTFail("MeshMsg JSON round-trip failed")
+        }
+        let envelope: [String: Any] = [
+            "body": original.text,
+            "room": original.room,
+            "messageID": original.stableID,
+            "sender": original.from,
+            "meshMessage": meshMessageObject,
+        ]
+        let payload = String(
+            decoding: try JSONSerialization.data(withJSONObject: envelope), as: UTF8.self
+        )
+        let submitRequest: [String: Any] = [
+            "jsonrpc": "2.0", "id": "xhost-rev-\(token)", "method": "delivery.submit-member",
+            "params": [
+                "memberID": memberID,
+                "idempotencyKey": "mesh:\(original.stableID):\(memberID)",
+                "payload": payload,
+            ],
+        ]
+        let submitJSON = String(
+            decoding: try JSONSerialization.data(withJSONObject: submitRequest), as: UTF8.self
+        )
+        let submitFile = "\(airRoot)/xhost-mini-\(token)/submit.json"
+        let connection = try await Task.detached {
+            try SharedSSHConnection(destination: "mac-air")
+        }.value
+        defer {
+            connection.close()
+            _ = connection.waitUntilStopped()
+        }
+        _ = try await remoteShell(
+            connection,
+            "umask 077; mkdir -p \(shellEscape("\(airRoot)/xhost-mini-\(token)")); " +
+            "cat > \(shellEscape(submitFile)) <<'EOF'\n\(submitJSON)\nEOF"
+        )
+        let submitOut = try await remoteShell(
+            connection,
+            "PHAROS_DISTRIBUTED_MESH=1 \(shellEscape(airBin)) distributed host-runtime-submit " +
+            "--via-local --peer \(miniText) --request-file \(shellEscape(submitFile)) " +
+            "--data-dir \(shellEscape(airMesh))"
+        )
+        print("XHOST air→mini Peer submit: \(submitOut.trimmingCharacters(in: .whitespacesAndNewlines))")
+        guard let submitObject = try JSONSerialization.jsonObject(
+            with: Data(submitOut.trimmingCharacters(in: .whitespacesAndNewlines).utf8)
+        ) as? [String: Any],
+              ((submitObject["result"] as? [String: Any])?["submitted"] as? Bool) == true else {
+            return XCTFail("air→mini Peer submit failed: \(submitOut)")
+        }
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(180))
+        var reply: MeshMsg?
+        var deliveryID: String?
+        var agentText: String?
+        var hostReplyOK = false
+        while ContinuousClock.now < deadline {
+            if deliveryID == nil {
+                let records = try AgyThreadRuntimeBridge.localRuntime(
+                    "delivery.poll", ["conversationID": conversationID]
+                ) as? [[String: Any]] ?? []
+                if let first = records.first,
+                   let id = first["id"] as? String,
+                   let deliveryPayload = first["payload"] as? String,
+                   let env = try? JSONSerialization.jsonObject(
+                    with: Data(deliveryPayload.utf8)
+                   ) as? [String: Any],
+                   let body = env["body"] as? String {
+                    deliveryID = id
+                    _ = try AgyThreadRuntimeBridge.localRuntime(
+                        "delivery.ack",
+                        [
+                            "deliveryID": id, "state": "injected",
+                            "detail": "xhost mini turn pending",
+                        ]
+                    )
+                    let prompt = try await agy.sendRequest(
+                        method: "session/prompt",
+                        params: [
+                            "sessionId": providerID,
+                            "prompt": [["type": "text", "text": body]],
+                        ]
+                    )
+                    agentText = extractAgyText(prompt.payload) ?? marker
+                    print("XHOST air→mini delivery=\(id) agy-bytes=\(agentText?.utf8.count ?? 0)")
+                }
+            }
+            if let id = deliveryID, let text = agentText, !hostReplyOK {
+                let sayOnce: [String: Any] = [
+                    "cmd": "say-once",
+                    "room": roomName,
+                    "memberID": memberID,
+                    "text": "host=xiang-mac-mini \(text)",
+                    "replyToID": original.stableID,
+                    "idempotencyKey": "xhost-mini:\(original.stableID)",
+                ]
+                let sayData = try JSONSerialization.data(withJSONObject: sayOnce)
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: miniMeshBin)
+                process.arguments = ["host-reply"]
+                process.environment = ProcessInfo.processInfo.environment.merging([
+                    "PHAROS_DISTRIBUTED_MESH": "1",
+                ]) { _, new in new }
+                let stdin = Pipe()
+                let stdout = Pipe()
+                let stderr = Pipe()
+                process.standardInput = stdin
+                process.standardOutput = stdout
+                process.standardError = stderr
+                try process.run()
+                try stdin.fileHandleForWriting.write(contentsOf: sayData)
+                try stdin.fileHandleForWriting.close()
+                process.waitUntilExit()
+                let out = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                print("XHOST air→mini host-reply: \(out.trimmingCharacters(in: .whitespacesAndNewlines)) \(err)")
+                hostReplyOK = out.contains("ok ")
+                if hostReplyOK {
+                    _ = try AgyThreadRuntimeBridge.localRuntime(
+                        "delivery.ack",
+                        [
+                            "deliveryID": id, "state": "completed",
+                            "detail": "xhost mini replied",
+                        ]
+                    )
+                }
+            }
+            // Confirm air can observe the reply after sync.
+            if hostReplyOK {
+                let airHistory = try await remoteShell(
+                    connection,
+                    "PHAROS_DISTRIBUTED_MESH=1 \(shellEscape(airBin)) distributed room-history " +
+                    "\(shellEscape(roomName)) --limit 20 --data-dir \(shellEscape(airMesh))"
+                )
+                if airHistory.contains(marker) || airHistory.contains("host=xiang-mac-mini") {
+                    print("XHOST air→mini air-history observes reply")
+                }
+            }
+            let history = try await chat.history(room: roomName, limit: 20)
+            reply = history.first {
+                $0.authorMemberID == memberID
+                    && $0.replyTo?.messageID == original.stableID
+                    && ($0.text.contains(marker) || $0.text.contains("host=xiang-mac-mini"))
+            }
+            if reply != nil { break }
+            try await Task.sleep(for: .milliseconds(750))
+        }
+        XCTAssertNotNil(reply, "mini must produce replyOnce after air Peer Runtime submit")
+        print(
+            "XHOST air→mini DONE mini=\(miniText) room=\(roomName) " +
+            "message=\(original.stableID) reply=\(reply?.stableID ?? "?") " +
+            "delivery=\(deliveryID ?? "?") marker=\(marker)"
+        )
+    }
+
     private func airRuntimeLocal(
         _ connection: SharedSSHConnection, airBin: String, socket: String,
         request: [String: Any]
