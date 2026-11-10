@@ -17,8 +17,10 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
+mod grokbot_bridge;
 mod mesh_bridge;
 mod replica_bridge;
+mod thread_service;
 
 const PROTOCOL_VERSION: u64 = 1;
 const SERVICE: &str = "me.pai.pharos.agent-runtime";
@@ -30,6 +32,8 @@ fn main() {
         mesh_bridge::describe_wiring(),
         replica_bridge::describe_wiring(),
         replica_bridge::HOST_RUNTIME_ALLOWED_METHODS,
+        thread_service::describe_wiring(),
+        grokbot_bridge::describe_wiring(),
     );
     if let Err(error) = run() {
         eprintln!("pharos-agent-runtime: {error}");
