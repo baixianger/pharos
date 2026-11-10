@@ -17,8 +17,9 @@ members = [
     # S4 web-api
     "crates/pharos-http",
     "crates/pharos-web",
-    # S5b adapter-dsh (wiring-local — captain may rebase/re-apply)
+    # S5b / S5c adapters
     "crates/pharos-adapter-dsh",
+    "crates/pharos-adapter-agy",
 ]
 resolver = "3"
 
@@ -37,6 +38,7 @@ pharos-grokbot = { path = "crates/pharos-grokbot" }
 pharos-http = { path = "crates/pharos-http" }
 pharos-web = { path = "crates/pharos-web" }
 pharos-adapter-dsh = { path = "crates/pharos-adapter-dsh" }
+pharos-adapter-agy = { path = "crates/pharos-adapter-agy" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 time = { version = "0.3", features = ["formatting", "parsing"] }

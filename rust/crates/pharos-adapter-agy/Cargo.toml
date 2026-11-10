@@ -1,0 +1,22 @@
+[package]
+name = "pharos-adapter-agy"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Pharos Agy (Antigravity) ACP SessionAdapter — RFC-007 stream S5c"
+
+[lib]
+name = "pharos_adapter_agy"
+path = "src/lib.rs"
+
+[dependencies]
+pharos-api.workspace = true
+pharos-protocol.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+uuid.workspace = true
