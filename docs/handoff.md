@@ -1,8 +1,11 @@
 ---
-summary: 2026-11-10 PM+：grokbot Thread 成员（webhook wake + CLI replyOnce）E2E 已通。
+summary: 2026-11-10 18:01：Rust 后端收敛盘点与 RFC-007 计划完成；等待审阅，未开始迁移。
 ---
 
 # 活跃任务交接
+
+**STATUS: RUST-PLAN-DONE**
+**Rust backend plan（2026-11-10 18:01）**：架构决定——全部后端收敛为独立 Rust 服务；Swift 只留 SwiftUI+WebKit 客户端。已盘点 `Sources/` 各模块与 `rust/`（agent-core / adapter-codex / pharos-meshd）及 MeshKit→iroh 现状；写出 `docs/RFC-007-rust-backend.md`（目标架构、API 边界、存储迁移、阶段 A CLI/Thread/grokbot → B Session/HITL → C mesh/sync → D Web UI/thin app → E 删 Swift 后端；验收复用 XHOST / Peer HITL / grokbot / DSH·Codex；Linux box 目标；风险与 Q1–Q8）。`BACKEND-MATRIX` 仅加注 `planned-rust`，未改 Status。**未开始搬代码；等审。**
 
 **STATUS: GROKBOT-MEMBER-DONE**
 **Grokbot Thread member（2026-11-10 14:20）**：成员 `grokbot` / nick `Pharos`（webhook 型，非本地 CLI）。`@Pharos` 定向投递 → Runtime `delivery.submit-member` → `GrokbotThreadBridge` POST ID-only `thread-mention`（human-proxy webhook）→ state=`injected`；`pharos-mesh thread reply --as grokbot` → `replyOnce` → state=`completed`；45m 无回复=`failed`。E2E Thread `grokbot-41349f97`（含 `agy-stub`），marker `PHAROS_GROKBOT_MEMBER_DONE_41349f97`，delivery `4f6afe55-…` → reply `reply-4c10d3ec…`，runtime-completed=1。协议：`docs/agents/grokbot/threads/2026-11-10_protocol.md`。证据：`internal/evidence/2026-11-10_grokbot-member-summary.md`、`..._grokbot-member-e2e.log`、`..._grokbot-unit.log`。矩阵 `GB-THD-01`…`05`。
@@ -349,4 +352,5 @@ STATUS: ALL-DONE
 STATUS: xhost-mini-to-air done Peer submit+Agy+replyOnce real
 STATUS: xhost-box headless Runtime done; Swift Host/Peer not-tested
 STATUS: GROKBOT-MEMBER-DONE
+STATUS: RUST-PLAN-DONE
 

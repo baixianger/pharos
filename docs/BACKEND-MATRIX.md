@@ -60,7 +60,9 @@ Status definitions:
 - `untested`: Structurally designed and supported by protocol schema, awaiting M3 test execution.
 - (All research archives finalized: Codex 0.166.0, Antigravity 1.5.1, DeepSeek Harness 0.2.1-rc.5).
 
-### 3.1 Codex CLI (`codex-cli 0.166.0`)
+**Rust plan (`planned-rust`):** Per [RFC-007](RFC-007-rust-backend.md), Session / Thread / HITL / Goal / Todo rows below that are currently implemented by Swift backend modules (`PharosMesh*`, `PharosRuntime`, Swift `pharos-mesh`) are annotated **planned-rust**. This tag does **not** change any Status cell; statuses flip only after Rust cutover evidence lands.
+
+### 3.1 Codex CLI (`codex-cli 0.166.0`) — `planned-rust`
 
 | Row ID | Backend | Path | Feature | Mechanism | Status | Researched Version | Evidence | Pharos Task ID | Test That Will Prove It |
 |---|---|---|---|---|---|---|---|---|---|
@@ -103,7 +105,7 @@ Status definitions:
 
 ---
 
-### 3.2 Antigravity CLI (`agy 1.5.1`)
+### 3.2 Antigravity CLI (`agy 1.5.1`) — `planned-rust`
 
 | Row ID | Backend | Path | Feature | Mechanism | Status | Researched Version | Evidence | Pharos Task ID | Test That Will Prove It |
 |---|---|---|---|---|---|---|---|---|---|
@@ -144,7 +146,7 @@ Status definitions:
 
 ---
 
-### 3.3 DeepSeek Harness (`dsh 0.2.1-rc.5`)
+### 3.3 DeepSeek Harness (`dsh 0.2.1-rc.5`) — `planned-rust`
 
 | Row ID | Backend | Path | Feature | Mechanism | Status | Researched Version | Evidence | Pharos Task ID | Test That Will Prove It |
 |---|---|---|---|---|---|---|---|---|---|
@@ -184,7 +186,7 @@ Status definitions:
 | `DS-THD-16` | `dsh` | `Thread` | `project-cwd` | Single-writer `workspace.json` registered via host node | `supported` | `0.2.1-rc.5` | `antigravity-cli/2026-11-05_integration-matrix.md §4` | Goal 5 | `TriBackendAdapterTests.testDshBackendAdapterStartupParsingAndLifecycle` |
 | `DS-THD-17` | `dsh` | `Thread` | `avatars-identity` | Sender avatar seed + member name rendered in thread message bubble | `supported` | `0.2.1-rc.5` | `GOAL.md Added 11:47` | Goal 5, Goal 6 | `ThreadChatAndReceiptTests.testPlainChatBubbleInvariant` |
 
-### 3.4 Grokbot webhook member (`grokbot` / nick `Pharos`)
+### 3.4 Grokbot webhook member (`grokbot` / nick `Pharos`) — `planned-rust`
 
 | Row ID | Backend | Path | Feature | Mechanism | Status | Researched Version | Evidence | Pharos Task ID | Test That Will Prove It |
 |---|---|---|---|---|---|---|---|---|---|
