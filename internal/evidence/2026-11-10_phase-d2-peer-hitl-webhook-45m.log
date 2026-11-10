@@ -1,0 +1,62 @@
+Building for debugging...
+[Computing dependencies]
+[Using on-disk description]
+Build complete! (0,57 secs)
+Test Suite 'Selected tests' started at 2026-11-10 12:51:19.362.
+Test Suite 'PharosTests.xctest' started at 2026-11-10 12:51:19.362.
+Test Suite 'MeshHostSessionRPCTests' started at 2026-11-10 12:51:19.362.
+Test Case '-[PharosTests.MeshHostSessionRPCTests testRealAirPeerHitlWithHumanProxyWhenEnabled]' started.
+Peer HITL Codex Session on air: 01a1c54c-6295-7260-a99d-d903eb9e0b7f
+Peer HITL seed completed=true
+Peer HITL inventory lists Session=true total=239
+Peer HITL prompt path peerSend=true
+Peer HITL approval id=peer:24c6f9b2-4cbc-4a03-8379-cf72de5ffcdf:01a1c54c-6295-7260-a99d-d903eb9e0b7f:approval:n:12 kind=toolPermission(toolName: "commandExecution", params: ["command": /bin/zsh -lc 'printf PHAROS_PEER_HITL_OK', "cwd": /Users/baixianger/personal/pharos-msg-test/peer-hitl/work], explanation: Optional("Do you want to allow this harmless command to test Peer HITL?"))
+Peer HITL human-proxy webhook skipped (no ~/.config/pharos/human-proxy-webhook.env)
+Peer HITL human-request written: /Users/baixianger/personal/pharos-msg-test/human-requests/2026-11-10T115147Z_peer-air-codex-hitl.md
+Peer HITL human-proxy done bytes=377
+Peer HITL approval already cleared before test apply (proxy may have resolved)
+Peer HITL E2E: session=01a1c54c-6295-7260-a99d-d903eb9e0b7f listed=true wantsAllow=true wantsReject=false cleared=true human=pharos-proxy
+Test Case '-[PharosTests.MeshHostSessionRPCTests testRealAirPeerHitlWithHumanProxyWhenEnabled]' passed (437.183 seconds).
+Test Suite 'MeshHostSessionRPCTests' passed at 2026-11-10 12:58:36.546.
+	 Executed 1 test, with 0 failures (0 unexpected) in 437.183 (437.184) seconds
+Test Suite 'PharosTests.xctest' passed at 2026-11-10 12:58:36.546.
+	 Executed 1 test, with 0 failures (0 unexpected) in 437.183 (437.184) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:58:36.546.
+	 Executed 1 test, with 0 failures (0 unexpected) in 437.183 (437.184) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:58:36.656.
+Test Suite 'PharosMeshProtocolTests.xctest' started at 2026-11-10 12:58:36.656.
+Test Suite 'PharosMeshProtocolTests.xctest' passed at 2026-11-10 12:58:36.656.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:58:36.656.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:58:36.729.
+Test Suite 'PharosMeshIrohTests.xctest' started at 2026-11-10 12:58:36.730.
+Test Suite 'PharosMeshIrohTests.xctest' passed at 2026-11-10 12:58:36.730.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:58:36.730.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:58:36.799.
+Test Suite 'PharosMeshIdentityTests.xctest' started at 2026-11-10 12:58:36.799.
+Test Suite 'PharosMeshIdentityTests.xctest' passed at 2026-11-10 12:58:36.799.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:58:36.799.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:58:36.870.
+Test Suite 'PharosMeshCoreTests.xctest' started at 2026-11-10 12:58:36.871.
+Test Suite 'PharosMeshCoreTests.xctest' passed at 2026-11-10 12:58:36.871.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:58:36.871.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:58:36.947.
+Test Suite 'PharosLightTests.xctest' started at 2026-11-10 12:58:36.948.
+Test Suite 'PharosLightTests.xctest' passed at 2026-11-10 12:58:36.948.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:58:36.948.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+=== human-proxy webhook wake 2026-11-10T11:58:40Z ===
+request=2026-11-10T115147Z_peer-air-codex-hitl.md
+host=xiangs-macbook-air
+session=peer:24c6f9b2-4cbc-4a03-8379-cf72de5ffcdf:01a1c54c-6295-7260-a99d-d903eb9e0b7f
+http=200
+body={"success":true,"runUuid":"ae5e876d-0667-4dca-ab98-f3e2bf6ce129"}
+env_mode=600

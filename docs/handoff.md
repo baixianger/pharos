@@ -1,5 +1,5 @@
 ---
-summary: 2026-11-10 PM+：human-proxy webhook 通道已加；Peer HITL 超时改 45m；复跑进行中。
+summary: 2026-11-10 PM+：human-proxy webhook + 45m HITL 已通；Peer HITL E2E real（webhook 200 → allowedOnce）。
 ---
 
 # 活跃任务交接
@@ -338,4 +338,8 @@ STATUS: ALL-DONE
 
 STATUS: peer-hitl-rerun blocked human-proxy .done.md timeout again
 
-STATUS: human-proxy-webhook landed; peer-hitl-rerun-45m pending
+STATUS: human-proxy-webhook landed
+
+STATUS: peer-hitl done webhook+45m real
+
+STATUS: ALL-DONE
