@@ -1,5 +1,5 @@
 ---
-summary: 2026-11-10 PM：Peer HITL blocked(proxy)；隔离 DSH/Codex product live 通过；跨机 Runtime/桌面 DSH 待续。
+summary: 2026-11-10 PM：Peer HITL blocked；DSH/Codex product live 通过；跨机 Runtime hello mini→air 通过；桌面 DSH 待提交。
 ---
 
 # 活跃任务交接
@@ -9,6 +9,11 @@ summary: 2026-11-10 PM：Peer HITL blocked(proxy)；隔离 DSH/Codex product liv
 **STATUS: isolated-dsh-product done**
 
 **STATUS: isolated-codex-product done**
+
+**STATUS: cross-host-runtime done hello mini→air; submit Peer RPC not-tested; box not-tested**
+
+**Phase (4) 跨机 Runtime（2026-11-10 12:24）**：在 air `peer-phase-a` 部署 `pharos-meshd` 并让 `sync-serve --host` 指向其 socket 后，`distributed host-runtime-hello --peer 24C6F9B2-…` **mini→air 成功**（service=`me.pai.pharos.agent-runtime`，含 delivery-queue / member-routed-delivery）。air→mini CLI 探测因 Iroh `duplicate connection` 失败（与已有 sync-serve 连接冲突）→ 反向 **not-tested**。Peer 协议目前仅有 `host.runtime.hello.v1`，**无**跨机 `delivery.submit` RPC → 真实跨机投递 **not-tested**。box/grok-bot：Linux 无 `pharos-meshd`/Swift Host → **not-tested**。证据：`internal/evidence/2026-11-10_phase-c-cross-host-runtime.log`。
+
 
 **Phase (3) 隔离 Codex app-server 真实产品往返（2026-11-10 12:22）**：**done / real**。`CodexStdioTransport` 独立 `codex app-server`（禁用共享 adapter 以免抢 delivery）；Host binder→`conversation.state`→Runtime submit `.accepted`→turn→`replyOnce`；Session `01a1c532-…`，phase=replied，runtime-completed=1。门控：`PHAROS_HOST_THREAD_CODEX_PRODUCT_PATH_TEST=1`。证据：`internal/evidence/2026-11-10_phase-b3-codex-live-product-path.log`。
 
@@ -317,3 +322,5 @@ STATUS: peer-hitl blocked human-proxy .done.md timeout (approval path proved min
 STATUS: isolated-dsh-product done
 
 STATUS: isolated-codex-product done
+
+STATUS: cross-host-runtime done hello mini→air; submit Peer RPC not-tested; box not-tested

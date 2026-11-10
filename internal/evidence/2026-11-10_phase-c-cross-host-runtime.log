@@ -1,0 +1,72 @@
+=== host-runtime-hello mini→air 2026-11-10T11:23:57Z ===
+{"capabilities":["driver-registration-v1","conversation-registry-v1","surface-attachment-v1","delivery-queue-v1","member-routed-delivery-v1","agent-adapter-v1","session-actions-v1","session-state-v1","codex-thread-id-v1","delivery-inspect-v1","dsh-binding-inspect-v1","dsh-binding-batch-inspect-v1","launch-options-v1","launch-requests-v1"],"hostDeviceID":{"rawValue":"24C6F9B2-4CBC-4A03-8379-CF72DE5FFCDF"},"protocolVersion":1,"service":"me.pai.pharos.agent-runtime"}
+EXIT:0
+--- local runtime ---
+total 8
+drwxr-xr-x@ 5 baixianger  staff  160 Nov 10 12:24 .
+drwxr-xr-x@ 7 baixianger  staff  224 Nov 10 12:24 ..
+srw-------@ 1 baixianger  staff    0 Nov 10 12:24 agent-runtime.sock
+drwxr-xr-x@ 2 baixianger  staff   64 Nov 10 12:24 data
+-rw-r--r--@ 1 baixianger  staff    6 Nov 10 12:24 meshd.pid
+Building for debugging...
+[Computing dependencies]
+[Using on-disk description]
+[1 / 1]
+[1 / 65] Pharos-product
+Build complete! (0,88 secs)
+Test Suite 'Selected tests' started at 2026-11-10 12:24:18.461.
+Test Suite 'PharosTests.xctest' started at 2026-11-10 12:24:18.461.
+Test Suite 'MeshHostSessionRPCTests' started at 2026-11-10 12:24:18.461.
+Test Case '-[PharosTests.MeshHostSessionRPCTests testRealAirPeerInventoryWhenEnabled]' started.
+Test Case '-[PharosTests.MeshHostSessionRPCTests testRealAirPeerInventoryWhenEnabled]' passed (2.019 seconds).
+Test Suite 'MeshHostSessionRPCTests' passed at 2026-11-10 12:24:20.480.
+	 Executed 1 test, with 0 failures (0 unexpected) in 2.019 (2.019) seconds
+Test Suite 'PharosTests.xctest' passed at 2026-11-10 12:24:20.480.
+	 Executed 1 test, with 0 failures (0 unexpected) in 2.019 (2.019) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:24:20.480.
+	 Executed 1 test, with 0 failures (0 unexpected) in 2.019 (2.020) seconds
+Real peer mac-air device=24C6F9B2-4CBC-4A03-8379-CF72DE5FFCDF
+Real peer project checkouts: count=78, unavailable=false
+Real peer inventory codex: count=20, unavailable=false
+Real peer inventory dsh: count=204, unavailable=false
+Real peer inventory agy: count=13, unavailable=false
+Real peer project↔session matches: 139
+Real peer sample checkout: 003fbe12-d240-49c8-b883-2f5735bf6ddd -> /tmp/demo
+Real peer sample related session: agy peer:24c6f9b2-4cbc-4a03-8379-cf72de5ffcdf:agy:c14a94bb-8cdc-45e6-831e-f5e07ad5063f workspace=/Users/baixianger/omika.AI/enetpulse-event
+Test Suite 'Selected tests' started at 2026-11-10 12:24:20.570.
+Test Suite 'PharosMeshProtocolTests.xctest' started at 2026-11-10 12:24:20.571.
+Test Suite 'PharosMeshProtocolTests.xctest' passed at 2026-11-10 12:24:20.571.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:24:20.571.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:24:20.632.
+Test Suite 'PharosMeshIrohTests.xctest' started at 2026-11-10 12:24:20.633.
+Test Suite 'PharosMeshIrohTests.xctest' passed at 2026-11-10 12:24:20.633.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:24:20.633.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:24:20.693.
+Test Suite 'PharosMeshIdentityTests.xctest' started at 2026-11-10 12:24:20.694.
+Test Suite 'PharosMeshIdentityTests.xctest' passed at 2026-11-10 12:24:20.694.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:24:20.694.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:24:20.756.
+Test Suite 'PharosMeshCoreTests.xctest' started at 2026-11-10 12:24:20.757.
+Test Suite 'PharosMeshCoreTests.xctest' passed at 2026-11-10 12:24:20.757.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:24:20.757.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:24:20.820.
+Test Suite 'PharosLightTests.xctest' started at 2026-11-10 12:24:20.821.
+Test Suite 'PharosLightTests.xctest' passed at 2026-11-10 12:24:20.821.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:24:20.821.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+=== host-runtime-hello air→mini ===
+usage: pharos-mesh distributed host-runtime-hello --peer DEVICE-UUID --data-dir ABSOLUTE-PATH
+=== host-runtime-hello air→mini C0CEB328-B91A-4C25-8251-F3FE9F2481E8 ===
+error: distributed command failed: IrohError { kind: Stream, message: "Read(ConnectionLost(ApplicationClosed(ApplicationClose { error_code: 0, reason: b\"duplicate connection\" })))", debug_message: "Read(ConnectionLost(ApplicationClosed(ApplicationClose { error_code: 0, reason: b\"duplicate connection\" })))" }
+EXIT:1
+=== box Runtime not-tested (no pharos-meshd / Swift Host on Linux grok-bot) ===
+=== delivery.submit Peer RPC: not present (only host.runtime.hello.v1); cross-host submit not-tested ===
