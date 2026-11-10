@@ -2244,7 +2244,12 @@ name = "pharos-codex-adapter"
 version = "0.1.0"
 dependencies = [
  "pharos-agent-core",
+ "pharos-api",
+ "pharos-protocol",
+ "serde",
  "serde_json",
+ "time",
+ "uuid",
 ]
 
 [[package]]
