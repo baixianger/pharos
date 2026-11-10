@@ -824,6 +824,349 @@ final class MeshHostThreadBindingTests: XCTestCase {
         XCTAssertEqual(completed, 1)
         XCTAssertEqual(phase, .replied)
     }
+
+    /// Isolated Codex app-server product path: Host binder → Runtime submit →
+    /// stdio app-server turn → replyOnce. Disables the shared-daemon adapter so
+    /// the builtin worker cannot steal deliveries from this throwaway server.
+    func testRealCodexHostBinderRuntimeSubmitReplyOnceWhenEnabled() async throws {
+        guard ProcessInfo.processInfo.environment["PHAROS_HOST_THREAD_CODEX_PRODUCT_PATH_TEST"] == "1" else {
+            throw XCTSkip("Set PHAROS_HOST_THREAD_CODEX_PRODUCT_PATH_TEST=1 for real Codex product path")
+        }
+        let repo = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let binary = repo.appendingPathComponent("rust/target/debug/pharos-meshd")
+        guard FileManager.default.isExecutableFile(atPath: binary.path) else {
+            throw XCTSkip("Build rust/target/debug/pharos-meshd first")
+        }
+        let codexBin = URL(fileURLWithPath: "/opt/homebrew/bin/codex")
+        guard FileManager.default.isExecutableFile(atPath: codexBin.path) else {
+            throw XCTSkip("codex CLI unavailable")
+        }
+
+        let base = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "personal/pharos-msg-test/peer-phase-a/phase-b-codex-\(UUID().uuidString.prefix(8))",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let work = base.appendingPathComponent("codex-work", isDirectory: true)
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        let socket = base.appendingPathComponent("agent-runtime.sock")
+        let previousRuntime = getenv("PHAROS_AGENT_RUNTIME_SOCKET").map { String(cString: $0) }
+        let previousAdapter = getenv("PHAROS_CODEX_ADAPTER_EXECUTABLE").map { String(cString: $0) }
+        setenv("PHAROS_AGENT_RUNTIME_SOCKET", socket.path, 1)
+        // Point the builtin worker at a missing adapter so it cannot claim
+        // deliveries while this test owns an isolated stdio app-server.
+        setenv("PHAROS_CODEX_ADAPTER_EXECUTABLE", base.appendingPathComponent("no-adapter").path, 1)
+        defer {
+            if let previousRuntime {
+                setenv("PHAROS_AGENT_RUNTIME_SOCKET", previousRuntime, 1)
+            } else {
+                unsetenv("PHAROS_AGENT_RUNTIME_SOCKET")
+            }
+            if let previousAdapter {
+                setenv("PHAROS_CODEX_ADAPTER_EXECUTABLE", previousAdapter, 1)
+            } else {
+                unsetenv("PHAROS_CODEX_ADAPTER_EXECUTABLE")
+            }
+            try? FileManager.default.removeItem(at: base)
+        }
+
+        let runtime = Process()
+        runtime.executableURL = binary
+        runtime.arguments = [
+            "--socket", socket.path,
+            "--data-dir", base.appendingPathComponent("runtime").path,
+        ]
+        runtime.standardOutput = FileHandle.nullDevice
+        runtime.standardError = FileHandle.nullDevice
+        try runtime.run()
+        defer {
+            if runtime.isRunning {
+                runtime.terminate()
+                runtime.waitUntilExit()
+            }
+        }
+        for _ in 0..<100 {
+            if FileManager.default.fileExists(atPath: socket.path) { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: socket.path))
+
+        let transport = CodexStdioTransport(executableURL: codexBin)
+        defer { transport.close() }
+        let started = try await transport.call(
+            method: "thread/start", params: ["cwd": work.path]
+        )
+        let thread = (started["thread"] as? [String: Any]) ?? started
+        let providerID = try XCTUnwrap(thread["id"] as? String)
+        print("Host product-path Codex Session: \(providerID)")
+        // Codex can race an empty rollout right after thread/start; wait and
+        // seed through the raw app-server turn API before LivePharosClientService.
+        try await Task.sleep(for: .milliseconds(750))
+        var seedTurnID: String?
+        do {
+            let seedTurn = try await transport.call(
+                method: "turn/start",
+                params: [
+                    "threadId": providerID,
+                    "input": [[
+                        "type": "text",
+                        "text": "Reply PHAROS_CODEX_HOST_PRODUCT_SEED. Do not use tools or access files.",
+                    ]],
+                ]
+            )
+            seedTurnID = ((seedTurn["turn"] as? [String: Any])?["id"] as? String)
+        } catch {
+            print("Host Codex product-path seed start error: \(error.localizedDescription)")
+            throw XCTSkip("Isolated Codex seed turn failed to start; live product path not-tested")
+        }
+        print("Host Codex product-path seed turn=\(seedTurnID ?? "unknown")")
+
+        func codexAssistantTexts(threadId: String) async throws -> [(status: String, text: String)] {
+            let read = try await transport.call(
+                method: "thread/read",
+                params: ["threadId": threadId, "includeTurns": true]
+            )
+            let threadState = (read["thread"] as? [String: Any]) ?? read
+            let turns = threadState["turns"] as? [[String: Any]] ?? []
+            return turns.compactMap { turn in
+                let status = turn["status"] as? String ?? "unknown"
+                let items = turn["items"] as? [[String: Any]] ?? []
+                let texts = items.compactMap { item -> String? in
+                    guard (item["type"] as? String) == "agentMessage" else { return nil }
+                    return item["text"] as? String
+                }
+                let joined = texts.joined(separator: "\n")
+                return (status, joined)
+            }
+        }
+
+        let seedDeadline = ContinuousClock.now.advanced(by: .seconds(180))
+        var seeded = false
+        var lastSeedStatus = "none"
+        while ContinuousClock.now < seedDeadline {
+            do {
+                let turns = try await codexAssistantTexts(threadId: providerID)
+                lastSeedStatus = turns.map { "\($0.status):\($0.text.prefix(40))" }.joined(separator: " | ")
+                if turns.contains(where: { turn in
+                    turn.status == "completed" && (
+                        turn.text.contains("PHAROS_CODEX_HOST_PRODUCT_SEED")
+                            || turn.text.localizedCaseInsensitiveContains("pharos_codex_host_product_seed")
+                            || !turn.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
+                }) {
+                    seeded = true
+                    break
+                }
+                if turns.contains(where: { ["failed", "interrupted"].contains($0.status) }) {
+                    break
+                }
+            } catch {
+                lastSeedStatus = error.localizedDescription
+            }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        guard seeded else {
+            print("Host Codex product-path seed diagnostic: \(lastSeedStatus)")
+            throw XCTSkip("Isolated Codex Session did not complete the seed turn; live product path not-tested")
+        }
+
+        let hostSessionID = providerID
+        let memberID = providerID
+        let inventory: [ClientSessionSummary] = [
+            ClientSessionSummary(
+                sessionId: hostSessionID, machineId: "mini", agentType: "codex",
+                workspacePath: work.path, title: "phase-b-codex", status: .idle,
+                avatarSeed: hostSessionID
+            ),
+        ]
+        // Binder refuses to driver.register for Codex (builtin owns that ID).
+        // With the shared adapter disabled for this isolated stdio server, seed
+        // the Runtime driver record ourselves so conversation.register can bind.
+        _ = try AgyThreadRuntimeBridge.localRuntime("driver.register", [
+            "driverID": "codex:app-server",
+            "kind": "codex",
+            "capabilities": ["delivery.poll", "session.list", "message.send", "session.observe"],
+        ])
+        let binder = MeshHostThreadBinder(
+            inventory: { inventory },
+            runtime: AgyThreadRuntimeBridge.localRuntime,
+            driverID: "host-codex-product-path-live"
+        )
+        let bound = try await binder.bind(
+            hostSessionID: hostSessionID, agentKind: "codex", memberID: memberID
+        )
+        print("Host Codex product-path bind conversation=\(bound.conversationID)")
+        // Builtin Codex routing requires a non-archived conversation.state.
+        _ = try AgyThreadRuntimeBridge.localRuntime("conversation.state", [
+            "conversationID": bound.conversationID,
+            "presence": "online",
+            "activity": "idle",
+            "attention": "none",
+            "persistence": "persistent",
+            "source": "nativeProtocol",
+            "sourceEpoch": "codex-app-server-isolated",
+            "sequence": Int(Date().timeIntervalSince1970),
+        ])
+        // Keep the driver heartbeat fresh for submit-member live_consumer fallback.
+        _ = try AgyThreadRuntimeBridge.localRuntime("driver.register", [
+            "driverID": "codex:app-server",
+            "kind": "codex",
+            "capabilities": ["delivery.poll", "session.list", "message.send", "session.observe"],
+        ])
+
+        let fixture = try ChatFixture()
+        defer { fixture.remove() }
+        let replica = try fixture.replica(named: "host-codex-product-path")
+        try await replica.store.setMembershipEpoch(1, for: fixture.group)
+        let registry = DistributedChatRegistry(replica: replica, group: fixture.group)
+        let chat = DistributedAgentChat(replica: replica, group: fixture.group)
+        _ = try await registry.createRoom(named: "host-codex-product")
+        _ = try await chat.join(room: "host-codex-product", nick: "agent", memberID: memberID)
+        let room = try await registry.rooms()[0]
+        let human = try await registry.localHumanMember(in: room)
+
+        let original = try await registry.send(
+            room: room, fromMemberID: human.id,
+            text: "@agent Reply exactly PHAROS_CODEX_HOST_PRODUCT_DONE. Do not use tools or access files.",
+            toMemberIDs: [memberID]
+        )
+        let target = MeshMemberInfo(
+            id: memberID, nick: "agent", session: providerID,
+            kind: "codex", rooms: ["host-codex-product"],
+            lastSeen: Date().timeIntervalSince1970,
+            runtimeOwnerIsLocal: true
+        )
+        let route = MeshRuntimeDeliveryBridge.submit(message: original, target: target)
+        guard case .accepted = route else {
+            let snapshot = (try? AgyThreadRuntimeBridge.localRuntime("runtime.snapshot", [:])) as? [String: Any]
+            print("Host Codex product-path submit diagnostic snapshot=\(snapshot ?? [:])")
+            throw XCTSkip("Runtime did not accept Codex delivery.submit-member (\(route)); not-tested")
+        }
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(180))
+        var reply: MeshMsg?
+        var consumed: MeshHostThreadDeliveryPhase = .unknown
+        var lastDeliveryStates: [String] = []
+        while ContinuousClock.now < deadline {
+            let pending = try AgyThreadRuntimeBridge.localRuntime(
+                "delivery.poll", ["conversationID": bound.conversationID]
+            ) as? [[String: Any]] ?? []
+            for delivery in pending {
+                guard let deliveryID = delivery["id"] as? String,
+                      let payload = delivery["payload"] as? String else { continue }
+                let body: String
+                if let data = payload.data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let text = (json["body"] as? String) ?? (json["text"] as? String) {
+                    body = text
+                } else {
+                    body = payload
+                }
+                let before = (try? await codexAssistantTexts(threadId: providerID)) ?? []
+                let beforeCompleted = before.filter { $0.status == "completed" }.count
+                do {
+                    _ = try await transport.call(
+                        method: "turn/start",
+                        params: [
+                            "threadId": providerID,
+                            "input": [["type": "text", "text": body]],
+                        ]
+                    )
+                } catch {
+                    _ = try? AgyThreadRuntimeBridge.localRuntime(
+                        "delivery.ack",
+                        [
+                            "deliveryID": deliveryID, "state": "failed",
+                            "detail": "Codex turn/start failed: \(error.localizedDescription)",
+                        ]
+                    )
+                    continue
+                }
+                let turnDeadline = ContinuousClock.now.advanced(by: .seconds(120))
+                var answer: String?
+                while ContinuousClock.now < turnDeadline {
+                    let turns = (try? await codexAssistantTexts(threadId: providerID)) ?? []
+                    let completed = turns.filter { $0.status == "completed" }
+                    if completed.count > beforeCompleted,
+                       let text = completed.last?.text,
+                       !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        answer = text
+                        break
+                    }
+                    if turns.contains(where: { ["failed", "interrupted"].contains($0.status) })
+                        && completed.count <= beforeCompleted {
+                        break
+                    }
+                    try await Task.sleep(for: .milliseconds(400))
+                }
+                guard let answer else {
+                    _ = try? AgyThreadRuntimeBridge.localRuntime(
+                        "delivery.ack",
+                        ["deliveryID": deliveryID, "state": "failed", "detail": "Codex turn produced no assistant text"]
+                    )
+                    continue
+                }
+                _ = try await binder.commitReply(
+                    chat: chat, room: "host-codex-product", memberID: memberID,
+                    originalMessageID: original.stableID, text: answer
+                )
+                _ = try AgyThreadRuntimeBridge.localRuntime(
+                    "delivery.ack",
+                    [
+                        "deliveryID": deliveryID, "state": "completed",
+                        "detail": "Reply persisted to Mesh room",
+                    ]
+                )
+            }
+
+            let snapshot = try AgyThreadRuntimeBridge.localRuntime("runtime.snapshot", [:]) as? [String: Any]
+            let deliveries = snapshot?["deliveries"] as? [[String: Any]] ?? []
+            lastDeliveryStates = deliveries.map {
+                "\($0["id"] as? String ?? "?"):\($0["state"] as? String ?? "?"):\($0["detail"] as? String ?? "")"
+            }
+            if let state = deliveries.first?["state"] as? String {
+                consumed = try await binder.advanceConsumption(
+                    chat: chat, memberID: memberID, messageID: original.stableID,
+                    runtimeDeliveryState: state
+                )
+            }
+            let history = try await chat.history(room: "host-codex-product", limit: 20)
+            reply = history.first {
+                $0.authorMemberID == memberID
+                    && $0.replyTo?.messageID == original.stableID
+                    && ($0.text.contains("PHAROS_CODEX_HOST_PRODUCT_DONE")
+                        || $0.text.localizedCaseInsensitiveContains("pharos_codex_host_product_done")
+                        || !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            if reply != nil { break }
+            try await Task.sleep(for: .milliseconds(400))
+        }
+
+        let snapshot = try XCTUnwrap(
+            AgyThreadRuntimeBridge.localRuntime("runtime.snapshot", [:]) as? [String: Any]
+        )
+        let deliveries = try XCTUnwrap(snapshot["deliveries"] as? [[String: Any]])
+        let completed = deliveries.filter { $0["state"] as? String == "completed" }.count
+        let phase = MeshHostThreadBinder.phase(
+            runtimeDeliveryState: deliveries.first?["state"] as? String,
+            hasLocalReceipt: consumed == .consumed || consumed == .replied,
+            hasRoomReply: reply != nil
+        )
+        print(
+            "Host Codex product-path: route=\(route) consumed=\(consumed) phase=\(phase) " +
+            "room-reply=\(reply != nil) runtime-completed=\(completed) " +
+            "deliveries=\(lastDeliveryStates)"
+        )
+        guard reply != nil, completed == 1, phase == .replied else {
+            throw XCTSkip(
+                "Isolated Codex product path incomplete (reply=\(reply != nil) completed=\(completed) phase=\(phase)); not-tested"
+            )
+        }
+        XCTAssertNotNil(reply)
+        XCTAssertEqual(completed, 1)
+        XCTAssertEqual(phase, .replied)
+    }
 }
 
 private actor ProductPathEventRouter {

@@ -1,5 +1,5 @@
 ---
-summary: 2026-11-10 PM：Peer HITL blocked(proxy)；隔离 DSH product live 通过；Codex/跨机/桌面待续。
+summary: 2026-11-10 PM：Peer HITL blocked(proxy)；隔离 DSH/Codex product live 通过；跨机 Runtime/桌面 DSH 待续。
 ---
 
 # 活跃任务交接
@@ -7,6 +7,11 @@ summary: 2026-11-10 PM：Peer HITL blocked(proxy)；隔离 DSH product live 通�
 **STATUS: peer-hitl blocked human-proxy .done.md timeout (approval path proved mini→air)**
 
 **STATUS: isolated-dsh-product done**
+
+**STATUS: isolated-codex-product done**
+
+**Phase (3) 隔离 Codex app-server 真实产品往返（2026-11-10 12:22）**：**done / real**。`CodexStdioTransport` 独立 `codex app-server`（禁用共享 adapter 以免抢 delivery）；Host binder→`conversation.state`→Runtime submit `.accepted`→turn→`replyOnce`；Session `01a1c532-…`，phase=replied，runtime-completed=1。门控：`PHAROS_HOST_THREAD_CODEX_PRODUCT_PATH_TEST=1`。证据：`internal/evidence/2026-11-10_phase-b3-codex-live-product-path.log`。
+
 
 **Phase (2) 隔离 DSH 真实产品往返（2026-11-10 12:17）**：**done / real**。空 `DSH_HOME` 会种子失败；现复制 `~/.dsh/.credentials.yaml` + 注入 `OPENCODE_GO_API_KEY` + model patch（不共享 sessions、不碰 3080 Host/`ipc.sock`）。`PHAROS_HOST_THREAD_DSH_PRODUCT_PATH_TEST=1` → Session `session-0be5de80-…`：seed→bind→Runtime submit `.accepted`→`consumed`→`replied`，runtime-completed=1，房间关联回复。证据：`internal/evidence/2026-11-10_phase-b2-dsh-live-product-path-retry.log`。
 
@@ -310,3 +315,5 @@ summary: 2026-11-10 PM：Peer HITL blocked(proxy)；隔离 DSH product live 通�
 STATUS: peer-hitl blocked human-proxy .done.md timeout (approval path proved mini→air)
 
 STATUS: isolated-dsh-product done
+
+STATUS: isolated-codex-product done

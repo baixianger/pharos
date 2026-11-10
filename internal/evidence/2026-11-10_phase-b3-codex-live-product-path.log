@@ -1,0 +1,55 @@
+Building for debugging...
+[Computing dependencies]
+[Using on-disk description]
+[2 / 7] PharosTests-product
+[4 / 11]
+[6 / 11] PharosTests-product
+[9 / 12] PharosTests-product
+[11 / 15] PharosTests-product
+[13 / 15] PharosTests-product
+Build complete! (3,60 secs)
+Test Suite 'Selected tests' started at 2026-11-10 12:22:46.397.
+Test Suite 'PharosTests.xctest' started at 2026-11-10 12:22:46.398.
+Test Suite 'MeshHostThreadBindingTests' started at 2026-11-10 12:22:46.398.
+Test Case '-[PharosTests.MeshHostThreadBindingTests testRealCodexHostBinderRuntimeSubmitReplyOnceWhenEnabled]' started.
+Host product-path Codex Session: 01a1c532-3e1d-70d1-b3cf-4d7c7c86f520
+Host Codex product-path seed turn=01a1c532-4190-78c0-b5e6-c533accdb53b
+Host Codex product-path bind conversation=26eda395-bcbf-4246-aa53-b499afd573e9
+Host Codex product-path: route=accepted consumed=consumed phase=replied room-reply=true runtime-completed=1 deliveries=["e516fb68-adf0-4e90-8308-97a70c8f7137:completed:Reply persisted to Mesh room"]
+Test Case '-[PharosTests.MeshHostThreadBindingTests testRealCodexHostBinderRuntimeSubmitReplyOnceWhenEnabled]' passed (7.031 seconds).
+Test Suite 'MeshHostThreadBindingTests' passed at 2026-11-10 12:22:53.429.
+	 Executed 1 test, with 0 failures (0 unexpected) in 7.031 (7.031) seconds
+Test Suite 'PharosTests.xctest' passed at 2026-11-10 12:22:53.429.
+	 Executed 1 test, with 0 failures (0 unexpected) in 7.031 (7.032) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:22:53.430.
+	 Executed 1 test, with 0 failures (0 unexpected) in 7.031 (7.032) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:22:53.516.
+Test Suite 'PharosMeshProtocolTests.xctest' started at 2026-11-10 12:22:53.517.
+Test Suite 'PharosMeshProtocolTests.xctest' passed at 2026-11-10 12:22:53.517.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:22:53.517.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:22:53.585.
+Test Suite 'PharosMeshIrohTests.xctest' started at 2026-11-10 12:22:53.586.
+Test Suite 'PharosMeshIrohTests.xctest' passed at 2026-11-10 12:22:53.586.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:22:53.586.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:22:53.648.
+Test Suite 'PharosMeshIdentityTests.xctest' started at 2026-11-10 12:22:53.649.
+Test Suite 'PharosMeshIdentityTests.xctest' passed at 2026-11-10 12:22:53.649.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:22:53.649.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:22:53.712.
+Test Suite 'PharosMeshCoreTests.xctest' started at 2026-11-10 12:22:53.712.
+Test Suite 'PharosMeshCoreTests.xctest' passed at 2026-11-10 12:22:53.712.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:22:53.712.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:22:53.778.
+Test Suite 'PharosLightTests.xctest' started at 2026-11-10 12:22:53.778.
+Test Suite 'PharosLightTests.xctest' passed at 2026-11-10 12:22:53.778.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:22:53.778.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
