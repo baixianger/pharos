@@ -4,7 +4,9 @@ summary: 2026-11-10：Batch 1 四流已 merge captain 合入；Batch 2 从此 HE
 
 # 活跃任务交接
 
-**STATUS: RUST-B1-MERGED — 09192f0213b3977c0a68ec00368446045284eea1**
+**STATUS: RUST-B1-MERGED — (see tip of \`rust/integrate-b1\`)**
+**FF note:**  worktree still has uncommitted  +  WIP; Already up to date. aborted to avoid overwrite. Batch 2 should branch from `rust/integrate-b1` (`b275dcfec817025260a99b6b052cb7db6d8f76d5`) until the main checkout is cleaned/relocated and FF lands. Captain did not stash user WIP.
+
 **Batch 1 merge（merge captain）**：在 worktree `~/personal/pharos-wt/_merge-b1` 分支 `rust/integrate-b1` 按 RFC-007 §6.1 顺序 `--no-ff`：S3 `rust/mesh-iroh` → S1 `rust/cli-thread` → S5a `rust/adapter-codex` → S4 `rust/web-api`。Captain 合并 `rust/Cargo.toml` members/deps 并集；`agent-runtime` 注册 `mesh_bridge`/`replica_bridge`/`thread_service`/`grokbot_bridge` mods；S4 按 wiring Option B 保留 `pharos-web` 旁路二进制。每步后 `cargo check --workspace` + `cargo test --workspace` 绿；全部合入后 `cargo clippy --workspace --all-targets -- -D warnings` 绿。未 push。Batch 2 从此 HEAD 开分支。主 checkout 未触碰既有脏文件。
 
 **STATUS: RUST-P0-DONE**
@@ -362,4 +364,3 @@ STATUS: RUST-PLAN-DONE
 STATUS: RUST-P0-DONE
 
 
-STATUS: RUST-B1-MERGED — 09192f0213b3977c0a68ec00368446045284eea1
