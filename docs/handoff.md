@@ -5,11 +5,9 @@ summary: 2026-11-10：Batch 1 四流已 merge captain 合入；Batch 2 从此 HE
 # 活跃任务交接
 
 **STATUS: RUST-B1-MERGED — 09192f0213b3977c0a68ec00368446045284eea1**
-**Batch 2 branch tip:** `fc60c2e24b73164454c7be374f481d599f7b256d` (`rust/integrate-b1`, includes handoff).
+**Batch 1 merge（merge captain）**：在 worktree `~/personal/pharos-wt/_merge-b1` 分支 `rust/integrate-b1` 按 RFC-007 §6.1 顺序 `--no-ff`：S3 `rust/mesh-iroh` → S1 `rust/cli-thread` → S5a `rust/adapter-codex` → S4 `rust/web-api`。Captain 合并 `rust/Cargo.toml` members/deps 并集；`agent-runtime` 注册 `mesh_bridge`/`replica_bridge`/`thread_service`/`grokbot_bridge` mods；S4 按 wiring Option B 保留 `pharos-web` 旁路二进制。每步后 `cargo check --workspace` + `cargo test --workspace` 绿；全部合入后 `cargo clippy --workspace --all-targets -- -D warnings` 绿。未 push。
 
-**FF note:**  worktree still has uncommitted  +  WIP; Already up to date. aborted to avoid overwrite. Batch 2 should branch from `rust/integrate-b1` (`b275dcfec817025260a99b6b052cb7db6d8f76d5`) until the main checkout is cleaned/relocated and FF lands. Captain did not stash user WIP.
-
-**Batch 1 merge（merge captain）**：在 worktree `~/personal/pharos-wt/_merge-b1` 分支 `rust/integrate-b1` 按 RFC-007 §6.1 顺序 `--no-ff`：S3 `rust/mesh-iroh` → S1 `rust/cli-thread` → S5a `rust/adapter-codex` → S4 `rust/web-api`。Captain 合并 `rust/Cargo.toml` members/deps 并集；`agent-runtime` 注册 `mesh_bridge`/`replica_bridge`/`thread_service`/`grokbot_bridge` mods；S4 按 wiring Option B 保留 `pharos-web` 旁路二进制。每步后 `cargo check --workspace` + `cargo test --workspace` 绿；全部合入后 `cargo clippy --workspace --all-targets -- -D warnings` 绿。未 push。Batch 2 从此 HEAD 开分支。主 checkout 未触碰既有脏文件。
+**FF blocked:** main checkout `integrate/mesh2-into-main` still has uncommitted WIP in `rust/Cargo.lock` and `rust/crates/agent-runtime/src/main.rs` (would be overwritten). Captain aborted `git merge --ff-only rust/integrate-b1` and did not stash. **Batch 2 must branch from `rust/integrate-b1` tip until that WIP is relocated/committed and FF lands.** Pre-existing dirty Sources/DESIGN/PLAN files were left untouched.
 
 **STATUS: RUST-P0-DONE**
 **Phase 0 contracts（2026-11-10 19:07）**：`pharos-protocol` / `pharos-store-schema` / `pharos-api`（CONTRACTS_VERSION=0.1.0，SCHEMA_VERSION=1）。`cargo check`+`test` 三 crate 通过；无 adapter/CLI/web 依赖。文档：`docs/GOAL-RUST-BACKEND.md`、`docs/rfc-007-contracts.md`。本地 tag `rust-contracts-0.1.0`。未做 CLI/适配器/HTTP/mesh。**等用户验收后开 Batch 1 并行流；本 agent 任 merge captain。**
