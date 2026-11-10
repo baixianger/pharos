@@ -4,7 +4,7 @@ summary: 2026-11-11：Batch 2 四流已 merge captain 合入 rust/integrate-b2�
 
 # 活跃任务交接
 
-**STATUS: RUST-B2-MERGED — PLACEHOLDER**
+**STATUS: RUST-B2-MERGED — ee442d80302753e0ba0cf0c0dd489e78e0a6f13f**
 **Batch 2 merge（merge captain）**：worktree `~/personal/pharos-wt/_merge-b2` 分支 `rust/integrate-b2`（base `rust/integrate-b1` @ `6a1c455`）。`--no-ff` 顺序：S5b `rust/adapter-dsh` → S5c `rust/adapter-agy` → S5d `rust/adapter-cursor` → S2 `rust/session-hitl`。Captain 对 `rust/Cargo.toml` members/deps 做并集（冲突于 S5c/S5d/S2）；`agent-runtime` 注册 `session_service`/`hitl_bridge` mods。每步 `cargo check --workspace` + `cargo test --workspace` 绿；合入后 `cargo fmt` + `cargo clippy --workspace --all-targets -- -D warnings` 绿。未 FF `integrate/mesh2-into-main`、未 stash 主 checkout WIP、未 push。
 
 **STATUS: RUST-B1-MERGED — 09192f0213b3977c0a68ec00368446045284eea1**
@@ -368,4 +368,4 @@ STATUS: GROKBOT-MEMBER-DONE
 STATUS: RUST-PLAN-DONE
 STATUS: RUST-P0-DONE
 STATUS: RUST-B1-MERGED — 09192f0213b3977c0a68ec00368446045284eea1
-STATUS: RUST-B2-MERGED — PLACEHOLDER
+STATUS: RUST-B2-MERGED — ee442d80302753e0ba0cf0c0dd489e78e0a6f13f
