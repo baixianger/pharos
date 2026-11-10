@@ -21,6 +21,10 @@ members = [
     "crates/pharos-adapter-dsh",
     "crates/pharos-adapter-agy",
     "crates/pharos-adapter-cursor",
+    # S2 session-hitl
+    "crates/pharos-session",
+    "crates/pharos-hitl",
+    "crates/pharos-goals",
 ]
 resolver = "3"
 
@@ -41,6 +45,9 @@ pharos-web = { path = "crates/pharos-web" }
 pharos-adapter-dsh = { path = "crates/pharos-adapter-dsh" }
 pharos-adapter-agy = { path = "crates/pharos-adapter-agy" }
 pharos-adapter-cursor = { path = "crates/pharos-adapter-cursor" }
+pharos-session = { path = "crates/pharos-session" }
+pharos-hitl = { path = "crates/pharos-hitl" }
+pharos-goals = { path = "crates/pharos-goals" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 time = { version = "0.3", features = ["formatting", "parsing"] }

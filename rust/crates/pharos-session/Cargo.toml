@@ -1,0 +1,25 @@
+[package]
+name = "pharos-session"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "RFC-007 S2: Session service over dyn SessionAdapter + progress/approval events"
+
+[dependencies]
+pharos-api = { workspace = true }
+pharos-protocol = { workspace = true }
+pharos-codex-adapter = { path = "../adapter-codex" }
+pharos-goals = { path = "../pharos-goals" }
+pharos-hitl = { path = "../pharos-hitl" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "2"
+time = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+pharos-store-schema = { workspace = true }
+serde_json = { workspace = true }
+tempfile = "3"
+uuid = { workspace = true }

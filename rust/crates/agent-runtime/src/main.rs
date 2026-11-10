@@ -18,8 +18,10 @@ use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
 mod grokbot_bridge;
+mod hitl_bridge;
 mod mesh_bridge;
 mod replica_bridge;
+mod session_service;
 mod thread_service;
 
 const PROTOCOL_VERSION: u64 = 1;
@@ -27,13 +29,15 @@ const SERVICE: &str = "me.pai.pharos.agent-runtime";
 const REFERENCE_DATE_OFFSET: f64 = 978_307_200.0;
 
 fn main() {
-    // Keep Batch-1 bridge modules linked for merge-captain wiring hooks.
+    // Keep Batch-1/2 bridge modules linked for merge-captain wiring hooks.
     let _ = (
         mesh_bridge::describe_wiring(),
         replica_bridge::describe_wiring(),
         replica_bridge::HOST_RUNTIME_ALLOWED_METHODS,
         thread_service::describe_wiring(),
         grokbot_bridge::describe_wiring(),
+        session_service::describe_wiring(),
+        hitl_bridge::describe_wiring(),
     );
     if let Err(error) = run() {
         eprintln!("pharos-agent-runtime: {error}");

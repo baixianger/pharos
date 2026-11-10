@@ -1,0 +1,19 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running tests/codex_hitl_live.rs (target/debug/deps/codex_hitl_live-fa3b16953c275ddc)
+
+running 1 test
+codex version=codex-cli 0.167.0
+HITL_TIMEOUT_SECS=2700 (unit-covered; live self-resolves)
+HITL Codex session=01a1c766-8bc4-7b12-9670-cf0539247ab1
+seed turn=01a1c766-906e-79b1-aa92-63a520d3cbb4
+seed status=completed
+hitl turn=01a1c766-a6dd-7662-9e6b-d23b5034d4fc
+approval id=0 method=item/commandExecution/requestApproval command=Some("/bin/zsh -lc 'printf PHAROS_RUST_HITL_OK'")
+human-request written: /Users/baixianger/personal/pharos-msg-test/human-requests/1794346759_rust-air-codex-hitl.md
+HITL bridge state after webhook=Injected notify=Posted { status_code: 200 }
+human-proxy done=/Users/baixianger/personal/pharos-msg-test/human-requests/1794346759_rust-air-codex-hitl.done.md
+HITL E2E: session=01a1c766-8bc4-7b12-9670-cf0539247ab1 turn=01a1c766-a6dd-7662-9e6b-d23b5034d4fc status=completed decision=allowedOnce human=pharos-proxy
+test codex_approval_human_proxy_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.15s
+
