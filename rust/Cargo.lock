@@ -116,10 +116,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "pharos-api"
+version = "0.1.0"
+dependencies = [
+ "pharos-protocol",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pharos-codex-adapter"
 version = "0.1.0"
 dependencies = [
  "pharos-agent-core",
+ "pharos-api",
+ "pharos-protocol",
+ "serde",
+ "serde_json",
+ "time",
+ "uuid",
+]
+
+[[package]]
+name = "pharos-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "pharos-store-schema"
+version = "0.1.0"
+dependencies = [
+ "serde",
  "serde_json",
 ]
 

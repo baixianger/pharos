@@ -1,0 +1,107 @@
+//! `SessionAdapter` trait — **contract-bump proposal** for S2.
+//!
+//! Frozen contracts (`CONTRACTS_VERSION=0.1.0`) do not yet export this trait.
+//! S5a defines it inside `pharos-codex-adapter` so S2 can depend on the shape
+//! immediately; promote into `pharos-protocol` / `pharos-api` in Phase 0.x.
+
+use crate::error::AdapterError;
+use pharos_api::AdapterManifest;
+use pharos_protocol::AdapterKind;
+use std::time::Duration;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptMode {
+    Queue,
+    Steer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartSessionRequest {
+    pub workspace_path: String,
+    pub model: Option<String>,
+    /// `"yolo"` → approvalPolicy never; otherwise on-request.
+    pub mode: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartedSession {
+    pub session_id: String,
+    pub vendor_thread_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartedTurn {
+    pub session_id: String,
+    pub turn_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnStatus {
+    InProgress,
+    Completed,
+    Failed,
+    Interrupted,
+    Unknown,
+}
+
+impl TurnStatus {
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "inProgress" | "active" => Self::InProgress,
+            "completed" => Self::Completed,
+            "failed" => Self::Failed,
+            "interrupted" | "cancelled" => Self::Interrupted,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Interrupted)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnOutcome {
+    pub turn_id: String,
+    pub status: TurnStatus,
+    pub assistant_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterruptOutcome {
+    pub session_id: String,
+    pub turn_id: Option<String>,
+    /// Vendor turn status after interrupt (must not be [`TurnStatus::Completed`]).
+    pub turn_status: Option<TurnStatus>,
+}
+
+/// Vendor session driver consumed by S2 (`dyn SessionAdapter`).
+pub trait SessionAdapter: Send {
+    fn kind(&self) -> AdapterKind;
+    fn manifest(&self) -> AdapterManifest;
+
+    fn start_session(
+        &mut self,
+        request: StartSessionRequest,
+    ) -> Result<StartedSession, AdapterError>;
+
+    fn send_prompt(
+        &mut self,
+        session_id: &str,
+        prompt: &str,
+        mode: PromptMode,
+    ) -> Result<StartedTurn, AdapterError>;
+
+    fn interrupt(&mut self, session_id: &str) -> Result<InterruptOutcome, AdapterError>;
+
+    fn wait_turn(
+        &mut self,
+        session_id: &str,
+        turn_id: &str,
+        timeout: Duration,
+    ) -> Result<TurnOutcome, AdapterError>;
+
+    fn read_turns(&mut self, session_id: &str) -> Result<Vec<TurnOutcome>, AdapterError>;
+
+    fn close(&mut self);
+}

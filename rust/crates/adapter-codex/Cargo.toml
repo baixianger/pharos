@@ -5,6 +5,23 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "pharos_codex_adapter"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pharos-codex-adapter"
+path = "src/main.rs"
+
 [dependencies]
 pharos-agent-core.workspace = true
+pharos-api.workspace = true
+pharos-protocol.workspace = true
+serde = { workspace = true }
 serde_json.workspace = true
+time.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+uuid.workspace = true
