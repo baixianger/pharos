@@ -7,7 +7,7 @@ summary: 2026-11-10：Batch 1 四流已 merge captain 合入；Batch 2 从此 HE
 **STATUS: RUST-B1-MERGED — 09192f0213b3977c0a68ec00368446045284eea1**
 **Batch 1 merge（merge captain）**：在 worktree `~/personal/pharos-wt/_merge-b1` 分支 `rust/integrate-b1` 按 RFC-007 §6.1 顺序 `--no-ff`：S3 `rust/mesh-iroh` → S1 `rust/cli-thread` → S5a `rust/adapter-codex` → S4 `rust/web-api`。Captain 合并 `rust/Cargo.toml` members/deps 并集；`agent-runtime` 注册 `mesh_bridge`/`replica_bridge`/`thread_service`/`grokbot_bridge` mods；S4 按 wiring Option B 保留 `pharos-web` 旁路二进制。每步后 `cargo check --workspace` + `cargo test --workspace` 绿；全部合入后 `cargo clippy --workspace --all-targets -- -D warnings` 绿。未 push。
 
-**Batch 2 start here:** `rust/integrate-b1` @ `1037aeeb86cc9aa8e89545ae54dd13dc74b516e5`.
+**Batch 2 start here:** tip of branch `rust/integrate-b1` (includes this handoff).
 
 **FF blocked:** main checkout `integrate/mesh2-into-main` still has uncommitted WIP in `rust/Cargo.lock` and `rust/crates/agent-runtime/src/main.rs` (would be overwritten). Captain aborted `git merge --ff-only rust/integrate-b1` and did not stash. **Batch 2 must branch from `rust/integrate-b1` tip until that WIP is relocated/committed and FF lands.** Pre-existing dirty Sources/DESIGN/PLAN files were left untouched.
 
