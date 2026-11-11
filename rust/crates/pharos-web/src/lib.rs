@@ -202,13 +202,17 @@ pub fn fake_app_state() -> AppState {
 /// A corrupt or unreadable store is surfaced as an error instead of silently
 /// falling back to memory or an empty store: a faked "persisted" success is
 /// worse than a failure. Never rewrites/truncates existing bytes on open.
+type SharedThreadBindingService = Arc<dyn ThreadBindingService>;
+type SharedMemberSettingsService = Arc<dyn MemberSettingsService>;
+type SharedAttachmentService = Arc<dyn AttachmentService>;
+
 fn open_web_stores(
     data_dir: &Path,
 ) -> Result<
     (
-        Arc<dyn ThreadBindingService>,
-        Arc<dyn MemberSettingsService>,
-        Arc<dyn AttachmentService>,
+        SharedThreadBindingService,
+        SharedMemberSettingsService,
+        SharedAttachmentService,
     ),
     String,
 > {

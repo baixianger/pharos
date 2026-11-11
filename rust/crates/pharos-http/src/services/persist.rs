@@ -212,7 +212,7 @@ fn sha256(input: &[u8]) -> [u8; 32] {
     }
     message.extend_from_slice(&bit_len.to_be_bytes());
 
-    for chunk in message.chunks_exact(64) {
+    for chunk in message.as_chunks::<64>().0 {
         let mut words = [0u32; 64];
         for (i, word) in words.iter_mut().take(16).enumerate() {
             let start = i * 4;
@@ -313,12 +313,13 @@ pub fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
     if bytes.is_empty() {
         return Ok(Vec::new());
     }
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err("length must be a multiple of 4".to_string());
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
     let total = bytes.len() / 4;
-    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+    for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
+        let chunk: &[u8] = chunk.as_slice();
         let last = index + 1 == total;
         if !last && chunk.contains(&b'=') {
             return Err("padding before the final quartet".to_string());

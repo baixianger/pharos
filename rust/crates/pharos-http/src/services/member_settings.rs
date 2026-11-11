@@ -147,12 +147,12 @@ impl MemberSettingsPatch {
         if let Some(value) = &self.model {
             validate_text_field(value, MAX_MODEL_LEN, "model")?;
         }
-        if let Some(value) = &self.mode {
-            if !SESSION_MODES.contains(&value.trim()) {
-                return Err(StoreError::invalid(format!(
-                    "mode must be one of {SESSION_MODES:?}, got {value:?}"
-                )));
-            }
+        if let Some(value) = &self.mode
+            && !SESSION_MODES.contains(&value.trim())
+        {
+            return Err(StoreError::invalid(format!(
+                "mode must be one of {SESSION_MODES:?}, got {value:?}"
+            )));
         }
         if let Some(value) = &self.avatar_shape {
             validate_text_field(value, MAX_AVATAR_STYLE_LEN, "avatarShape")?;
@@ -518,10 +518,10 @@ impl MemberSettingsService for FileMemberSettingsService {
             }
             return Err(error);
         }
-        if let Some(previous) = previous {
-            if previous.sha256 != avatar.sha256 {
-                self.remove_avatar_blob_if_unreferenced(&members, &previous);
-            }
+        if let Some(previous) = previous
+            && previous.sha256 != avatar.sha256
+        {
+            self.remove_avatar_blob_if_unreferenced(&members, &previous);
         }
         Ok(view)
     }
