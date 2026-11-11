@@ -1878,10 +1878,7 @@ fn dispatch_next_codex_delivery(process: &mut AdapterProcess, registry: &Arc<Mut
         }),
     ) {
         Ok(result) => {
-            let turn_id = result
-                .pointer("/turn/id")
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty());
+            let turn_id = turn_id_from_start_result(&result);
             finish_codex_delivery(registry, &job.delivery_id, turn_id);
         }
         Err(error) => release_codex_delivery(registry, &job.delivery_id, &error, true),
@@ -1904,6 +1901,16 @@ fn adapter_call(
         return Err(error.message);
     }
     Ok(response.result.unwrap_or(Value::Null))
+}
+
+/// Extract the vendor turn id from a `turn/start` result. Reply correlation is
+/// anchored to it, so a missing id must degrade to `missing-turn-id` instead of
+/// guessing a neighbouring turn.
+fn turn_id_from_start_result(result: &Value) -> Option<&str> {
+    result
+        .pointer("/turn/id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
 }
 
 /// Record that the Codex turn consumed this delivery and arm the correlated
@@ -4048,5 +4055,18 @@ mod tests {
         assert!(sink.posted.is_empty());
         assert!(claim_codex_reply(&registry).is_none());
         fs::remove_dir_all(directory).ok();
+    }
+    #[test]
+    fn turn_id_extraction_requires_a_concrete_turn_id() {
+        assert_eq!(
+            turn_id_from_start_result(&json!({"turn": {"id": "turn-1"}})),
+            Some("turn-1")
+        );
+        assert_eq!(turn_id_from_start_result(&json!({"turn": {}})), None);
+        assert_eq!(turn_id_from_start_result(&json!({})), None);
+        assert_eq!(
+            turn_id_from_start_result(&json!({"turn": {"id": ""}})),
+            None
+        );
     }
 }
