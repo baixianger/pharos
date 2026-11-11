@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import PharosClientKit
 
 final class ArchitectureBoundaryTests: XCTestCase {
     private let backendDirectories = [
@@ -58,6 +59,82 @@ final class ArchitectureBoundaryTests: XCTestCase {
                 XCTAssertFalse(source.contains(token), "\(file.path) contains runtime detail '\(token)'")
             }
         }
+    }
+
+    /// RFC-007 Phase D / S6: the rust-api client path must not import MeshCore or Runtime.
+    /// Full Package.swift unlink of MeshCore/Runtime from the app target is captain / Phase E;
+    /// this gate asserts the new-path sources themselves stay mesh-free.
+    func testRustAPIClientPathDoesNotImportMeshOrRuntime() throws {
+        let forbiddenImports = [
+            "import PharosMeshCore",
+            "import PharosRuntime",
+            "import PharosMeshProtocol",
+            "import PharosMeshIdentity",
+            "import PharosMeshIroh",
+            "import PharosMeshReplica",
+            "import PharosMeshLifecycle",
+            "import PharosMeshControl",
+            "import PharosCodexAdapter",
+        ]
+        let newPathRoots = [
+            "Sources/PharosClientKit",
+            "Sources/Pharos/UI/Shell/PharosClientBackend.swift",
+            "Sources/Pharos/UI/Canvas/PharosWebCanvasView.swift",
+            "Sources/Pharos/UI/Shell/PharosMainShellView.swift",
+            "Sources/Pharos/UI/Canvas/ConversationCanvasView.swift",
+            "Sources/Pharos/UI/Canvas/SessionConversationViewModel.swift",
+            "Sources/Pharos/UI/Canvas/ThreadConversationViewModel.swift",
+        ]
+        // Legacy desktop-mesh implementation may still import Mesh/Runtime (kept until Phase E).
+        let legacyAllowlist = Set([
+            "Sources/Pharos/UI/Shell/DesktopPharosClientService.swift",
+        ])
+
+        for root in newPathRoots {
+            let url = repositoryRoot.appendingPathComponent(root)
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else {
+                XCTFail("Missing rust-api path file/dir: \(root)")
+                continue
+            }
+            let files: [URL]
+            if isDir.boolValue {
+                files = try swiftFiles(in: url)
+            } else {
+                files = [url]
+            }
+            for file in files {
+                let relative = file.path.replacingOccurrences(of: repositoryRoot.path + "/", with: "")
+                if legacyAllowlist.contains(relative) { continue }
+                let source = try String(contentsOf: file, encoding: .utf8)
+                for forbidden in forbiddenImports {
+                    XCTAssertFalse(
+                        source.contains(forbidden),
+                        "\(relative) imports '\(forbidden)' on the rust-api client path"
+                    )
+                }
+            }
+        }
+    }
+
+    /// Assert ClientKit HTTP impl exists and is the default backend kind.
+    func testRustAPIIsDefaultClientBackend() {
+        let suite = "pharos.arch.boundary.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        XCTAssertEqual(
+            PharosClientBackendKind.resolve(environment: [:], defaults: defaults),
+            .rustAPI
+        )
+        XCTAssertEqual(
+            PharosClientBackendKind.resolve(
+                environment: ["PHAROS_CLIENT_BACKEND": "desktop-mesh"],
+                defaults: defaults
+            ),
+            .desktopMesh
+        )
+        XCTAssertEqual(PharosClientBackendKind.rustAPI.rawValue, "rust-api")
+        XCTAssertEqual(PharosClientBackendKind.desktopMesh.rawValue, "desktop-mesh")
     }
 
     private var repositoryRoot: URL {

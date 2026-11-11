@@ -141,6 +141,13 @@ let packageTargets: [Target] = {
             dependencies: ["PharosMeshCore", "PharosMeshIdentity", "CSQLite"],
             path: "Tests/PharosMeshCoreTests"
         ),
+        // wiring-local (S6): ClientKit-only tests so ArchitectureBoundary + HTTP smoke
+        // can run without building MeshCore/Runtime (tip Mesh stack incomplete).
+        .testTarget(
+            name: "PharosClientKitTests",
+            dependencies: ["PharosClientKit"],
+            path: "Tests/PharosClientKitTests"
+        ),
     ]
     #if os(macOS)
     targets.append(
