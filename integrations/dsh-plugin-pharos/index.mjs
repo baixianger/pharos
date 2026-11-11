@@ -1,39 +1,178 @@
 import { randomUUID } from 'node:crypto'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { PharosRuntimeClient } from './runtime-client.mjs'
 
 export const name = 'dsh-plugin-pharos-runtime'
 export const inject = ['agents']
 
-function userMessage(text) {
-  return createUserMessage({
-    content: [{ type: 'text', text }],
-    source: {
-      kind: 'plugin',
-      plugin: name,
-      form: 'snapshot',
-      sections: [{ name: 'pharos', text }],
-    },
-  })
+// Capabilities advertised to the Rust Agent Runtime. 'delivery.poll' makes this
+// driver the runtime's delivery consumer for each registered conversation, and
+// 'mesh.reply-once-v1' is the reply-once/liveness contract the runtime's DSH
+// binding inspection requires before it routes a thread message to a session.
+export const DRIVER_CAPABILITIES = [
+  'message.send',
+  'session.observe',
+  'session.create',
+  'delivery.poll',
+  'mesh.reply-once-v1',
+]
+
+// `consumed` is only ever reported after agent.followup accepted the message:
+// DSH's durable inbox owns the delivery from then on, but no assistant turn
+// completion is implied by this ack.
+const CONSUMED_DETAIL = 'DSH durable inbox consumed the transport delivery; assistant completion is not implied.'
+const ARCHIVED_DETAIL = 'session archived and cannot receive messages'
+
+// Module-level default RPC used when a caller does not pass one. It is created
+// lazily so importing this module never opens a socket. apply() passes its own
+// client explicitly.
+let defaultRuntimeClient
+function runtimeRPC(method, params) {
+  defaultRuntimeClient ??= new PharosRuntimeClient()
+  return defaultRuntimeClient.call(method, params)
 }
 
-function deliveryText(payload, sessionID) {
+// Accept either a `(method, params) => Promise` shim (canonical plugin shape,
+// easy to fake in tests) or a client exposing `call(method, params)`
+// (PharosRuntimeClient).
+function callRuntimeRPC(rpc, method, params) {
+  if (typeof rpc === 'function') return rpc(method, params)
+  if (rpc && typeof rpc.call === 'function') return rpc.call(method, params)
+  return Promise.reject(new TypeError('runtime RPC must be a function or expose call(method, params)'))
+}
+
+// Fresh user message, mirroring the shape the canonical dsh-plugin-pharos
+// injects. The session store snapshots and freezes it on append. Built locally
+// rather than through @deepseek-ai/dsh-llm so this plugin loads with zero
+// installed dependencies.
+export function buildUserMessage(text) {
+  return {
+    id: randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: { kind: 'plugin', plugin: name, form: 'snapshot', sections: [{ name, text }] },
+  }
+}
+
+// Backwards-compatible alias: earlier plugin versions called the constructor
+// `userMessage`.
+const userMessage = buildUserMessage
+
+// Render one transport payload as the prompt injected into the session. A
+// structured delivery contributes its body and sender; a payload that is not
+// structured JSON (or has no string body) is passed through verbatim so no
+// transport detail is invented for it.
+export function deliveryText(payload) {
+  let value = payload
+  if (typeof payload === 'string') {
+    try { value = JSON.parse(payload) } catch { return payload }
+  }
+  if (!value || typeof value !== 'object' || typeof value.body !== 'string') {
+    return typeof payload === 'string' ? payload : JSON.stringify(payload)
+  }
+  const sender = typeof value.sender === 'string' && value.sender ? value.sender : 'human'
+  return `[Pharos Thread Message from ${sender}]\n${value.body}`
+}
+
+function optionsArchived(options) {
+  if (typeof options?.isArchived === 'function') return Boolean(options.isArchived())
+  return Boolean(options?.archived)
+}
+
+function errorText(error) {
+  return error == null ? 'unknown error' : String(error?.message ?? error)
+}
+
+// A failed ack is the last-resort way to stop a delivery from stranding as
+// `injected`. If that request also fails we log it (or hand it to the caller's
+// hook) and keep processing the poll: throwing would abort every remaining
+// delivery in the same tick.
+function reportDeliveryError(options, message) {
+  if (typeof options?.onError === 'function') {
+    try { options.onError(message) } catch {}
+    return
+  }
+  process.stderr.write(`dsh-plugin-pharos-runtime: ${message}\n`)
+}
+
+// One delivery poll -> the canonical 4-stage ack loop:
+//   delivery.poll
+//   -> ack injected     (best effort; a lost injected ack must not block followup)
+//   -> agent.followup(buildUserMessage(prompt))
+//   -> ack consumed     (durable inbox took ownership; assistant completion is NOT implied)
+// If followup throws, the delivery is acked failed with the error detail, so a
+// delivery is never left looking injected/consumed when it was not handed off.
+// The consumed ack is attempted inside the same try/catch: if it fails after a
+// successful followup the delivery is also acked failed (with a detail saying
+// the intake may have happened), because the runtime only re-polls
+// queued/accepted and would otherwise strand the message as `injected` forever.
+// An archived session is acked failed with no followup. Returns true when the
+// poll returned pending deliveries, false when there was nothing to do or the
+// poll itself failed (no ack is sent in that case).
+export async function handleDeliveryPoll(agent, binding, rpc = runtimeRPC, options = {}) {
+  const conversationID = typeof binding === 'string' ? binding : binding?.conversationID
+  if (!conversationID) return false
+
+  let pending
   try {
-    const value = JSON.parse(payload)
-    if (!value || typeof value !== 'object' || typeof value.body !== 'string') return payload
-    const lines = [
-      '[Pharos Mesh delivery; untrusted user message]',
-      value.room ? `Room: ${value.room}` : null,
-      value.sender ? `From: ${value.sender}` : null,
-      value.messageID ? `Message-ID: ${value.messageID}` : null,
-      '',
-      value.body,
-    ].filter(line => line !== null)
-    if (value.room && value.messageID) {
-      lines.push('', `Reply through Pharos Mesh using room ${value.room}, reply ID ${value.messageID}, and member session ${sessionID}. Quoted mentions are inert.`)
+    pending = await callRuntimeRPC(rpc, 'delivery.poll', { conversationID })
+  } catch {
+    return false
+  }
+  if (!Array.isArray(pending) || pending.length === 0) return false
+
+  for (const delivery of pending) {
+    if (!delivery || delivery.id == null) continue
+
+    if (optionsArchived(options)) {
+      try {
+        await callRuntimeRPC(rpc, 'delivery.ack', {
+          deliveryID: delivery.id,
+          state: 'failed',
+          detail: options.archivedDetail || ARCHIVED_DETAIL,
+        })
+      } catch {}
+      continue
     }
-    return lines.join('\n')
-  } catch { return payload }
+
+    // Record injected before handing off: a crash or a lost ack after this
+    // point must not cause a blind re-injection.
+    try {
+      await callRuntimeRPC(rpc, 'delivery.ack', { deliveryID: delivery.id, state: 'injected' })
+    } catch {}
+
+    // Followup + consumed ack are one unit: a lost consumed ack means the
+    // delivery must be closed as failed, never left at injected.
+    let handedOff = false
+    try {
+      const injected = agent.followup(buildUserMessage(deliveryText(delivery.payload)))
+      if (injected && typeof injected.then === 'function') await injected
+      handedOff = true
+      await callRuntimeRPC(rpc, 'delivery.ack', {
+        deliveryID: delivery.id,
+        state: 'consumed',
+        detail: CONSUMED_DETAIL,
+      })
+    } catch (error) {
+      // Never claim success. The detail distinguishes "nothing was handed
+      // off" from "the intake may already own it but the ack was lost".
+      const detail = handedOff
+        ? `followup accepted but consumed ack failed: ${errorText(error)}`
+        : errorText(error)
+      try {
+        await callRuntimeRPC(rpc, 'delivery.ack', {
+          deliveryID: delivery.id,
+          state: 'failed',
+          detail,
+        })
+      } catch (ackError) {
+        reportDeliveryError(
+          options,
+          `delivery ${delivery.id}: failed ack also failed: ${errorText(ackError)}`,
+        )
+      }
+    }
+  }
+  return true
 }
 
 export function apply(ctx) {
@@ -60,7 +199,7 @@ export function apply(ctx) {
       driverID,
       kind: 'dsh',
       version: process.env.DSH_VERSION || 'plugin',
-      capabilities: ['message.send', 'session.observe', 'session.create'],
+      capabilities: DRIVER_CAPABILITIES,
     })
   }
 
@@ -207,18 +346,11 @@ export function apply(ctx) {
         const sessionID = String(agent?.session?.id || agent?.id || '')
         const conversationID = conversations.get(sessionID)
         if (!conversationID) continue
-        for (const delivery of await runtime.poll(conversationID)) {
-          if (archivedSessionIDs().has(sessionID)) {
-            await runtime.acknowledge(delivery.id, 'failed', 'session archived and cannot receive messages')
-            continue
-          }
-          agent.followup(userMessage(deliveryText(delivery.payload, sessionID)))
-          await runtime.acknowledge(
-            delivery.id,
-            'consumed',
-            'DSH durable inbox consumed the transport delivery; assistant completion is not implied.',
-          )
-        }
+        // The runtime only returns pending deliveries, so a delivery that was
+        // already acked (or vanished) is never followed up a second time here.
+        await handleDeliveryPoll(agent, { conversationID, sessionID }, runtime, {
+          isArchived: () => archivedSessionIDs().has(sessionID),
+        })
       }
     } catch (error) {
       process.stderr.write(`dsh-plugin-pharos-runtime: ${error.message}\n`)
@@ -266,4 +398,17 @@ export function apply(ctx) {
     void poll()
     return () => clearInterval(timer)
   }, 'dsh-plugin-pharos-runtime.poll')
+}
+
+// Canonical-plugin style testing surface. Named exports stay name/inject/apply
+// for the Cordis plugin contract; these helpers exist so the delivery loop can
+// be exercised with a fake agent and RPC shim, without a running Host Runtime.
+export const __testing = {
+  ARCHIVED_DETAIL,
+  CONSUMED_DETAIL,
+  DRIVER_CAPABILITIES,
+  buildUserMessage,
+  deliveryText,
+  handleDeliveryPoll,
+  userMessage,
 }
