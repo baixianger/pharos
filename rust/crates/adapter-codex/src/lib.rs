@@ -8,6 +8,7 @@
 pub mod codex;
 pub mod delivery;
 pub mod error;
+pub mod reply;
 pub mod resolve;
 pub mod session;
 pub mod transport;
@@ -15,6 +16,7 @@ pub mod transport;
 pub use codex::{CodexSessionAdapter, msg_test_root, run_jsonl_daemon_proxy_bridge};
 pub use delivery::{DeliveryDispatchResult, DeliveryJob, DeliveryWorker, format_delivery_prompt};
 pub use error::AdapterError;
+pub use reply::{ReplyInspection, assistant_reply_text, final_answer_text, inspect_turn_reply};
 pub use session::{
     InterruptOutcome, PromptMode, SessionAdapter, StartSessionRequest, StartedSession, StartedTurn,
     TurnOutcome, TurnStatus,
