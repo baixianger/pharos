@@ -1,0 +1,14 @@
+{
+  "generator": "codex-cli 0.166.0 app-server generate-json-schema",
+  "title": "TurnPlanUpdatedNotification",
+  "required": [
+    "plan",
+    "threadId",
+    "turnId"
+  ],
+  "statusValues": [
+    "pending",
+    "inProgress",
+    "completed"
+  ]
+}
