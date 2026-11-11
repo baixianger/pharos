@@ -22,6 +22,12 @@ export const DRIVER_CAPABILITIES = [
 const CONSUMED_DETAIL = 'DSH durable inbox consumed the transport delivery; assistant completion is not implied.'
 const ARCHIVED_DETAIL = 'session archived and cannot receive messages'
 
+// Optional live-E2E diagnostics. Off by default; never prints prompt bodies.
+const DEBUG_ENABLED = process.env.PHAROS_PLUGIN_DEBUG === '1'
+function debug(message) {
+  if (DEBUG_ENABLED) process.stderr.write(`dsh-plugin-pharos-runtime[debug]: ${message}\n`)
+}
+
 // Module-level default RPC used when a caller does not pass one. It is created
 // lazily so importing this module never opens a socket. apply() passes its own
 // client explicitly.
@@ -49,7 +55,12 @@ export function buildUserMessage(text) {
     id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: name, form: 'snapshot', sections: [{ name, text }] },
+    // DSH session format v4 rejects the retired generic `kind: 'plugin'`
+    // wrapper: a user message must carry its producer-owned kind. The producer
+    // kind for a third-party plugin is `plugin:<package name>` (dsh 0.2.2-rc.1
+    // `SessionFormatError: format v4 message requires a producer-owned source
+    // kind` when `plugin` is used).
+    source: { kind: `plugin:${name}`, form: 'snapshot', sections: [{ name, text }] },
   }
 }
 
@@ -146,16 +157,14 @@ export async function handleDeliveryPoll(agent, binding, rpc = runtimeRPC, optio
     let injectedMessage
     try {
       injectedMessage = buildUserMessage(deliveryText(delivery.payload))
-      const injected = agent.followup(injectedMessage)
-      if (injected && typeof injected.then === 'function') await injected
-      handedOff = true
-      // A successfully injected delivery that carries a Thread anchor may owe
-      // the room an assistant reply. Remember that *after* the handoff (never
-      // before: nothing is promised unless DSH accepted the message) and
-      // correlate it to the turn later via `agent/inbox/claimed` + turn/end.
-      if (typeof options?.onFollowupAccepted === 'function') {
+      // Correlate BEFORE the handoff. On a real DSH host an idle agent wakes
+      // synchronously inside `agent.followup(...)`, so `agent/inbox/claimed`
+      // (which binds the reply to its turn) can fire before followup returns.
+      // A handoff that never lands is rolled back by `onFollowupFailed`, so this
+      // reserves correlation without promising a reply.
+      if (typeof options?.onFollowupStarted === 'function') {
         try {
-          options.onFollowupAccepted({
+          options.onFollowupStarted({
             messageID: injectedMessage?.id,
             payload: delivery.payload,
             memberID: String(binding?.sessionID || agent?.session?.id || agent?.id || ''),
@@ -169,12 +178,20 @@ export async function handleDeliveryPoll(agent, binding, rpc = runtimeRPC, optio
           )
         }
       }
+      const injected = agent.followup(injectedMessage)
+      if (injected && typeof injected.then === 'function') await injected
+      handedOff = true
       await callRuntimeRPC(rpc, 'delivery.ack', {
         deliveryID: delivery.id,
         state: 'consumed',
         detail: CONSUMED_DETAIL,
       })
     } catch (error) {
+      if (!handedOff && typeof options?.onFollowupFailed === 'function') {
+        try {
+          options.onFollowupFailed(injectedMessage?.id)
+        } catch {}
+      }
       // Never claim success. The detail distinguishes "nothing was handed
       // off" from "the intake may already own it but the ack was lost".
       const detail = handedOff
@@ -282,13 +299,22 @@ export function createReplyRelay({ rpc, onError, maxAttempts = REPLY_RPC_ATTEMPT
     process.stderr.write(`dsh-plugin-pharos-runtime: ${message}\n`)
   }
 
-  // Remember a reply owed by a delivery whose followup DSH accepted.
-  function onFollowupAccepted({ messageID, payload, memberID } = {}) {
+  // Reserve a reply owed by a delivery about to be handed to DSH. Reserved
+  // before `agent.followup(...)` because an idle DSH agent claims the message
+  // synchronously; `onFollowupFailed` rolls it back when the handoff fails.
+  function onFollowupStarted({ messageID, payload, memberID } = {}) {
     if (messageID === undefined || messageID === null) return false
     const plan = replyPlanFromPayload(payload)
     if (!plan) return false
     pendingByMessage.set(String(messageID), { ...plan, asMember: String(memberID ?? '') })
+    debug(`reply reserved for delivery message ${messageID} room ${plan.room} anchor ${plan.originalMessageID}`)
     return true
+  }
+
+  // The followup never reached DSH: no assistant turn can own that message.
+  function onFollowupFailed(messageID) {
+    if (messageID === undefined || messageID === null) return false
+    return pendingByMessage.delete(String(messageID))
   }
 
   // The followup message left the inbox inside turn N: remember which turn owes
@@ -296,8 +322,12 @@ export function createReplyRelay({ rpc, onError, maxAttempts = REPLY_RPC_ATTEMPT
   function onClaimed({ messageID, sessionID, turn } = {}) {
     if (messageID === undefined || messageID === null) return false
     const pending = pendingByMessage.get(String(messageID))
-    if (!pending) return false
+    if (!pending) {
+      debug(`claimed message ${messageID} has no reserved reply (normal human turn)`)
+      return false
+    }
     pendingByMessage.delete(String(messageID))
+    debug(`claimed message ${messageID} -> session ${sessionID} turn ${turn}`)
     if (!sessionID || turn === undefined || turn === null) {
       report(`delivery message ${messageID} was claimed without a session/turn anchor; not writing a thread reply`)
       return false
@@ -371,6 +401,7 @@ export function createReplyRelay({ rpc, onError, maxAttempts = REPLY_RPC_ATTEMPT
       const text = latestTextByTurn.get(key) ?? ''
       latestTextByTurn.delete(key)
       const pending = pendingByTurn.get(key)
+      debug(`turn/end ${key}: ${pending?.length ?? 0} reserved reply(ies)`)
       if (!pending || pending.length === 0) return undefined
       pendingByTurn.delete(key)
       const endKind = event?.data?.reason?.kind
@@ -408,7 +439,8 @@ export function createReplyRelay({ rpc, onError, maxAttempts = REPLY_RPC_ATTEMPT
   }
 
   return {
-    onFollowupAccepted,
+    onFollowupFailed,
+    onFollowupStarted,
     onClaimed,
     onSessionEvent,
     onAgentDisposed,
@@ -599,7 +631,8 @@ export function apply(ctx) {
         // already acked (or vanished) is never followed up a second time here.
         await handleDeliveryPoll(agent, { conversationID, sessionID }, runtime, {
           isArchived: () => archivedSessionIDs().has(sessionID),
-          onFollowupAccepted: replyRelay.onFollowupAccepted,
+          onFollowupStarted: replyRelay.onFollowupStarted,
+          onFollowupFailed: replyRelay.onFollowupFailed,
         })
       }
     } catch (error) {

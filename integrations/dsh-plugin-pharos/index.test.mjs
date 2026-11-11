@@ -390,12 +390,14 @@ test('buildUserMessage builds the canonical plugin snapshot shape locally', () =
   assert.deepEqual(Object.keys(message), ['id', 'role', 'content', 'source'])
   assert.equal(message.role, 'user')
   assert.deepEqual(message.content, [{ type: 'text', text: 'hello' }])
+  // DSH format v4: producer-owned source kind, never the retired generic
+  // `plugin` wrapper (the real DSH host rejects it at session append time).
   assert.deepEqual(message.source, {
-    kind: 'plugin',
-    plugin: name,
+    kind: `plugin:${name}`,
     form: 'snapshot',
     sections: [{ name, text: 'hello' }],
   })
+  assert.notEqual(message.source.kind, 'plugin')
   assert.notEqual(buildUserMessage('hello').id, message.id)
 
   assert.equal(typeof __testing.userMessage, 'function')
@@ -475,7 +477,8 @@ async function injectDelivery({ payload, failTimes = 0, sessionID = 'sess-1', co
   const relay = createReplyRelay({ rpc: harness.rpc, onError: message => errors.push(message) })
   const agent = fakeFollowupAgent()
   await handleDeliveryPoll(agent, { conversationID, sessionID }, harness.rpc, {
-    onFollowupAccepted: relay.onFollowupAccepted,
+    onFollowupStarted: relay.onFollowupStarted,
+    onFollowupFailed: relay.onFollowupFailed,
   })
   return { ...harness, errors, relay, agent, sessionID, followupID: agent.messages[0]?.id }
 }
@@ -510,6 +513,69 @@ test('replyPlanFromPayload only accepts structured payloads with a room and orig
   assert.equal(replyPlanFromPayload(JSON.stringify({ room: '   ', messageID: 'message-a' })), null)
   assert.equal(replyPlanFromPayload(JSON.stringify({ room: 'room-a', messageID: '   ' })), null)
   assert.equal(replyPlanFromPayload(null), null)
+})
+
+test('a followup claimed synchronously inside agent.followup still writes the reply back exactly once', async () => {
+  // Real DSH host ordering: an idle agent wakes synchronously inside
+  // agent.followup(message), so agent/inbox/claimed fires BEFORE followup
+  // returns. Correlation must be reserved before the handoff.
+  const harness = deliveryRpc()
+  const errors = []
+  const relay = createReplyRelay({ rpc: harness.rpc, onError: message => errors.push(message) })
+  let injectedID
+  const agent = {
+    followup(message) {
+      injectedID = message.id
+      assert.equal(
+        relay.onClaimed({ messageID: message.id, sessionID: 'sess-1', turn: 7 }),
+        true,
+        'the synchronously claimed message must already be correlated',
+      )
+    },
+  }
+  await handleDeliveryPoll(agent, { conversationID: 'conv-1', sessionID: 'sess-1' }, harness.rpc, {
+    onFollowupStarted: relay.onFollowupStarted,
+    onFollowupFailed: relay.onFollowupFailed,
+  })
+  assert.ok(injectedID)
+  relay.onSessionEvent({ id: 'sess-1' }, {
+    type: 'assistant/message',
+    data: { turn: 7, step: 1, message: { content: [{ type: 'text', text: 'PONG' }] } },
+  })
+  const posted = await relay.onSessionEvent({ id: 'sess-1' }, {
+    type: 'turn/end',
+    data: { turn: 7, reason: { kind: 'completed' } },
+  })
+  assert.equal(posted, true)
+  assert.deepEqual(harness.replyCalls(), [
+    { method: 'thread.reply', params: { room: 'room-a', asMember: 'sess-1', text: 'PONG', messageId: 'message-a' } },
+  ])
+  assert.deepEqual(errors, [])
+})
+
+test('a followup that never reaches DSH rolls back the reserved correlation (no fabricated reply)', async () => {
+  const harness = deliveryRpc()
+  const errors = []
+  const relay = createReplyRelay({ rpc: harness.rpc, onError: message => errors.push(message) })
+  let injectedID
+  const agent = {
+    followup(message) {
+      injectedID = message.id
+      throw new Error('Agent busy')
+    },
+  }
+  await handleDeliveryPoll(agent, { conversationID: 'conv-1', sessionID: 'sess-1' }, harness.rpc, {
+    onFollowupStarted: relay.onFollowupStarted,
+    onFollowupFailed: relay.onFollowupFailed,
+  })
+  assert.ok(injectedID)
+  assert.equal(relay.onClaimed({ messageID: injectedID, sessionID: 'sess-1', turn: 1 }), false)
+  relay.onSessionEvent({ id: 'sess-1' }, {
+    type: 'assistant/message',
+    data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'not ours' }] } },
+  })
+  await relay.onSessionEvent({ id: 'sess-1' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  assert.deepEqual(harness.replyCalls(), [])
 })
 
 test('a claimed delivery turn posts exactly one thread.reply with the final assistant text only', async () => {

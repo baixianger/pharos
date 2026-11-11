@@ -20,7 +20,11 @@ it does not claim that an assistant turn completed.
    block the injection, and a crash after it must not re-inject blindly.
 3. `agent.followup(buildUserMessage(deliveryText(payload)))`. Structured payloads
    render as `[Pharos Thread Message from <sender>]\n<body>`; anything else is
-   injected verbatim.
+   injected verbatim. The user message uses DSH session-format v4's
+   **producer-owned source kind** (`kind: "plugin:<package name>"`); the retired
+   generic `kind: "plugin"` wrapper is rejected by a real DSH 0.2.2-rc.1 host
+   (`SessionFormatError: format v4 message requires a producer-owned source
+   kind`).
 4. ack `consumed` only after the durable inbox accepted the message. If
    `followup` throws (sync or async), or the `consumed` ack itself fails after a
    successful followup, the delivery is acked `failed` with a truthful detail
@@ -52,7 +56,11 @@ followup(user message)
   never guessed at: no `thread.reply` is sent for them.
 * `agent/inbox/claimed` maps the exact `buildUserMessage()` id that
   `agent.followup` injected to its turn. A claimed message the plugin did not
-  inject is a normal human turn and is ignored.
+  inject is a normal human turn and is ignored. On a real DSH host an idle agent
+  wakes **synchronously inside `agent.followup(...)`**, so the claim can fire
+  before `followup` returns: the reply is reserved *before* the handoff and
+  rolled back if the handoff throws (a reserved-but-unclaimed reply is never
+  posted).
 * At `turn/end`, the **final answer of that turn** is sent **once** with
   `asMember` = the conversation member id (the session id) and `messageId` = the
   original delivery message id. Final-answer selection is the text of the last
@@ -81,6 +89,14 @@ Replay-safe callers must pass `messageId`. Omitting it is accepted by the RPC
 but resolves the newest unreplied directed message server-side, so an identical
 retried call need not return the same `replyId`.
 
+## Options
+
+* `options.onError(message)` — last-resort ack / write-back errors (default:
+  stderr).
+* `PHAROS_PLUGIN_DEBUG=1` — stderr diagnostics for live E2E (reservation, claim
+  → turn correlation, `turn/end` drain); never prints prompt bodies. Off by
+  default.
+
 ## Driver capabilities
 
 `registerDriver` advertises `message.send`, `session.observe`, `session.create`,
@@ -107,8 +123,9 @@ Zero dependencies, no network, no running Host Runtime:
         node --test
         # or: npm test
 
-28 cases: the 18 delivery-loop/contract regressions plus thread reply
+30 cases: the 18 delivery-loop/contract regressions plus thread reply
 write-back coverage (exact `thread.reply` params from claimed turn + final-answer
-text, multi-step final-answer selection, replayed `turn/end` dedupe, no
-assistant text / no anchor skips, bounded RPC retries and exhausted-retry
-logging, runtime-client param shape).
+text, multi-step final-answer selection, replayed `turn/end` dedupe, synchronous
+claim-inside-followup correlation, failed-handoff rollback, no assistant text /
+no anchor skips, bounded RPC retries and exhausted-retry logging,
+runtime-client param shape).
