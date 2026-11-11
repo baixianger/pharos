@@ -1,7 +1,9 @@
 //! `pharos-web` — S4 static Web UI + HTTP/WS API binary.
 //!
 //! Default services are **fake** stand-ins for S1/S2 until those streams wire
-//! real traits into the merge captain's `pharos-meshd` process.
+//! real traits into the merge captain's `pharos-meshd` process. Pending HITL
+//! approvals are persisted under the Host data dir so a browser reload or WS
+//! reconnect can recover them.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -22,6 +24,10 @@ struct Args {
     /// Static Web UI root (copy of WebCanvas). Overrides PHAROS_WEBUI_DIR.
     #[arg(long, env = "PHAROS_WEBUI_DIR")]
     webui_dir: Option<PathBuf>,
+
+    /// Host data dir (pending approval store). Overrides PHAROS_DATA_DIR.
+    #[arg(long, env = "PHAROS_DATA_DIR")]
+    data_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -32,7 +38,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let args = Args::parse();
     let webui_dir = pharos_web::resolve_webui_dir(args.webui_dir)?;
-    let state = pharos_web::fake_app_state();
-    tracing::warn!("pharos-web using FakeThreadService + FakeSessionService (S1/S2 not wired yet)");
+    let data_dir = pharos_web::resolve_data_dir(args.data_dir)?;
+    let state = pharos_web::persistent_app_state(&data_dir)?;
+    pharos_web::warn_fake_services();
     pharos_web::serve(args.addr, webui_dir, state).await
 }
