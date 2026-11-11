@@ -1,6 +1,53 @@
 ---
 summary: 2026-11-11：Phase E（删除 Swift 后端模块）在 rust/phase-e 完成；见 docs/handoff-phase-e.md。
 ---
+
+**STATUS: THREAD-AUTOREPLY-DONE — 7655e95**
+**Thread 自动回复（Codex + DSH）2026-11-11**：worktree `/workspace/pharos-rust/2026-11-11_dsh-team/wt/thread-autoreply`，分支 `rust/thread-autoreply`（base `integrate/mesh2-into-main` @ `4e381a4`）。共 10 个提交，未 push、未 rebase/amend/force、未改历史。
+
+**做了什么（投递 poll → 代理 followup → 最终答案 → 关联回复 → ack 闭环）**
+- **Rust agent-runtime 投递路由**（f7306f8）：`delivery.submit-member` 只投给**唯一存活**候选——conversation `online` + 非 archived + state 观察值新鲜（-5..=45s），且其 driver 声明 `delivery.poll` 且心跳新鲜（-5..=15s）；runtime 自带的 managed Codex（`codex:app-server`）不需要插件心跳。0 个候选 → `No managed conversation registered for member: …`；>1 个 → `-32602 Multiple active conversations registered for member: …`（绝不乱投/猜）。`idempotencyKey` 复用必须同 member+conversation+payload，否则 `-32602`。新增只读 RPC `delivery.inspect-members` / `delivery.inspect-dsh-binding` / `delivery.inspect-dsh-bindings`（300/512 上限校验，不建投递不落盘），`runtime.hello` capabilities 增加 `delivery-inspect-v1`、`dsh-binding-inspect-v1`、`dsh-binding-batch-inspect-v1`。
+- **Codex 最终答案 → 关联回复 → ack**（5e5f637 + 8f7f7cb/42064ed/87e9c98 加固）：把 `turn/start` 返回的 turn id 记录进投递（`turnId`），投递 `consumed` 后按 envelope 的 `room`/`messageID` + `targetMemberID` 布置 reply job；缺失则显式 `missing-turn-id`/`missing-member-id`/`missing-correlation`，绝不静默当成功。adapter worker 轮询 `thread/read(includeTurns=true)`，用 `pharos-codex-adapter::inspect_turn_reply` 只取**该 turn** 且 `status=completed` 的 `phase="final_answer"` 文本（commentary/别的 turn 永不泄漏）；成功时经 `HostReplySink` 的生产实现 `ThreadStoreReplySink` 调用 `pharos-thread` 的 `replyOnce`（room + member=`targetMemberID` + messageID=原消息）写回 Thread，回复 ID 由 (scope,room,member,原消息) 确定，崩溃重试返回同一 ID → 不会重复回复；`reply_state` 记 `posted`/`turn-failed`/`no-final-answer`/`answer-too-large`/`failed`/`turn-timeout`，sink 失败最多 5 次、未终结 turn 的等待预算 300 次轮询（约 10 分钟）后显式 `turn-timeout`，只有回复真正落盘才 `posted`。
+- **幂等/顺序加固**（8f7f7cb、42064ed）：`delivery.ack` 重复同状态是**真 no-op**（不重复发事件、不重复回复），且只允许状态前移——misordered/重复 consumer 不能把已 `consumed` 的投递退回 `injected` 让 Codex worker 重投；公开 `delivery.submit` 不能伪造 `targetMemberID`（必须是对应 conversation 的唯一存活路由）、archived conversation 不接受投递、幂等键复用校验 conversation/payload；`ready_codex_delivery_index` 不再向 archived Codex 会话注入；turn id 提取走受测 helper。
+- **adapter-codex 最终答案选择**（9f8bc20、e7b7d04）：新增 `src/reply.rs`（`ReplyInspection`、`inspect_turn_reply`、`final_answer_text`、`assistant_reply_text`）；`parse_turns`/`DeliveryWorker::dispatch` 不再拼接所有 agentMessage，改为“匹配 turn 的 `final_answer`，否则最后一条非空 agentMessage（legacy 无 phase）”，completed 无文本 → Failed、failed/interrupted → Failed（绝不 Completed）；新增 `CodexTransport::Recorded(RecordedAppServer)` 假 transport、`RecordedRequest`、`CodexSessionAdapter::from_transport`。
+- **DSH plugin 闭环对齐 canonical 427db7d（PIT-DS-05）**（790892d、7655e95）：`integrations/dsh-plugin-pharos` 循环改为 `delivery.poll` → ack `injected`（失败吞掉）→ `agent.followup(buildUserMessage(...))` → ack `consumed`；followup 抛错 → ack `failed`+detail；consumed-ack 在 followup 成功后抛错 → 再 ack `failed`（detail `followup accepted but consumed ack failed: …`），failed-ack 自身失败只记录不中断其余投递；archived session → failed 且不 followup；`consumed` 只表示 DSH durable inbox 接管、不宣称助手回合完成。移除 `@deepseek-ai/dsh-llm` 顶层依赖（本地 `buildUserMessage`，零依赖可测）；driver capabilities 增加 `delivery.poll` + `mesh.reply-once-v1`（Rust 侧 liveness/reply-capable 检查依赖它）；`package.json` 加 `node --test`。
+- **pharos-adapter-dsh 保持薄、不伪造**（cbb7425）：新增 `RUNTIME_DRIVER_CAPABILITIES`（`delivery.poll`/`mesh.reply-once-v1`）并用于 manifest；文档明确 adapter 只报告观测到的 terminal turn、不自己发 Thread 回复、不存在 fabricated `delivered`；测试保证 failure/interrupt 结果永不 Completed 且无 assistant_text。
+
+**改了哪些 crate / 文件**
+- `rust/crates/agent-runtime/`：`src/main.rs`（投递路由 + inspection + ack 顺序 + Codex reply loop + worker 接线）、新增 `src/reply_sink.rs`（`HostReplySink`/`ThreadStoreReplySink`/确定性 nick）、`Cargo.toml`（+pharos-api/pharos-thread/pharos-codex-adapter）；`rust/Cargo.lock`。
+- `rust/crates/adapter-codex/src/{reply.rs(new), lib.rs, codex.rs, delivery.rs, transport/mod.rs, transport/recorded.rs(new)}`、`tests/recorded_dispatch.rs`(new)。
+- `rust/crates/pharos-adapter-dsh/src/{adapter.rs, lib.rs}`。
+- `integrations/dsh-plugin-pharos/{index.mjs, index.test.mjs(new), package.json, package-lock.json, README.md}`。
+- 未改 `pharos-web`/`pharos-http` services、未改 `pharos-hitl`、未改 `pharos-thread` 源码、未改 Swift/WebCanvas。
+
+**新增测试（cargo test / node --test）**
+- `agent-runtime`：32 个 unit（新增 21：liveness/ambiguity/idempotency/inspection、ack no-op+顺序、reply correlation/restart、sink 重试、等待超时、大答案、direct-submit 防伪造、turn id 提取）；均用 /tmp 临时 registry + 录制 `thread/read` JSON + `RecordingReplySink`/内存 SqliteThreadStore，不调真实 Codex。
+- `adapter-codex`：lib 19（新增 14）+ `tests/recorded_dispatch.rs` 8（final-answer-only Completed、failed/interrupted→Failed、无文本→Failed、commentary-only→Failed、legacy phase-less→Completed、turn/start 错误→Failed 等），全部假 transport/录制事件。
+- `pharos-adapter-dsh`：lib 9（新增 2：runtime capability 契约、failure 不伪造 Completed）+ 1 integration。
+- `integrations/dsh-plugin-pharos`：`node --test` 18/18（新套件：4 阶段 ack 顺序/载荷、followup 抛错→failed、consumed-ack 抛错→failed、failed-ack 再失败被捕获、archived、空 poll、payload 渲染、buildUserMessage 形状、capabilities、name/inject/apply 保持）。
+
+**门禁（在 rust/ 下，最终代码提交 7655e95）**
+- `cargo fmt --all -- --check` → exit 0。
+- `CARGO_BUILD_JOBS=3 cargo clippy --workspace --all-targets -- -D warnings` → exit 0，无 warning。
+- `CARGO_BUILD_JOBS=3 cargo test --workspace` → exit 0；52 个 test suite 全绿，共 **135** 个测试（其中 agent-runtime 32、adapter-codex 19+8、pharos-adapter-dsh 9+1）。
+- `cd integrations/dsh-plugin-pharos && node --test` / `npm test` → **18 passed / 0 failed**；`node --check index.mjs` OK。
+- `git status` 干净（本 handoff 提交前）。
+
+**没做 / 没验证**
+- 未跑真实 Codex app-server E2E（真实 0.167 的 `thread/read` 是否带 `phase="final_answer"` 未验证；env-gated product test 未执行）。若 0.167 不带 phase，本实现会诚实落到 `no-final-answer`，不会乱发。
+- 未跑真实 DSH Host + Rust agent-runtime 端到端（插件测试为 fake agent/RPC shim）；未在 `~/personal/pharos-msg-test` 做真实消息投递/回复；未碰 3080 Host/ipc.sock/~/.gemini。
+- 应用启动器（Swift/GUI 或 supervisor）如何传 `--thread-data-dir`/`PHAROS_THREAD_DATA_DIR`、是否与 GUI/Host 共用同一 `replica.sqlite3` 未验证；默认 `$HOME/Library/Application Support/Pharos/Mesh`。
+- DSH 助手回复的实际写回路径（canonical 0.2.0 插件的 `pharos_mesh_send` 工具）不在本流；仓库内插件是 runtime-intake 包装，只负责 poll→followup→ack，助手正文回复需另接（见下）。
+- 未验证真实 Codex worker 崩溃恢复的 at-least-once 重投（turn/start `clientUserMessageId` 去重依赖 vendor 行为）；重复**回复**不会发生（replyOnce 稳定 ID），但 prompt 可能重投一次。
+- `delivery.submit` 仍是低层 API（本地 socket 0600，且 Peer allowlist 只放 `delivery.submit-member`），现已加 target/archived/幂等校验；如需彻底关闭可再加开关。
+- 未改 Swift/WebCanvas，无需 Swift 编译验证（本机 Linux 也无法编译 Swift）。
+
+**需要人决定**
+1. daemon 的 Thread 数据目录权威来源与启动参数（谁在 supervisor 里传 `--thread-data-dir`，是否与 GUI/Host 共用同一 `replica.sqlite3`）。
+2. DSH 助手回复写回 Thread 的路径：接 canonical 插件的 mesh 工具，还是给 Rust runtime 新增 `thread.reply` RPC 由插件调用（本流只做投递 intake 闭环）。
+3. 真实 Codex 0.167 若确实不带 `phase`，是否允许“匹配 turn 的最后一条非空 agentMessage”作为兜底（当前严格 final_answer，宁可 `no-final-answer` 也不乱发）。
+4. `delivery.submit` 是保留为可信本地 API（已加校验）还是彻底移除，以收窄本地 socket 攻击面。
+
 # 活跃任务交接
 
 **STATUS: PHASE-E-DONE — see docs/handoff-phase-e.md**
