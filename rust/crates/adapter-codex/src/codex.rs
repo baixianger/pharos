@@ -525,7 +525,22 @@ pub fn run_jsonl_daemon_proxy_bridge() -> Result<(), String> {
                 }
             }
             Ok(request) => {
-                match app_server.request(request.id.clone(), &request.method, request.params) {
+                // codex-cli 0.167 elides/errors `thread/read includeTurns:true`
+                // depending on connection/thread history state; normalize it via
+                // the supported thread/turns/list fallback so reply correlation
+                // reads real final answers instead of polling to turn-timeout.
+                let result =
+                    if crate::thread_turns::is_include_turns_read(&request.method, &request.params)
+                    {
+                        crate::thread_turns::thread_read_include_turns(
+                            &mut app_server,
+                            request.id.clone(),
+                            request.params,
+                        )
+                    } else {
+                        app_server.request(request.id.clone(), &request.method, request.params)
+                    };
+                match result {
                     Ok(result) => AdapterResponse::success(request.id, result),
                     Err(error) => AdapterResponse::failure(request.id, error.message),
                 }

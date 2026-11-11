@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-use pharos_api::ReplyThreadMessageRequest;
+use pharos_api::{ReplyThreadMessageRequest, ReplyThreadMessageResponse};
 use pharos_thread::{SqliteThreadStore, ThreadError, ThreadService, open_thread_db};
 
 /// One correlated reply to post for a completed Codex delivery.
@@ -67,6 +67,15 @@ impl ThreadStoreReplySink {
         }
         Ok(self.store.as_ref().expect("store was just opened"))
     }
+
+    /// Build a sink around an already-open store (unit tests; e.g. in-memory).
+    #[cfg(test)]
+    pub(crate) fn from_store(store: SqliteThreadStore) -> Self {
+        Self {
+            data_dir: PathBuf::new(),
+            store: Some(store),
+        }
+    }
 }
 
 impl HostReplySink for ThreadStoreReplySink {
@@ -79,29 +88,40 @@ impl HostReplySink for ThreadStoreReplySink {
             text: reply.text.clone(),
             message_id: Some(reply.original_message_id.clone()),
         };
-        let store = self.store()?;
-        match store.reply_message(&reply.room, request.clone()) {
-            Ok(response) => Ok(response.reply_id),
-            // The Runtime routes by member id, but the Thread replica may not
-            // have a membership row for that vendor session yet (fresh Host
-            // replica). Join with a deterministic nick, then retry the same
-            // idempotent reply (same `replyOnce` id -> no duplicate).
-            Err(ThreadError::MemberNotFound(_)) => {
-                store
-                    .join(
-                        &reply.room,
-                        &reply.member_id,
-                        &deterministic_nick(&reply.member_id),
-                        Some("codex"),
-                    )
-                    .map_err(|error| error.to_string())?;
-                store
-                    .reply_message(&reply.room, request)
-                    .map(|response| response.reply_id)
-                    .map_err(|error| error.to_string())
-            }
-            Err(error) => Err(error.to_string()),
+        post_correlated_reply(self.store()?, &reply.room, request, Some("codex"))
+            .map(|response| response.reply_id)
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Post one correlated reply, auto-joining an unknown vendor member first.
+///
+/// The Runtime routes by member id, but the Thread replica may not have a
+/// membership row for that vendor session yet (fresh Host replica). Join with a
+/// deterministic nick, then retry the same idempotent reply (same `replyOnce`
+/// id -> no duplicate).
+///
+/// Shared by [`ThreadStoreReplySink`] (Codex final-answer relay) and the
+/// additive `thread.reply` RPC (DSH plugin reply write-back) so both paths have
+/// byte-for-byte identical idempotency and join behavior.
+pub(crate) fn post_correlated_reply(
+    store: &SqliteThreadStore,
+    room: &str,
+    request: ReplyThreadMessageRequest,
+    joined_member_kind: Option<&str>,
+) -> Result<ReplyThreadMessageResponse, ThreadError> {
+    match store.reply_message(room, request.clone()) {
+        Ok(response) => Ok(response),
+        Err(ThreadError::MemberNotFound(_)) => {
+            store.join(
+                room,
+                &request.as_member,
+                &deterministic_nick(&request.as_member),
+                joined_member_kind,
+            )?;
+            store.reply_message(room, request)
         }
+        Err(error) => Err(error),
     }
 }
 
@@ -165,10 +185,7 @@ mod tests {
     }
 
     fn with_store(store: SqliteThreadStore) -> ThreadStoreReplySink {
-        ThreadStoreReplySink {
-            data_dir: PathBuf::new(),
-            store: Some(store),
-        }
+        ThreadStoreReplySink::from_store(store)
     }
 
     #[test]

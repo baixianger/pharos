@@ -142,6 +142,50 @@ summary: 2026-11-11：跨 Host 会话（host.session.query/action）Rust 端到�
 - 合并提示：`router.rs` 的新路由全部集中在一个 `// --- web-endpoints additions` 块（在 `.with_state` 之前）；cross-host-sessions 若按约定只在 router.rs 末尾最小追加，冲突面仅限该块附近。
 
 
+# ---- live-e2e 流交接（合并保留）----
+
+**做了什么（四项全部完成）**
+- **A. 真实 Codex 0.167 E2E = PASS**（详细证据 `internal/evidence/2026-11-11_live-e2e-codex.md`，脚本 `scripts/e2e/codex_*`）：`phase="final_answer"` 在真实 0.167 **存在**（completed turn 的 `agentMessage = {type:"agentMessage", text:"PONG", phase:"final_answer"}`；live `item/completed` 与 `thread/read {includeTurns:true}` 都能看到），严格策略 → `Ready(final_answer)`，**未放宽策略**。全链路真实跑通：`pharos-web --session-adapter codex` + `pharos-meshd` 同 data dir → `codex.thread.start` → HTTP Thread+消息 → `delivery.submit-member` → 真实 Codex turn → `replyState:"posted"`（~48s，replyPolls=2，replyOnce stable id）→ Thread 里**恰好一条**关联回复（`replyTo.messageId`=原消息），+5s 无重复，web 重启同 data dir 后 reply id/关联不变；replica DB dump 恰好 2 条消息。真实 vendor quirk 已记录：0.167 的 `thread/read {includeTurns:true}` 状态相关（空 thread → `-32601 list_turns is not supported yet`；一次 loaded 同连接读到 `thread.turns:[]` 达 180s 的 flake，而 `thread/turns/list {itemsView:"full"}` 稳定返回完整 turn+items+phase）。
+- **B. DSH 回复写回 = 选定方案 B：插件调用 Rust runtime 新 RPC `thread.reply`**（可被用户否决；canonical 替代是 DSH mesh 工具 `pharos_mesh_send`，关掉只需去掉插件的 thread.reply 调用，Rust 无需改）。`rust/crates/agent-runtime` 新增 `thread_reply.rs`（main.rs 仅 +19/−2：capability `thread-reply-v1`、dispatch arm、Registry 懒开/重解析 `--thread-data-dir` 的 Thread store），走 `pharos-thread` `replyOnce` 稳定 ID：相同重试返回同一 `replyId`、绝不插第二行；同 anchor 不同文本 → conflict 错误不覆盖；未知 room / 未知或非投递给该 member 的 messageId / 空字段 / >1MiB 文本 → 明确 `-32602`；未知 member 用确定性 nick 自动 join；`ok:true` 只在行落盘后返回。**`pharos-adapter-dsh` 保持薄**（未搬入任何 Thread 闭环逻辑）。`integrations/dsh-plugin-pharos`：followup 前**先**保留 reply 关联（真实 DSH 空闲 agent 在 `agent.followup` 内**同步**唤醒并 claim，claim 事件会早于 followup 返回；handoff 抛错则回滚，绝不乱写），`agent/inbox/claimed` 把注入消息 id 绑到 turn，该 turn `turn/end` 时把**该 turn 最后一条非空 `assistant/message`** 的 text blocks 经 `thread.reply` 只写一次（多步 turn 的 narration 不拼接；无正文/无 room+messageID → 显式日志、不写、不伪造）；`PHAROS_PLUGIN_DEBUG=1` 提供 E2E 诊断（不打印 prompt 正文）。delivery ack 语义不变（`consumed` 仍不宣称助手回合完成）。
+- **C. 真实 DSH 0.2.2-rc.1 E2E = PASS**（sandbox `/workspace/pharos-rust/2026-11-11_dsh-wave2/e2e-sandbox/dsh-20261111T204716Z/`，2026-11-11T20:47:18Z 起 ~21s；`dsh-e2e-result.json`、`logs/dsh-stderr.log`、`logs/dsh-session-events.jsonl` 均为证据）：隔离 `DSH_HOME`+独立 profile `pharos-e2e`（由 **shipped `sdk` template** 创建，非用户 profile；用 `sdk` 而非 `headless` 因为 E2E 需要常驻 agent 才能接收外部 followup——与任务示例的偏差已记录）、repo 插件经 `dsh plugin add file:` 装入、opencode-go 路由经 env `OPENCODE_GO_API_KEY`（源 `~/.secrets/opencode-personal-default.env`，未打印）。全链路：HTTP Thread 消息（`只回复 PONG`）→ `delivery.submit-member` → 插件 poll/followup/ack consumed → **真实 opencode-go 助手回合 `PONG`**（turn 1/step 1）→ 插件 `thread.reply` → Thread **恰好一条**关联回复 `reply-275ea0b0…`（text `PONG`，`replyTo.messageId`=原消息），重复提交同 idempotencyKey 不产生第二条回复，web 重启同 data dir 后回复仍在且 id/关联不变。两次真实失败也如实记录并促成修复：① DSH v4 拒绝旧式 user-message `source.kind="plugin"`（`format v4 message requires a producer-owned source kind`）→ 改用 `plugin:dsh-plugin-pharos-runtime`；② claim 与 followup 的同步顺序导致关联未建立 → 改为 handoff 前保留 + 失败回滚。测完只停自己起的进程（唯一 sandbox 路径/独立 profile），3080 dsh web（pid 3544）与用户 profiles 全程未动；`~/.dsh` 未被修改。
+- **D. 可复跑脚本**：`scripts/e2e/codex_thread_read_probe.mjs`、`codex_e2e.sh`（`PHAROS_E2E_CODEX=1` 才跑真实，默认 SKIP/exit 0）、`dsh_e2e.sh` + `dsh_sdk_driver.mjs`（`PHAROS_E2E_DSH=1` 才跑真实，默认 SKIP；`PHAROS_E2E_DSH_PROBE_ONLY=1` 只做 boot/注册不调模型），均不在 cargo test 里执行。证据汇总与命令/时间/脱敏节选/局限：`internal/evidence/2026-11-11_live-e2e.md`。
+
+**改了哪些 crate/文件**（14 个代码/脚本/文档文件 + 3 个证据文件）
+- `rust/crates/agent-runtime/src/thread_reply.rs`（新，528 行含 10 单测）、`reply_sink.rs`（共享 `post_correlated_reply` + `from_store` 测试 helper）、`main.rs`（+19/−2 最小追加）。
+- `integrations/dsh-plugin-pharos/{index.mjs,index.test.mjs,runtime-client.mjs,README.md}`（thread.reply 写回 + 同步 claim 修复 + v4 source kind + debug + 12 新测试）。
+- `rust/crates/adapter-codex/src/thread_turns.rs`（新，`thread/read includeTurns` → `thread/turns/list` 归一化，7 单测）、`codex.rs`（JSONL bridge 接线）、`lib.rs`（mod）。
+- `scripts/e2e/{codex_thread_read_probe.mjs,codex_runtime_rpc.mjs,codex_daemon_proxy_read.mjs,codex_e2e.sh,dsh_e2e.sh,dsh_sdk_driver.mjs}`、`internal/evidence/{2026-11-11_live-e2e.md,2026-11-11_live-e2e-codex.md,2026-11-11_live-e2e-thread-reply.md}`。
+- **未改**：Swift/`Sources/`/`Tests/`/`Package.swift`/`webui/`（asset_sync 绿，Swift 未在 Linux 编译验证——本流未触碰，无需验证）、`pharos-http/src/router.rs`、`pharos-protocol`、`pharos-replica`、`pharos-adapter-dsh` 源码（保持薄）、`rust/crates/pharos-thread` 源码。提交序列：`c43e985`（runtime thread.reply）、`dc42874`（plugin 写回）、`601cf71`（adapter-codex thread/turns/list 归一化）、`ed52930`（implementer 证据）、`70b67fc`+`46748f7`（Codex E2E 脚本+证据）、`3b271bf`（DSH 真实宿主兼容修复）、`da4aede`（DSH E2E 脚本+证据）。
+
+**新增测试（全部真实跑过）**
+- `agent-runtime`：42 unit（32 旧 + 10 新：idempotent 重放同 replyId 且只一行、conflict 拒绝、未知 room/messageId、空/超长、自动 join、capability、store 一致性等；均用 /tmp 临时 data dir + in-memory SQLite，不调真实 vendor）。
+- `adapter-codex`：lib 26（19 旧 + 7 新：空 turns/`-32601` 时用 `thread/turns/list` 补齐、已有 turns 不触发 fallback、两次都失败保留原始错误/不伪造、bare turns shape、请求判定）+ `tests/recorded_dispatch.rs` 8 + product gated 1（未开 gate 时 skip-pass）。
+- `integrations/dsh-plugin-pharos` `node --test`：**30 passed / 0 failed**（18 旧 + 12 新：精确 thread.reply 参数、多步 turn 只取最后非空 assistant text、重放 turn/end 不重复写、**followup 内同步 claim 仍只写一次**、failed handoff 回滚不写、无正文/无 anchor 跳过、RPC 重试有界与耗尽日志、runtime-client 参数形状）。
+- `scripts/e2e/` 的真实 E2E 本身（非 cargo test）：A PASS、C PASS（含重启持久化与去重检查）。
+
+**门禁结果（最终代码/证据 HEAD `da4aede`，`rust/` 下 `CARGO_BUILD_JOBS=3`）**
+- `cargo fmt --all -- --check` → **PASS**（exit 0，无输出）。
+- `cargo clippy --workspace --all-targets -- -D warnings` → **PASS**（exit 0，0 warning）。
+- `cargo test --workspace` → **PASS**（exit 0，**239 passed / 0 failed / 0 ignored，57 suites**；baseline 222 + 新增 17 = agent-runtime +10、adapter-codex +7。含 `pharos-web` `asset_sync`）。
+- `cd integrations/dsh-plugin-pharos && npm test` / `node --test` → **30 passed / 0 failed**；`node --check index.mjs` OK。
+- `git status --porcelain` → **空**（本 handoff 提交前）。
+
+**没做/未验证**
+- adapter-codex 的 `thread/turns/list` fallback 只有单测覆盖：真实 E2E 走普通 `thread/read` 即拿到 final_answer（replyPolls=2），未触发 fallback；它防的 flake 只在独立真实 probe 里出现过一次（见 A 证据）。是否保留由用户决定。
+- DSH E2E 用 shipped `sdk` profile（stdio JSON-RPC）而非用户 web profile 或 headless 一次性 runner；插件闭环相同，但 dsh **web UI** 路径未跑。profile 保留在各 run 的 sandbox `DSH_HOME` 下（未写入 `~/.dsh/profiles/pharos-e2e`）。
+- DSH 写回取“该 turn 最后一条非空 assistant 消息”；`interrupted`/`error` 结束但已提交文本的 turn 会转发该文本并记 reason（该分支未真实测得）；同一 turn 被多条 delivery claim 时会按 anchor 各写一次（E2E 未触发）。
+- 未做跨主机/远端 mesh 投递的真实 E2E（本流两个 E2E 都是单机 loopback）。
+- 共享 SQLite 仍无 WAL/busy_timeout（S1/S2 owner 既有问题，本流未改）；Codex `delivery-read` 的 `thread/read includeTurns:false` 在 0.167 的 `notLoaded` 线程行为未逐一测（E2E 已覆盖正常产品路径）。
+- WebKit/浏览器 UI、Swift ClientKit 未验证（Linux 无 Swift/WebKit，且本流未改 Swift/WebCanvas）。
+- 未 push、未合并、未改冻结契约（`pharos-api` OpenAPI stub 未增 thread.reply——它是本地 runtime RPC，不是 HTTP API）。
+
+**需要人决定**
+1. DSH 助手回复写回路径：**保留选定方案 B**（插件调用 Rust `thread.reply`，本流已实现并真实 E2E 验证）还是改用 canonical DSH mesh 工具（`pharos_mesh_send`）？B 是纯增量、可逆，`thread-reply-v1` capability 已在 `runtime.hello`。
+2. adapter-codex 的 `thread/read includeTurns` → `thread/turns/list` fallback 是否保留（真实 0.167 有状态相关 quirk，fallback 已被单测覆盖但 pass 路径未用它）。
+3. E2E 的真实 vendor 调用使用本机已登录 Codex 与用户 opencode key：是否改为专用低额度账号/测试凭据，以及 CI 默认是否允许 env-gated 真实 E2E。
+4. DSH E2E 隔离方式（sandbox `DSH_HOME` + shipped `sdk` profile，可复跑但每次新建 profile）是否接受；还是希望在某固定 `~/.dsh/profiles/pharos-e2e` 保留长期 profile（本流按硬规则未写用户 dsh home）。
+5. `pharos-superagent`/web 真机 UI 上的 dsh 回复显示（浏览器 WebSocket 实时刷新）未在本流验证，是否需要后续在 macOS 或 dsh web profile 上补一次人工验收。
+
 **STATUS: INTEGRATE-DSH3-DONE — 287a136fb274f781baae11c8e7782b5eb4795058**
 **分支/worktree**：`rust/integrate-dsh3`，worktree `/workspace/pharos-rust/2026-11-11_dsh-team/wt/integrate-dsh3`，base `integrate/mesh2-into-main @ 4e381a4`。未 push、未 force/rebase/amend、未改写任何已有提交；只 `git fetch` 过 remote refs。未触碰其它 worktree（hitl-persist / web-real-sessions / thread-autoreply 保持原 tip、未改）与主 checkout `/workspace/pharos-rust/2026-11-11_dsh-team/repo`。团队：Lead（本轮、merge1+集成测试+最终交接）、teammate `implementer`（merge2 + node/npm + 门禁）、teammate `verifier`（独立静态审查 + 全门禁复跑 + 真实二进制黑盒 smoke）。
 

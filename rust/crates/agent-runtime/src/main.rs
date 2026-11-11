@@ -25,6 +25,7 @@ mod mesh_bridge;
 mod replica_bridge;
 mod reply_sink;
 mod session_service;
+mod thread_reply;
 mod thread_service;
 
 const PROTOCOL_VERSION: u64 = 1;
@@ -175,7 +176,9 @@ struct Job {
 
 impl Runtime {
     fn start(data_dir: PathBuf, thread_data_dir: PathBuf) -> Result<Self, String> {
-        let registry = Arc::new(Mutex::new(Registry::load(data_dir)?));
+        let registry = Arc::new(Mutex::new(
+            Registry::load(data_dir)?.with_thread_data_dir(thread_data_dir.clone()),
+        ));
         let (sender, receiver) = mpsc::channel::<Job>();
         let queued = Arc::new(AtomicUsize::new(0));
         let adapter_running = Arc::new(AtomicBool::new(false));
@@ -955,12 +958,15 @@ impl Default for Snapshot {
 
 struct Registry {
     data_dir: PathBuf,
+    /// Lazily opened Thread replica for the additive `thread.reply` RPC.
+    thread_reply_store: thread_reply::ThreadReplyStore,
     snapshot: Snapshot,
     events: EventJournal,
 }
 
 impl Registry {
     fn load(data_dir: PathBuf) -> Result<Self, String> {
+        let thread_data_dir = default_thread_data_dir();
         fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
         let registry_file = data_dir.join("agent-runtime-registry.json");
         let mut snapshot = fs::read(&registry_file)
@@ -986,9 +992,17 @@ impl Registry {
         let events = EventJournal::load(data_dir.join("agent-runtime-events.json"));
         Ok(Self {
             data_dir,
+            thread_reply_store: thread_reply::ThreadReplyStore::new(thread_data_dir),
             snapshot,
             events,
         })
+    }
+
+    /// Point the additive `thread.reply` RPC at the runtime's Thread replica
+    /// directory (`--thread-data-dir`, usually the Host/web data dir `/mesh`).
+    fn with_thread_data_dir(mut self, thread_data_dir: PathBuf) -> Self {
+        self.thread_reply_store = thread_reply::ThreadReplyStore::new(thread_data_dir);
+        self
     }
 
     fn invoke(&mut self, method: &str, params: &Value) -> RuntimeResult {
@@ -1002,7 +1016,7 @@ impl Registry {
                     "agent-adapter-v1", "session-actions-v1", "session-state-v1",
                     "delivery-inspect-v1", "dsh-binding-inspect-v1",
                     "dsh-binding-batch-inspect-v1",
-                    "launch-options-v1", "launch-requests-v1"
+                    "launch-options-v1", "launch-requests-v1", "thread-reply-v1"
                 ]
             })),
             "runtime.snapshot" => serde_json::to_value(&self.snapshot)
@@ -1029,6 +1043,7 @@ impl Registry {
             "launch.submit" => self.launch_submit(params),
             "launch.poll" => self.launch_poll(params),
             "launch.ack" => self.launch_ack(params),
+            "thread.reply" => self.thread_reply(params),
             _ => Err(RuntimeError::method(method)),
         }
     }

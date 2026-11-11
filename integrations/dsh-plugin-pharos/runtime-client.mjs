@@ -73,4 +73,13 @@ export class PharosRuntimeClient {
   launchAck({ launchID, state, detail, sessionID }) {
     return this.call('launch.ack', { launchID, state, detail, sessionID })
   }
+  // Additive Rust agent-runtime RPC: post exactly one idempotent Thread reply
+  // correlated to the original delivery message. `messageId` is the original
+  // Mesh message anchor; omitting it makes the call *not* replay-safe (the
+  // runtime resolves the newest unreplied directed message server-side).
+  threadReply({ room, asMember, text, messageId } = {}) {
+    const params = { room, asMember, text }
+    if (messageId !== undefined && messageId !== null) params.messageId = messageId
+    return this.call('thread.reply', params)
+  }
 }

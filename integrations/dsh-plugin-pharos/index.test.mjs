@@ -9,14 +9,18 @@ import test from 'node:test'
 
 import {
   DRIVER_CAPABILITIES,
+  THREAD_REPLY_ATTEMPTS,
   __testing,
   apply,
   buildUserMessage,
+  createReplyRelay,
   deliveryText,
   handleDeliveryPoll,
   inject,
   name,
+  replyPlanFromPayload,
 } from './index.mjs'
+import { PharosRuntimeClient } from './runtime-client.mjs'
 
 function fakeAgent(record) {
   return {
@@ -386,12 +390,14 @@ test('buildUserMessage builds the canonical plugin snapshot shape locally', () =
   assert.deepEqual(Object.keys(message), ['id', 'role', 'content', 'source'])
   assert.equal(message.role, 'user')
   assert.deepEqual(message.content, [{ type: 'text', text: 'hello' }])
+  // DSH format v4: producer-owned source kind, never the retired generic
+  // `plugin` wrapper (the real DSH host rejects it at session append time).
   assert.deepEqual(message.source, {
-    kind: 'plugin',
-    plugin: name,
+    kind: `plugin:${name}`,
     form: 'snapshot',
     sections: [{ name, text: 'hello' }],
   })
+  assert.notEqual(message.source.kind, 'plugin')
   assert.notEqual(buildUserMessage('hello').id, message.id)
 
   assert.equal(typeof __testing.userMessage, 'function')
@@ -417,4 +423,334 @@ test('a malformed delivery without an id is skipped so no bogus ack is sent', as
     calls.filter(call => call.method === 'delivery.ack').map(call => call.params.deliveryID),
     ['del-ok', 'del-ok'],
   )
+})
+
+// ─── Thread reply write-back (approach B) ────────────────────────────────────
+//
+// These cases simulate the DSH event order around one delivery:
+//   delivery.poll -> ack(injected) -> agent.followup -> ack(consumed)
+//   -> agent/inbox/claimed -> session/event assistant/message -> turn/end
+// and assert the plugin calls the additive Rust `thread.reply` RPC at most once
+// with the exact corridor (room/asMember/text/messageId).
+
+const THREAD_PAYLOAD = JSON.stringify({
+  body: 'Deploy v2',
+  sender: 'Pai',
+  room: 'room-a',
+  messageID: 'message-a',
+})
+
+function fakeFollowupAgent() {
+  const messages = []
+  return {
+    messages,
+    followup(message) {
+      messages.push(message)
+    },
+  }
+}
+
+function deliveryRpc({ payload = THREAD_PAYLOAD, failTimes = 0 } = {}) {
+  const calls = []
+  let replyAttempts = 0
+  const rpc = async (method, params) => {
+    calls.push({ method, params })
+    if (method === 'delivery.poll') return [{ id: 'del-1', payload }]
+    if (method === 'thread.reply') {
+      replyAttempts += 1
+      if (replyAttempts <= failTimes) throw new Error('runtime socket dropped')
+      return { ok: true, thread: params.room, as: params.asMember, replyId: 'reply-1', replyTo: params.messageId }
+    }
+    return { ok: true }
+  }
+  return {
+    rpc,
+    calls,
+    replyCalls: () => calls.filter(call => call.method === 'thread.reply'),
+    replyAttempts: () => replyAttempts,
+  }
+}
+
+async function injectDelivery({ payload, failTimes = 0, sessionID = 'sess-1', conversationID = 'conv-1' } = {}) {
+  const harness = deliveryRpc({ payload, failTimes })
+  const errors = []
+  const relay = createReplyRelay({ rpc: harness.rpc, onError: message => errors.push(message) })
+  const agent = fakeFollowupAgent()
+  await handleDeliveryPoll(agent, { conversationID, sessionID }, harness.rpc, {
+    onFollowupStarted: relay.onFollowupStarted,
+    onFollowupFailed: relay.onFollowupFailed,
+  })
+  return { ...harness, errors, relay, agent, sessionID, followupID: agent.messages[0]?.id }
+}
+
+test('runtime client threadReply calls thread.reply with camelCase params and omits absent messageId', async () => {
+  const calls = []
+  const client = new PharosRuntimeClient({ socketPath: '/tmp/pharos-runtime-not-needed' })
+  client.call = (method, params) => { calls.push({ method, params }); return Promise.resolve({ ok: true }) }
+
+  await client.threadReply({ room: 'room-a', asMember: 'sess-1', text: 'deployed', messageId: 'message-a' })
+  await client.threadReply({ room: 'room-a', asMember: 'sess-1', text: 'deployed' })
+
+  assert.deepEqual(calls, [
+    { method: 'thread.reply', params: { room: 'room-a', asMember: 'sess-1', text: 'deployed', messageId: 'message-a' } },
+    { method: 'thread.reply', params: { room: 'room-a', asMember: 'sess-1', text: 'deployed' } },
+  ])
+})
+
+test('replyPlanFromPayload only accepts structured payloads with a room and original message anchor', () => {
+  assert.equal(THREAD_REPLY_ATTEMPTS, 3)
+  assert.deepEqual(replyPlanFromPayload(THREAD_PAYLOAD), { room: 'room-a', originalMessageID: 'message-a' })
+  assert.deepEqual(
+    replyPlanFromPayload({ room: '  room-a  ', messageID: '  message-a  ' }),
+    { room: 'room-a', originalMessageID: 'message-a' },
+  )
+  // Rust envelopes are camelCase `messageID`; tolerate `messageId` too.
+  assert.deepEqual(replyPlanFromPayload({ room: 'room-a', messageId: 'message-a' }), { room: 'room-a', originalMessageID: 'message-a' })
+  assert.equal(replyPlanFromPayload('wake'), null)
+  assert.equal(replyPlanFromPayload('{not json'), null)
+  assert.equal(replyPlanFromPayload(JSON.stringify({ messageID: 'message-a' })), null)
+  assert.equal(replyPlanFromPayload(JSON.stringify({ room: 'room-a' })), null)
+  assert.equal(replyPlanFromPayload(JSON.stringify({ room: '   ', messageID: 'message-a' })), null)
+  assert.equal(replyPlanFromPayload(JSON.stringify({ room: 'room-a', messageID: '   ' })), null)
+  assert.equal(replyPlanFromPayload(null), null)
+})
+
+test('a followup claimed synchronously inside agent.followup still writes the reply back exactly once', async () => {
+  // Real DSH host ordering: an idle agent wakes synchronously inside
+  // agent.followup(message), so agent/inbox/claimed fires BEFORE followup
+  // returns. Correlation must be reserved before the handoff.
+  const harness = deliveryRpc()
+  const errors = []
+  const relay = createReplyRelay({ rpc: harness.rpc, onError: message => errors.push(message) })
+  let injectedID
+  const agent = {
+    followup(message) {
+      injectedID = message.id
+      assert.equal(
+        relay.onClaimed({ messageID: message.id, sessionID: 'sess-1', turn: 7 }),
+        true,
+        'the synchronously claimed message must already be correlated',
+      )
+    },
+  }
+  await handleDeliveryPoll(agent, { conversationID: 'conv-1', sessionID: 'sess-1' }, harness.rpc, {
+    onFollowupStarted: relay.onFollowupStarted,
+    onFollowupFailed: relay.onFollowupFailed,
+  })
+  assert.ok(injectedID)
+  relay.onSessionEvent({ id: 'sess-1' }, {
+    type: 'assistant/message',
+    data: { turn: 7, step: 1, message: { content: [{ type: 'text', text: 'PONG' }] } },
+  })
+  const posted = await relay.onSessionEvent({ id: 'sess-1' }, {
+    type: 'turn/end',
+    data: { turn: 7, reason: { kind: 'completed' } },
+  })
+  assert.equal(posted, true)
+  assert.deepEqual(harness.replyCalls(), [
+    { method: 'thread.reply', params: { room: 'room-a', asMember: 'sess-1', text: 'PONG', messageId: 'message-a' } },
+  ])
+  assert.deepEqual(errors, [])
+})
+
+test('a followup that never reaches DSH rolls back the reserved correlation (no fabricated reply)', async () => {
+  const harness = deliveryRpc()
+  const errors = []
+  const relay = createReplyRelay({ rpc: harness.rpc, onError: message => errors.push(message) })
+  let injectedID
+  const agent = {
+    followup(message) {
+      injectedID = message.id
+      throw new Error('Agent busy')
+    },
+  }
+  await handleDeliveryPoll(agent, { conversationID: 'conv-1', sessionID: 'sess-1' }, harness.rpc, {
+    onFollowupStarted: relay.onFollowupStarted,
+    onFollowupFailed: relay.onFollowupFailed,
+  })
+  assert.ok(injectedID)
+  assert.equal(relay.onClaimed({ messageID: injectedID, sessionID: 'sess-1', turn: 1 }), false)
+  relay.onSessionEvent({ id: 'sess-1' }, {
+    type: 'assistant/message',
+    data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'not ours' }] } },
+  })
+  await relay.onSessionEvent({ id: 'sess-1' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  assert.deepEqual(harness.replyCalls(), [])
+})
+
+test('a claimed delivery turn posts exactly one thread.reply with the final assistant text only', async () => {
+  const { relay, replyCalls, errors, followupID, sessionID } = await injectDelivery()
+  assert.ok(followupID, 'handleDeliveryPoll must report the injected user-message id')
+  assert.equal(relay.onClaimed({ messageID: followupID, sessionID, turn: 3 }), true)
+
+  // Step 1 is narration, step 2 is a tool call with an interim note, step 3 is
+  // the final answer with two text blocks. Only step 3's blocks are relayed.
+  relay.onSessionEvent({ id: sessionID }, {
+    type: 'assistant/message',
+    data: {
+      turn: 3,
+      step: 1,
+      message: {
+        content: [
+          { type: 'reasoning', text: 'private chain of thought' },
+          { type: 'text', text: 'Deploying v2.' },
+        ],
+      },
+    },
+  })
+  relay.onSessionEvent({ id: sessionID }, {
+    type: 'assistant/message',
+    data: { turn: 3, step: 2, message: { content: [{ type: 'tool-call', id: 'call-1' }, { type: 'text', text: 'Interim note.' }] } },
+  })
+  relay.onSessionEvent({ id: sessionID }, {
+    type: 'assistant/message',
+    data: {
+      turn: 3,
+      step: 3,
+      message: {
+        content: [
+          { type: 'text', text: 'Deployed v2.' },
+          { type: 'reasoning', text: 'hidden' },
+          { type: 'text', text: 'Everything green.' },
+        ],
+      },
+    },
+  })
+  const posted = await relay.onSessionEvent({ id: sessionID }, {
+    type: 'turn/end',
+    data: { turn: 3, reason: { kind: 'completed' } },
+  })
+
+  assert.equal(posted, true)
+  assert.equal(replyCalls().length, 1, 'exactly one thread.reply per completed turn')
+  assert.deepEqual(replyCalls()[0], {
+    method: 'thread.reply',
+    params: {
+      room: 'room-a',
+      asMember: 'sess-1',
+      text: 'Deployed v2.\n\nEverything green.',
+      messageId: 'message-a',
+    },
+  })
+  assert.deepEqual(errors, [])
+  assert.deepEqual(relay.pendingCounts(), { messages: 0, turns: 0, texts: 0 })
+})
+
+test('a tool-only last assistant message keeps the earlier non-empty final text', async () => {
+  const { relay, replyCalls, followupID, sessionID } = await injectDelivery()
+  relay.onClaimed({ messageID: followupID, sessionID, turn: 4 })
+  relay.onSessionEvent({ id: sessionID }, {
+    type: 'assistant/message',
+    data: { turn: 4, step: 1, message: { content: [{ type: 'text', text: 'The real answer.' }] } },
+  })
+  // Conservative selection: the last message *with text* wins; a later
+  // tool-call-only message neither clears nor replaces it.
+  relay.onSessionEvent({ id: sessionID }, {
+    type: 'assistant/message',
+    data: { turn: 4, step: 2, message: { content: [{ type: 'tool-call', id: 'call-2' }] } },
+  })
+  await relay.onSessionEvent({ id: sessionID }, { type: 'turn/end', data: { turn: 4, reason: { kind: 'completed' } } })
+
+  assert.equal(replyCalls().length, 1)
+  assert.equal(replyCalls()[0].params.text, 'The real answer.')
+})
+
+test('a replayed turn/end (or late assistant/message) never duplicates the thread.reply', async () => {
+  const { relay, replyCalls, followupID, sessionID } = await injectDelivery()
+  relay.onClaimed({ messageID: followupID, sessionID, turn: 7 })
+  relay.onSessionEvent({ id: sessionID }, {
+    type: 'assistant/message',
+    data: { turn: 7, step: 1, message: { content: [{ type: 'text', text: 'answer' }] } },
+  })
+  await relay.onSessionEvent({ id: sessionID }, { type: 'turn/end', data: { turn: 7, reason: { kind: 'completed' } } })
+  assert.equal(replyCalls().length, 1)
+
+  // Replayed assistant/message + turn/end after the turn was already drained.
+  relay.onSessionEvent({ id: sessionID }, {
+    type: 'assistant/message',
+    data: { turn: 7, step: 1, message: { content: [{ type: 'text', text: 'answer' }] } },
+  })
+  await relay.onSessionEvent({ id: sessionID }, { type: 'turn/end', data: { turn: 7, reason: { kind: 'completed' } } })
+  await relay.onSessionEvent({ id: sessionID }, { type: 'turn/end', data: { turn: 7, reason: { kind: 'completed' } } })
+  assert.equal(replyCalls().length, 1, 'replayed turn/end stays idempotent at the plugin layer too')
+})
+
+test('a turn with no assistant text is logged and never written back', async () => {
+  const { relay, replyCalls, errors, followupID, sessionID } = await injectDelivery()
+  relay.onClaimed({ messageID: followupID, sessionID, turn: 5 })
+  relay.onSessionEvent({ id: sessionID }, {
+    type: 'assistant/message',
+    data: { turn: 5, step: 1, message: { content: [{ type: 'reasoning', text: 'only thinking' }, { type: 'tool-call', id: 'call-9' }] } },
+  })
+  const posted = await relay.onSessionEvent({ id: sessionID }, { type: 'turn/end', data: { turn: 5, reason: { kind: 'completed' } } })
+
+  assert.equal(posted, false)
+  assert.equal(replyCalls().length, 0)
+  assert.equal(errors.length, 1)
+  assert.match(errors[0], /turn 5 ended without assistant text/)
+})
+
+test('a payload without room/messageID (or an unclaimed human turn) writes no thread.reply', async () => {
+  const opaque = await injectDelivery({ payload: 'wake' })
+  assert.equal(opaque.relay.onClaimed({ messageID: opaque.followupID, sessionID: 'sess-1', turn: 1 }), false)
+  opaque.relay.onSessionEvent({ id: 'sess-1' }, {
+    type: 'assistant/message',
+    data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'hello human' }] } },
+  })
+  await opaque.relay.onSessionEvent({ id: 'sess-1' }, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  assert.equal(opaque.replyCalls().length, 0)
+
+  // A claimed message the plugin never injected is a normal human turn.
+  const threaded = await injectDelivery()
+  assert.equal(threaded.relay.onClaimed({ messageID: 'human-message-id', sessionID: 'sess-1', turn: 2 }), false)
+  threaded.relay.onSessionEvent({ id: 'sess-1' }, {
+    type: 'assistant/message',
+    data: { turn: 2, step: 1, message: { content: [{ type: 'text', text: 'human answer' }] } },
+  })
+  await threaded.relay.onSessionEvent({ id: 'sess-1' }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
+  assert.equal(threaded.replyCalls().length, 0)
+})
+
+test('a claimed delivery without a session/turn anchor is logged and not guessed', async () => {
+  const { relay, replyCalls, errors, followupID } = await injectDelivery()
+  assert.equal(relay.onClaimed({ messageID: followupID, sessionID: '', turn: undefined }), false)
+  assert.equal(replyCalls().length, 0)
+  assert.equal(errors.length, 1)
+  assert.match(errors[0], /without a session\/turn anchor/)
+})
+
+test('a transient thread.reply RPC failure is retried with bounded attempts and then succeeds', async () => {
+  const { relay, replyCalls, replyAttempts, errors, followupID, sessionID } = await injectDelivery({ failTimes: 2 })
+  relay.onClaimed({ messageID: followupID, sessionID, turn: 9 })
+  relay.onSessionEvent({ id: sessionID }, {
+    type: 'assistant/message',
+    data: { turn: 9, step: 1, message: { content: [{ type: 'text', text: 'answer' }] } },
+  })
+  const posted = await relay.onSessionEvent({ id: sessionID }, { type: 'turn/end', data: { turn: 9, reason: { kind: 'completed' } } })
+
+  assert.equal(posted, true)
+  assert.equal(replyAttempts(), 3)
+  assert.equal(replyCalls().length, 3)
+  assert.equal(errors.length, 2)
+  assert.match(errors[0], /thread\.reply attempt 1\/3 failed/)
+  assert.match(errors[1], /thread\.reply attempt 2\/3 failed/)
+})
+
+test('an exhausted thread.reply RPC failure is logged, bounded and never crashes the turn', async () => {
+  const { relay, replyAttempts, replyCalls, errors, followupID, sessionID } = await injectDelivery({ failTimes: 99 })
+  relay.onClaimed({ messageID: followupID, sessionID, turn: 11 })
+  relay.onSessionEvent({ id: sessionID }, {
+    type: 'assistant/message',
+    data: { turn: 11, step: 1, message: { content: [{ type: 'text', text: 'answer' }] } },
+  })
+  const posted = await relay.onSessionEvent({ id: sessionID }, {
+    type: 'turn/end',
+    data: { turn: 11, reason: { kind: 'completed' } },
+  })
+
+  assert.equal(posted, false)
+  assert.equal(replyAttempts(), THREAD_REPLY_ATTEMPTS)
+  assert.equal(replyCalls().length, THREAD_REPLY_ATTEMPTS)
+  assert.ok(errors.some(message => /thread\.reply failed after 3 attempts/.test(message)))
+  assert.ok(errors.some(message => /not written back/.test(message)))
 })

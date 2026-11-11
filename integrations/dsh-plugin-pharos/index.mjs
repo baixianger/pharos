@@ -22,6 +22,12 @@ export const DRIVER_CAPABILITIES = [
 const CONSUMED_DETAIL = 'DSH durable inbox consumed the transport delivery; assistant completion is not implied.'
 const ARCHIVED_DETAIL = 'session archived and cannot receive messages'
 
+// Optional live-E2E diagnostics. Off by default; never prints prompt bodies.
+const DEBUG_ENABLED = process.env.PHAROS_PLUGIN_DEBUG === '1'
+function debug(message) {
+  if (DEBUG_ENABLED) process.stderr.write(`dsh-plugin-pharos-runtime[debug]: ${message}\n`)
+}
+
 // Module-level default RPC used when a caller does not pass one. It is created
 // lazily so importing this module never opens a socket. apply() passes its own
 // client explicitly.
@@ -49,7 +55,12 @@ export function buildUserMessage(text) {
     id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: name, form: 'snapshot', sections: [{ name, text }] },
+    // DSH session format v4 rejects the retired generic `kind: 'plugin'`
+    // wrapper: a user message must carry its producer-owned kind. The producer
+    // kind for a third-party plugin is `plugin:<package name>` (dsh 0.2.2-rc.1
+    // `SessionFormatError: format v4 message requires a producer-owned source
+    // kind` when `plugin` is used).
+    source: { kind: `plugin:${name}`, form: 'snapshot', sections: [{ name, text }] },
   }
 }
 
@@ -143,8 +154,31 @@ export async function handleDeliveryPoll(agent, binding, rpc = runtimeRPC, optio
     // Followup + consumed ack are one unit: a lost consumed ack means the
     // delivery must be closed as failed, never left at injected.
     let handedOff = false
+    let injectedMessage
     try {
-      const injected = agent.followup(buildUserMessage(deliveryText(delivery.payload)))
+      injectedMessage = buildUserMessage(deliveryText(delivery.payload))
+      // Correlate BEFORE the handoff. On a real DSH host an idle agent wakes
+      // synchronously inside `agent.followup(...)`, so `agent/inbox/claimed`
+      // (which binds the reply to its turn) can fire before followup returns.
+      // A handoff that never lands is rolled back by `onFollowupFailed`, so this
+      // reserves correlation without promising a reply.
+      if (typeof options?.onFollowupStarted === 'function') {
+        try {
+          options.onFollowupStarted({
+            messageID: injectedMessage?.id,
+            payload: delivery.payload,
+            memberID: String(binding?.sessionID || agent?.session?.id || agent?.id || ''),
+            deliveryID: delivery.id,
+            conversationID,
+          })
+        } catch (error) {
+          reportDeliveryError(
+            options,
+            `delivery ${delivery.id}: reply correlation failed: ${errorText(error)}`,
+          )
+        }
+      }
+      const injected = agent.followup(injectedMessage)
       if (injected && typeof injected.then === 'function') await injected
       handedOff = true
       await callRuntimeRPC(rpc, 'delivery.ack', {
@@ -153,6 +187,11 @@ export async function handleDeliveryPoll(agent, binding, rpc = runtimeRPC, optio
         detail: CONSUMED_DETAIL,
       })
     } catch (error) {
+      if (!handedOff && typeof options?.onFollowupFailed === 'function') {
+        try {
+          options.onFollowupFailed(injectedMessage?.id)
+        } catch {}
+      }
       // Never claim success. The detail distinguishes "nothing was handed
       // off" from "the intake may already own it but the ack was lost".
       const detail = handedOff
@@ -175,8 +214,250 @@ export async function handleDeliveryPoll(agent, binding, rpc = runtimeRPC, optio
   return true
 }
 
+// ─── Thread reply write-back (approach B) ────────────────────────────────────
+//
+// The DSH plugin owns the vendor loop, so it is also the only layer that can
+// correlate an injected delivery with the assistant turn that answered it:
+//
+//   followup(user message)                     (delivery handoff)
+//   -> agent/inbox/claimed { message.id, turn } (message opens/joins a turn)
+//   -> session/event assistant/message { data.turn, data.message.content }
+//   -> session/event turn/end { data.turn }
+//   -> thread.reply { room, asMember, text, messageId }
+//
+// The Rust side (additive `thread.reply` RPC, capability `thread-reply-v1`)
+// owns the stable replyOnce id, so a replayed turn/end or a bounded retry can
+// never duplicate the Thread row. This is deliberately user-overridable: the
+// canonical alternative is the DSH mesh tool (`pharos_mesh_send`); dropping
+// this hook's `thread.reply` call disables write-back without touching Rust.
+//
+// Honesty rules: a reply is only posted when (a) the delivery payload named a
+// room + original message anchor, (b) DSH claimed that exact followup message
+// into a concrete turn, and (c) that turn produced non-empty assistant text.
+// Anything else is logged explicitly and nothing is written.
+//
+// Final-answer selection: a DSH turn may commit several assistant messages (one
+// per step: narration, tool-call steps, then the answer). The reply text is the
+// text of the LAST assistant/message of the turn that has non-empty text — never
+// a concatenation of intermediate narration — and a later tool-only message
+// leaves the earlier non-empty text in place.
+
+const REPLY_RPC_ATTEMPTS = 3
+export const THREAD_REPLY_ATTEMPTS = REPLY_RPC_ATTEMPTS
+
+// Extract the reply anchor from a delivery payload. Only structured JSON with a
+// non-empty `room` and `messageID` (camelCase `messageId` accepted too) is
+// correlatable; anything else is left alone so we never guess a room or anchor.
+export function replyPlanFromPayload(payload) {
+  let value = payload
+  if (typeof payload === 'string') {
+    try { value = JSON.parse(payload) } catch { return null }
+  }
+  if (!value || typeof value !== 'object') return null
+  const room = typeof value.room === 'string' ? value.room.trim() : ''
+  const raw = value.messageID ?? value.messageId
+  const messageID = typeof raw === 'string' ? raw.trim() : ''
+  if (!room || !messageID) return null
+  return { room, originalMessageID: messageID }
+}
+
+// Text blocks of ONE assistant message, joined with a blank line. Non-text
+// blocks (reasoning, tool calls, images) are never relayed. Empty/whitespace
+// blocks are dropped.
+function assistantMessageText(content) {
+  return content
+    .filter(block => block?.type === 'text')
+    .map(block => String(block.text ?? ''))
+    .filter(text => text.trim())
+    .join('\n\n')
+}
+
+function turnKey(sessionID, turn) {
+  return `${sessionID}:${turn}`
+}
+
+// Correlate injected deliveries -> assistant turns -> one `thread.reply` each.
+// `rpc` is a `(method, params) => Promise` shim or a client exposing
+// `call(method, params)`. `onError(message)` receives every skipped/failed
+// write-back (default: stderr). Returning objects are exported for tests; the
+// production wiring lives in apply().
+export function createReplyRelay({ rpc, onError, maxAttempts = REPLY_RPC_ATTEMPTS } = {}) {
+  const attempts = Number.isInteger(maxAttempts) && maxAttempts > 0 ? maxAttempts : REPLY_RPC_ATTEMPTS
+  // followup user-message id -> { room, originalMessageID, asMember }
+  const pendingByMessage = new Map()
+  // "<sessionID>:<turn>" -> [{ room, originalMessageID, asMember }, ...]
+  const pendingByTurn = new Map()
+  // "<sessionID>:<turn>" -> final-answer text of the latest assistant message
+  // with non-empty text (multi-step turns overwrite, never concatenate).
+  const latestTextByTurn = new Map()
+
+  function report(message) {
+    if (typeof onError === 'function') {
+      try { onError(message) } catch {}
+      return
+    }
+    process.stderr.write(`dsh-plugin-pharos-runtime: ${message}\n`)
+  }
+
+  // Reserve a reply owed by a delivery about to be handed to DSH. Reserved
+  // before `agent.followup(...)` because an idle DSH agent claims the message
+  // synchronously; `onFollowupFailed` rolls it back when the handoff fails.
+  function onFollowupStarted({ messageID, payload, memberID } = {}) {
+    if (messageID === undefined || messageID === null) return false
+    const plan = replyPlanFromPayload(payload)
+    if (!plan) return false
+    pendingByMessage.set(String(messageID), { ...plan, asMember: String(memberID ?? '') })
+    debug(`reply reserved for delivery message ${messageID} room ${plan.room} anchor ${plan.originalMessageID}`)
+    return true
+  }
+
+  // The followup never reached DSH: no assistant turn can own that message.
+  function onFollowupFailed(messageID) {
+    if (messageID === undefined || messageID === null) return false
+    return pendingByMessage.delete(String(messageID))
+  }
+
+  // The followup message left the inbox inside turn N: remember which turn owes
+  // the reply. A claimed message we did not inject is a normal human turn.
+  function onClaimed({ messageID, sessionID, turn } = {}) {
+    if (messageID === undefined || messageID === null) return false
+    const pending = pendingByMessage.get(String(messageID))
+    if (!pending) {
+      debug(`claimed message ${messageID} has no reserved reply (normal human turn)`)
+      return false
+    }
+    pendingByMessage.delete(String(messageID))
+    debug(`claimed message ${messageID} -> session ${sessionID} turn ${turn}`)
+    if (!sessionID || turn === undefined || turn === null) {
+      report(`delivery message ${messageID} was claimed without a session/turn anchor; not writing a thread reply`)
+      return false
+    }
+    const key = turnKey(sessionID, turn)
+    const entries = pendingByTurn.get(key) ?? []
+    entries.push({ ...pending, asMember: pending.asMember || String(sessionID), sessionID: String(sessionID), turn })
+    pendingByTurn.set(key, entries)
+    return true
+  }
+
+  async function deliver(entry, text) {
+    const params = {
+      room: entry.room,
+      asMember: entry.asMember,
+      text,
+      messageId: entry.originalMessageID,
+    }
+    if (!params.room || !params.asMember || !String(params.text ?? '').trim() || !params.messageId) {
+      report(`refusing to fabricate a thread reply (room=${params.room || '<empty>'} asMember=${params.asMember || '<empty>'} messageId=${params.messageId || '<empty>'})`)
+      return false
+    }
+    let lastError
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        await callRuntimeRPC(rpc, 'thread.reply', params)
+        return true
+      } catch (error) {
+        lastError = error
+        report(`thread.reply attempt ${attempt}/${attempts} failed for room ${entry.room} message ${entry.originalMessageID}: ${errorText(error)}`)
+      }
+    }
+    report(`thread.reply failed after ${attempts} attempts for room ${entry.room} message ${entry.originalMessageID}; the assistant text was not written back: ${errorText(lastError)}`)
+    return false
+  }
+
+  async function deliverTurn(turn, pending, text) {
+    if (!String(text ?? '').trim()) {
+      report(`turn ${turn} ended without assistant text; not writing a thread reply for ${pending.length} delivery message(s)`)
+      return false
+    }
+    const results = await Promise.all(pending.map(entry => deliver(entry, text)))
+    return results.every(Boolean)
+  }
+
+  // Handle one committed session event. `assistant/message` only remembers text
+  // for turns that actually owe a reply; `turn/end` drains and posts it.
+  //
+  // Final-answer selection: a DSH turn can have several steps (tool calls plus
+  // narration), so the reply is the text of the LAST assistant/message event of
+  // the turn that has non-empty text — a later tool-only step keeps the earlier
+  // non-empty text instead of concatenating intermediate commentary/narration.
+  //
+  // Returns a promise for `turn/end` (awaitable in tests; the live handler
+  // ignores it) and never rejects.
+  function onSessionEvent(session, event) {
+    try {
+      const sessionID = String(session?.id ?? '')
+      if (!sessionID || !event || typeof event.type !== 'string') return undefined
+      const turn = event?.data?.turn
+      const key = turnKey(sessionID, turn)
+      if (event.type === 'assistant/message') {
+        if (!pendingByTurn.has(key)) return undefined
+        const content = event?.data?.message?.content
+        if (!Array.isArray(content)) return undefined
+        const text = assistantMessageText(content)
+        if (text.trim()) latestTextByTurn.set(key, text)
+        return undefined
+      }
+      if (event.type !== 'turn/end') return undefined
+      const text = latestTextByTurn.get(key) ?? ''
+      latestTextByTurn.delete(key)
+      const pending = pendingByTurn.get(key)
+      debug(`turn/end ${key}: ${pending?.length ?? 0} reserved reply(ies)`)
+      if (!pending || pending.length === 0) return undefined
+      pendingByTurn.delete(key)
+      const endKind = event?.data?.reason?.kind
+      if (endKind !== undefined && endKind !== 'completed') {
+        report(`turn ${turn} ended with reason ${String(endKind)}; relaying its committed assistant text`)
+      }
+      return deliverTurn(turn, pending, text).catch(error => {
+        report(`turn ${turn}: thread reply write-back failed: ${errorText(error)}`)
+        return false
+      })
+    } catch (error) {
+      report(`session/event handler failed: ${errorText(error)}`)
+      return undefined
+    }
+  }
+
+  // Drop correlation state for a disposed agent session (no leak on long runs).
+  function onAgentDisposed(agentOrSessionID) {
+    const sessionID = String(
+      typeof agentOrSessionID === 'string'
+        ? agentOrSessionID
+        : (agentOrSessionID?.session?.id || agentOrSessionID?.id || ''),
+    )
+    if (!sessionID) return
+    for (const [messageID, plan] of pendingByMessage) {
+      if (plan.asMember === sessionID) pendingByMessage.delete(messageID)
+    }
+    const prefix = `${sessionID}:`
+    for (const key of [...pendingByTurn.keys()]) if (key.startsWith(prefix)) pendingByTurn.delete(key)
+    for (const key of [...latestTextByTurn.keys()]) if (key.startsWith(prefix)) latestTextByTurn.delete(key)
+  }
+
+  function pendingCounts() {
+    return { messages: pendingByMessage.size, turns: pendingByTurn.size, texts: latestTextByTurn.size }
+  }
+
+  return {
+    onFollowupFailed,
+    onFollowupStarted,
+    onClaimed,
+    onSessionEvent,
+    onAgentDisposed,
+    pendingCounts,
+    replyPlanFromPayload,
+  }
+}
+
 export function apply(ctx) {
   const runtime = new PharosRuntimeClient()
+  // Assistant-reply write-back: correlate delivery followups to their DSH turn
+  // and post one idempotent `thread.reply` per turn (approach B). Errors are
+  // logged to stderr and never break the delivery poll loop.
+  const replyRelay = createReplyRelay({
+    rpc: (method, params) => runtime.call(method, params),
+    onError: message => process.stderr.write(`dsh-plugin-pharos-runtime: ${message}\n`),
+  })
   const driverID = `dsh:${process.pid}`
   const conversations = new Map()
   const stateSequences = new Map()
@@ -350,6 +631,8 @@ export function apply(ctx) {
         // already acked (or vanished) is never followed up a second time here.
         await handleDeliveryPoll(agent, { conversationID, sessionID }, runtime, {
           isArchived: () => archivedSessionIDs().has(sessionID),
+          onFollowupStarted: replyRelay.onFollowupStarted,
+          onFollowupFailed: replyRelay.onFollowupFailed,
         })
       }
     } catch (error) {
@@ -360,6 +643,21 @@ export function apply(ctx) {
   }
 
   ctx.on('agent/created', payload => registerAgent(payload?.agent || payload).catch(() => {}))
+  // Reply correlation (approach B): `agent/inbox/claimed` tells us which turn
+  // claimed the followup user message we injected; `session/event` carries the
+  // turn's committed assistant text and its end. The relay only writes back for
+  // deliveries that carried a room + original message anchor and produced text.
+  ctx.on('agent/inbox/claimed', payload => {
+    const agent = payload?.agent
+    replyRelay.onClaimed({
+      messageID: payload?.message?.id,
+      sessionID: String(agent?.session?.id || agent?.id || ''),
+      turn: payload?.turn,
+    })
+  })
+  ctx.on('session/event', (session, event) => {
+    void replyRelay.onSessionEvent(session, event)
+  })
   ctx.on('agent/status', payload => {
     const agent = payload?.agent || payload
     reportAgentState(agent, payload?.status || agent?.status || 'idle').catch(() => {})
@@ -380,6 +678,7 @@ export function apply(ctx) {
     stateSequences.delete(sessionID)
     lastStateReports.delete(sessionID)
     registrations.delete(sessionID)
+    replyRelay.onAgentDisposed(sessionID)
   })
 
   // Event-driven archive refresh: 'domain/changed' fires on every workspace
@@ -407,8 +706,11 @@ export const __testing = {
   ARCHIVED_DETAIL,
   CONSUMED_DETAIL,
   DRIVER_CAPABILITIES,
+  THREAD_REPLY_ATTEMPTS,
   buildUserMessage,
+  createReplyRelay,
   deliveryText,
   handleDeliveryPoll,
+  replyPlanFromPayload,
   userMessage,
 }

@@ -11,6 +11,7 @@ pub mod error;
 pub mod reply;
 pub mod resolve;
 pub mod session;
+pub(crate) mod thread_turns;
 pub mod transport;
 
 pub use codex::{CodexSessionAdapter, msg_test_root, run_jsonl_daemon_proxy_bridge};
