@@ -380,3 +380,22 @@ STATUS: RUST-P0-DONE
 STATUS: RUST-B1-MERGED — 09192f0213b3977c0a68ec00368446045284eea1
 STATUS: RUST-B2-MERGED — 144cab6e3485d47bca45c2514a388b7167e03b71
 STATUS: RUST-B3-MERGED — 648c22892a52a27812de44f75b306d5fd23b4234
+
+## 2026-11-11 — WIP salvage (partial)
+
+STATUS: WIP-SALVAGE-PARTIAL
+
+Worktree `rust/wip-salvage` starts at `6f33c33`; no push or merge. Snapshot `cbb7c8e` was read from Git objects. Commits: `b1ff80c` preserves historical validation and ideas; `8318e59` adds standalone session progress models; `80fd55d` retains the DSH runtime socket alias; `d3550cf` preserves WIP evidence and pitfalls; `0ecc1e1` fixes Codex fork routing by concrete thread ID with a regression test; `6ea3d72` rejects unrecognized approval choices; `9913d63` documents gaps.
+
+The workspace/WebCanvas UI, remaining ClientKit changes, DSH reply flow and iOS changes have **not** been ported. The WIP workspace requires the native bridge and older contracts, while the current `pharos-web` executable uses fake services. Deleted Swift backend code and its backend-specific tests were not restored. See [WIP salvage gaps](2026-11-11_wip-salvage-gaps.md) for feature-level coverage and remaining work. The workspace UI port and reconciliation of other compatible WIP changes remain open; do not treat this as WIP-SALVAGE-DONE.
+
+Gate results after code changes (2026-11-11; PATH includes `/opt/homebrew/bin`, Rust commands after `source "$HOME/.cargo/env"`):
+
+- `swift build`: PASS — `Build complete!`.
+- `swift test --filter ArchitectureBoundary`: PASS — 4 tests, 0 failures.
+- `swift test --filter PharosClientKitTests`: PASS with one skipped live HTTP smoke — 5 tests executed, 1 skipped, 0 failures; `PHAROS_SMOKE_BASE_URL` was not set.
+- `cd rust && cargo fmt --all -- --check`: PASS — exit 0.
+- `cd rust && cargo clippy --workspace --all-targets -- -D warnings`: PASS — `Finished dev profile`.
+- `cd rust && cargo test --workspace`: PASS — 89 tests passed, 0 failed, including `codex_forks_register_concrete_thread_ids`.
+
+Full command output is in `internal/evidence/2026-11-11-wip-salvage-{swift-build,swift-boundary,swift-client,cargo-fmt,cargo-clippy,cargo-test}.log` (local ignored files). No live host or GUI verification was performed.
