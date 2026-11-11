@@ -19,10 +19,57 @@
     }
   }
 
+  // Product API prefers same-origin fetch against the S4 daemon.
+  // pharosBridge remains only as a legacy compatibility shim (file:// / desktop-mesh).
+  let sessionContext = { sessionId: null, approvalId: null };
+
+  function apiBase() {
+    // When served by pharos-web, relative /api/v1 works. When loaded from file://,
+    // callers should set window.__PHAROS_API_BASE__ (optional).
+    if (typeof window.__PHAROS_API_BASE__ === 'string' && window.__PHAROS_API_BASE__.length > 0) {
+      return window.__PHAROS_API_BASE__.replace(/\/$/, '');
+    }
+    if (window.location && window.location.protocol && window.location.protocol.indexOf('http') === 0) {
+      return '';
+    }
+    return '';
+  }
+
   function postToNative(action, payload) {
     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pharosBridge) {
       window.webkit.messageHandlers.pharosBridge.postMessage({ action, payload });
     }
+  }
+
+  function mapApprovalDecision(choice) {
+    switch (choice) {
+      case 'allowed_always': return 'allowedAlways';
+      case 'rejected': return 'rejected';
+      default: return 'allowedOnce';
+    }
+  }
+
+  async function resolveApprovalViaFetch(choice) {
+    const sessionId = sessionContext.sessionId;
+    const approvalId = sessionContext.approvalId;
+    if (!sessionId || !approvalId) {
+      return false;
+    }
+    const url = apiBase() + '/api/v1/sessions/' + encodeURIComponent(sessionId) + '/approval';
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        approvalId: approvalId,
+        decision: mapApprovalDecision(choice)
+      })
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      console.error('pharos resolveApproval failed', res.status, text);
+      throw new Error('resolveApproval HTTP ' + res.status);
+    }
+    return true;
   }
 
   window.toggleLiveReasoning = function() {
@@ -36,6 +83,36 @@
 
   // Exposed API to Swift via evaluateJavaScript
   window.pharosAPI = {
+    setSessionContext: function(sessionId, approvalId) {
+      sessionContext.sessionId = sessionId || null;
+      sessionContext.approvalId = approvalId || null;
+    },
+
+    /// Load session history from the daemon API (preferred over bridge push when online).
+    loadSessionHistory: async function(sessionId) {
+      if (!sessionId) return;
+      const url = apiBase() + '/api/v1/sessions/' + encodeURIComponent(sessionId) + '/history';
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('history HTTP ' + res.status);
+      const turns = await res.json();
+      // Compact API turns use assistantText[]; adapt to setTurns shape when steps absent.
+      const adapted = (Array.isArray(turns) ? turns : []).map(function(turn) {
+        if (turn.steps) return turn;
+        const texts = turn.assistantText || [];
+        return Object.assign({}, turn, {
+          steps: [{
+            stepId: (turn.turnId || 't') + '-step1',
+            stepNumber: 1,
+            status: 'completed',
+            blocks: texts.map(function(text, i) {
+              return { blockId: (turn.turnId || 't') + '-a' + i, kind: { type: 'assistantText', text: text } };
+            })
+          }]
+        });
+      });
+      window.pharosAPI.setTurns(adapted);
+    },
+
     setTheme: function(isDark) {
       document.body.className = isDark ? 'theme-dark' : 'theme-light';
     },
@@ -146,8 +223,16 @@
   };
 
   window.resolveApproval = function(choice) {
-    postToNative('resolveApproval', { choice });
     liveApprovalSlotEl.innerHTML = '';
+    resolveApprovalViaFetch(choice).then(function(didFetch) {
+      if (!didFetch) {
+        // Legacy shim: only used when session context is missing (file:// / desktop-mesh).
+        postToNative('resolveApproval', { choice });
+      }
+    }).catch(function(err) {
+      console.error(err);
+      postToNative('resolveApproval', { choice });
+    });
   };
 
   function createBlockElement(block) {

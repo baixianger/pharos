@@ -9,6 +9,8 @@ public struct PharosMainShellView: View {
 
     // Client service providing data
     public let clientService: PharosClientService
+    /// Optional hook for the Projects "+" affordance (wired from ContentView / ProjectStore).
+    public let onAddProject: (() -> Void)?
 
     // Navigation and selection state
     @State private var selectedTab: NavigationTab = .sessions
@@ -33,8 +35,12 @@ public struct PharosMainShellView: View {
     @State private var currentModel: String = "gpt-4o"
     @State private var currentMode: String = "yolo"
 
-    public init(clientService: PharosClientService = MockPharosClientService()) {
+    public init(
+        clientService: PharosClientService = MockPharosClientService(),
+        onAddProject: (() -> Void)? = nil
+    ) {
         self.clientService = clientService
+        self.onAddProject = onAddProject
     }
 
     public var body: some View {
