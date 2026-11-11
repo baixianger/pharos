@@ -2464,10 +2464,17 @@ dependencies = [
  "pharos-agent-core",
  "pharos-api",
  "pharos-codex-adapter",
+ "pharos-goals",
+ "pharos-mesh",
+ "pharos-protocol",
+ "pharos-session",
  "pharos-thread",
  "serde",
  "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
  "time",
+ "tokio",
  "uuid",
 ]
 
@@ -2598,9 +2605,11 @@ dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
  "hex",
+ "pharos-api",
  "pharos-iroh",
  "pharos-protocol",
  "pharos-replica",
+ "pharos-session",
  "pharos-store-schema",
  "rand 0.8.8",
  "serde",
@@ -2645,11 +2654,13 @@ dependencies = [
 name = "pharos-session"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "pharos-api",
  "pharos-codex-adapter",
  "pharos-goals",
  "pharos-hitl",
  "pharos-protocol",
+ "pharos-replica",
  "pharos-store-schema",
  "serde",
  "serde_json",

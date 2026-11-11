@@ -5,6 +5,10 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Cross-Host Session query/action wire bodies (`host.session.query.v1` /
+/// `host.session.action.v1`). Additive: payloads carry their own version.
+pub mod host_session;
+
 /// Frozen contract semver for this Phase 0 tag (`rust-contracts-0.1.0`).
 pub const CONTRACTS_VERSION: &str = "0.1.0";
 

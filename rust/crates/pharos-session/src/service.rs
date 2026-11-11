@@ -21,7 +21,11 @@ use crate::events::{
 };
 
 /// Sync SessionService surface (S4 wraps into async HTTP handlers).
-pub trait SessionService: Send {
+///
+/// `Sync` is required so a shared `Arc<dyn SessionService>` can back the
+/// cross-host [`crate::host_bridge::SessionServiceHostHandler`], which the
+/// replica dispatcher requires to be `Send + Sync`.
+pub trait SessionService: Send + Sync {
     fn list_sessions(&self) -> Result<Vec<SessionSummary>, SessionError>;
     fn get_session(&self, session_id: &str) -> Result<SessionSummary, SessionError>;
     fn list_history(&self, session_id: &str) -> Result<Vec<CanonicalTurn>, SessionError>;

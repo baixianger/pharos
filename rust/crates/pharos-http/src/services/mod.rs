@@ -13,6 +13,7 @@ pub mod fake;
 mod real;
 mod real_session;
 mod real_thread;
+pub mod remote_session;
 mod session;
 mod thread;
 
@@ -25,5 +26,6 @@ pub use fake::{FakeEventBus, FakeSessionService, FakeThreadService};
 pub use real::{RealOptions, RealServiceError, SessionAdapterChoice, build_real_app_state};
 pub use real_session::RealSessionService;
 pub use real_thread::RealThreadService;
+pub use remote_session::RemoteSessionMergedService;
 pub use session::{CreateSessionRequest, SessionService};
 pub use thread::{CreateThreadRequest, ThreadService};
