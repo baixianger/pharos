@@ -6,17 +6,21 @@ public struct CanonicalApprovalRequest: Sendable, Codable, Equatable, Identifiab
     public let approvalId: String
     public let sessionId: String
     public let kind: ApprovalKind
+    /// Choices the backend can accept; nil means an older producer did not specify them.
+    public let availableChoices: [ApprovalChoice]?
     public let rawVendorPayload: [String: JSONValue]?
 
     public init(
         approvalId: String,
         sessionId: String,
         kind: ApprovalKind,
+        availableChoices: [ApprovalChoice]? = nil,
         rawVendorPayload: [String: JSONValue]? = nil
     ) {
         self.approvalId = approvalId
         self.sessionId = sessionId
         self.kind = kind
+        self.availableChoices = availableChoices
         self.rawVendorPayload = rawVendorPayload
     }
 }
@@ -74,12 +78,17 @@ public struct CanonicalQuestionOption: Sendable, Codable, Equatable, Identifiabl
     public let question: String
     public let options: [String]
     public let isMultiSelect: Bool
+    public let allowsFreeText: Bool?
+    public let isSecret: Bool?
 
-    public init(id: String, question: String, options: [String], isMultiSelect: Bool = false) {
+    public init(id: String, question: String, options: [String], isMultiSelect: Bool = false,
+                allowsFreeText: Bool? = nil, isSecret: Bool? = nil) {
         self.id = id
         self.question = question
         self.options = options
         self.isMultiSelect = isMultiSelect
+        self.allowsFreeText = allowsFreeText
+        self.isSecret = isSecret
     }
 }
 
@@ -88,6 +97,8 @@ public enum ApprovalChoice: String, Sendable, Codable, Equatable {
     case allowedOnce = "allowed_once"
     case allowedAlways = "allowed_always"
     case rejected = "rejected"
+    /// Deny the action and interrupt the current turn when the provider offers it.
+    case cancelled = "cancelled"
 }
 
 /// Full decision payload delivered to resolve an approval request.

@@ -54,6 +54,22 @@ public actor HttpPharosClientService: PharosClientService {
         return wire.map { $0.asClient() }
     }
 
+    public func fetchSessionProgress(sessionId: String) async throws -> CanonicalSessionProgress? {
+        try await getJSON(path: "api/v1/sessions/\(Self.encodePathComponent(sessionId))/progress")
+    }
+
+    public func sendSessionMessage(sessionId: String, text: String, files: [SessionFileUpload], requestId: String) async throws -> CanonicalTurn {
+        guard files.isEmpty else { throw PharosClientError.operationFailed("Session attachments are unavailable in the Rust API") }
+        let wire: APICanonicalTurn = try await postJSON(
+            path: "api/v1/sessions/\(Self.encodePathComponent(sessionId))/messages",
+            body: ["text": text, "requestId": requestId]
+        )
+        let turn = wire.asClient()
+        if turn.status == .inProgress { broadcast(.turnStarted(turn)) }
+        else { broadcast(.turnCompleted(turn)) }
+        return turn
+    }
+
     public func fetchThreadMessages(threadId: String) async throws -> [ClientThreadMessage] {
         let encoded = Self.encodePathComponent(threadId)
         let wire: [APIThreadMessage] = try await getJSON(path: "api/v1/threads/\(encoded)/messages")
@@ -74,7 +90,8 @@ public actor HttpPharosClientService: PharosClientService {
             body: body
         )
         let turn = wire.asClient()
-        broadcast(.turnCompleted(turn))
+        if turn.status == .inProgress { broadcast(.turnStarted(turn)) }
+        else { broadcast(.turnCompleted(turn)) }
         return turn
     }
 
@@ -93,9 +110,15 @@ public actor HttpPharosClientService: PharosClientService {
         decision: ApprovalDecision
     ) async throws {
         let encoded = Self.encodePathComponent(sessionId)
+        guard decision.answers?.isEmpty != false else {
+            throw PharosClientError.operationFailed("Questionnaire answers are unavailable in the Rust API")
+        }
+        guard let apiDecision = decision.choice.apiDecisionValue else {
+            throw PharosClientError.operationFailed("This approval choice is unavailable in the Rust API")
+        }
         let body: [String: String] = [
             "approvalId": approvalId,
-            "decision": decision.choice.apiDecisionValue,
+            "decision": apiDecision,
         ]
         let _: [String: Bool] = try await postJSON(
             path: "api/v1/sessions/\(encoded)/approval",
@@ -244,12 +267,24 @@ public actor HttpPharosClientService: PharosClientService {
         }
     }
 
-    private func mapWireEvent(eventType: String, data: Data) -> PharosClientEvent? {
+    func mapWireEvent(eventType: String, data: Data) -> PharosClientEvent? {
         switch eventType {
         case "sessionUpdated":
             struct Envelope: Decodable { let session: APISessionSummary }
             guard let env = try? decoder.decode(Envelope.self, from: data) else { return nil }
             return .sessionUpdated(env.session.asClient())
+        case "sessionConnectionRestored":
+            struct Envelope: Decodable { let sessionId: String }
+            guard let env = try? decoder.decode(Envelope.self, from: data) else { return nil }
+            return .sessionConnectionRestored(sessionId: env.sessionId)
+        case "sessionGoalUpdated":
+            struct Envelope: Decodable { let sessionId: String; let goal: CanonicalSessionGoal? }
+            guard let env = try? decoder.decode(Envelope.self, from: data) else { return nil }
+            return .sessionGoalUpdated(sessionId: env.sessionId, goal: env.goal)
+        case "sessionTodosUpdated":
+            struct Envelope: Decodable { let sessionId: String; let todos: [CanonicalSessionTodo] }
+            guard let env = try? decoder.decode(Envelope.self, from: data) else { return nil }
+            return .sessionTodosUpdated(sessionId: env.sessionId, todos: env.todos)
         case "turnStarted":
             struct Envelope: Decodable { let turn: APICanonicalTurn }
             guard let env = try? decoder.decode(Envelope.self, from: data) else { return nil }
@@ -261,7 +296,11 @@ public actor HttpPharosClientService: PharosClientService {
         case "approvalRequired", "approvalUpdated":
             struct Envelope: Decodable { let approval: APIApprovalRequest }
             guard let env = try? decoder.decode(Envelope.self, from: data) else { return nil }
-            return .approvalRequired(env.approval.asClient())
+            return eventType == "approvalUpdated" ? .approvalUpdated(env.approval.asClient()) : .approvalRequired(env.approval.asClient())
+        case "approvalWithdrawn":
+            struct Envelope: Decodable { let approvalId: String }
+            guard let env = try? decoder.decode(Envelope.self, from: data) else { return nil }
+            return .approvalWithdrawn(approvalId: env.approvalId)
         case "approvalResolved":
             struct Envelope: Decodable {
                 let approvalId: String
@@ -272,7 +311,8 @@ public actor HttpPharosClientService: PharosClientService {
             switch env.decision {
             case "allowedAlways": choice = .allowedAlways
             case "rejected": choice = .rejected
-            default: choice = .allowedOnce
+            case "allowedOnce": choice = .allowedOnce
+            default: return nil
             }
             return .approvalResolved(approvalId: env.approvalId, decision: ApprovalDecision(choice: choice))
         case "threadMessageReceived":

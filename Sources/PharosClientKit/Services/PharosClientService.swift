@@ -1,5 +1,11 @@
 import Foundation
 
+public struct SessionFileUpload: Sendable, Equatable {
+    public let name: String
+    public let data: Data
+    public init(name: String, data: Data) { self.name = name; self.data = data }
+}
+
 /// Errors surfaced by the Pharos client service to presentation consumers.
 public enum PharosClientError: Error, Sendable, Codable, Equatable {
     /// Explicit error surfaced when a vendor backend daemon is unreachable or restarted.
@@ -73,18 +79,49 @@ public enum PharosClientError: Error, Sendable, Codable, Equatable {
     }
 }
 
+public struct SessionCommandResult: Sendable, Equatable {
+    public let text: String
+    public init(text: String) { self.text = text }
+}
+
+/// Optional capability of a Host-backed client, separate from thread/project APIs.
+public protocol HostSessionInventoryReporting: Sendable {
+    func hostAgentInventory() async throws -> HostSessionInventoryStatus
+}
+
+public protocol HostSessionInventorySnapshotReporting: Sendable {
+    func fetchHostSessionInventorySnapshot() async throws -> HostSessionInventorySnapshot
+}
+
+/// Host-local project UUID to checkout path; identity is supplied by the
+/// authenticated peer transport, not by paths or machine display names.
+public protocol HostProjectCheckoutReporting: Sendable {
+    func fetchHostProjectCheckouts() async throws -> [UUID: String]
+}
+
 /// The unified versioned client service contract powering the Pharos desktop UI.
 /// Pure presentation components communicate exclusively through this protocol.
 public protocol PharosClientService: Sendable {
     func fetchSessions() async throws -> [ClientSessionSummary]
+    func fetchSessionInventoryIssues() async -> [ClientSessionInventoryIssue]
     func fetchThreads() async throws -> [ClientThreadSummary]
+    func supportsThreadSessionBinding() async -> Bool
+    func threadSessionBindingCandidates() async -> [ClientSessionSummary]
+    func bindThreadSession(threadId: String, sessionId: String, nickname: String) async throws
     func fetchProjects() async throws -> [ClientProjectSummary]
     func fetchSessionHistory(sessionId: String) async throws -> [CanonicalTurn]
+    func fetchSessionConfiguration(sessionId: String) async throws -> [JSONValue]?
+    func supportsSessionTextAttachments(sessionId: String) async -> Bool
+    func setSessionConfiguration(sessionId: String, configId: String, value: String) async throws -> [JSONValue]
+    func fetchSessionProgress(sessionId: String) async throws -> CanonicalSessionProgress?
+    func fetchSessionApproval(sessionId: String) async throws -> CanonicalApprovalRequest?
     func fetchThreadMessages(threadId: String) async throws -> [ClientThreadMessage]
     func fetchMemberDetail(name: String) async throws -> ClientMemberDetail
 
     // 1:1 Session actions (live streaming, steering, approvals)
+    func executeSessionCommand(sessionId: String, line: String) async throws -> SessionCommandResult?
     func sendSessionMessage(sessionId: String, text: String) async throws -> CanonicalTurn
+    func sendSessionMessage(sessionId: String, text: String, files: [SessionFileUpload], requestId: String) async throws -> CanonicalTurn
     func steerSession(sessionId: String, text: String) async throws
     func resolveSessionApproval(sessionId: String, approvalId: String, decision: ApprovalDecision) async throws
 
@@ -100,4 +137,27 @@ public protocol PharosClientService: Sendable {
 
     /// Async stream of real-time client events.
     func events() -> AsyncStream<PharosClientEvent>
+}
+
+public extension PharosClientService {
+    func supportsThreadSessionBinding() async -> Bool { false }
+    func threadSessionBindingCandidates() async -> [ClientSessionSummary] { [] }
+    func bindThreadSession(threadId: String, sessionId: String, nickname: String) async throws {
+        throw PharosClientError.operationFailed("Adding a Session to this Thread is unavailable")
+    }
+    func supportsSessionTextAttachments(sessionId: String) async -> Bool { false }
+    func sendSessionMessage(sessionId: String, text: String, files: [SessionFileUpload], requestId: String) async throws -> CanonicalTurn {
+        guard files.isEmpty else { throw PharosClientError.operationFailed("Attachments are unavailable for this agent") }
+        return try await sendSessionMessage(sessionId: sessionId, text: text)
+    }
+    func fetchSessionConfiguration(sessionId: String) async throws -> [JSONValue]? { nil }
+    func setSessionConfiguration(sessionId: String, configId: String, value: String) async throws -> [JSONValue] {
+        throw PharosClientError.operationFailed("Session configuration is unavailable")
+    }
+    func fetchSessionInventoryIssues() async -> [ClientSessionInventoryIssue] { [] }
+    func executeSessionCommand(sessionId: String, line: String) async throws -> SessionCommandResult? {
+        throw PharosClientError.operationFailed("Session commands are unavailable in the Rust API")
+    }
+    func fetchSessionProgress(sessionId: String) async throws -> CanonicalSessionProgress? { nil }
+    func fetchSessionApproval(sessionId: String) async throws -> CanonicalApprovalRequest? { nil }
 }

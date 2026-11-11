@@ -6,6 +6,33 @@ public enum SessionActivityStatus: String, Sendable, Codable, Equatable {
     case working = "working"
     case needsHuman = "needs_human"
     case stopped = "stopped"
+    case unknown = "unknown"
+}
+
+public struct ClientSessionInventoryIssue: Sendable, Codable, Equatable {
+    public let host: String
+    public let agent: String
+
+    public init(host: String, agent: String) { self.host = host; self.agent = agent }
+}
+
+public struct HostSessionInventoryStatus: Sendable, Codable, Equatable {
+    public let supportedAgents: [String]
+    public let unavailableAgents: [String]
+
+    public init(supportedAgents: [String], unavailableAgents: [String]) {
+        self.supportedAgents = supportedAgents
+        self.unavailableAgents = unavailableAgents
+    }
+}
+
+/// Sessions and availability from the same Host inventory operation.
+public struct HostSessionInventorySnapshot: Sendable, Codable, Equatable {
+    public let sessions: [ClientSessionSummary]
+    public let status: HostSessionInventoryStatus
+    public init(sessions: [ClientSessionSummary], status: HostSessionInventoryStatus) {
+        self.sessions = sessions; self.status = status
+    }
 }
 
 /// Summary item representing an active 1:1 agent session in the Sessions tab.
@@ -21,6 +48,10 @@ public struct ClientSessionSummary: Sendable, Codable, Equatable, Identifiable {
     public let updatedAt: Date
     public let avatarSeed: String
     public let rawVendorPayload: [String: JSONValue]?
+    /// True when the last inventory refresh failed and this row is cached.
+    public let inventoryStale: Bool?
+    /// Actual remote transport used for this row; absent for local sessions.
+    public let connectionRoute: String?
 
     public init(
         sessionId: String,
@@ -32,7 +63,9 @@ public struct ClientSessionSummary: Sendable, Codable, Equatable, Identifiable {
         latestMessagePreview: String? = nil,
         updatedAt: Date = Date(),
         avatarSeed: String,
-        rawVendorPayload: [String: JSONValue]? = nil
+        rawVendorPayload: [String: JSONValue]? = nil,
+        inventoryStale: Bool? = nil,
+        connectionRoute: String? = nil
     ) {
         self.sessionId = sessionId
         self.machineId = machineId
@@ -44,6 +77,8 @@ public struct ClientSessionSummary: Sendable, Codable, Equatable, Identifiable {
         self.updatedAt = updatedAt
         self.avatarSeed = avatarSeed
         self.rawVendorPayload = rawVendorPayload
+        self.inventoryStale = inventoryStale
+        self.connectionRoute = connectionRoute
     }
 }
 
@@ -73,22 +108,33 @@ public struct ClientThreadSummary: Sendable, Codable, Equatable, Identifiable {
 
 /// Summary item representing a registered workspace repository in the Projects tab.
 public struct ClientProjectSummary: Sendable, Codable, Equatable, Identifiable {
-    public var id: String { projectPath }
+    public var id: String { projectId ?? projectPath }
+    public let projectId: String?
     public let projectPath: String
     public let name: String
     public let trackedDevices: [String]
     public let activeSessionsCount: Int
+    /// nil means the session inventory has not been loaded yet.
+    public let relatedSessionIds: [String]?
+    /// Hosts whose checkout mappings could not be read; their project membership is unknown.
+    public let checkoutUnavailableHosts: [String]?
 
     public init(
         projectPath: String,
         name: String,
         trackedDevices: [String] = [],
-        activeSessionsCount: Int = 0
+        activeSessionsCount: Int = 0,
+        projectId: String? = nil,
+        relatedSessionIds: [String]? = nil,
+        checkoutUnavailableHosts: [String]? = nil
     ) {
         self.projectPath = projectPath
         self.name = name
         self.trackedDevices = trackedDevices
         self.activeSessionsCount = activeSessionsCount
+        self.projectId = projectId
+        self.relatedSessionIds = relatedSessionIds
+        self.checkoutUnavailableHosts = checkoutUnavailableHosts
     }
 }
 

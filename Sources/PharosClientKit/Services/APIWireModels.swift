@@ -64,7 +64,7 @@ struct APISessionSummary: Decodable, Sendable {
             status: SessionActivityStatus(apiValue: status),
             latestMessagePreview: latestMessagePreview,
             updatedAt: APIDate.parse(updatedAt),
-            avatarSeed: avatarSeed
+            avatarSeed: avatarSeed, inventoryStale: inventoryStale, connectionRoute: connectionRoute
         )
     }
 }
@@ -100,7 +100,7 @@ struct APIProjectSummary: Decodable, Sendable {
             projectPath: projectPath,
             name: name,
             trackedDevices: trackedDevices,
-            activeSessionsCount: Int(activeSessionsCount)
+            activeSessionsCount: Int(activeSessionsCount), projectId: projectId, relatedSessionIds: relatedSessionIds
         )
     }
 }
@@ -115,6 +115,7 @@ struct APIThreadMessage: Decodable, Sendable {
     let timestamp: String
     let receipt: String
     let targetMemberIds: [String]?
+    let replyTo: APIThreadReply?
 
     func asClient() -> ClientThreadMessage {
         ClientThreadMessage(
@@ -125,9 +126,16 @@ struct APIThreadMessage: Decodable, Sendable {
             senderAvatarSeed: senderAvatarSeed,
             text: text,
             timestamp: APIDate.parse(timestamp),
-            receipt: DeliveryReceiptState(apiValue: receipt)
+            receipt: DeliveryReceiptState(apiValue: receipt),
+            replyTo: replyTo.map { ClientThreadReply(messageId: $0.messageId, senderName: $0.senderName, preview: $0.preview) }
         )
     }
+}
+
+struct APIThreadReply: Decodable, Sendable {
+    let messageId: String
+    let senderName: String
+    let preview: String
 }
 
 /// Compact turn DTO from pharos-api (assistantText[], no full block tree yet).
@@ -174,12 +182,20 @@ struct APIApprovalRequest: Decodable, Sendable {
     let approvalId: String
     let sessionId: String
     let kind: APIApprovalKind
+    let availableChoices: [String]?
 
     func asClient() -> CanonicalApprovalRequest {
         CanonicalApprovalRequest(
             approvalId: approvalId,
             sessionId: sessionId,
-            kind: kind.asClient()
+            kind: kind.asClient(),
+            availableChoices: availableChoices.map { $0.compactMap { value in
+                switch value {
+                case "allowedOnce": return .allowedOnce
+                case "allowedAlways": return .allowedAlways
+                default: return ApprovalChoice(rawValue: value)
+                }
+            } }
         )
     }
 }
@@ -247,7 +263,7 @@ extension SessionActivityStatus {
         case "working": self = .working
         case "needs_human": self = .needsHuman
         case "stopped": self = .stopped
-        default: self = .idle
+        default: self = .unknown
         }
     }
 }
@@ -279,11 +295,12 @@ extension DeliveryReceiptState {
 
 extension ApprovalChoice {
     /// pharos-api `ApprovalDecision` serializes as camelCase variant names.
-    var apiDecisionValue: String {
+    var apiDecisionValue: String? {
         switch self {
         case .allowedOnce: return "allowedOnce"
         case .allowedAlways: return "allowedAlways"
         case .rejected: return "rejected"
+        case .cancelled: return nil
         }
     }
 }

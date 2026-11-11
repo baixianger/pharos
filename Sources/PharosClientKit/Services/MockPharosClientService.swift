@@ -1,11 +1,26 @@
 import Foundation
 
 /// In-memory implementation of `PharosClientService` for deterministic UI testing and previews.
-public actor MockPharosClientService: PharosClientService {
+public actor MockPharosClientService: PharosClientService, HostSessionInventoryReporting, HostSessionInventorySnapshotReporting, HostProjectCheckoutReporting {
     public var sessions: [ClientSessionSummary]
+    private var inventoryIssues: [ClientSessionInventoryIssue] = []
+    private var hostInventory = HostSessionInventoryStatus(supportedAgents: ["codex"], unavailableAgents: [])
+    private var hostCheckouts: [UUID: String]?
+    public func setHostAgentInventory(_ value: HostSessionInventoryStatus) { hostInventory = value }
+    public func hostAgentInventory() async throws -> HostSessionInventoryStatus { hostInventory }
+    public func fetchHostSessionInventorySnapshot() async throws -> HostSessionInventorySnapshot {
+        HostSessionInventorySnapshot(sessions: try await fetchSessions(), status: hostInventory)
+    }
+    public func setHostProjectCheckouts(_ value: [UUID: String]?) { hostCheckouts = value }
+    public func fetchHostProjectCheckouts() async throws -> [UUID: String] {
+        guard let hostCheckouts else { throw PharosClientError.operationFailed("Host checkout map is unavailable") }
+        return hostCheckouts
+    }
+    private var sessionConfigurations: [String: [JSONValue]] = [:]
     public var threads: [ClientThreadSummary]
     public var projects: [ClientProjectSummary]
     public var sessionHistories: [String: [CanonicalTurn]]
+    private var historyGate: (@Sendable () async throws -> Void)?
     public var threadMessages: [String: [ClientThreadMessage]]
     public var members: [String: ClientMemberDetail]
 
@@ -37,6 +52,31 @@ public actor MockPharosClientService: PharosClientService {
         }
     }
 
+    public func setInventoryIssues(_ issues: [ClientSessionInventoryIssue]) { inventoryIssues = issues }
+    public func fetchSessionInventoryIssues() async -> [ClientSessionInventoryIssue] { inventoryIssues }
+
+    public func setMockSessionConfiguration(_ options: [JSONValue], sessionId: String) { sessionConfigurations[sessionId] = options }
+    public func fetchSessionConfiguration(sessionId: String) async throws -> [JSONValue]? { sessionConfigurations[sessionId] }
+    public func setSessionConfiguration(sessionId: String, configId: String, value: String) async throws -> [JSONValue] {
+        guard var options = sessionConfigurations[sessionId], let index = options.firstIndex(where: { $0.objectValue?["id"]?.stringValue == configId }),
+              var option = options[index].objectValue,
+              let choices = option["options"]?.arrayValue,
+              choices.contains(where: { $0.objectValue?["value"]?.stringValue == value }) else {
+            throw PharosClientError.operationFailed("Configuration option is unavailable")
+        }
+        option["currentValue"] = .string(value)
+        options[index] = .object(option)
+        sessionConfigurations[sessionId] = options
+        emitEvent(.sessionConfigurationUpdated(sessionId: sessionId))
+        return options
+    }
+
+    public func setHistoryGate(_ gate: (@Sendable () async throws -> Void)?) { historyGate = gate }
+
+    public func setSessionHistory(_ turns: [CanonicalTurn], sessionId: String) {
+        sessionHistories[sessionId] = turns
+    }
+
     public func emitEvent(_ event: PharosClientEvent) {
         for continuation in eventContinuations.values {
             continuation.yield(event)
@@ -65,6 +105,7 @@ public actor MockPharosClientService: PharosClientService {
         guard let history = sessionHistories[sessionId] else {
             throw PharosClientError.sessionNotFound(sessionId)
         }
+        if let historyGate { try await historyGate() }
         return history
     }
 

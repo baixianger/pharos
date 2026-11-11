@@ -6,6 +6,22 @@ public enum DeliveryReceiptState: String, Sendable, Codable, Equatable {
     case delivered = "delivered"
     case consumed = "consumed"
     case unverifiedFallback = "unverified_fallback"
+    case deliveryUncertain = "delivery_uncertain"
+    case deliveryRejected = "delivery_rejected"
+    case deliveryMixed = "delivery_mixed"
+}
+
+/// Immutable snapshot of the message that a Thread reply refers to.
+public struct ClientThreadReply: Sendable, Codable, Equatable {
+    public let messageId: String
+    public let senderName: String
+    public let preview: String
+
+    public init(messageId: String, senderName: String, preview: String) {
+        self.messageId = messageId
+        self.senderName = senderName
+        self.preview = preview
+    }
 }
 
 /// A lightweight, plain chat bubble message exchanged within a collaborative Thread roster.
@@ -20,6 +36,7 @@ public struct ClientThreadMessage: Sendable, Codable, Equatable, Identifiable {
     public let timestamp: Date
     public let receipt: DeliveryReceiptState
     public let attachments: [CanonicalAttachment]
+    public let replyTo: ClientThreadReply?
 
     public init(
         id: String,
@@ -30,7 +47,8 @@ public struct ClientThreadMessage: Sendable, Codable, Equatable, Identifiable {
         text: String,
         timestamp: Date = Date(),
         receipt: DeliveryReceiptState = .pending,
-        attachments: [CanonicalAttachment] = []
+        attachments: [CanonicalAttachment] = [],
+        replyTo: ClientThreadReply? = nil
     ) {
         self.id = id
         self.threadId = threadId
@@ -41,5 +59,6 @@ public struct ClientThreadMessage: Sendable, Codable, Equatable, Identifiable {
         self.timestamp = timestamp
         self.receipt = receipt
         self.attachments = attachments
+        self.replyTo = replyTo
     }
 }
