@@ -1,6 +1,45 @@
 ---
 summary: 2026-11-11：Phase E（删除 Swift 后端模块）在 rust/phase-e 完成；见 docs/handoff-phase-e.md。
 ---
+
+**STATUS: WEB-REAL-SESSIONS-DONE — 494435f**
+**Stream:** `rust/web-real-sessions`，worktree `/workspace/pharos-rust/2026-11-11_dsh-team/wt/web-real-sessions`，分支 `rust/web-real-sessions`（base `4e381a4` = integrate/mesh2-into-main）。未 push。未改 Swift / `Sources/Pharos/Resources/WebCanvas/` / `webui/` / `Package.swift`（本流无需 WebCanvas 变更，asset_sync 逐字节检查保持绿；Swift 未在 Linux 编译，因未触碰无需验证）。
+
+**做了什么（真实 Session/Thread，不再假数据）**：
+- `pharos-web` 默认改为启动真实 S1/S2 后端（`pharos_http::services::build_real_app_state`）；假服务只在 `--fake`（显式参数，启动 WARN "data will NOT persist"）或测试中使用。
+- `RealThreadService`：真实 `pharos-thread` SQLite replica（`<data-dir>/mesh/replica.sqlite3`，PHASE0 rooms/memberships/messages）支撑 thread 列表/详情/messages/send/replyOnce/create；`ThreadError`→冻结的 `PharosApiError`；写路径向 WS `EventBus` 发 `threadMessageReceived`；store 的数字 epoch 时间戳在 HTTP 层归一化成 RFC3339（否则浏览器 `new Date()` 显示 Invalid Date，reviewer MEDIUM-1 已修复）；send 不会隐式建 thread（缺 thread 返回 404）。
+- `RealSessionService`：包 `pharos-session::AdapterSessionService`。`--session-adapter none`（默认）不 spawn vendor：sessions 列表为空、get/history 404、send/steer/approval/create 明确返回 `operationFailed`（message 含 `--session-adapter`，绝不伪造 turn/session）；`--session-adapter codex` 才接 live Codex adapter。progress 读持久化 `pharos-goals`（`<data-dir>/mesh/goals.sqlite3`），session 事件桥接到 WS bus；projects/inventory 不发明数据（projects 空列表，inventory 只报真实 sessions + configured/unavailable agents）。
+- CLI/ENV：`--data-dir`/`PHAROS_WEB_DATA_DIR`（默认 macOS `~/Library/Application Support/Pharos`，Linux `$XDG_DATA_HOME/pharos` 或 `~/.local/share/pharos`；测试用临时目录）、`--addr` 默认 `127.0.0.1:8787`、`--token`/`PHAROS_WEB_TOKEN`、`--session-adapter`/`PHAROS_WEB_SESSION_ADAPTER`（none|codex）、`--fake`。非 loopback 绑定（含 0.0.0.0/::）无 token 拒绝启动（`validate_bind` 在 CLI 和 `serve_with_token` 双重校验）；有 token 时 API 要求 `Authorization: Bearer` 或 `?token=`（常量时间比较、token Debug 脱敏、不入日志；`/health` 与静态 UI 免鉴权）。
+- router 只做最小追加：`POST /api/v1/threads`（`{threadId, memberIds}` → ThreadSummary，幂等，memberIds 先校验后建 room）、`POST /api/v1/sessions`（`{workspacePath, mode}`，无 live adapter 时明确 502）；现有路由形状未改。HITL 审批持久化（hitl-persist 流）与 Codex/dsh 自动回复（thread-autoreply 流）未触碰。
+- 数据目录与 CLI/daemon 共享：web `--data-dir` 是 Host 根（DB 在 `mesh/replica.sqlite3`）；`pharos-cli --data-dir <同一 Host 根>` 会解析到同一 `mesh/replica.sqlite3`（macOS 上 CLI 默认 `.../Pharos/Mesh` 与 web 的 `.../Pharos/mesh` 大小写不敏感即同一目录）。
+
+**改动 crate/文件**：`rust/crates/pharos-http/`（`Cargo.toml`、`src/lib.rs`、`src/router.rs`、`src/services/{mod,thread,session,fake,real,real_thread,real_session}.rs`、`tests/real_state_http.rs`）；`rust/crates/pharos-web/`（`Cargo.toml`、`src/{auth,lib,main}.rs`、`tests/real_sessions.rs`）；`rust/Cargo.lock`；`internal/evidence/2026-11-11_rust-web-real-sessions-review.md`（独立 reviewer 证据）；`docs/handoff.md`（本段）。提交序列：`98a241f`（真实服务+builder）、`788c2c8`（HTTP 真实集成测试）、`94177a7`（auth）、`3fc4826`（lib token/serve/validate_bind/data-dir）、`6e3de9c`（main 默认 real）、`dddcc00`（real_sessions 集成测试）、`494435f`（reviewer 发现项修复），最后为本 handoff/证据提交。
+
+**新增测试**：`pharos-http` 24（20 lib 单测：real thread 建/发/replyOnce/幂等/时间戳/RFC3339/坏 memberId 不落半成品、真实 session live+unconfigured 诚实错误、builder 持久化、fake 新路由；4 `tests/real_state_http.rs` 真实 state HTTP 集成：create→send→reply→GET、重建 state 后持久化、无假 session、真实 errors）；`pharos-web` 27（22 lib：auth 401/200 header+query、常量时间、Debug 脱敏、validate_bind、default_data_dir；+既有 acceptance 1、asset_sync 1；3 `tests/real_sessions.rs`：真实服务无假数据、诚实 session 错误、thread 创建→消息→grokbot reply→abort+重建 AppState 重启后数据仍在、token 真实 HTTP 矩阵）。workspace 合计 135 passed / 0 failed / 0 ignored。
+
+**门禁（`rust/`，源码 HEAD `494435f`，CARGO_BUILD_JOBS=3）**：
+- `cargo fmt --all -- --check` → exit 0（无输出）。
+- `cargo clippy --workspace --all-targets -- -D warnings` → exit 0，无 warning。
+- `cargo test --workspace` → exit 0，**135 passed / 0 failed / 0 ignored**（doc-tests 0）。
+- 独立 reviewer（teammate `reviewer`）在 `dddcc00` 另跑三条门禁全绿（131 passed），并在 `dddcc00` 与 `494435f` 用**真实二进制** E2E smoke 验证：默认无假数据（threads/sessions []、fake ids 404）、HTTP create thread→send→reply→持久化、kill+重启同一 `--data-dir` 数据仍在、`--fake` 显式显示假数据并 WARN、`0.0.0.0` 无 token exit 1 明确拒绝、有 token 401/200（Bearer + `?token=`）、`/health`+静态资源免鉴权、token 未入日志、默认 XDG data dir 生成 `mesh/{replica,goals}.sqlite3`。证据：`internal/evidence/2026-11-11_rust-web-real-sessions-review.md`（§1–§7）。
+
+**没做/未验证**：
+- live Codex 路径（`--session-adapter codex`）未在 CI/测试里连真实 vendor：测试用 fake `SessionAdapter` 验证包装层与 HTTP 路由，binary smoke 只覆盖默认 `none`；启动时 `CodexSessionAdapter::connect_stdio()` 的 live 行为未验证。
+- session 列表/元数据不持久化（`AdapterSessionService` 内存态，重启后 live session 列表丢失；durable session registry 属 S2/后续）。
+- HITL 审批持久化/快照（hitl-persist 流）、Codex/dsh Thread 自动回复（thread-autoreply 流）不在本流。
+- projects 真实 registry 未接线（`GET /api/v1/projects` 返回 []，不伪造）；inventory 只反映已配置 adapter。
+- `openapi.json` stub 未追加 `POST /threads`、`POST /sessions`（未改冻结的 `pharos-api` 以避免跨流冲突）。
+- 浏览器 UI：`webui/transport.js` 不支持 token、也没有创建 Thread 的入口（thread 需经 HTTP/CLI 创建）；非 loopback + token 模式目前是 API-only，浏览器会被 401。
+- WS 升级的 `?token=` 鉴权路径未被 cargo 测试覆盖（HTTP query token 已覆盖；reviewer smoke 覆盖 HTTP 侧）。
+- reviewer 记录的非阻塞遗留：SQLite store 无 WAL/busy_timeout（pharos-thread/pharos-goals 既有，S1/S2 owner 未改，共享 data dir 与 daemon 并发时可能 SQLITE_BUSY）；live codex 模式 session 调用会阻塞 tokio worker 至 180s（持 std Mutex）；reply 重试会重复广播一次 WS 帧（UI refresh 去重，无害）；`--fake` 仍会先解析默认 data dir（只影响 warning）。
+
+**需要人决定**：
+1. `pharos-web` 默认 `--session-adapter`：保持 `none`（不 spawn vendor 进程）还是检测到 codex CLI 时默认 `codex`？当前 opt-in。
+2. Host canonical data-dir 根/命名：web 用 `<root>/mesh/replica.sqlite3`，CLI 默认 macOS `.../Pharos/Mesh`；是否统一（RFC-007 Q1/Q8 相关）并让 daemon/CLI/web 共用。
+3. 非 loopback 的浏览器 UI 鉴权：在 `webui/`+`Sources/Pharos/Resources/WebCanvas/` 注入 token（必须两份同步、Swift 无法在 Linux 验证）还是明确 API-only。
+4. 两条 append-only create 路由是否纳入 `pharos-api` OpenAPI stub / 是否需要 CONTRACTS_VERSION bump（本流未改冻结契约）。
+5. 是否由 S1/S2 owner 补 SQLite WAL/busy_timeout 与 durable session registry。
+
 # 活跃任务交接
 
 **STATUS: HITL-PERSIST-DONE — 6f2a7c8**

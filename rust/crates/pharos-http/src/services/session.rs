@@ -5,6 +5,20 @@ use pharos_api::{
     CanonicalTurn, HostInventorySnapshot, PharosApiError, ProjectSummary, ResolveApprovalRequest,
     SendSessionMessageRequest, SessionProgress, SessionSummary, SteerSessionRequest,
 };
+use serde::{Deserialize, Serialize};
+
+/// `POST /api/v1/sessions` body — start a live vendor session.
+///
+/// Only usable when the server was started with a live session adapter
+/// (`--session-adapter codex`); otherwise the service returns an explicit
+/// unavailable error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSessionRequest {
+    pub workspace_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+}
 
 /// S2 session + inventory + projects surface used by HTTP handlers.
 #[async_trait]
@@ -38,4 +52,16 @@ pub trait SessionService: Send + Sync {
     async fn list_projects(&self) -> Result<Vec<ProjectSummary>, PharosApiError>;
 
     async fn inventory(&self) -> Result<HostInventorySnapshot, PharosApiError>;
+
+    /// Start a live session through the configured vendor adapter.
+    ///
+    /// Default: explicit unavailable error (never a fabricated session).
+    async fn create_session(
+        &self,
+        _request: CreateSessionRequest,
+    ) -> Result<SessionSummary, PharosApiError> {
+        Err(PharosApiError::OperationFailed {
+            message: "session creation is not supported by this service".into(),
+        })
+    }
 }

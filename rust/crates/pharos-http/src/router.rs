@@ -11,7 +11,7 @@ use pharos_api::{
 
 use crate::approvals::{APPROVALS_ROUTE, list_approvals};
 use crate::error::ApiResult;
-use crate::services::ResolveApprovalResponse;
+use crate::services::{CreateSessionRequest, CreateThreadRequest, ResolveApprovalResponse};
 use crate::state::AppState;
 use crate::ws::events_ws_handler;
 
@@ -22,14 +22,14 @@ pub fn api_router(state: AppState) -> Router {
         .route(routes::OPENAPI, get(openapi))
         .route(routes::EVENTS_WS, get(events_ws_handler))
         .route(APPROVALS_ROUTE, get(list_approvals))
-        .route("/api/v1/sessions", get(list_sessions))
+        .route("/api/v1/sessions", get(list_sessions).post(create_session))
         .route("/api/v1/sessions/{id}", get(get_session))
         .route("/api/v1/sessions/{id}/history", get(session_history))
         .route("/api/v1/sessions/{id}/messages", post(send_session_message))
         .route("/api/v1/sessions/{id}/steer", post(steer_session))
         .route("/api/v1/sessions/{id}/approval", post(resolve_approval))
         .route("/api/v1/sessions/{id}/progress", get(session_progress))
-        .route("/api/v1/threads", get(list_threads))
+        .route("/api/v1/threads", get(list_threads).post(create_thread))
         .route("/api/v1/threads/{id}", get(get_thread))
         .route(
             "/api/v1/threads/{id}/messages",
@@ -80,6 +80,14 @@ async fn openapi() -> Json<serde_json::Value> {
 async fn list_sessions(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     let sessions = state.sessions.list_sessions().await?;
     Ok(Json(serde_json::to_value(sessions).expect("serialize")))
+}
+
+async fn create_session(
+    State(state): State<AppState>,
+    Json(body): Json<CreateSessionRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let session = state.sessions.create_session(body).await?;
+    Ok(Json(serde_json::to_value(session).expect("serialize")))
 }
 
 async fn get_session(
@@ -176,6 +184,14 @@ async fn session_progress(
 async fn list_threads(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     let threads = state.threads.list_threads().await?;
     Ok(Json(serde_json::to_value(threads).expect("serialize")))
+}
+
+async fn create_thread(
+    State(state): State<AppState>,
+    Json(body): Json<CreateThreadRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let thread = state.threads.create_thread(body).await?;
+    Ok(Json(serde_json::to_value(thread).expect("serialize")))
 }
 
 async fn get_thread(
@@ -640,5 +656,72 @@ mod tests {
             !retry.already_resolved,
             "a decision consumed by a failed dispatch would make the retry a no-op"
         );
+    }
+
+    #[tokio::test]
+    async fn create_thread_route_creates_and_lists() {
+        let app = test_app();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/threads")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"threadId":"route-thread","memberIds":["human","grokbot"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["threadId"], "route-thread");
+        assert_eq!(json["memberIds"][0], "human");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/threads")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let json = body_json(response).await;
+        assert!(
+            json.as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["threadId"] == "route-thread")
+        );
+    }
+
+    #[tokio::test]
+    async fn create_session_route_starts_fake_session() {
+        let app = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/sessions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"workspacePath":"/tmp/pharos-fake-ws","mode":null}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert!(
+            json["sessionId"]
+                .as_str()
+                .unwrap()
+                .starts_with("fake-session-")
+        );
+        assert_eq!(json["workspacePath"], "/tmp/pharos-fake-ws");
     }
 }

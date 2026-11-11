@@ -21,6 +21,7 @@ tower-http = { workspace = true, features = ["fs", "trace"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 clap = { workspace = true, features = ["derive", "env"] }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 pharos-http = { workspace = true }
@@ -28,5 +29,6 @@ reqwest = { workspace = true, default-features = false, features = ["json", "rus
 tokio-tungstenite = { workspace = true, features = ["connect"] }
 futures-util = { workspace = true }
 serde_json = { workspace = true }
-tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+tempfile = "3"
+tower = { workspace = true, features = ["util"] }
