@@ -399,3 +399,24 @@ Gate results after code changes (2026-11-11; PATH includes `/opt/homebrew/bin`, 
 - `cd rust && cargo test --workspace`: PASS — 89 tests passed, 0 failed, including `codex_forks_register_concrete_thread_ids`.
 
 Full command output is in `internal/evidence/2026-11-11-wip-salvage-{swift-build,swift-boundary,swift-client,cargo-fmt,cargo-clippy,cargo-test}.log` (local ignored files). No live host or GUI verification was performed.
+
+## 2026-11-11 — WIP salvage follow-up
+
+STATUS: WIP-SALVAGE-DONE
+
+- `a812cff`, `dbf19cf`, `5e6f364`: ported WebCanvas workspace, transcript, avatar, markdown and styling to both `Sources/Pharos/Resources/WebCanvas/` and `webui/`. `transport.js` uses the WebKit bridge when available and otherwise the Rust HTTP/WS API. Keep the two directories byte-identical; `rust/crates/pharos-web/tests/asset_sync.rs` enforces this during `cargo test`. The web root redirects to `workspace.html`.
+- `19cd544`: ported ClientKit workspace DTOs, request IDs, progress reads, matching Rust event mapping, and explicit errors for unavailable operations. `50958f7`: ported the app shell, workspace view and session/thread view models without restoring Swift backend modules. `b594c34`: checked bundled WebKit rendering and bridge dispatch. `0639d88`: updated the [gap list](2026-11-11_wip-salvage-gaps.md), including missing operations and wire contracts.
+- WIP backend implementations and incompatible tests remain dropped; iOS remains unported. The web server binary still uses fake services. Current approval snapshots, session commands/configuration/attachments, questionnaire answers, session binding, member operations and other missing endpoints are listed in the gap document and disabled or reported unavailable. No real host, physical GUI interaction or production backend behavior was verified.
+
+Final gates, run after the code changes with `/opt/homebrew/bin` in `PATH` and `source "$HOME/.cargo/env"` for Rust. Full local output: `internal/evidence/2026-11-11-wip-salvage-final-{swift-build,swift-boundary,swift-client,cargo-fmt,cargo-clippy,cargo-test}.log`.
+
+| Exact command | Result and output excerpt |
+| --- | --- |
+| `swift build` | PASS — `Build complete!` |
+| `swift test --filter ArchitectureBoundary` | PASS — `Executed 4 tests, with 0 failures` |
+| `PHAROS_SMOKE_BASE_URL=http://127.0.0.1:18787 swift test --filter PharosClientKitTests` | PASS — both selected suites reported `Executed 8 tests, with 0 failures`; live HTTP smoke used the local fake server, with no skipped test. |
+| `cd rust && cargo fmt --all -- --check` | PASS — no formatter output, exit 0 |
+| `cd rust && cargo clippy --workspace --all-targets -- -D warnings` | PASS — `Finished dev profile` |
+| `cd rust && cargo test --workspace` | PASS — 90 passed, 0 failed; includes `app_and_web_assets_are_identical` |
+
+Additional checks: `node --test Tests/WebCanvas/transport.test.mjs` passed 2 tests; `swift test --filter WorkspaceWebViewPortTests` passed the bundled WebKit rendering and native bridge check. A local browser sent a message to the fake service, rendered the response and progress, and displayed an unavailable error for an unsupported action. The local fake server was stopped after testing. No push or merge.
