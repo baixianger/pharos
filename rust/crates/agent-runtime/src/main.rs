@@ -797,6 +797,19 @@ struct DeliveryRecord {
     attempts: u32,
     #[serde(default)]
     next_attempt_at: f64,
+    /// Codex turn that consumed this delivery (reply correlation anchor).
+    #[serde(default)]
+    turn_id: Option<String>,
+    /// Reply lifecycle once the turn completed:
+    /// `pending` -> `posted` / `turn-failed` / `no-final-answer` / `failed` /
+    /// `missing-turn-id` / `missing-member-id` / `answer-too-large`.
+    #[serde(default)]
+    reply_state: Option<String>,
+    /// Member ID this delivery was routed to (`delivery.submit-member`).
+    #[serde(default, rename = "targetMemberID")]
+    target_member_id: Option<String>,
+    #[serde(default)]
+    reply_attempts: u32,
 }
 
 /// One agent-preset / launch-mode option a driver advertises for the
@@ -922,6 +935,8 @@ impl Registry {
                     "driver-registration-v1", "conversation-registry-v1",
                     "surface-attachment-v1", "delivery-queue-v1", "member-routed-delivery-v1",
                     "agent-adapter-v1", "session-actions-v1", "session-state-v1",
+                    "delivery-inspect-v1", "dsh-binding-inspect-v1",
+                    "dsh-binding-batch-inspect-v1",
                     "launch-options-v1", "launch-requests-v1"
                 ]
             })),
@@ -939,6 +954,9 @@ impl Registry {
             "surface.detach" => self.surface_detach(params),
             "delivery.submit" => self.delivery_submit(params),
             "delivery.submit-member" => self.delivery_submit_member(params),
+            "delivery.inspect-members" => self.delivery_inspect_members(params),
+            "delivery.inspect-dsh-binding" => self.delivery_inspect_dsh_binding(params),
+            "delivery.inspect-dsh-bindings" => self.delivery_inspect_dsh_bindings(params),
             "delivery.poll" => self.delivery_poll(params),
             "delivery.ack" => self.delivery_ack(params),
             "launch.options" => self.launch_options_upsert(params),
@@ -1199,6 +1217,10 @@ impl Registry {
             detail: None,
             attempts: 0,
             next_attempt_at: 0.0,
+            turn_id: None,
+            reply_state: None,
+            target_member_id: optional(params, "targetMemberID"),
+            reply_attempts: 0,
         };
         let id = record.id.clone();
         self.snapshot.deliveries.push(record.clone());
@@ -1209,22 +1231,58 @@ impl Registry {
 
     fn delivery_submit_member(&mut self, params: &Value) -> RuntimeResult {
         let member_id = required(params, "memberID")?;
-        let index = self
+        let key = required(params, "idempotencyKey")?;
+        let payload = required(params, "payload")?;
+        // Replayed submit must never be re-routed to a different member or
+        // silently reuse a key that was minted for another message.
+        if let Some(existing) = self
             .snapshot
-            .conversations
+            .deliveries
             .iter()
-            .enumerate()
-            .filter(|(_, value)| {
-                value.member_id.as_deref() == Some(member_id.as_str())
-                    || (value.member_id.is_none() && value.vendor_session_id == member_id)
-            })
-            .max_by(|(_, left), (_, right)| left.updated_at.cmp(&right.updated_at))
-            .map(|(index, _)| index)
-            .ok_or_else(|| {
-                RuntimeError::not_found(format!(
+            .find(|delivery| delivery.idempotency_key == key)
+        {
+            let matches = existing
+                .target_member_id
+                .as_deref()
+                .map(|target| target == member_id)
+                .unwrap_or_else(|| {
+                    self.snapshot
+                        .conversations
+                        .iter()
+                        .find(|conversation| conversation.id == existing.conversation_id)
+                        .is_some_and(|conversation| {
+                            conversation.member_id.as_deref() == Some(member_id.as_str())
+                                || (conversation.member_id.is_none()
+                                    && conversation.vendor_session_id == member_id)
+                        })
+                });
+            if !matches || existing.payload != payload {
+                return Err(RuntimeError::invalid(
+                    "idempotencyKey already used for another delivery",
+                ));
+            }
+            return Ok(json!({
+                "submitted": true,
+                "conversationID": existing.conversation_id,
+                "deliveryID": existing.id,
+                "delivery": value(existing)?,
+            }));
+        }
+        let candidates = self.delivery_candidates(&member_id);
+        let index = match candidates.as_slice() {
+            [] => {
+                return Err(RuntimeError::not_found(format!(
                     "No managed conversation registered for member: {member_id}"
-                ))
-            })?;
+                )));
+            }
+            [index] => *index,
+            // Ambiguity is a routing error: never guess between two members.
+            _ => {
+                return Err(RuntimeError::invalid(format!(
+                    "Multiple active conversations registered for member: {member_id}"
+                )));
+            }
+        };
         if self.snapshot.conversations[index].member_id.is_none() {
             self.snapshot.conversations[index].member_id = Some(member_id.clone());
         }
@@ -1234,6 +1292,7 @@ impl Registry {
             "conversationID".into(),
             Value::String(conversation_id.clone()),
         );
+        routed.insert("targetMemberID".into(), Value::String(member_id));
         let delivery = self.delivery_submit(&Value::Object(routed))?;
         let delivery_id = delivery.get("id").cloned().unwrap_or(Value::Null);
         Ok(json!({
@@ -1242,6 +1301,154 @@ impl Registry {
             "deliveryID": delivery_id,
             "delivery": delivery
         }))
+    }
+
+    /// Conversations that can currently receive a member-routed delivery.
+    ///
+    /// Liveness is required because routing to an archived/offline session or a
+    /// driver that stopped polling would strand the delivery: the built-in Codex
+    /// worker owns its own dispatch (no plugin heartbeat), every external
+    /// consumer must report an online, fresh state and a fresh `delivery.poll`
+    /// driver heartbeat. Ambiguous (>1) candidates are surfaced, not guessed.
+    fn delivery_candidates(&self, member_id: &str) -> Vec<usize> {
+        self.snapshot
+            .conversations
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| {
+                let matches_member = value.member_id.as_deref() == Some(member_id)
+                    || (value.member_id.is_none() && value.vendor_session_id == member_id);
+                // This runtime owns the Codex worker itself; unlike external
+                // plugins it neither polls nor sends driver heartbeats.
+                let builtin_codex = value.kind == "codex"
+                    && value.driver_id == "codex:app-server"
+                    && value.ownership == "managed"
+                    && value
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.persistence != "archived");
+                let online = value.state.as_ref().is_some_and(|state| {
+                    let age = OffsetDateTime::parse(&state.observed_at, &Rfc3339)
+                        .ok()
+                        .map(|seen| (OffsetDateTime::now_utc() - seen).whole_seconds());
+                    state.presence == "online"
+                        && state.persistence != "archived"
+                        && age.is_some_and(|seconds| (-5..=45).contains(&seconds))
+                });
+                let live_consumer = self
+                    .snapshot
+                    .drivers
+                    .iter()
+                    .find(|driver| driver.id == value.driver_id)
+                    .is_some_and(|driver| {
+                        let age = OffsetDateTime::parse(&driver.last_seen_at, &Rfc3339)
+                            .ok()
+                            .map(|seen| (OffsetDateTime::now_utc() - seen).whole_seconds());
+                        driver
+                            .capabilities
+                            .iter()
+                            .any(|capability| capability == "delivery.poll")
+                            && age.is_some_and(|seconds| (-5..=15).contains(&seconds))
+                    });
+                matches_member && (builtin_codex || (online && live_consumer))
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    fn driver_reply_capable(&self, driver_id: &str) -> bool {
+        self.snapshot
+            .drivers
+            .iter()
+            .find(|driver| driver.id == driver_id)
+            .is_some_and(|driver| {
+                driver
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == "mesh.reply-once-v1")
+            })
+    }
+
+    fn delivery_inspect_members(&self, params: &Value) -> RuntimeResult {
+        let members = params
+            .get("memberIDs")
+            .and_then(Value::as_array)
+            .ok_or_else(|| RuntimeError::invalid("memberIDs must be an array"))?;
+        if members.len() > 300 {
+            return Err(RuntimeError::invalid("at most 300 member IDs"));
+        }
+        let mut results = Vec::with_capacity(members.len());
+        for item in members {
+            let id = item
+                .as_str()
+                .filter(|value| !value.is_empty() && value.len() <= 512)
+                .ok_or_else(|| RuntimeError::invalid("invalid member ID"))?;
+            let candidates = self.delivery_candidates(id);
+            let route = if let [index] = candidates.as_slice() {
+                let conversation = &self.snapshot.conversations[*index];
+                json!({
+                    "memberID": id,
+                    "eligible": true,
+                    "kind": conversation.kind,
+                    "vendorSessionID": conversation.vendor_session_id,
+                    "replyCapable": self.driver_reply_capable(&conversation.driver_id),
+                })
+            } else {
+                json!({
+                    "memberID": id,
+                    "eligible": false,
+                    "ambiguous": candidates.len() > 1,
+                })
+            };
+            results.push(route);
+        }
+        Ok(json!({"routes": results}))
+    }
+
+    /// Remote callers learn only whether one exact DSH Session can currently
+    /// receive and reply. No driver identities, paths or queue data leak.
+    fn delivery_inspect_dsh_binding(&self, params: &Value) -> RuntimeResult {
+        let session = required(params, "sessionID")?;
+        if session.len() > 512 {
+            return Err(RuntimeError::invalid("invalid session ID"));
+        }
+        Ok(json!({"eligible": self.is_dsh_binding_eligible(&session)}))
+    }
+
+    fn delivery_inspect_dsh_bindings(&self, params: &Value) -> RuntimeResult {
+        let sessions = params
+            .get("sessionIDs")
+            .and_then(Value::as_array)
+            .ok_or_else(|| RuntimeError::invalid("sessionIDs must be an array"))?;
+        if sessions.len() > 300 {
+            return Err(RuntimeError::invalid("at most 300 session IDs"));
+        }
+        let mut eligible = Vec::with_capacity(sessions.len());
+        for item in sessions {
+            let id = item
+                .as_str()
+                .filter(|value| !value.is_empty() && value.len() <= 512)
+                .ok_or_else(|| RuntimeError::invalid("invalid session ID"))?;
+            eligible.push(self.is_dsh_binding_eligible(id));
+        }
+        Ok(json!({"eligible": eligible}))
+    }
+
+    fn is_dsh_binding_eligible(&self, session: &str) -> bool {
+        let candidates = self.delivery_candidates(session);
+        if let [index] = candidates.as_slice() {
+            let conversation = &self.snapshot.conversations[*index];
+            conversation.kind == "dsh"
+                && conversation.vendor_session_id == session
+                && conversation
+                    .member_id
+                    .as_deref()
+                    .unwrap_or(&conversation.vendor_session_id)
+                    == session
+                && self.driver_reply_capable(&conversation.driver_id)
+        } else {
+            false
+        }
     }
 
     fn delivery_poll(&self, params: &Value) -> RuntimeResult {
@@ -1268,14 +1475,20 @@ impl Registry {
         ) {
             return Err(RuntimeError::invalid("state"));
         }
+        let detail = optional(params, "detail");
         let record = self
             .snapshot
             .deliveries
             .iter_mut()
             .find(|value| value.id == id)
             .ok_or_else(|| RuntimeError::not_found(format!("Unknown delivery: {id}")))?;
+        // Replaying the same ack is a no-op: a consumer that retried after a
+        // lost response must not re-trigger reply/completion side effects.
+        if record.state == state && record.detail == detail {
+            return value(record.clone());
+        }
         record.state = state;
-        record.detail = optional(params, "detail");
+        record.detail = detail;
         record.updated_at = now_rfc3339();
         let output = record.clone();
         self.persist()?;
@@ -2049,16 +2262,21 @@ mod tests {
         let directory = PathBuf::from(format!("/tmp/pharos-runtime-test-{}", new_id()));
         let mut registry = Registry::load(directory.clone()).unwrap();
         registry
-            .invoke("driver.register", &json!({"driverID":"d1","kind":"claude"}))
+            .invoke(
+                "driver.register",
+                &json!({"driverID":"d1","kind":"dsh","capabilities":["delivery.poll"]}),
+            )
             .unwrap();
-        registry
+        let conversation = registry
             .invoke(
                 "conversation.register",
                 &json!({
-                    "driverID":"d1","vendorSessionID":"session-1","kind":"claude"
+                    "driverID":"d1","vendorSessionID":"session-1","kind":"dsh"
                 }),
             )
             .unwrap();
+        let conversation_id = conversation["id"].as_str().unwrap().to_owned();
+        set_conversation_state(&mut registry, &conversation_id, "online", "persistent", 1);
         let params = json!({
             "memberID":"session-1","idempotencyKey":"mesh:message-1:session-1",
             "payload":"{\"body\":\"wake\",\"room\":\"r\",\"messageID\":\"message-1\"}"
@@ -2330,6 +2548,525 @@ mod tests {
             loaded.snapshot.launch_requests[0].session_id.as_deref(),
             Some("reserved-1")
         );
+        fs::remove_dir_all(directory).ok();
+    }
+
+    // -- delivery routing: liveness, ambiguity, idempotency, inspection ------
+
+    fn test_directory(label: &str) -> PathBuf {
+        PathBuf::from(format!("/tmp/pharos-runtime-test-{label}-{}", new_id()))
+    }
+
+    fn set_conversation_state(
+        registry: &mut Registry,
+        conversation_id: &str,
+        presence: &str,
+        persistence: &str,
+        sequence: u64,
+    ) {
+        let result = registry
+            .invoke(
+                "conversation.state",
+                &json!({
+                    "conversationID": conversation_id, "presence": presence,
+                    "activity": "idle", "attention": "none", "persistence": persistence,
+                    "source": "nativeProtocol", "sourceEpoch": "test", "sequence": sequence,
+                }),
+            )
+            .unwrap();
+        assert_eq!(result["applied"], true, "state write must be accepted");
+    }
+
+    fn add_dsh_conversation(
+        registry: &mut Registry,
+        driver_id: &str,
+        member_id: &str,
+        vendor_session_id: &str,
+        capabilities: Value,
+        presence: &str,
+        persistence: &str,
+    ) -> String {
+        registry
+            .invoke(
+                "driver.register",
+                &json!({"driverID": driver_id, "kind": "dsh", "capabilities": capabilities}),
+            )
+            .unwrap();
+        let conversation = registry
+            .invoke(
+                "conversation.register",
+                &json!({
+                    "driverID": driver_id, "kind": "dsh",
+                    "vendorSessionID": vendor_session_id, "memberID": member_id,
+                    "ownership": "managed"
+                }),
+            )
+            .unwrap();
+        let conversation_id = conversation["id"].as_str().unwrap().to_owned();
+        set_conversation_state(registry, &conversation_id, presence, persistence, 1);
+        conversation_id
+    }
+
+    fn age_conversation_state(registry: &mut Registry, conversation_id: &str) {
+        registry
+            .snapshot
+            .conversations
+            .iter_mut()
+            .find(|value| value.id == conversation_id)
+            .and_then(|value| value.state.as_mut())
+            .expect("conversation state")
+            .observed_at = "2000-01-01T00:00:00Z".into();
+    }
+
+    fn age_driver_heartbeat(registry: &mut Registry, driver_id: &str) {
+        registry
+            .snapshot
+            .drivers
+            .iter_mut()
+            .find(|value| value.id == driver_id)
+            .expect("driver")
+            .last_seen_at = "2000-01-01T00:00:00Z".into();
+    }
+
+    fn remove_driver_capability(registry: &mut Registry, driver_id: &str, capability: &str) {
+        registry
+            .snapshot
+            .drivers
+            .iter_mut()
+            .find(|value| value.id == driver_id)
+            .expect("driver")
+            .capabilities
+            .retain(|value| value != capability);
+    }
+
+    #[test]
+    fn delivery_inspection_uses_live_routing_rules_and_is_read_only() {
+        let directory = test_directory("inspect");
+        let mut registry = Registry::load(directory.clone()).unwrap();
+        let conversation = add_dsh_conversation(
+            &mut registry,
+            "dsh-one",
+            "session-one",
+            "session-one",
+            json!(["delivery.poll", "mesh.reply-once-v1"]),
+            "online",
+            "persistent",
+        );
+        let query = json!({"memberIDs":["session-one", "missing"]});
+        let routes = registry.invoke("delivery.inspect-members", &query).unwrap();
+        assert_eq!(routes["routes"][0]["eligible"], true);
+        assert_eq!(routes["routes"][0]["kind"], "dsh");
+        assert_eq!(routes["routes"][0]["vendorSessionID"], "session-one");
+        assert_eq!(routes["routes"][0]["replyCapable"], true);
+        assert_eq!(routes["routes"][1]["eligible"], false);
+        assert_eq!(routes["routes"][1]["ambiguous"], false);
+        assert_eq!(
+            registry
+                .invoke(
+                    "delivery.inspect-dsh-binding",
+                    &json!({"sessionID":"session-one"})
+                )
+                .unwrap(),
+            json!({"eligible": true})
+        );
+        assert_eq!(
+            registry
+                .invoke(
+                    "delivery.inspect-dsh-binding",
+                    &json!({"sessionID":"missing"})
+                )
+                .unwrap(),
+            json!({"eligible": false})
+        );
+        assert_eq!(
+            registry
+                .invoke(
+                    "delivery.inspect-dsh-bindings",
+                    &json!({"sessionIDs":["missing", "session-one", "missing"]})
+                )
+                .unwrap(),
+            json!({"eligible": [false, true, false]})
+        );
+        // Bounds/validation and read-only behavior.
+        assert!(
+            registry
+                .invoke(
+                    "delivery.inspect-dsh-bindings",
+                    &json!({"sessionIDs": vec!["x"; 301]})
+                )
+                .is_err()
+        );
+        assert!(
+            registry
+                .invoke(
+                    "delivery.inspect-dsh-bindings",
+                    &json!({"sessionIDs":["session-one", ""]})
+                )
+                .is_err()
+        );
+        assert!(
+            registry
+                .invoke("delivery.inspect-dsh-binding", &json!({"sessionID":""}))
+                .is_err()
+        );
+        assert!(
+            registry
+                .invoke(
+                    "delivery.inspect-dsh-binding",
+                    &json!({"sessionID": "x".repeat(513)})
+                )
+                .is_err()
+        );
+        assert!(
+            registry
+                .invoke(
+                    "delivery.inspect-members",
+                    &json!({"memberIDs": vec!["session-one"; 301]})
+                )
+                .is_err()
+        );
+        assert!(registry.snapshot.deliveries.is_empty());
+
+        // Two live conversations for the same member: ambiguous, never guessed.
+        add_dsh_conversation(
+            &mut registry,
+            "dsh-two",
+            "session-one",
+            "session-two",
+            json!(["delivery.poll", "mesh.reply-once-v1"]),
+            "online",
+            "persistent",
+        );
+        let ambiguous = registry.invoke("delivery.inspect-members", &query).unwrap();
+        assert_eq!(ambiguous["routes"][0]["eligible"], false);
+        assert_eq!(ambiguous["routes"][0]["ambiguous"], true);
+        assert_eq!(
+            registry
+                .invoke(
+                    "delivery.inspect-dsh-binding",
+                    &json!({"sessionID":"session-one"})
+                )
+                .unwrap(),
+            json!({"eligible": false})
+        );
+
+        // A stale heartbeat removes the second candidate; routing is unambiguous.
+        age_driver_heartbeat(&mut registry, "dsh-two");
+        let single = registry.invoke("delivery.inspect-members", &query).unwrap();
+        assert_eq!(single["routes"][0]["eligible"], true);
+
+        // A consumer without the reply capability is eligible to receive but
+        // is not advertised as able to post the correlated reply.
+        remove_driver_capability(&mut registry, "dsh-one", "mesh.reply-once-v1");
+        let no_reply = registry.invoke("delivery.inspect-members", &query).unwrap();
+        assert_eq!(no_reply["routes"][0]["eligible"], true);
+        assert_eq!(no_reply["routes"][0]["replyCapable"], false);
+        assert_eq!(
+            registry
+                .invoke(
+                    "delivery.inspect-dsh-binding",
+                    &json!({"sessionID":"session-one"})
+                )
+                .unwrap(),
+            json!({"eligible": false})
+        );
+        registry
+            .snapshot
+            .drivers
+            .iter_mut()
+            .find(|value| value.id == "dsh-one")
+            .unwrap()
+            .capabilities
+            .push("mesh.reply-once-v1".into());
+
+        // The DSH binding must address the exact session, not another member.
+        registry
+            .snapshot
+            .conversations
+            .iter_mut()
+            .find(|value| value.id == conversation)
+            .unwrap()
+            .member_id = Some("different-member".into());
+        assert_eq!(
+            registry
+                .invoke(
+                    "delivery.inspect-dsh-binding",
+                    &json!({"sessionID":"session-one"})
+                )
+                .unwrap(),
+            json!({"eligible": false})
+        );
+        registry
+            .snapshot
+            .conversations
+            .iter_mut()
+            .find(|value| value.id == conversation)
+            .unwrap()
+            .member_id = Some("session-one".into());
+
+        // Stale observed state and archived persistence are not deliverable.
+        age_conversation_state(&mut registry, &conversation);
+        let stale = registry.invoke("delivery.inspect-members", &query).unwrap();
+        assert_eq!(stale["routes"][0]["eligible"], false);
+        set_conversation_state(&mut registry, &conversation, "online", "persistent", 2);
+        set_conversation_state(&mut registry, &conversation, "online", "archived", 3);
+        let archived = registry.invoke("delivery.inspect-members", &query).unwrap();
+        assert_eq!(archived["routes"][0]["eligible"], false);
+        assert_eq!(
+            registry
+                .invoke(
+                    "delivery.inspect-dsh-binding",
+                    &json!({"sessionID":"session-one"})
+                )
+                .unwrap(),
+            json!({"eligible": false})
+        );
+        assert!(registry.snapshot.deliveries.is_empty());
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn submit_member_rejects_ambiguous_and_unlive_routes() {
+        let directory = test_directory("ambiguous");
+        let mut registry = Registry::load(directory.clone()).unwrap();
+        let first = add_dsh_conversation(
+            &mut registry,
+            "dsh-one",
+            "session-one",
+            "session-one",
+            json!(["delivery.poll"]),
+            "online",
+            "persistent",
+        );
+        add_dsh_conversation(
+            &mut registry,
+            "dsh-two",
+            "session-one",
+            "session-two",
+            json!(["delivery.poll"]),
+            "online",
+            "persistent",
+        );
+        let error = registry
+            .invoke(
+                "delivery.submit-member",
+                &json!({
+                    "memberID":"session-one", "idempotencyKey":"mesh:m1:session-one",
+                    "payload":"{\"body\":\"hi\"}"
+                }),
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("Multiple active conversations registered for member"),
+            "unexpected error: {}",
+            error.message
+        );
+        assert!(registry.snapshot.deliveries.is_empty());
+
+        // Only one conversation remains live: route to it, and correlate.
+        age_driver_heartbeat(&mut registry, "dsh-two");
+        let routed = registry
+            .invoke(
+                "delivery.submit-member",
+                &json!({
+                    "memberID":"session-one", "idempotencyKey":"mesh:m1:session-one",
+                    "payload":"{\"body\":\"hi\"}"
+                }),
+            )
+            .unwrap();
+        assert_eq!(routed["submitted"], true);
+        assert_eq!(routed["conversationID"].as_str(), Some(first.as_str()));
+        assert_eq!(routed["delivery"]["targetMemberID"], "session-one");
+
+        // Nothing live anymore: refuse instead of queueing a stranded delivery.
+        age_conversation_state(&mut registry, &first);
+        let error = registry
+            .invoke(
+                "delivery.submit-member",
+                &json!({
+                    "memberID":"session-one", "idempotencyKey":"mesh:m2:session-one",
+                    "payload":"{\"body\":\"again\"}"
+                }),
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("No managed conversation registered for member"),
+            "unexpected error: {}",
+            error.message
+        );
+        assert_eq!(registry.snapshot.deliveries.len(), 1);
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn submit_member_rejects_idempotency_key_reuse_for_other_member_or_payload() {
+        let directory = test_directory("idem");
+        let mut registry = Registry::load(directory.clone()).unwrap();
+        add_dsh_conversation(
+            &mut registry,
+            "dsh-one",
+            "session-one",
+            "session-one",
+            json!(["delivery.poll"]),
+            "online",
+            "persistent",
+        );
+        let params = json!({
+            "memberID":"session-one", "idempotencyKey":"mesh:m1:session-one",
+            "payload":"{\"body\":\"hi\"}"
+        });
+        let first = registry.invoke("delivery.submit-member", &params).unwrap();
+        let replay = registry.invoke("delivery.submit-member", &params).unwrap();
+        assert_eq!(first["deliveryID"], replay["deliveryID"]);
+
+        let different_payload = registry
+            .invoke(
+                "delivery.submit-member",
+                &json!({
+                    "memberID":"session-one", "idempotencyKey":"mesh:m1:session-one",
+                    "payload":"{\"body\":\"different\"}"
+                }),
+            )
+            .unwrap_err();
+        assert!(different_payload.message.contains("idempotencyKey"));
+        let different_member = registry
+            .invoke(
+                "delivery.submit-member",
+                &json!({
+                    "memberID":"session-two", "idempotencyKey":"mesh:m1:session-one",
+                    "payload":"{\"body\":\"hi\"}"
+                }),
+            )
+            .unwrap_err();
+        assert!(different_member.message.contains("idempotencyKey"));
+        assert_eq!(registry.snapshot.deliveries.len(), 1);
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn replayed_delivery_ack_is_a_noop_and_does_not_duplicate_side_effects() {
+        let directory = test_directory("ack");
+        let mut registry = Registry::load(directory.clone()).unwrap();
+        add_dsh_conversation(
+            &mut registry,
+            "dsh-one",
+            "session-one",
+            "session-one",
+            json!(["delivery.poll"]),
+            "online",
+            "persistent",
+        );
+        let submitted = registry
+            .invoke(
+                "delivery.submit-member",
+                &json!({
+                    "memberID":"session-one", "idempotencyKey":"mesh:m1:session-one",
+                    "payload":"{\"body\":\"hi\"}"
+                }),
+            )
+            .unwrap();
+        let delivery_id = submitted["deliveryID"].as_str().unwrap().to_owned();
+        registry
+            .invoke(
+                "delivery.ack",
+                &json!({"deliveryID": delivery_id, "state":"injected"}),
+            )
+            .unwrap();
+        let done = json!({"deliveryID": delivery_id, "state":"consumed", "detail":"durable inbox"});
+        let first = registry.invoke("delivery.ack", &done).unwrap();
+        let replay = registry.invoke("delivery.ack", &done).unwrap();
+        assert_eq!(first["state"], replay["state"]);
+        assert_eq!(first["detail"], replay["detail"]);
+        assert_eq!(registry.snapshot.deliveries.len(), 1);
+        let events = registry
+            .invoke("events.resume", &json!({"cursor": 0}))
+            .unwrap();
+        let acked = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["kind"] == "delivery.acked")
+            .count();
+        assert_eq!(acked, 2, "replayed identical ack must not publish again");
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn builtin_codex_managed_conversation_routes_without_plugin_heartbeat() {
+        let directory = test_directory("codex-route");
+        let mut registry = Registry::load(directory.clone()).unwrap();
+        registry
+            .invoke(
+                "driver.register",
+                &json!({"driverID": "codex:app-server", "kind": "codex"}),
+            )
+            .unwrap();
+        let conversation = registry
+            .invoke(
+                "conversation.register",
+                &json!({
+                    "driverID": "codex:app-server", "vendorSessionID": "thread-codex",
+                    "kind": "codex", "ownership": "managed"
+                }),
+            )
+            .unwrap();
+        let conversation_id = conversation["id"].as_str().unwrap().to_owned();
+        set_conversation_state(&mut registry, &conversation_id, "offline", "persistent", 1);
+        // The runtime owns the Codex worker: no driver heartbeat is required.
+        age_driver_heartbeat(&mut registry, "codex:app-server");
+        let routed = registry
+            .invoke(
+                "delivery.submit-member",
+                &json!({
+                    "memberID":"thread-codex", "idempotencyKey":"mesh:m1:thread-codex",
+                    "payload":"{\"body\":\"hi\",\"room\":\"room-a\",\"messageID\":\"m1\"}"
+                }),
+            )
+            .unwrap();
+        assert_eq!(routed["submitted"], true);
+        assert_eq!(routed["delivery"]["targetMemberID"], "thread-codex");
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn external_consumer_requires_fresh_state_and_poll_heartbeat() {
+        let directory = test_directory("liveness");
+        let mut registry = Registry::load(directory.clone()).unwrap();
+        let conversation = add_dsh_conversation(
+            &mut registry,
+            "dsh-one",
+            "session-one",
+            "session-one",
+            json!(["delivery.poll"]),
+            "online",
+            "persistent",
+        );
+        let query = json!({"memberIDs":["session-one"]});
+        let eligible = |registry: &mut Registry| {
+            registry.invoke("delivery.inspect-members", &query).unwrap()["routes"][0]["eligible"]
+                .as_bool()
+                .unwrap()
+        };
+        assert!(eligible(&mut registry));
+        // Offline conversation never receives.
+        set_conversation_state(&mut registry, &conversation, "offline", "persistent", 2);
+        assert!(!eligible(&mut registry));
+        set_conversation_state(&mut registry, &conversation, "online", "persistent", 3);
+        assert!(eligible(&mut registry));
+        // Online but no fresh poll heartbeat -> not live.
+        age_driver_heartbeat(&mut registry, "dsh-one");
+        assert!(!eligible(&mut registry));
+        registry
+            .invoke("driver.heartbeat", &json!({"driverID":"dsh-one"}))
+            .unwrap();
+        assert!(eligible(&mut registry));
+        // A consumer that does not poll cannot consume deliveries.
+        remove_driver_capability(&mut registry, "dsh-one", "delivery.poll");
+        assert!(!eligible(&mut registry));
         fs::remove_dir_all(directory).ok();
     }
 }
