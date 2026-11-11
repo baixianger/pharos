@@ -21,12 +21,11 @@ enum WorkspaceSurface: Equatable {
     case sessions
 }
 
-/// The unified content view for Pharos, presenting the new Grok-Bot inspired 3-pane client shell.
+/// The unified content view for Pharos, presenting the 3-pane client shell.
+/// Phase E: always uses the Rust HTTP/WS API via PharosClientKit.
 struct ContentView: View {
     @Environment(ProjectStore.self) private var store
-    @Environment(DistributedMeshSupport.self) private var distributedMesh
     @State private var snapSettingsTab: Int?
-    /// Existential client: default rust-api HTTP path, or legacy DesktopMesh behind flag.
     @State private var clientService: (any PharosClientService)?
 
     var body: some View {
@@ -43,14 +42,8 @@ struct ContentView: View {
         }
         .sheet(isPresented: $store.addRequested) { AddProjectSheet() }
         .task {
-            // wiring-local (S6): feature-flagged backend selection.
-            // PHAROS_CLIENT_BACKEND=rust-api (default) | desktop-mesh
             if clientService == nil {
-                if PharosClientBackend.usesRustAPI {
-                    clientService = PharosClientBackend.makeHTTPClient()
-                } else {
-                    clientService = DesktopPharosClientService(store: store, mesh: distributedMesh)
-                }
+                clientService = PharosClientBackend.makeHTTPClient()
             }
             await SnapshotMode.run(
                 store: store,

@@ -1,34 +1,24 @@
 import Foundation
 
-/// Which desktop client backend to use (RFC-007 Phase D / S6).
+/// Desktop client backend kind (RFC-007 Phase E).
 ///
-/// Toggle:
-/// - Environment `PHAROS_CLIENT_BACKEND` = `rust-api` (default) | `desktop-mesh`
-/// - Or `UserDefaults` key `pharos.clientBackend` with the same values
+/// Only the Rust HTTP/WS path remains. Legacy `desktop-mesh` was removed.
 public enum PharosClientBackendKind: String, Sendable, Codable, Equatable {
-    /// HTTP/WS ClientKit talking to the S4 Rust daemon (`pharos-web` / `pharos-meshd`).
+    /// HTTP/WS ClientKit talking to the Rust daemon (`pharos-web` / `pharos-meshd`).
     case rustAPI = "rust-api"
-    /// Legacy in-process DesktopMesh / Runtime path (kept until Phase E).
-    case desktopMesh = "desktop-mesh"
 
     public static func resolve(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         defaults: UserDefaults = .standard
     ) -> PharosClientBackendKind {
-        if let raw = environment["PHAROS_CLIENT_BACKEND"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !raw.isEmpty,
-           let kind = PharosClientBackendKind(rawValue: raw) {
-            return kind
-        }
-        if let raw = defaults.string(forKey: PharosAPIConfiguration.backendDefaultsKey),
-           let kind = PharosClientBackendKind(rawValue: raw) {
-            return kind
-        }
+        // Accept legacy env/defaults values but always resolve to rust-api.
+        _ = environment["PHAROS_CLIENT_BACKEND"]
+        _ = defaults.string(forKey: PharosAPIConfiguration.backendDefaultsKey)
         return .rustAPI
     }
 }
 
-/// Connection settings for the Rust HTTP/WS API (S4 base URL).
+/// Connection settings for the Rust HTTP/WS API.
 public struct PharosAPIConfiguration: Sendable, Equatable {
     public static let backendDefaultsKey = "pharos.clientBackend"
     public static let baseURLDefaultsKey = "pharos.apiBaseURL"

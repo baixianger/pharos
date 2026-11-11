@@ -1,5 +1,4 @@
 import Foundation
-import PharosMeshCore
 
 /// A recoverable error from a core operation. The CLI maps it to stderr + a
 /// non-zero exit code.
@@ -32,10 +31,7 @@ enum PharosCore {
             return URL(fileURLWithPath: override)
         }
         DataLocation.migrateLegacyCacheIfNeeded()
-        return DataLocation.current.appendingPathComponent(
-            PharosMeshRuntimeMode.usesDistributedMesh
-                ? "distributed-project-cache.json" : "projects.json"
-        )
+        return DataLocation.current.appendingPathComponent("projects.json")
     }
 
     // MARK: Registry IO
@@ -43,21 +39,8 @@ enum PharosCore {
     /// Read the full `StoreData`. Tolerates a missing file (empty store) and
     /// migrates the older flat-array format — mirrors `ProjectStore.load()`.
     static func loadStore() -> StoreData {
-        let usesTestOverride = ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] != nil
-        let data: Data?
-        if !usesTestOverride, !PharosMeshRuntimeMode.usesDistributedMesh,
-           let snapshot = try? MeshClient.fetchRegistry() {
-            loadedRegistryRevision = snapshot.revision
-            PharosPrefs.shared.set(snapshot.revision, forKey: "pharos.registryRevision")
-            let remote = Data(snapshot.payload.utf8)
-            try? FileManager.default.createDirectory(at: registryURL.deletingLastPathComponent(),
-                                                     withIntermediateDirectories: true)
-            try? remote.write(to: registryURL, options: .atomic)
-            data = remote
-        } else {
-            loadedRegistryRevision = PharosPrefs.shared.string(forKey: "pharos.registryRevision")
-            data = try? Data(contentsOf: registryURL)
-        }
+        loadedRegistryRevision = PharosPrefs.shared.string(forKey: "pharos.registryRevision")
+        let data = try? Data(contentsOf: registryURL)
         guard let data else { return StoreData() }
         let decoder = JSONDecoder()
         var store = StoreData()
@@ -85,32 +68,6 @@ enum PharosCore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(out) {
             try? data.write(to: registryURL, options: .atomic)
-            guard ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] == nil,
-                  !PharosMeshRuntimeMode.usesDistributedMesh else { return }
-            do {
-                if loadedRegistryRevision == nil {
-                    loadedRegistryRevision = try MeshClient.fetchRegistry().revision
-                }
-                let revision = try MeshClient.replaceRegistry(
-                    payload: String(decoding: data, as: UTF8.self),
-                    expectedRevision: loadedRegistryRevision!)
-                loadedRegistryRevision = revision
-                PharosPrefs.shared.set(revision, forKey: "pharos.registryRevision")
-            } catch {
-                let conflictDir = DataLocation.current.appendingPathComponent("registry-conflicts",
-                                                                              isDirectory: true)
-                try? FileManager.default.createDirectory(at: conflictDir, withIntermediateDirectories: true)
-                let conflict = conflictDir.appendingPathComponent(
-                    "cli-conflict-\(UUID().uuidString).json")
-                try? data.write(to: conflict, options: .atomic)
-                registrySaveError = "Broker rejected the registry write: \(error.localizedDescription). "
-                    + "The local edit is preserved at \(conflict.path)."
-                if let remote = try? MeshClient.fetchRegistry() {
-                    loadedRegistryRevision = remote.revision
-                    PharosPrefs.shared.set(remote.revision, forKey: "pharos.registryRevision")
-                    try? Data(remote.payload.utf8).write(to: registryURL, options: .atomic)
-                }
-            }
         }
     }
 

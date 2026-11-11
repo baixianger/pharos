@@ -1,5 +1,15 @@
 import Foundation
-import PharosMeshProtocol
+import SwiftUI
+
+/// Legacy attachment metadata kept for Codable compatibility with older
+/// projects.json values. Phase E no longer links PharosMeshProtocol.
+struct MeshAttachment: Codable, Hashable, Sendable, Identifiable {
+    var id: String
+    var name: String
+    var mimeType: String
+    var byteSize: Int
+    var sha256: String
+}
 
 /// Agent session record for dashboard inventory rollup.
 struct DashboardAgentSession: Hashable, Sendable, Identifiable {
@@ -593,6 +603,16 @@ enum AppearanceMode: String, CaseIterable, Identifiable, Codable {
         case .system: return "System"
         case .light: return "Light"
         case .dark: return "Dark"
+        }
+    }
+}
+
+extension AppearanceMode {
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
         }
     }
 }

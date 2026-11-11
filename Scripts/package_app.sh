@@ -169,44 +169,34 @@ install_binary() {
 }
 
 install_binary "$APP_NAME" "$APP/Contents/MacOS/$APP_NAME"
-install_binary "pharos-mesh" "$APP/Contents/Helpers/pharos-mesh"
 
-RUST_BINARIES=()
-for ARCH in "${ARCH_LIST[@]}"; do
-  case "$ARCH" in
-    arm64) RUST_TARGET="aarch64-apple-darwin" ;;
-    x86_64) RUST_TARGET="x86_64-apple-darwin" ;;
-  esac
-  RUST_PROFILE="$CONF"
-  [[ "$CONF" == "release" ]] || RUST_PROFILE="debug"
-  RUST_BINARIES+=("$ROOT/rust/target/$RUST_TARGET/$RUST_PROFILE/pharos-codex-adapter")
-done
-if [[ ${#RUST_BINARIES[@]} -gt 1 ]]; then
-  lipo -create "${RUST_BINARIES[@]}" -output "$APP/Contents/Helpers/pharos-codex-adapter"
-else
-  cp "${RUST_BINARIES[0]}" "$APP/Contents/Helpers/pharos-codex-adapter"
-fi
-chmod +x "$APP/Contents/Helpers/pharos-codex-adapter"
-verify_binary_arches "$APP/Contents/Helpers/pharos-codex-adapter" "${ARCH_LIST[@]}"
+# Phase E: Swift pharos-mesh is gone. Bundle Rust CLI + daemon helpers.
+install_rust_helper() {
+  local bin_name="$1"
+  local dest="$2"
+  local binaries=()
+  for ARCH in "${ARCH_LIST[@]}"; do
+    case "$ARCH" in
+      arm64) RUST_TARGET="aarch64-apple-darwin" ;;
+      x86_64) RUST_TARGET="x86_64-apple-darwin" ;;
+    esac
+    RUST_PROFILE="$CONF"
+    [[ "$CONF" == "release" ]] || RUST_PROFILE="debug"
+    binaries+=("$ROOT/rust/target/$RUST_TARGET/$RUST_PROFILE/$bin_name")
+  done
+  if [[ ${#binaries[@]} -gt 1 ]]; then
+    lipo -create "${binaries[@]}" -output "$dest"
+  else
+    cp "${binaries[0]}" "$dest"
+  fi
+  chmod +x "$dest"
+  verify_binary_arches "$dest" "${ARCH_LIST[@]}"
+}
 
-RUNTIME_BINARIES=()
-for ARCH in "${ARCH_LIST[@]}"; do
-  case "$ARCH" in
-    arm64) RUST_TARGET="aarch64-apple-darwin" ;;
-    x86_64) RUST_TARGET="x86_64-apple-darwin" ;;
-  esac
-  RUST_PROFILE="$CONF"
-  [[ "$CONF" == "release" ]] || RUST_PROFILE="debug"
-  RUNTIME_BINARIES+=("$ROOT/rust/target/$RUST_TARGET/$RUST_PROFILE/pharos-meshd")
-done
-if [[ ${#RUNTIME_BINARIES[@]} -gt 1 ]]; then
-  lipo -create "${RUNTIME_BINARIES[@]}" -output "$APP/Contents/Helpers/pharos-meshd"
-else
-  cp "${RUNTIME_BINARIES[0]}" "$APP/Contents/Helpers/pharos-meshd"
-fi
-chmod +x "$APP/Contents/Helpers/pharos-meshd"
-verify_binary_arches "$APP/Contents/Helpers/pharos-meshd" "${ARCH_LIST[@]}"
-
+install_rust_helper "pharos" "$APP/Contents/Helpers/pharos"
+install_rust_helper "pharos-codex-adapter" "$APP/Contents/Helpers/pharos-codex-adapter"
+install_rust_helper "pharos-meshd" "$APP/Contents/Helpers/pharos-meshd"
+install_rust_helper "pharos-web" "$APP/Contents/Helpers/pharos-web"
 # Bundle app resources (if any).
 APP_RESOURCES_DIR="$ROOT/Sources/$APP_NAME/Resources"
 if [[ -d "$APP_RESOURCES_DIR" ]]; then
@@ -311,9 +301,10 @@ sign_frameworks
 
 # The per-user LaunchAgent executes this stable embedded helper after the GUI
 # quits, so it must be signed before sealing the containing app bundle.
-codesign "${CODESIGN_ARGS[@]}" "$APP/Contents/Helpers/pharos-mesh"
+codesign "${CODESIGN_ARGS[@]}" "$APP/Contents/Helpers/pharos"
 codesign "${CODESIGN_ARGS[@]}" "$APP/Contents/Helpers/pharos-codex-adapter"
 codesign "${CODESIGN_ARGS[@]}" "$APP/Contents/Helpers/pharos-meshd"
+codesign "${CODESIGN_ARGS[@]}" "$APP/Contents/Helpers/pharos-web"
 
 codesign "${CODESIGN_ARGS[@]}" \
   --entitlements "$APP_ENTITLEMENTS" \

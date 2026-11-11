@@ -1,0 +1,1041 @@
+=== cargo fmt --check ===
+=== cargo clippy ===
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling libc v0.2.191
+    Checking cfg-if v1.0.5
+    Checking memchr v2.8.3
+   Compiling serde_core v1.0.229
+    Checking itoa v1.0.19
+   Compiling serde v1.0.229
+   Compiling version_check v0.9.5
+    Checking once_cell v1.21.4
+    Checking rand_core v0.10.1
+    Checking log v0.4.35
+   Compiling zmij v1.0.23
+   Compiling serde_json v1.0.154
+    Checking pin-project-lite v0.2.17
+    Checking typenum v1.20.1
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.15
+   Compiling cc v1.11.1
+    Checking smallvec v1.16.5
+   Compiling getrandom v0.4.3
+    Checking bytes v1.12.1
+    Checking bitflags v2.13.2
+    Checking futures-core v0.3.34
+    Checking stable_deref_trait v1.2.1
+   Compiling generic-array v0.14.7
+    Checking subtle v2.6.1
+    Checking futures-sink v0.3.34
+    Checking percent-encoding v2.3.2
+    Checking slab v0.4.12
+    Checking futures-io v0.3.34
+    Checking futures-channel v0.3.34
+    Checking writeable v0.6.4
+    Checking litemap v0.8.3
+    Checking utf_types v1.0.0
+    Checking futures-task v0.3.34
+   Compiling icu_normalizer_data v2.4.0
+   Compiling icu_properties_data v2.4.0
+   Compiling syn v3.0.10
+   Compiling syn v2.0.119
+    Checking utf8_iter v1.1.0
+    Checking form_urlencoded v1.2.2
+   Compiling thiserror v2.0.21
+    Checking http v1.5.0
+    Checking errno v0.3.14
+    Checking socket2 v0.6.5
+    Checking signal-hook-registry v1.4.8
+    Checking mio v1.2.4
+    Checking getrandom v0.2.17
+    Checking crypto-common v0.1.7
+   Compiling zerocopy v0.8.63
+    Checking tracing-core v0.1.36
+    Checking untrusted v0.9.0
+   Compiling rustls v0.23.46
+    Checking cpufeatures v0.2.17
+   Compiling ring v0.17.14
+   Compiling httparse v1.10.1
+    Checking foldhash v0.2.0
+    Checking base64 v0.22.1
+    Checking hashbrown v0.17.1
+    Checking equivalent v1.0.3
+    Checking powerfmt v0.2.1
+    Checking uuid v1.29.2
+    Checking deranged v0.5.9
+    Checking time-core v0.1.9
+    Checking num-conv v0.2.2
+    Checking http-body v1.1.0
+    Checking base64 v0.23.1
+    Checking atomic-waker v1.1.2
+    Checking indexmap v2.14.2
+    Checking tower-service v0.3.3
+   Compiling cfg_aliases v0.2.2
+    Checking try-lock v0.2.5
+    Checking httpdate v1.0.3
+    Checking ipnet v2.12.2
+    Checking fnv v1.0.7
+    Checking want v0.3.2
+    Checking http-body-util v0.1.5
+    Checking tower-layer v0.3.3
+    Checking block-buffer v0.10.4
+    Checking sync_wrapper v1.0.2
+    Checking mime v0.3.18
+    Checking digest v0.10.7
+    Checking fastrand v2.5.0
+   Compiling unicase v2.10.0
+    Checking ryu v1.0.23
+    Checking time v0.3.55
+    Checking data-encoding v2.11.1
+   Compiling ahash v0.8.12
+   Compiling mime_guess v2.0.5
+   Compiling heck v0.5.0
+    Checking http-range-header v0.4.2
+   Compiling unicode-segmentation v1.13.3
+   Compiling vcpkg v0.2.15
+   Compiling pkg-config v0.3.34
+   Compiling semver v1.0.28
+   Compiling convert_case v0.10.0
+   Compiling unicode-xid v0.2.6
+   Compiling rustc_version v0.4.1
+    Checking chacha20 v0.10.2
+    Checking fallible-iterator v0.3.0
+   Compiling libsqlite3-sys v0.30.1
+    Checking core-foundation-sys v0.8.7
+    Checking fallible-streaming-iterator v0.1.9
+   Compiling objc2 v0.6.5
+    Checking rand v0.10.3
+    Checking hybrid-array v0.4.15
+    Checking objc2-encode v4.1.0
+    Checking base64ct v1.8.3
+   Compiling n0-future v0.3.2
+    Checking pem-rfc7468 v1.0.0
+   Compiling synstructure v0.14.0
+    Checking parking v2.2.1
+    Checking cordyceps v0.3.5
+    Checking spin v0.10.1
+    Checking diatomic-waker v0.2.3
+    Checking const-oid v0.10.3
+    Checking fixedbitset v0.5.9
+    Checking futures-lite v2.6.1
+    Checking futures-buffered v0.2.14
+    Checking block-buffer v0.12.1
+    Checking crypto-common v0.2.2
+    Checking core-foundation v0.10.1
+    Checking inout v0.1.4
+   Compiling getrandom v0.3.4
+   Compiling rustversion v1.0.23
+   Compiling winnow v1.0.5
+   Compiling zeroize_derive v1.5.0
+   Compiling tracing-attributes v0.1.31
+   Compiling derive_more-impl v2.1.1
+    Checking ppv-lite86 v0.2.21
+    Checking hashbrown v0.14.5
+   Compiling spez v0.1.2
+   Compiling serde_derive v1.0.229
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+    Checking zeroize v1.9.1
+   Compiling zerovec-derive v0.11.7
+   Compiling displaydoc v0.2.7
+   Compiling tokio-macros v2.7.2
+   Compiling futures-macro v0.3.34
+   Compiling thiserror-impl v2.0.21
+    Checking rustls-pki-types v1.16.0
+    Checking tracing v0.1.44
+    Checking hashlink v0.9.1
+    Checking tokio v1.54.1
+    Checking zerofrom v0.1.8
+    Checking futures-util v0.3.34
+    Checking rustls-webpki v0.103.16
+    Checking webpki-roots v1.0.12
+   Compiling n0-error-macros v1.0.3
+   Compiling pin-project-internal v1.1.13
+    Checking yoke v0.8.4
+    Checking zerovec v0.11.9
+    Checking zerotrie v0.2.5
+    Checking n0-error v1.0.3
+    Checking pin-project v1.1.13
+    Checking der v0.8.3
+    Checking tinystr v0.8.5
+    Checking potential_utf v0.1.6
+    Checking icu_collections v2.4.0
+    Checking icu_locale_core v2.4.0
+    Checking rusqlite v0.32.1
+    Checking derive_more v2.1.1
+   Compiling toml_parser v1.1.5+spec-1.1.0
+    Checking icu_provider v2.4.0
+    Checking spki v0.8.1
+    Checking digest v0.11.3
+    Checking pharos-protocol v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-protocol)
+    Checking pharos-store-schema v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-store-schema)
+    Checking pharos-agent-core v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/agent-core)
+    Checking icu_properties v2.4.0
+    Checking icu_normalizer v2.4.0
+    Checking block2 v0.6.2
+    Checking dispatch2 v0.3.1
+    Checking cipher v0.4.4
+   Compiling curve25519-dalek v5.0.0
+    Checking pharos-api v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-api)
+    Checking security-framework-sys v2.17.0
+   Compiling noq-udp v1.4.0
+    Checking universal-hash v0.5.1
+   Compiling toml_datetime v1.1.3+spec-1.1.0
+    Checking opaque-debug v0.3.1
+   Compiling system-configuration-sys v0.6.0
+    Checking base16ct v1.0.0
+   Compiling portable-atomic v1.15.0
+    Checking serdect v0.4.3
+   Compiling toml_edit v0.25.19+spec-1.1.0
+    Checking objc2-core-foundation v0.3.2
+    Checking polyval v0.6.2
+    Checking security-framework v3.7.0
+    Checking pkcs8 v0.11.0
+    Checking cpufeatures v0.3.1
+   Compiling slotmap v1.1.1
+    Checking signature v3.0.0
+   Compiling rustix v1.1.6
+    Checking rustc-hash v2.1.3
+    Checking idna_adapter v1.2.2
+    Checking idna v1.1.0
+    Checking pharos-codex-adapter v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/adapter-codex)
+   Compiling proc-macro-crate v3.5.0
+    Checking url v2.5.8
+    Checking rustls-platform-verifier v0.7.1
+    Checking ed25519 v3.0.0
+    Checking tokio-util v0.7.20
+    Checking tower v0.5.3
+    Checking tokio-rustls v0.26.6
+   Compiling data-encoding-macro-internal v0.1.19
+    Checking sha2 v0.11.1
+    Checking rand_core v0.9.5
+    Checking ghash v0.5.1
+    Checking ctr v0.9.2
+    Checking aes v0.8.4
+    Checking aead v0.5.2
+    Checking quick-xml v0.42.0
+   Compiling crc32fast v1.5.5
+   Compiling n0-dns-resolver v0.1.0
+   Compiling netdev v0.46.3
+    Checking h2 v0.4.20
+    Checking tower-http v0.6.11
+    Checking aes-gcm v0.10.3
+    Checking data-encoding-macro v0.1.21
+    Checking system-configuration v0.8.0
+    Checking ed25519-dalek v3.0.0
+    Checking objc2-security v0.3.2
+    Checking rand_chacha v0.9.0
+    Checking plist v1.10.3
+   Compiling num_enum_derive v0.7.6
+    Checking futures-executor v0.3.34
+    Checking objc2-system-configuration v0.3.2
+   Compiling enum-assoc v1.4.2
+   Compiling strum_macros v0.28.0
+   Compiling iroh-metrics-derive v1.0.1
+    Checking sha2 v0.10.9
+   Compiling iroh-dns v1.4.1
+   Compiling netwatch v0.19.3
+   Compiling noq v1.4.0
+    Checking lru v0.18.5
+   Compiling blake3 v1.8.7
+    Checking simple-dns v0.12.0
+    Checking rand_pcg v0.10.2
+    Checking identity-hash v0.1.0
+    Checking mac-addr v0.3.0
+    Checking sorted-index-buffer v0.2.1
+    Checking lru-slab v0.1.3
+    Checking adler2 v2.0.1
+    Checking tinyvec v1.13.3
+    Checking xml-rs v0.8.29
+    Checking regex-syntax v0.8.11
+    Checking simd-adler32 v0.3.10
+    Checking num_enum v0.7.6
+    Checking tempfile v3.27.0
+    Checking miniz_oxide v0.9.1
+    Checking noq-proto v1.4.0
+    Checking xmltree v0.10.3
+    Checking iroh-metrics v1.0.2
+    Checking n0-watcher v1.0.1
+    Checking futures v0.3.34
+    Checking regex-automata v0.4.18
+    Checking rand v0.9.5
+    Checking iroh-base v1.4.1
+    Checking tokio-stream v0.1.19
+    Checking attohttpc v0.30.1
+    Checking strum v0.28.0
+    Checking arc-swap v1.9.5
+    Checking serde_urlencoded v0.7.1
+    Checking cobs v0.3.0
+   Compiling postcard-derive v0.2.2
+    Checking sha1 v0.10.7
+   Compiling iroh-relay v1.4.1
+    Checking simdutf8 v0.1.5
+    Checking lazy_static v1.5.1
+    Checking constant_time_eq v0.4.2
+    Checking sha1_smol v1.0.1
+    Checking arrayvec v0.7.8
+    Checking sharded-slab v0.1.7
+    Checking tokio-websockets v0.13.3
+    Checking webpki-roots v0.26.11
+    Checking flate2 v1.1.11
+    Checking postcard v1.1.3
+   Compiling iroh v1.4.1
+    Checking serde_bytes v0.11.19
+    Checking tracing-log v0.2.0
+    Checking thread_local v1.1.10
+    Checking cmov v0.5.4
+    Checking hyper v1.12.0
+    Checking matchers v0.2.0
+    Checking seize v0.5.1
+    Checking nu-ansi-term v0.50.3
+    Checking ureq v2.12.1
+    Checking ctutils v0.4.8
+    Checking papaya v0.2.5
+    Checking backon v1.6.0
+    Checking tracing-subscriber v0.3.23
+    Checking tungstenite v0.29.0
+    Checking utf8parse v0.2.2
+   Compiling curve25519-dalek v4.1.3
+    Checking axum-core v0.5.6
+    Checking serde_path_to_error v0.1.20
+    Checking anstyle-parse v1.0.0
+    Checking rand_core v0.6.4
+    Checking anstyle v1.0.14
+    Checking anstyle-query v1.1.5
+    Checking colorchoice v1.0.5
+    Checking matchit v0.8.4
+    Checking is_terminal_polyfill v1.70.2
+   Compiling async-trait v0.1.92
+    Checking strsim v0.11.1
+    Checking anstream v1.0.0
+    Checking tokio-tungstenite v0.29.0
+    Checking clap_lex v1.1.1
+    Checking signature v2.2.0
+    Checking rand_chacha v0.3.1
+    Checking ed25519 v2.2.3
+    Checking clap_builder v4.6.7
+    Checking hyper-util v0.1.21
+   Compiling clap_derive v4.6.7
+    Checking pharos-thread v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-thread)
+    Checking rand v0.8.8
+    Checking hex v0.4.3
+    Checking utf-8 v0.7.6
+    Checking ed25519-dalek v2.2.0
+    Checking pharos-grokbot v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-grokbot)
+    Checking tungstenite v0.26.2
+    Checking pharos-hitl v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-hitl)
+    Checking pharos-goals v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-goals)
+    Checking pharos-adapter-cursor v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-adapter-cursor)
+    Checking pharos-adapter-agy v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-adapter-agy)
+    Checking pharos-session v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-session)
+    Checking tokio-tungstenite v0.26.2
+    Checking pharos-cli v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-cli)
+    Checking hyper-rustls v0.27.10
+    Checking igd-next v0.17.1
+    Checking axum v0.8.9
+    Checking pharos-agent-runtime v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/agent-runtime)
+    Checking reqwest v0.13.5
+    Checking reqwest v0.12.28
+    Checking portmapper v0.19.3
+    Checking clap v4.6.7
+    Checking pharos-adapter-dsh v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-adapter-dsh)
+    Checking pharos-http v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-http)
+    Checking pharos-web v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-web)
+    Checking pharos-iroh v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-iroh)
+    Checking pharos-replica v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-replica)
+    Checking pharos-mesh v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-mesh)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 17.81s
+=== cargo test --workspace ===
+   Compiling cfg-if v1.0.5
+   Compiling memchr v2.8.3
+   Compiling itoa v1.0.19
+   Compiling once_cell v1.21.4
+   Compiling libc v0.2.191
+   Compiling serde_core v1.0.229
+   Compiling zmij v1.0.23
+   Compiling rand_core v0.10.1
+   Compiling log v0.4.35
+   Compiling smallvec v1.16.5
+   Compiling pin-project-lite v0.2.17
+   Compiling typenum v1.20.1
+   Compiling bitflags v2.13.2
+   Compiling bytes v1.12.1
+   Compiling zeroize v1.9.1
+   Compiling zerofrom v0.1.8
+   Compiling stable_deref_trait v1.2.1
+   Compiling yoke v0.8.4
+   Compiling futures-core v0.3.34
+   Compiling percent-encoding v2.3.2
+   Compiling subtle v2.6.1
+   Compiling writeable v0.6.4
+   Compiling futures-sink v0.3.34
+   Compiling zerovec v0.11.9
+   Compiling utf_types v1.0.0
+   Compiling litemap v0.8.3
+   Compiling slab v0.4.12
+   Compiling futures-io v0.3.34
+   Compiling futures-channel v0.3.34
+   Compiling errno v0.3.14
+   Compiling getrandom v0.4.3
+   Compiling socket2 v0.6.5
+   Compiling utf8_iter v1.1.0
+   Compiling signal-hook-registry v1.4.8
+   Compiling getrandom v0.2.17
+   Compiling mio v1.2.4
+   Compiling zerotrie v0.2.5
+   Compiling form_urlencoded v1.2.2
+   Compiling futures-task v0.3.34
+   Compiling generic-array v0.14.7
+   Compiling tinystr v0.8.5
+   Compiling potential_utf v0.1.6
+   Compiling futures-util v0.3.34
+   Compiling thiserror v2.0.21
+   Compiling icu_collections v2.4.0
+   Compiling icu_locale_core v2.4.0
+   Compiling icu_properties_data v2.4.0
+   Compiling icu_normalizer_data v2.4.0
+   Compiling rustls-pki-types v1.16.0
+   Compiling tokio v1.54.1
+   Compiling http v1.5.0
+   Compiling equivalent v1.0.3
+   Compiling untrusted v0.9.0
+   Compiling zerocopy v0.8.63
+   Compiling crypto-common v0.1.7
+   Compiling ring v0.17.14
+   Compiling tracing-core v0.1.36
+   Compiling base64 v0.22.1
+   Compiling cpufeatures v0.2.17
+   Compiling deranged v0.5.9
+   Compiling time-core v0.1.9
+   Compiling icu_provider v2.4.0
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.154
+   Compiling uuid v1.29.2
+   Compiling icu_properties v2.4.0
+   Compiling icu_normalizer v2.4.0
+   Compiling tracing v0.1.44
+   Compiling num-conv v0.2.2
+   Compiling foldhash v0.2.0
+   Compiling powerfmt v0.2.1
+   Compiling rustls-webpki v0.103.16
+   Compiling hashbrown v0.17.1
+   Compiling time v0.3.55
+   Compiling httparse v1.10.1
+   Compiling pharos-protocol v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-protocol)
+   Compiling idna_adapter v1.2.2
+   Compiling pharos-api v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-api)
+   Compiling idna v1.1.0
+   Compiling rustls v0.23.46
+   Compiling indexmap v2.14.2
+   Compiling webpki-roots v1.0.12
+   Compiling http-body v1.1.0
+   Compiling base64 v0.23.1
+   Compiling tower-service v0.3.3
+   Compiling url v2.5.8
+   Compiling atomic-waker v1.1.2
+   Compiling try-lock v0.2.5
+   Compiling httpdate v1.0.3
+   Compiling ipnet v2.12.2
+   Compiling fnv v1.0.7
+   Compiling want v0.3.2
+   Compiling http-body-util v0.1.5
+   Compiling fastrand v2.5.0
+   Compiling tower-layer v0.3.3
+   Compiling pharos-store-schema v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-store-schema)
+   Compiling sync_wrapper v1.0.2
+   Compiling mime v0.3.18
+   Compiling block-buffer v0.10.4
+   Compiling unicase v2.10.0
+   Compiling ryu v1.0.23
+   Compiling digest v0.10.7
+   Compiling data-encoding v2.11.1
+   Compiling http-range-header v0.4.2
+   Compiling libsqlite3-sys v0.30.1
+   Compiling mime_guess v2.0.5
+   Compiling fallible-iterator v0.3.0
+   Compiling ahash v0.8.12
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling ppv-lite86 v0.2.21
+   Compiling derive_more v2.1.1
+   Compiling hashbrown v0.14.5
+   Compiling pharos-agent-core v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/agent-core)
+   Compiling chacha20 v0.10.2
+   Compiling core-foundation-sys v0.8.7
+   Compiling hybrid-array v0.4.15
+   Compiling base64ct v1.8.3
+   Compiling objc2-encode v4.1.0
+   Compiling rand v0.10.3
+   Compiling n0-error v1.0.3
+   Compiling tokio-util v0.7.20
+   Compiling tower v0.5.3
+   Compiling hashlink v0.9.1
+   Compiling objc2 v0.6.5
+   Compiling pem-rfc7468 v1.0.0
+   Compiling const-oid v0.10.3
+   Compiling diatomic-waker v0.2.3
+   Compiling fixedbitset v0.5.9
+   Compiling rusqlite v0.32.1
+   Compiling parking v2.2.1
+   Compiling cordyceps v0.3.5
+   Compiling spin v0.10.1
+   Compiling futures-lite v2.6.1
+   Compiling der v0.8.3
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling h2 v0.4.20
+   Compiling tower-http v0.6.11
+   Compiling futures-buffered v0.2.14
+   Compiling pin-project v1.1.13
+   Compiling rustix v1.1.6
+   Compiling core-foundation v0.10.1
+   Compiling inout v0.1.4
+   Compiling tokio-rustls v0.26.6
+   Compiling cipher v0.4.4
+   Compiling spki v0.8.1
+   Compiling n0-future v0.3.2
+   Compiling digest v0.11.3
+   Compiling block2 v0.6.2
+   Compiling dispatch2 v0.3.1
+   Compiling security-framework-sys v2.17.0
+   Compiling pharos-codex-adapter v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/adapter-codex)
+   Compiling universal-hash v0.5.1
+   Compiling opaque-debug v0.3.1
+   Compiling base16ct v1.0.0
+   Compiling toml_edit v0.25.19+spec-1.1.0
+   Compiling polyval v0.6.2
+   Compiling security-framework v3.7.0
+   Compiling serdect v0.4.3
+   Compiling objc2-core-foundation v0.3.2
+   Compiling pkcs8 v0.11.0
+   Compiling cpufeatures v0.3.1
+   Compiling tempfile v3.27.0
+   Compiling signature v3.0.0
+   Compiling rustc-hash v2.1.3
+   Compiling ed25519 v3.0.0
+   Compiling sha2 v0.11.1
+   Compiling proc-macro-crate v3.5.0
+   Compiling curve25519-dalek v5.0.0
+   Compiling noq-udp v1.4.0
+   Compiling getrandom v0.3.4
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling ghash v0.5.1
+   Compiling system-configuration-sys v0.6.0
+   Compiling portable-atomic v1.15.0
+   Compiling aes v0.8.4
+   Compiling ctr v0.9.2
+   Compiling aead v0.5.2
+   Compiling quick-xml v0.42.0
+   Compiling ed25519-dalek v3.0.0
+   Compiling aes-gcm v0.10.3
+   Compiling system-configuration v0.8.0
+   Compiling num_enum_derive v0.7.6
+   Compiling rand_core v0.9.5
+   Compiling slotmap v1.1.1
+   Compiling data-encoding-macro v0.1.21
+   Compiling futures-executor v0.3.34
+   Compiling lru v0.18.5
+   Compiling simple-dns v0.12.0
+   Compiling rand_pcg v0.10.2
+   Compiling tinyvec v1.13.3
+   Compiling mac-addr v0.3.0
+   Compiling plist v1.10.3
+   Compiling identity-hash v0.1.0
+   Compiling sorted-index-buffer v0.2.1
+   Compiling xml-rs v0.8.29
+   Compiling lru-slab v0.1.3
+   Compiling objc2-security v0.3.2
+   Compiling noq-proto v1.4.0
+   Compiling n0-watcher v1.0.1
+   Compiling hyper v1.12.0
+   Compiling objc2-system-configuration v0.3.2
+   Compiling num_enum v0.7.6
+   Compiling futures v0.3.34
+   Compiling xmltree v0.10.3
+   Compiling iroh-base v1.4.1
+   Compiling netdev v0.46.3
+   Compiling strum v0.28.0
+   Compiling iroh-metrics v1.0.2
+   Compiling rand_chacha v0.9.0
+   Compiling arc-swap v1.9.5
+   Compiling tokio-stream v0.1.19
+   Compiling sha2 v0.10.9
+   Compiling serde_urlencoded v0.7.1
+   Compiling attohttpc v0.30.1
+   Compiling cobs v0.3.0
+   Compiling simdutf8 v0.1.5
+   Compiling adler2 v2.0.1
+   Compiling regex-syntax v0.8.11
+   Compiling hyper-util v0.1.21
+   Compiling constant_time_eq v0.4.2
+   Compiling sha1_smol v1.0.1
+   Compiling arrayvec v0.7.8
+   Compiling simd-adler32 v0.3.10
+   Compiling blake3 v1.8.7
+   Compiling tokio-websockets v0.13.3
+   Compiling postcard v1.1.3
+   Compiling netwatch v0.19.3
+   Compiling miniz_oxide v0.9.1
+   Compiling rand v0.9.5
+   Compiling crc32fast v1.5.5
+   Compiling sha1 v0.10.7
+   Compiling serde_bytes v0.11.19
+   Compiling lazy_static v1.5.1
+   Compiling cmov v0.5.4
+   Compiling seize v0.5.1
+   Compiling regex-automata v0.4.18
+   Compiling ctutils v0.4.8
+   Compiling sharded-slab v0.1.7
+   Compiling papaya v0.2.5
+   Compiling backon v1.6.0
+   Compiling webpki-roots v0.26.11
+   Compiling tracing-log v0.2.0
+   Compiling thread_local v1.1.10
+   Compiling nu-ansi-term v0.50.3
+   Compiling tungstenite v0.29.0
+   Compiling axum-core v0.5.6
+   Compiling serde_path_to_error v0.1.20
+   Compiling hyper-rustls v0.27.10
+   Compiling igd-next v0.17.1
+   Compiling reqwest v0.13.5
+   Compiling flate2 v1.1.11
+   Compiling tokio-tungstenite v0.29.0
+   Compiling utf8parse v0.2.2
+   Compiling matchit v0.8.4
+   Compiling ureq v2.12.1
+   Compiling anstyle-parse v1.0.0
+   Compiling rand_core v0.6.4
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling anstyle v1.0.14
+   Compiling anstyle-query v1.1.5
+   Compiling colorchoice v1.0.5
+   Compiling reqwest v0.12.28
+   Compiling strsim v0.11.1
+   Compiling signature v2.2.0
+   Compiling portmapper v0.19.3
+   Compiling axum v0.8.9
+   Compiling matchers v0.2.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling anstream v1.0.0
+   Compiling clap_lex v1.1.1
+   Compiling n0-dns-resolver v0.1.0
+   Compiling noq v1.4.0
+   Compiling clap_builder v4.6.7
+   Compiling iroh-dns v1.4.1
+   Compiling ed25519 v2.2.3
+   Compiling curve25519-dalek v4.1.3
+   Compiling pharos-http v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-http)
+   Compiling rand_chacha v0.3.1
+   Compiling clap v4.6.7
+   Compiling ed25519-dalek v2.2.0
+   Compiling rand v0.8.8
+   Compiling pharos-thread v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-thread)
+   Compiling utf-8 v0.7.6
+   Compiling hex v0.4.3
+   Compiling tungstenite v0.26.2
+   Compiling pharos-hitl v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-hitl)
+   Compiling pharos-goals v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-goals)
+   Compiling pharos-web v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-web)
+   Compiling tokio-tungstenite v0.26.2
+   Compiling pharos-grokbot v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-grokbot)
+   Compiling pharos-adapter-dsh v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-adapter-dsh)
+   Compiling pharos-adapter-cursor v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-adapter-cursor)
+   Compiling pharos-adapter-agy v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-adapter-agy)
+   Compiling pharos-session v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-session)
+   Compiling pharos-cli v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-cli)
+   Compiling iroh-relay v1.4.1
+   Compiling pharos-agent-runtime v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/agent-runtime)
+   Compiling iroh v1.4.1
+   Compiling pharos-iroh v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-iroh)
+   Compiling pharos-replica v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-replica)
+   Compiling pharos-mesh v0.1.0 (/Users/baixianger/personal/pharos-wt/_phase-e/rust/crates/pharos-mesh)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.63s
+     Running unittests src/lib.rs (target/debug/deps/pharos_adapter_agy-d79044c17a2d209d)
+
+running 4 tests
+test agy::tests::stop_reason_cancelled_is_interrupted_not_completed ... ok
+test agy::tests::stop_reason_end_turn_is_completed ... ok
+test delivery::tests::interrupt_result_is_never_completed ... ok
+test delivery::tests::format_prompt_reads_json_body ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/acp_smoke.rs (target/debug/deps/acp_smoke-4a840a843028a601)
+
+running 1 test
+test acp_roundtrip_and_interrupt_never_completed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_adapter_cursor-6e6863c7f0e00d72)
+
+running 8 tests
+test resolve::tests::home_dir_is_non_empty ... ok
+test cli::tests::chat_id_accepts_uuid ... ok
+test cursor::tests::interrupt_delivery_helper_never_completed ... ok
+test cli::tests::interrupt_mapping_never_completed ... ok
+test cursor::tests::list_chats_is_explicit_unsupported ... ok
+test cursor::tests::manifest_is_cursor ... ok
+test cli::tests::parse_json_result_success ... ok
+test cli::tests::parse_stream_json_prefers_result_line ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/product_roundtrip.rs (target/debug/deps/product_roundtrip-9ea0fd3ed1e63feb)
+
+running 2 tests
+test list_chats_is_explicit_unsupported ... ok
+test product_roundtrip_resume_and_interrupt_never_completed ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_adapter_dsh-a653658cdc36aa50)
+
+running 7 tests
+test host::tests::parse_startup_line_rejects_noise ... ok
+test adapter::tests::msg_test_root_ends_with_pharos_msg_test ... ok
+test transport::tests::prompt_mode_maps_to_wire ... ok
+test host::tests::parse_startup_line_extracts_port ... ok
+test adapter::tests::interrupt_dispatch_helper_never_completed ... ok
+test history::tests::aborted_maps_to_interrupted_never_completed ... ok
+test history::tests::parse_completed_turn_with_text ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/product_roundtrip.rs (target/debug/deps/product_roundtrip-dbcfe46e8a1e6da6)
+
+running 1 test
+test product_roundtrip_and_interrupt_never_completed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_agent_core-316eb0ac690f2f51)
+
+running 2 tests
+test tests::success_omits_error ... ok
+test tests::request_defaults_missing_params_to_null ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/pharos_meshd-b45c8855db02df7e)
+
+running 10 tests
+test tests::archive_is_explicitly_unsupported ... ok
+test tests::public_response_preserves_jsonrpc ... ok
+test tests::discovery_uses_nested_options ... ok
+test tests::registry_delivery_is_idempotent_and_persistent ... ok
+test tests::launch_request_is_idempotent_and_ackable ... ok
+test tests::launch_claim_reserves_session_id_and_ack_preserves_it ... ok
+test tests::launch_options_upsert_replaces_and_lists ... ok
+test tests::native_state_rejects_lower_authority_and_stale_sequences ... ok
+test tests::member_routed_delivery_links_session_and_remains_idempotent ... ok
+test tests::codex_events_register_and_advance_native_session_state ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_api-d3dcf186c3da5e17)
+
+running 5 tests
+test tests::contracts_version ... ok
+test tests::client_event_tag ... ok
+test tests::reply_request_grokbot_member ... ok
+test tests::api_error_roundtrip ... ok
+test tests::openapi_lists_thread_reply ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/pharos-1f6b0b1cd87ae387)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_codex_adapter-4f0c542b4cbd96bf)
+
+running 5 tests
+test delivery::tests::interrupt_result_is_never_completed ... ok
+test transport::daemon_proxy::tests::surfaces_app_server_error_message ... ok
+test transport::daemon_proxy::tests::notification_capture_is_bounded_and_excludes_responses ... ok
+test transport::daemon_proxy::tests::matches_only_expected_response_id ... ok
+test delivery::tests::format_prompt_reads_json_body ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/pharos_codex_adapter-7a237175d8917a0b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/product_roundtrip.rs (target/debug/deps/product_roundtrip-b1b069783e135e51)
+
+running 1 test
+test product_roundtrip_and_interrupt_never_completed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_goals-d2bf305f45725b80)
+
+running 1 test
+test store::tests::goal_and_todo_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/msg_test_smoke.rs (target/debug/deps/msg_test_smoke-32e0b447a126c30b)
+
+running 1 test
+test goal_todo_smoke_isolated_msg_test_dir ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_grokbot-a31d600946c005fe)
+
+running 4 tests
+test webhook::tests::missing_env_is_skipped ... ok
+test bridge::tests::missing_webhook_fails_delivery ... ok
+test bridge::tests::webhook_success_is_injected_not_replied ... ok
+test webhook::tests::loads_webhook_config ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/grokbot_member_live.rs (target/debug/deps/grokbot_member_live-3baca93a79655b19)
+
+running 1 test
+test rust_grokbot_member_thread_mention_reply_when_enabled ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_hitl-fc9ecc7b0412f628)
+
+running 7 tests
+test pending::tests::webhook_success_is_injected ... ok
+test pending::tests::resolve_allowed_once_and_denied ... ok
+test pending::tests::webhook_missing_config_is_failed_not_injected ... ok
+test channel::tests::markdown_contains_exact_commands_and_timeout ... ok
+test pending::tests::forty_five_minutes_timeout_branch ... ok
+test webhook::tests::missing_env_is_skipped ... ok
+test webhook::tests::loads_webhook_config ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/codex_hitl_live.rs (target/debug/deps/codex_hitl_live-179cfa89d4216966)
+
+running 1 test
+test codex_approval_human_proxy_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_http-e859af4ce3205e61)
+
+running 4 tests
+test router::tests::health_ok ... ok
+test router::tests::fake_threads_list ... ok
+test router::tests::fake_thread_not_found ... ok
+test router::tests::openapi_stub_served ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_iroh-f86e155952674b6d)
+
+running 4 tests
+test frame::tests::rejects_bad_magic ... ok
+test frame::tests::roundtrip_request_with_body ... ok
+test frame::tests::async_read_write_roundtrip ... ok
+test transport::tests::loopback_exchange_over_iroh ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.31s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_mesh-c456fa0662126a09)
+
+running 1 test
+test pairing::tests::invite_accept_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/pharos_mesh_node.rs (target/debug/deps/pharos_mesh_node-99fd791f1d16ffda)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/peer_rpc_smoke.rs (target/debug/deps/peer_rpc_smoke-87a636b03843fe2e)
+
+running 1 test
+test peer_hello_sync_and_runtime_call ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.47s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_protocol-5d5571141f3dd051)
+
+running 3 tests
+test tests::contracts_version_is_phase0 ... ok
+test tests::delivery_state_roundtrip ... ok
+test tests::thread_mention_is_id_only_shape ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_replica-246366c6ba97c278)
+
+running 4 tests
+test rpc::tests::host_runtime_call_allowlist ... ok
+test rpc::tests::header_roundtrip_uses_contract_disposition ... ok
+test store::tests::message_sync_helpers ... ok
+test store::tests::opens_and_migrates_phase0 ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_session-b8401524c86c8c80)
+
+running 2 tests
+test events::tests::progress_and_approval_event_json_shapes ... ok
+test service::tests::consumes_dyn_session_adapter_and_emits_progress_events ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_store_schema-c5d1a50ddfa10960)
+
+running 2 tests
+test tests::migrations_cover_schema_version ... ok
+test tests::phase0_meta ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_thread-f80853bd6f76f812)
+
+running 5 tests
+test reply::tests::reply_once_id_changes_with_inputs ... ok
+test reply::tests::reply_once_id_is_stable ... ok
+test store::tests::cli_read_respects_since_and_limit ... ok
+test store::tests::unreplied_directed_auto_select ... ok
+test store::tests::send_and_reply_once_idempotent ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/pharos_web-cd12bb0efab2b9ab)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/pharos_web-cc91fa5d0eb14dcc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/acceptance.rs (target/debug/deps/acceptance-48505cb14023deb5)
+
+running 1 test
+test health_openapi_static_and_ws_pump ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+   Doc-tests pharos_adapter_agy
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_adapter_cursor
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_adapter_dsh
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_agent_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_api
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_codex_adapter
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_goals
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_grokbot
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_hitl
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_http
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_iroh
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_mesh
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_protocol
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_replica
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_session
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_store_schema
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_thread
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests pharos_web
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

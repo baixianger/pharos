@@ -1,9 +1,16 @@
 import SwiftUI
 import Observation
 import AppKit
-import PharosRuntime
-import PharosMeshCore
 import UniformTypeIdentifiers
+
+/// Local roster row for menu-bar display (Phase E: no Mesh module).
+struct MeshMemberInfo: Identifiable, Hashable, Sendable {
+    var id: String
+    var nick: String
+    var state: String? = nil
+    var rooms: [String] = []
+}
+
 @preconcurrency import UserNotifications
 
 /// On-disk shape of the registry.
@@ -479,16 +486,7 @@ final class ProjectStore {
     private(set) var meshRoomNames: [String] = []
     private var meshSnapshotPolling = false
     var lastError: String?
-    private(set) var registrySyncStatus: RegistrySyncStatus = .connecting
-    private var registrySync: BrokerRegistrySync?
-    private var distributedProjection: DistributedProjectIssueProjection?
-    private var distributedMeshSupport: DistributedMeshSupport?
-    private var distributedPublishTask: Task<Void, Never>?
-    private var distributedBaseline = StoreData()
-    /// Monotonic local snapshot generation. Older queued publishes may finish,
-    /// but only the newest generation may replace UI state or report `synced`.
-    private var distributedPublishRevision: UInt64 = 0
-    private(set) var usesDistributedRegistry = false
+    private(set) var registrySyncStatus: RegistrySyncStatus = .synced
     var terminal: TerminalApp = .ghostty {
         didSet { PharosPrefs.shared.set(terminal.rawValue, forKey: "pharos.terminal") }
     }
@@ -579,47 +577,12 @@ final class ProjectStore {
         // Compatibility for the CLI and older app builds during rolling update.
         PharosPrefs.shared.set(executionHosts.first?.sshHost ?? "", forKey: "pharos.peerHost")
     }
-    /// Device-local runtime role. A Broker always includes this Mac's Node.
-    var runtimeRole: PharosRuntimeRole = .node {
-        didSet {
-            PharosPrefs.shared.set(runtimeRole.rawValue,
-                                   forKey: PharosRuntimeConfigurationStore.roleKey)
-            PharosPrefs.shared.set(runtimeRole == .broker, forKey: "pharos.hostBroker")
-        }
-    }
-    /// Remote Broker used by a pure Node. Preserved while this Mac is a Broker
-    /// so switching back can be validated before the local Broker is stopped.
-    var meshServerEndpoint = "" {
-        didSet {
-            if PharosMeshRuntimeMode.usesDistributedMesh {
-                // Distributed product mode must not recreate the legacy dial
-                // marker from an old preference during ProjectStore init.
-                MeshClient.remoteEndpoint = nil
-                MeshPaths.setDialEndpointFile(nil)
-                return
-            }
-            PharosPrefs.shared.set(meshServerEndpoint, forKey: "pharos.meshServerEndpoint")
-            let trimmed = meshServerEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-            if runtimeRole == .node, meshSplitHostPort(trimmed) != nil {
-                MeshClient.remoteEndpoint = trimmed
-                MeshPaths.setDialEndpointFile(trimmed)
-            } else if runtimeRole == .node, trimmed.isEmpty {
-                MeshClient.remoteEndpoint = nil
-                MeshPaths.setDialEndpointFile(nil)
-            }
-        }
-    }
-    var validMeshServerEndpoint: String? {
-        let endpoint = meshServerEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        return meshSplitHostPort(endpoint) == nil ? nil : endpoint
-    }
-    var launchMeshAtLogin = true {
-        didSet { PharosPrefs.shared.set(launchMeshAtLogin, forKey: "pharos.launchMeshAtLogin") }
-    }
-    /// Recover an existing pre-refactor Mac pairing without overwriting an
-    /// explicit modern value. Runs once at app startup, offloading Tailscale +
-    /// SSH probes so the window never blocks. The obsolete key is removed only
-    /// after an exact reachable match succeeds.
+    /// Deprecated Phase E prefs retained only so old UserDefaults keys remain readable.
+    var runtimeRoleRaw: String = "node"
+    var meshServerEndpoint = ""
+    var validMeshServerEndpoint: String? { nil }
+    var launchMeshAtLogin = false
+
     @MainActor
     func recoverLegacyPeerIfNeeded() async {
         guard peerHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -634,41 +597,10 @@ final class ProjectStore {
         PharosPrefs.shared.removeObject(forKey: "pharos.peerHostKey")
     }
 
-    var runtimeConfiguration: PharosRuntimeConfiguration {
-        PharosRuntimeConfiguration(role: runtimeRole,
-                                   remoteBrokerEndpoint: meshServerEndpoint)
-    }
-
-    @MainActor
-    @discardableResult
-    func applyRuntimeConfiguration(_ configuration: PharosRuntimeConfiguration) async throws
-        -> PharosRuntimeStatus {
-        let status = try await Task.detached(priority: .userInitiated) {
-            try PharosRuntimeCoordinator().apply(configuration)
-        }.value
-        runtimeRole = status.configuration.role
-        meshServerEndpoint = status.configuration.remoteBrokerEndpoint
-        return status
-    }
-
-    @MainActor
-    func activateRuntimeRoute() async -> Bool {
-        await Task.detached(priority: .utility) {
-            (try? PharosRuntimeCoordinator().activateSavedRoute()) != nil
-        }.value
-    }
-
-
-    /// The registry file. Resolved from the shared `DataLocation` (honoring the
+        /// The registry file. Resolved from the shared `DataLocation` (honoring the
     /// Broker-backed cache (plus the `PHAROS_REGISTRY` test override) so the GUI
     /// and CLI agree without treating iCloud or a Host checkout as shared state.
-    private var fileURL: URL {
-        if PharosMeshRuntimeMode.usesDistributedMesh {
-            return PharosCore.registryURL.deletingLastPathComponent()
-                .appendingPathComponent("distributed-project-cache.json")
-        }
-        return PharosCore.registryURL
-    }
+    private var fileURL: URL { PharosCore.registryURL }
     private var pollTask: Task<Void, Never>?
     /// Last modification date of projects.json we've observed/written, used by the
     /// external-edit watcher to avoid reloading our own saves in a loop.
@@ -700,46 +632,8 @@ final class ProjectStore {
         } else if let legacy = d.string(forKey: "pharos.peerHost"), !legacy.isEmpty {
             executionHosts = [ExecutionHostProfile(name: legacy, sshHost: legacy)]
         }
-        let distributedMode = PharosMeshRuntimeMode.usesDistributedMesh
-        let runtime = PharosRuntimeConfigurationStore(defaults: d).load()
-        runtimeRole = runtime.role
-        meshServerEndpoint = distributedMode ? "" : runtime.remoteBrokerEndpoint
-        d.set(true, forKey: "pharos.launchMeshAtLogin")
-        if runtimeRole == .node, let endpoint = validMeshServerEndpoint {
-            MeshClient.remoteEndpoint = endpoint
-        }
         load()
-        if distributedMode {
-            // The local cache is display-only until DistributedMeshSupport
-            // attaches the replica. Never dial the legacy Broker in this mode.
-            registrySyncStatus = .connecting
-        } else {
-            let sync = BrokerRegistrySync(
-                revision: d.string(forKey: "pharos.registryRevision")
-            ) { [weak self] event in
-                Task { @MainActor in self?.handleRegistryEvent(event) }
-            }
-            registrySync = sync
-            if d.bool(forKey: "pharos.registryPending"),
-               let payload = try? String(contentsOf: fileURL, encoding: .utf8) {
-                registrySyncStatus = .pending
-                sync.submit(payload)
-            } else if let snapshot = sync.bootstrap(),
-                      applyRegistryPayload(snapshot.payload) {
-                d.set(snapshot.revision, forKey: "pharos.registryRevision")
-                registrySyncStatus = .synced
-                persistCurrentCache()
-            } else {
-                registrySyncStatus = .offline(
-                    "Using the last local cache until the Broker reconnects."
-                )
-            }
-        }
-        // Migrate the old local preference without carrying it in project data.
-        if d.bool(forKey: "pharos.hostMesh") {
-            d.removeObject(forKey: "pharos.hostMesh")
-            runtimeRole = .broker
-        }
+        registrySyncStatus = .synced
         lastFileMtime = fileModificationDate()
         if ProcessInfo.processInfo.environment[
             "PHAROS_DISABLE_NOTIFICATIONS"
@@ -751,8 +645,8 @@ final class ProjectStore {
         ] != "1" {
             refreshRunningAgents()
             startPolling()
+            startFileWatch()
         }
-        if registrySync != nil { startFileWatch() }
     }
 
     // MARK: External-edit watcher (live registry sync)
@@ -766,7 +660,6 @@ final class ProjectStore {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard let self, !Task.isCancelled else { return }
-                self.registrySync?.retryAndRefresh()
                 self.reloadIfChangedExternally()
             }
         }
@@ -871,61 +764,6 @@ final class ProjectStore {
 
     // MARK: Persistence
 
-    func activateDistributedRegistry(
-        replica: MeshLocalReplica, group: MeshTrustGroupID,
-        meshSupport: DistributedMeshSupport? = nil
-    ) async {
-        let projection = DistributedProjectIssueProjection(
-            replica: replica, group: group
-        )
-        distributedProjection = projection
-        distributedMeshSupport = meshSupport
-        usesDistributedRegistry = true
-        registrySyncStatus = .connecting
-        do {
-            let cachedGroups = groups
-            let cachedTrash = trash
-            let hadReplicatedMetadata = try await projection.hasReplicatedRegistryMetadata()
-            var materialized = try await projection.materializedStore()
-            if materialized.projects.isEmpty,
-               ProcessInfo.processInfo.environment[
-                   "PHAROS_DISTRIBUTED_SEED_CACHE"
-               ] == "1", !projects.isEmpty {
-                var seed = StoreData(projects: projects)
-                HostLocalProjectPaths.captureAndStrip(&seed)
-                try await projection.publish(store: seed)
-                materialized = try await projection.materializedStore()
-            }
-            if !hadReplicatedMetadata,
-               !cachedGroups.isEmpty || !cachedTrash.isEmpty {
-                materialized.groups = Array(Set(
-                    materialized.groups + cachedGroups
-                )).sorted {
-                    $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
-                }
-                materialized.trash = cachedTrash
-                try await projection.publish(store: materialized)
-                materialized = try await projection.materializedStore()
-            }
-            applyDistributedStore(materialized)
-            registrySyncStatus = .synced
-        } catch {
-            registrySyncStatus = .offline(
-                "Could not open the distributed project replica: \(error)"
-            )
-        }
-    }
-
-    private func applyDistributedStore(_ portable: StoreData) {
-        distributedBaseline = portable
-        var store = portable
-        HostLocalProjectPaths.apply(to: &store)
-        projects = store.projects
-        groups = store.groups
-        trash = store.trash
-        persistCurrentCache()
-    }
-
     func load() {
         guard let data = try? Data(contentsOf: fileURL) else { return }
         _ = applyRegistryData(data)
@@ -963,49 +801,7 @@ final class ProjectStore {
         HostLocalProjectPaths.captureAndStrip(&store)
         if let data = try? encoder.encode(store) {
             writeCache(data)
-            if usesDistributedRegistry, let projection = distributedProjection {
-                registrySyncStatus = .pending
-                distributedPublishRevision &+= 1
-                let revision = distributedPublishRevision
-                let snapshot = store.projects
-                let baseline = distributedBaseline
-                let previous = distributedPublishTask
-                distributedPublishTask = Task { [weak self] in
-                    _ = await previous?.value
-                    guard !Task.isCancelled else { return }
-                    do {
-                        let portable = StoreData(
-                            projects: snapshot, groups: store.groups,
-                            trash: store.trash
-                        )
-                        try await projection.publish(
-                            store: portable, replacing: baseline
-                        )
-                        let materialized = try await projection.materializedStore()
-                        guard !Task.isCancelled else { return }
-                        await MainActor.run {
-                            guard let self,
-                                  self.distributedPublishRevision == revision
-                            else { return }
-                            self.applyDistributedStore(materialized)
-                            self.registrySyncStatus = .synced
-                        }
-                    } catch {
-                        await MainActor.run {
-                            guard let self,
-                                  self.distributedPublishRevision == revision
-                            else { return }
-                            self.registrySyncStatus = .offline(
-                                "Local changes are queued in the distributed replica: \(error)"
-                            )
-                        }
-                    }
-                }
-                return
-            }
-            PharosPrefs.shared.set(true, forKey: "pharos.registryPending")
-            registrySyncStatus = .pending
-            registrySync?.submit(String(decoding: data, as: UTF8.self))
+            registrySyncStatus = .synced
         }
     }
 
@@ -1029,36 +825,6 @@ final class ProjectStore {
             try? FileManager.default.setAttributes([.modificationDate: stamp],
                                                    ofItemAtPath: fileURL.path)
             lastFileMtime = fileModificationDate() ?? stamp
-        }
-    }
-
-    private func handleRegistryEvent(_ event: BrokerRegistryEvent) {
-        switch event {
-        case .synced(let revision):
-            PharosPrefs.shared.set(revision, forKey: "pharos.registryRevision")
-            PharosPrefs.shared.set(false, forKey: "pharos.registryPending")
-            registrySyncStatus = .synced
-        case .remote(let snapshot):
-            guard applyRegistryPayload(snapshot.payload) else { return }
-            PharosPrefs.shared.set(snapshot.revision, forKey: "pharos.registryRevision")
-            PharosPrefs.shared.set(false, forKey: "pharos.registryPending")
-            persistCurrentCache()
-            registrySyncStatus = .synced
-        case .offline(let message):
-            registrySyncStatus = .offline(message)
-        case .conflict(let remote, let localPayload):
-            let directory = DataLocation.current.appendingPathComponent("registry-conflicts", isDirectory: true)
-            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let file = directory.appendingPathComponent("conflict-\(UUID().uuidString).json")
-            try? Data(localPayload.utf8).write(to: file, options: .atomic)
-            if applyRegistryPayload(remote.payload) {
-                PharosPrefs.shared.set(remote.revision, forKey: "pharos.registryRevision")
-                persistCurrentCache()
-            }
-            registrySync?.acceptRemoteAfterConflict()
-            PharosPrefs.shared.set(false, forKey: "pharos.registryPending")
-            registrySyncStatus = .conflict(file.path)
-            reportError("Another client changed project data first. The Broker version was loaded and your local edit was preserved at \(file.path).")
         }
     }
 
@@ -1114,31 +880,13 @@ final class ProjectStore {
         }
     }
 
-    // MARK: Broker-owned data / local cache
+    // MARK: Local cache
 
     var dataDirectoryPath: String { DataLocation.current.path }
 
     func syncRegistryNow() {
-        registrySyncStatus = .connecting
-        if let projection = distributedProjection {
-            Task { [weak self] in
-                do {
-                    let store = try await projection.materializedStore()
-                    await MainActor.run {
-                        self?.applyDistributedStore(store)
-                        self?.registrySyncStatus = .synced
-                    }
-                } catch {
-                    await MainActor.run {
-                        self?.registrySyncStatus = .offline(
-                            "Could not read the distributed replica: \(error)"
-                        )
-                    }
-                }
-            }
-        } else {
-            registrySync?.retryAndRefresh()
-        }
+        load()
+        registrySyncStatus = .synced
     }
     func contains(name: String) -> Bool { projects.contains { $0.name == name } }
     func contains(remote: String) -> Bool { projects.contains { $0.githubRemote == remote } }
@@ -1274,42 +1022,6 @@ final class ProjectStore {
     func addAttachments(_ projectID: Project.ID, number: Int, urls: [URL]) {
         guard let issue = project(projectID)?.issues.first(where: { $0.number == number }) else { return }
         let issueID = issue.id
-        if usesDistributedRegistry, let mesh = distributedMeshSupport {
-            Task {
-                for url in urls {
-                    do {
-                        let (data, mediaType) = try await Task.detached {
-                            let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-                            let mediaType = UTType(filenameExtension: url.pathExtension)?
-                                .preferredMIMEType ?? "application/octet-stream"
-                            return (data, mediaType)
-                        }.value
-                        let reference = try await mesh.uploadChatAttachment(
-                            data: data, name: url.lastPathComponent,
-                            mediaType: mediaType
-                        )
-                        let attachment = try await Task.detached {
-                            try AttachmentStore.add(
-                                fileAt: url, toIssue: issueID,
-                                distributedReference: reference
-                            )
-                        }.value
-                        mutateStore {
-                            _ = $0.updateIssue(
-                                projectID: projectID, number: number
-                            ) { $0.attachments.append(attachment) }
-                        }
-                    } catch {
-                        reportError(
-                            "Couldn't attach \(url.lastPathComponent): " +
-                            error.localizedDescription
-                        )
-                    }
-                }
-                _ = await mesh.synchronizeOnce()
-            }
-            return
-        }
         var added: [IssueAttachment] = []
         for url in urls {
             if let a = try? AttachmentStore.add(fileAt: url, toIssue: issueID) { added.append(a) }
@@ -1327,25 +1039,9 @@ final class ProjectStore {
         issueID: UUID, attachment: IssueAttachment
     ) async -> URL? {
         let localURL = AttachmentStore.fileURL(attachment, issueID: issueID)
-        if FileManager.default.fileExists(atPath: localURL.path) { return localURL }
-        guard usesDistributedRegistry,
-              let reference = attachment.meshAttachment,
-              let mesh = distributedMeshSupport else { return nil }
-        do {
-            let data = try await mesh.chatAttachmentData(reference)
-            return try await Task.detached {
-                try AttachmentStore.storeDistributedData(
-                    data, for: attachment, issueID: issueID
-                )
-            }.value
-        } catch {
-            reportError(
-                "Couldn't fetch \(attachment.originalName): " +
-                error.localizedDescription
-            )
-            return nil
-        }
+        return FileManager.default.fileExists(atPath: localURL.path) ? localURL : nil
     }
+
 
     /// Remove one attachment from an issue and delete its file.
     func removeAttachment(_ projectID: Project.ID, number: Int, attachment: IssueAttachment) {
@@ -1509,14 +1205,9 @@ final class ProjectStore {
     }
 
     func refreshMeshSnapshot() async {
-        let snapshot = await Task.detached { () -> (roster: [MeshMemberInfo], rooms: [String]) in
-            let roster = MeshClient.send(MeshRequest(cmd: "who")).members ?? []
-            let rooms = (MeshClient.send(MeshRequest(cmd: "list")).rooms ?? []).map(\.name)
-            return (roster, rooms)
-        }.value
-        meshRoster = snapshot.roster.filter { $0.nick != "human" }
-            .sorted { $0.nick.lowercased() < $1.nick.lowercased() }
-        meshRoomNames = snapshot.rooms.sorted { $0.lowercased() < $1.lowercased() }
+        // Phase E: roster/rooms come from the Rust API via the shell; menu bar stays empty.
+        meshRoster = []
+        meshRoomNames = []
     }
     func requestOpenRoom(_ room: String) { requestedRoomOpen = room }
     /// Open a specific issue: select its project, then queue the issue so the

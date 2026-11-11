@@ -2,8 +2,7 @@ import Foundation
 import XCTest
 @testable import PharosClientKit
 
-/// S6 / RFC-007 Phase D boundary gates that run without linking MeshCore/Runtime.
-/// Complements `Tests/PharosTests/ArchitectureBoundaryTests` (blocked on tip Mesh build).
+/// Phase E boundary gates for ClientKit + rust-api-only composition.
 final class ArchitectureBoundaryClientKitTests: XCTestCase {
     func testClientKitSourcesDoNotImportMeshOrRuntime() throws {
         let forbidden = [
@@ -16,6 +15,7 @@ final class ArchitectureBoundaryClientKitTests: XCTestCase {
             "import PharosMeshLifecycle",
             "import PharosMeshControl",
             "import PharosCodexAdapter",
+            "import PharosAgentCore",
             "import SwiftUI",
             "import AppKit",
             "import Cocoa",
@@ -32,7 +32,7 @@ final class ArchitectureBoundaryClientKitTests: XCTestCase {
         }
     }
 
-    func testHttpClientExistsAndDefaultBackendIsRustAPI() {
+    func testHttpClientExistsAndOnlyRustAPIBackendRemains() {
         XCTAssertEqual(PharosAPIConfiguration.contractsVersion, "0.1.0")
         let suite = "pharos.clientkit.boundary.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -46,7 +46,7 @@ final class ArchitectureBoundaryClientKitTests: XCTestCase {
                 environment: ["PHAROS_CLIENT_BACKEND": "desktop-mesh"],
                 defaults: defaults
             ),
-            .desktopMesh
+            .rustAPI
         )
         let client = HttpPharosClientService(
             configuration: PharosAPIConfiguration(
@@ -54,8 +54,26 @@ final class ArchitectureBoundaryClientKitTests: XCTestCase {
                 backendKind: .rustAPI
             )
         )
-        // Actor materializes; proves the HTTP path type is linked from ClientKit alone.
         _ = client
+    }
+
+    func testRemovedBackendModulesAreAbsent() {
+        let removed = [
+            "Sources/PharosMeshCore",
+            "Sources/PharosRuntime",
+            "Sources/PharosMesh",
+            "Sources/PharosCodexAdapter",
+            "Sources/PharosAgentCore",
+            "Sources/CSQLite",
+            "Sources/Pharos/UI/Shell/DesktopPharosClientService.swift",
+        ]
+        for relative in removed {
+            let url = repositoryRoot.appendingPathComponent(relative)
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: url.path),
+                "expected removal of \(relative)"
+            )
+        }
     }
 
     func testRustAPIUIPathSourcesDoNotImportMeshOrRuntime() throws {
@@ -70,6 +88,8 @@ final class ArchitectureBoundaryClientKitTests: XCTestCase {
             "Sources/Pharos/UI/Canvas/ConversationCanvasView.swift",
             "Sources/Pharos/UI/Canvas/SessionConversationViewModel.swift",
             "Sources/Pharos/UI/Canvas/ThreadConversationViewModel.swift",
+            "Sources/Pharos/ContentView.swift",
+            "Sources/Pharos/PharosApp.swift",
         ]
         for relative in paths {
             let url = repositoryRoot.appendingPathComponent(relative)

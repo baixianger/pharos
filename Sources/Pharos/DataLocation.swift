@@ -1,5 +1,4 @@
 import Foundation
-import PharosMeshCore
 
 /// The app's preferences domain (`me.pai.pharos`) no matter which front door
 /// the process came through.
@@ -100,13 +99,7 @@ enum AttachmentStore {
     }
 
     static func fileURL(_ attachment: IssueAttachment, issueID: UUID) -> URL {
-        let url = directory(forIssue: issueID).appendingPathComponent(attachment.storedName)
-        if !FileManager.default.fileExists(atPath: url.path),
-           !PharosMeshRuntimeMode.usesDistributedMesh,
-           ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] == nil {
-            _ = try? MeshClient.downloadAttachment(id: attachment.id.uuidString, to: url)
-        }
-        return url
+        directory(forIssue: issueID).appendingPathComponent(attachment.storedName)
     }
 
     private static let imageExtensions: Set<String> =
@@ -123,7 +116,7 @@ enum AttachmentStore {
     /// metadata without contacting the retired Broker.
     static func add(
         fileAt source: URL, toIssue id: UUID,
-        distributedReference: MeshAttachment?
+        distributedReference: MeshAttachment? = nil
     ) throws -> IssueAttachment {
         let fm = FileManager.default
         let dir = directory(forIssue: id)
@@ -133,16 +126,6 @@ enum AttachmentStore {
         let dest = dir.appendingPathComponent(stored)
         try fm.copyItem(at: source, to: dest)
         let id = UUID()
-        if distributedReference == nil,
-           ProcessInfo.processInfo.environment["PHAROS_REGISTRY"] == nil {
-            do {
-                _ = try MeshClient.uploadAttachment(fileAt: dest, id: id.uuidString,
-                                                    name: source.lastPathComponent)
-            } catch {
-                try? fm.removeItem(at: dest)
-                throw error
-            }
-        }
         let attrs = try? fm.attributesOfItem(atPath: dest.path)
         let size = (attrs?[.size] as? Int) ?? 0
         return IssueAttachment(

@@ -12,7 +12,7 @@ esac
 
 command -v docker >/dev/null || { echo "error: docker is required" >&2; exit 1; }
 
-IMAGE="pharos-mesh-build-${PLATFORM}-$$"
+IMAGE="pharos-rust-build-${PLATFORM}-$$"
 CONTAINER=""
 cleanup() {
   if [[ -n "$CONTAINER" ]]; then
@@ -30,9 +30,12 @@ docker build \
 
 CONTAINER=$(docker create --platform "linux/$PLATFORM" "$IMAGE")
 mkdir -p "$OUTPUT_DIR"
-docker cp "$CONTAINER:/usr/local/bin/pharos-mesh" "$OUTPUT_DIR/pharos-mesh"
-docker cp "$CONTAINER:/usr/local/lib/libiroh_ffi.so" "$OUTPUT_DIR/libiroh_ffi.so"
-chmod 0755 "$OUTPUT_DIR/pharos-mesh"
+docker cp "$CONTAINER:/usr/local/bin/pharos" "$OUTPUT_DIR/pharos"
+docker cp "$CONTAINER:/usr/local/bin/pharos-meshd" "$OUTPUT_DIR/pharos-meshd"
+docker cp "$CONTAINER:/usr/local/bin/pharos-web" "$OUTPUT_DIR/pharos-web"
+# Compat alias for package_deb / older docs that still look for pharos-mesh.
+cp "$OUTPUT_DIR/pharos" "$OUTPUT_DIR/pharos-mesh"
+chmod 0755 "$OUTPUT_DIR/pharos" "$OUTPUT_DIR/pharos-mesh" "$OUTPUT_DIR/pharos-meshd" "$OUTPUT_DIR/pharos-web"
 
 docker run --rm --platform "linux/$PLATFORM" --entrypoint /bin/sh "$IMAGE" \
-  -c 'ldd /usr/local/bin/pharos-mesh && /usr/local/bin/pharos-mesh --help >/dev/null'
+  -c 'ldd /usr/local/bin/pharos && /usr/local/bin/pharos --help >/dev/null'

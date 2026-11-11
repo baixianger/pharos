@@ -53,9 +53,8 @@ jobs:
           Scripts/package_deb.sh \
             "$VERSION" \
             "${{ matrix.deb_arch }}" \
-            "dist/linux-${{ matrix.platform }}/pharos-mesh" \
-            dist \
-            "dist/linux-${{ matrix.platform }}/libiroh_ffi.so"
+            "dist/linux-${{ matrix.platform }}/pharos" \
+            dist
           dpkg-deb --info "dist/pharos-mesh_${VERSION}_${{ matrix.deb_arch }}.deb"
           dpkg-deb --contents "dist/pharos-mesh_${VERSION}_${{ matrix.deb_arch }}.deb"
 

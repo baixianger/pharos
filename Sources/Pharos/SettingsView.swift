@@ -1,6 +1,4 @@
 import AppKit
-import PharosMeshCore
-import PharosRuntime
 import SwiftUI
 
 /// A small "?" that reveals an explanation — click for a popover (reliable and
@@ -90,7 +88,7 @@ struct SettingsView: View {
 
                 Spacer()
 
-                Text("Settings are local to this Pharos host unless marked as Broker data.")
+                Text("Settings are local to this Pharos client. Session/Thread state lives in the Rust daemon.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -228,843 +226,119 @@ private struct ProjectsSettingsTab: View {
     }
 }
 
-// MARK: - Integrations
+// MARK: - Agents & CLI
+
+private struct CLISettingsTab: View {
+    @State private var installStatus: String?
+
+    var body: some View {
+        Form {
+            Section("Rust CLI") {
+                Text("Mesh/Runtime CLI commands moved to the Rust `pharos` binary. Install helpers from the app package Contents/Helpers when packaging.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                LabeledContent("API base URL") {
+                    Text(PharosClientBackend.configuration.baseURL.absoluteString)
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+            }
+            Section("Local CLI installer") {
+                Button("Install `pharos` symlink…") {
+                    installStatus = CLIInstaller.install("pharos")
+                }
+                if let installStatus {
+                    Text(installStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - Machines
 
 private struct MachinesSettingsTab: View {
     @Environment(ProjectStore.self) private var store
-    @Environment(DistributedMeshSupport.self) private var distributedMesh
-    @State private var brokerStatus: BrokerConnectionStatus = .unchecked
-    @State private var advertisedEndpoint: String?
-    @State private var showsPairingAssistant = false
-    @State private var remoteEndpointDraft = ""
-    @State private var runtimeError: String?
-    @State private var isApplyingRuntime = false
-    @State private var showsJoinMeshAssistant = false
-    @State private var showsLeaveOptions = false
-    @State private var deviceToRevoke: MeshPairedDevice?
-    @State private var revokeError: String?
-    @State private var lifecycleError: String?
 
     var body: some View {
         @Bindable var store = store
         Form {
-            if distributedMesh.isProductModeEnabled {
-                distributedProjectDataSection
-                distributedDevicesSection
-            } else {
-                Section("Project data") {
-                    registrySyncStatusView
-                    LabeledContent("Offline cache") {
-                        Text(store.dataDirectoryPath.replacingOccurrences(
-                            of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .lineLimit(1).truncationMode(.middle)
-                    }
-                    LabeledContent("This host") {
-                        Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Button("Sync now") { store.syncRegistryNow() }
-                        .controlSize(.small)
-                    Text("The Mesh Broker is the single source of truth for projects, issues, logs, chat, and attachments. This Mac keeps only an offline cache and Host-specific settings; iCloud is no longer used for live synchronization.")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+            Section("Rust backend") {
+                Text("This Mac is a SwiftUI + WebKit client. Mesh sync, Runtime, and Thread/Session ownership live in `pharos-meshd` / `pharos-web`.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                LabeledContent("Client backend") {
+                    Text("rust-api")
                 }
-                Section("Runtime") {
-                    Picker("This Mac", selection: Binding(
-                        get: { store.runtimeRole },
-                        set: { role in Task { await applyRuntime(role: role) } }
-                    )) {
-                        ForEach(PharosRuntimeRole.allCases) { role in
-                            Text(role.displayName).tag(role)
-                        }
+                LabeledContent("Registry sync") {
+                    switch store.registrySyncStatus {
+                    case .synced: Text("Local projects.json")
+                    case .connecting: Text("Loading…")
+                    case .pending: Text("Saving…")
+                    case .offline(let message): Text(message)
+                    case .conflict(let path): Text("Conflict at \(path)")
                     }
-                    .disabled(isApplyingRuntime)
-                    if store.runtimeRole == .node {
-                        TextField("Broker endpoint", text: $remoteEndpointDraft,
-                                  prompt: Text("100.x.y.z:47800"))
-                            .font(.system(.body, design: .monospaced))
-                            .onSubmit { Task { await applyRuntime(role: .node) } }
-                        Button("Apply Node Configuration") {
-                            Task { await applyRuntime(role: .node) }
-                        }
-                        .disabled(isApplyingRuntime || draftEndpointIsInvalid)
-                    }
-                    brokerStatusView
-                    if let runtimeError {
-                        Label(runtimeError, systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption).foregroundStyle(.orange)
-                    }
-                    Text(store.runtimeRole == .broker
-                         ? "Broker mode always runs both the local Broker and this Mac's Host node."
-                         : "Node mode always keeps this Mac's Host node connected to the remote Broker.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    HStack {
-                        Text(brokerTarget)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .textSelection(.enabled)
-                        Spacer()
-                        Button("Test again") { Task { await checkBroker() } }
-                            .controlSize(.small)
-                            .disabled(brokerStatus.isChecking || brokerTargetIsInvalid)
-                    }
-                    Button("Pair iPhone…", systemImage: "qrcode") {
-                        showsPairingAssistant = true
-                    }
-                    .disabled(advertisedEndpoint == nil || brokerStatus.isChecking)
-                    Text("The Broker coordinates rooms, messages, presence, replies, and attachments. It does not execute agent commands; execution machines are configured under Hosts.")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
+                Button("Reload local registry") { store.syncRegistryNow() }
             }
             HostsSettingsSection()
         }
         .formStyle(.grouped)
-        .task(id: "\(store.runtimeRole.rawValue)|\(store.meshServerEndpoint)") {
-            if distributedMesh.isProductModeEnabled {
-                store.syncRegistryNow()
-                return
-            }
-            remoteEndpointDraft = store.meshServerEndpoint
-            advertisedEndpoint = await effectiveEndpoint()
-            await checkBroker()
-            if !brokerTargetIsInvalid { store.syncRegistryNow() }
-        }
-        .sheet(isPresented: $showsPairingAssistant) {
-            if distributedMesh.isProductModeEnabled {
-                PairDeviceSheet(endpoint: "")
-            } else if let advertisedEndpoint {
-                PairDeviceSheet(endpoint: advertisedEndpoint)
-            }
-        }
-        .sheet(isPresented: $showsJoinMeshAssistant) {
-            JoinMeshSheet().environment(distributedMesh)
-        }
-        .alert(
-            "Remove trusted device?",
-            isPresented: Binding(
-                get: { deviceToRevoke != nil },
-                set: { if !$0 { deviceToRevoke = nil } }
-            ),
-            presenting: deviceToRevoke
-        ) { device in
-            Button("Cancel", role: .cancel) { deviceToRevoke = nil }
-            Button("Remove", role: .destructive) {
-                deviceToRevoke = nil
-                Task {
-                    do { try await distributedMesh.revokeDevice(device) }
-                    catch { revokeError = error.localizedDescription }
-                }
-            }
-        } message: { device in
-            Text("\(device.descriptor.displayName) will immediately lose access after the signed membership update reaches your other devices. Use this when a device is lost or being replaced.")
-        }
-        .confirmationDialog(
-            "Leave this personal Mesh?",
-            isPresented: $showsLeaveOptions,
-            titleVisibility: .visible
-        ) {
-            Button("Remove this Mac from Mesh", role: .destructive) {
-                Task {
-                    do {
-                        _ = try await distributedMesh.leaveCurrentMesh(
-                            displayName: Host.current().localizedName ?? "This Mac"
-                        )
-                    } catch {
-                        lifecycleError = error.localizedDescription
-                    }
-                }
-            }
-            Button("Disconnect and archive locally") {
-                Task {
-                    do { _ = try await distributedMesh.archiveCurrentMesh() }
-                    catch { lifecycleError = error.localizedDescription }
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Leaving publishes a signed self-removal and requires another online Mesh admin device. Disconnecting only archives this Mac locally; revoke it later from another admin device.")
-        }
-    }
-
-    @ViewBuilder
-    private var distributedProjectDataSection: some View {
-        Section("Replicated data") {
-            registrySyncStatusView
-            LabeledContent("Local replica") {
-                Text(store.dataDirectoryPath.replacingOccurrences(
-                    of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .lineLimit(1).truncationMode(.middle)
-            }
-            LabeledContent("This host") {
-                Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
-            }
-            Button("Sync now") {
-                Task {
-                    _ = await distributedMesh.synchronizeOnce()
-                    store.syncRegistryNow()
-                }
-            }
-            .controlSize(.small)
-            .disabled(distributedMesh.activeTrustGroupID == nil)
-            Text("Projects, issues, rooms, messages, and attachments are signed into a local replica on every trusted device. Concurrent edits merge field by field; no device is a central source of truth.")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    @ViewBuilder
-    private var distributedDevicesSection: some View {
-        Section("Trusted devices") {
-            distributedStateView
-            LabeledContent("Mesh admins") {
-                Text("\(distributedMesh.meshAdminCount)")
-                    .font(.caption.monospaced())
-            }
-            if distributedMesh.trustedDevices.isEmpty {
-                if distributedMesh.activeTrustGroupID == nil {
-                    Text("This Mac is disconnected. Join a Mesh to resume replication.")
-                        .font(.callout).foregroundStyle(.secondary)
-                } else {
-                    Text("No peer devices yet. Pair another Mac or iPhone to replicate your data.")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-            } else {
-                ForEach(distributedMesh.trustedDevices, id: \.descriptor.id) { device in
-                    let connection = distributedMesh.connections[device.descriptor.id]
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 8) {
-                            Label(
-                                device.descriptor.displayName,
-                                systemImage: connection?.connected == true
-                                    ? "checkmark.circle.fill" : "circle.dashed"
-                            )
-                            .foregroundStyle(connection?.connected == true ? .green : .primary)
-                            if device.descriptor.roles.contains(.controller) {
-                                Text("Mesh Admin")
-                                    .font(.caption2.weight(.semibold))
-                                    .padding(.horizontal, 6).padding(.vertical, 2)
-                                    .background(.tint.opacity(0.12), in: Capsule())
-                            }
-                            if localDeviceID == device.descriptor.id {
-                                Text("This Mac")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        Text([
-                            device.descriptor.roles.map(\.rawValue).sorted().joined(separator: ", "),
-                            connection.map { String(describing: $0.path) } ?? "not connected yet",
-                            abbreviated(device.descriptor.id.rawValue.uuidString),
-                        ].joined(separator: " · "))
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                    }
-                    .contextMenu {
-                        Button("Remove trusted device", role: .destructive) {
-                            deviceToRevoke = device
-                        }
-                        .disabled(!distributedMesh.isLocalMeshAdmin)
-                    }
-                }
-            }
-            if !distributedMesh.membershipAudit.isEmpty {
-                Divider()
-                LabeledContent("Membership audit") {
-                    Text("\(distributedMesh.membershipAudit.count) signed updates")
-                        .font(.caption.monospaced())
-                }
-                ForEach(Array(distributedMesh.membershipAudit.suffix(3).reversed())) { entry in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(entry.removedDevices.isEmpty
-                             ? "Roster updated"
-                             : "Removed " + entry.removedDevices.map {
-                                $0.descriptor.displayName
-                             }.joined(separator: ", "))
-                        Text(
-                            "epoch \(entry.previousEpoch)→\(entry.nextEpoch) · " +
-                            "admin \(abbreviated(entry.authorDeviceID.rawValue.uuidString)) · " +
-                            "sha256 \(String(entry.transitionSHA256.prefix(12)))…"
-                        )
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            if let error = distributedMesh.lastSyncError {
-                Text(error).font(.caption).foregroundStyle(.orange)
-            }
-            if let revokeError {
-                Text(revokeError).font(.caption).foregroundStyle(.red)
-            }
-            Button("Invite a device…", systemImage: "qrcode") {
-                lifecycleError = nil
-                showsPairingAssistant = true
-            }
-            .disabled(
-                distributedMesh.activeTrustGroupID == nil ||
-                    !distributedMesh.isBackgroundServiceOnline ||
-                    !distributedMesh.isLocalMeshAdmin
-            )
-            Button(joinMeshButtonTitle, systemImage: "link.badge.plus") {
-                lifecycleError = nil
-                showsJoinMeshAssistant = true
-            }
-            Button("Leave this Mesh…", systemImage: "rectangle.portrait.and.arrow.right") {
-                lifecycleError = nil
-                showsLeaveOptions = true
-            }
-            .foregroundStyle(.red)
-            .disabled(distributedMesh.activeTrustGroupID == nil)
-            if let lifecycleError {
-                Text(lifecycleError).font(.caption).foregroundStyle(.red)
-            }
-            Text("Pairing codes expire after five minutes and work once. Device identity is its signing key—not an IP address—so direct and relay paths can change without changing trust.")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var localDeviceID: MeshDeviceID? {
-        guard case .ready(let deviceID, _) = distributedMesh.state else { return nil }
-        return deviceID
-    }
-
-    @ViewBuilder
-    private var distributedStateView: some View {
-        switch distributedMesh.state {
-        case .opening:
-            HStack { ProgressView().controlSize(.small); Text("Opening private Mesh…") }
-        case .ready(let deviceID, _):
-            if distributedMesh.activeTrustGroupID == nil {
-                Label("This Mac is ready to join a Mesh", systemImage: "link.badge.plus")
-                    .foregroundStyle(.secondary)
-            } else {
-                if distributedMesh.isBackgroundServiceOnline {
-                    Label(
-                        "Background Mesh service online",
-                        systemImage: "checkmark.shield.fill"
-                    )
-                    .foregroundStyle(.green)
-                } else if distributedMesh.meshServiceLoaded {
-                    Label(
-                        "Background Mesh service starting",
-                        systemImage: "clock.arrow.circlepath"
-                    )
-                    .foregroundStyle(.orange)
-                } else {
-                    Label(
-                        "Background Mesh service unavailable",
-                        systemImage: "exclamationmark.triangle.fill"
-                    )
-                    .foregroundStyle(.orange)
-                }
-                if let status = distributedMesh.meshServiceStatus {
-                    Text(
-                        "PID \(status.processID) · " +
-                            "\(status.networkState.rawValue) · " +
-                            status.buildID
-                    )
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                }
-                if !distributedMesh.isBackgroundServiceOnline {
-                    Button("Repair Mesh Service") {
-                        Task {
-                            await distributedMesh.repairBackgroundService()
-                        }
-                    }
-                    .controlSize(.small)
-                }
-            }
-            Text(abbreviated(deviceID.rawValue.uuidString))
-                .font(.caption.monospaced()).foregroundStyle(.secondary)
-        case .failed(let message):
-            Label(message, systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-        }
-    }
-
-    private var legacyProjectDataSection: some View {
-        Section("Project data") {
-            registrySyncStatusView
-            LabeledContent("Offline cache") {
-                Text(store.dataDirectoryPath.replacingOccurrences(
-                    of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .lineLimit(1).truncationMode(.middle)
-            }
-            LabeledContent("This host") {
-                Text(HostIdentity.current).font(.caption).foregroundStyle(.secondary)
-            }
-            Button("Sync now") { store.syncRegistryNow() }.controlSize(.small)
-            Text("The Broker is the single source of truth for projects, issues, rooms, messages, and attachments.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-
-
-    private var joinMeshButtonTitle: LocalizedStringResource {
-        distributedMesh.activeTrustGroupID == nil
-            ? "Join a Mesh…" : "Join another Mesh…"
-    }
-
-    private func abbreviated(_ value: String) -> String {
-        value.count > 16 ? "\(value.prefix(8))…\(value.suffix(8))" : value
-    }
-
-    @MainActor
-    private func applyRuntime(role: PharosRuntimeRole) async {
-        isApplyingRuntime = true
-        runtimeError = nil
-        defer { isApplyingRuntime = false }
-        let endpoint = role == .node ? remoteEndpointDraft : store.meshServerEndpoint
-        do {
-            let status = try await store.applyRuntimeConfiguration(
-                PharosRuntimeConfiguration(role: role, remoteBrokerEndpoint: endpoint)
-            )
-            advertisedEndpoint = status.effectiveBrokerEndpoint
-            await checkBroker()
-        } catch {
-            runtimeError = error.localizedDescription
-        }
-    }
-
-    private func effectiveEndpoint() async -> String? {
-        let configuration = store.runtimeConfiguration
-        return await Task.detached {
-            try? PharosRuntimeCoordinator().effectiveEndpoint(for: configuration)
-        }.value
-    }
-
-    private var draftEndpointIsInvalid: Bool {
-        PharosRuntimeConfiguration(role: .node, remoteBrokerEndpoint: remoteEndpointDraft)
-            .validRemoteBrokerEndpoint == nil
-    }
-
-    private var brokerTargetIsInvalid: Bool {
-        store.runtimeRole == .node && store.validMeshServerEndpoint == nil
-    }
-
-    private var brokerTarget: String {
-        if brokerTargetIsInvalid { return "Invalid endpoint" }
-        return advertisedEndpoint ?? "Connect Tailscale to pair another device"
-    }
-
-    @ViewBuilder
-    private var registrySyncStatusView: some View {
-        switch store.registrySyncStatus {
-        case .connecting:
-            Label("Connecting to project registry…", systemImage: "arrow.triangle.2.circlepath")
-                .foregroundStyle(.secondary)
-        case .synced:
-            Label(distributedMesh.isProductModeEnabled ? "Local replica ready" : "Broker registry synced",
-                  systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-        case .pending:
-            Label(distributedMesh.isProductModeEnabled ? "Writing signed changes…" : "Saving to Broker…",
-                  systemImage: "arrow.up.circle")
-                .foregroundStyle(.secondary)
-        case .offline(let message):
-            VStack(alignment: .leading, spacing: 3) {
-                Label("Offline cache", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                Text(message).font(.caption).foregroundStyle(.secondary)
-            }
-        case .conflict(let path):
-            VStack(alignment: .leading, spacing: 3) {
-                Label("Conflict preserved", systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
-                    .foregroundStyle(.orange)
-                Text(path).font(.caption.monospaced()).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var brokerStatusView: some View {
-        switch brokerStatus {
-        case .unchecked:
-            Label("Not tested yet", systemImage: "circle.dashed")
-                .foregroundStyle(.secondary)
-        case .checking:
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Checking Broker…")
-            }
-        case .connected(let latencyMS, let capabilities):
-            VStack(alignment: .leading, spacing: 4) {
-                Label("Connected", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                Text("\(latencyMS) ms · \(capabilitySummary(capabilities))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        case .unavailable(let message):
-            VStack(alignment: .leading, spacing: 4) {
-                Label("Not connected", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        case .invalidEndpoint:
-            Label("Enter a valid endpoint before testing.",
-                  systemImage: "exclamationmark.triangle.fill")
-                .font(.caption)
-                .foregroundStyle(.orange)
-        }
-    }
-
-    private func capabilitySummary(_ capabilities: [String]) -> String {
-        var labels: [String] = []
-        if capabilities.contains("mesh-v2") { labels.append("Mesh v2") }
-        if capabilities.contains("reply-v1") { labels.append("Replies") }
-        if capabilities.contains("attachment-v1") { labels.append("Attachments") }
-        if capabilities.contains("headless-v1") { labels.append("Headless") }
-        if capabilities.contains("registry-cas-v1") { labels.append("Project data") }
-        return labels.isEmpty ? "Broker responded" : labels.joined(separator: " · ")
-    }
-
-    @MainActor
-    private func checkBroker() async {
-        if brokerTargetIsInvalid {
-            brokerStatus = .invalidEndpoint
-            return
-        }
-        brokerStatus = .checking
-        let endpoint = advertisedEndpoint
-        let started = ContinuousClock.now
-        let response = await Task.detached {
-            let request = MeshRequest(cmd: "capabilities")
-            if let endpoint {
-                return MeshClient.send(request, to: endpoint)
-            }
-            return MeshClient.send(request)
-        }.value
-        guard !Task.isCancelled else { return }
-        let duration = started.duration(to: .now)
-        let latencyMS = max(0, Int(duration.components.seconds * 1_000
-            + duration.components.attoseconds / 1_000_000_000_000_000))
-        if response.ok, let capabilities = response.capabilities {
-            brokerStatus = .connected(latencyMS: latencyMS, capabilities: capabilities)
-        } else {
-            brokerStatus = .unavailable(response.error ?? "The Broker did not complete the Mesh handshake.")
-        }
     }
 }
 
-private enum BrokerConnectionStatus: Equatable {
-    case unchecked
-    case checking
-    case connected(latencyMS: Int, capabilities: [String])
-    case unavailable(String)
-    case invalidEndpoint
-
-    var isChecking: Bool { self == .checking }
-}
-
-// MARK: - Execution hosts
-
-/// SSH is the current control plane for execution Hosts. It installs/drives
-/// Pharos, tmux, and coding agents; it is not the Mesh message transport.
 private struct HostsSettingsSection: View {
     @Environment(ProjectStore.self) private var store
-    @State private var peers: [PairingService.Peer] = []
-    @State private var testing = false
-    @State private var result: PairingService.Result?
     @State private var draftName = ""
-    @State private var draftSSHHost = ""
+    @State private var draftSSH = ""
+    @State private var status: String?
 
     var body: some View {
-        Section("Hosts") {
-            LabeledContent {
-                Text("Local").font(.caption).foregroundStyle(.secondary)
-            } label: {
-                Label(HostIdentity.current, systemImage: "desktopcomputer")
+        @Bindable var store = store
+        Section("SSH hosts (optional attach)") {
+            if store.executionHosts.isEmpty {
+                Text("No hosts configured.")
+                    .foregroundStyle(.secondary)
             }
             ForEach(store.executionHosts) { host in
                 HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Label(host.displayName, systemImage: "server.rack")
-                        Text(host.sshHost).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    VStack(alignment: .leading) {
+                        Text(host.name.isEmpty ? host.sshHost : host.name)
+                        Text(host.sshHost)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button(role: .destructive) { store.removeExecutionHost(id: host.id) } label: {
-                        Image(systemName: "trash")
+                    Button(role: .destructive) {
+                        store.removeExecutionHost(id: host.id)
+                    } label: {
+                        Image(systemName: "minus.circle")
                     }
                     .buttonStyle(.borderless)
-                    .help("Remove Host")
                 }
             }
-            Divider()
-            HStack {
-                Text("Discover")
-                Spacer()
-                Menu("Choose a tailnet Mac…") {
-                    if peers.isEmpty {
-                        Text("No other Macs found on your tailnet").disabled(true)
-                    } else {
-                        ForEach(peers) { p in
-                            Button("\(p.name)  ·  \(p.ip)") {
-                                draftName = p.name
-                                draftSSHHost = p.ip
-                                result = nil
-                            }
-                        }
-                    }
-                    Divider()
-                    Button("Refresh") { Task { await refresh() } }
-                }
-                .frame(maxWidth: 240)
+            TextField("Display name", text: $draftName)
+            TextField("SSH host", text: $draftSSH)
+            Button("Add host") {
+                let ssh = draftSSH.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !ssh.isEmpty else { return }
+                let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+                store.upsertExecutionHost(
+                    ExecutionHostProfile(name: name.isEmpty ? ssh : name, sshHost: ssh)
+                )
+                draftName = ""
+                draftSSH = ""
+                status = "Added \(ssh)"
             }
-            LabeledContent("Name") {
-                TextField("home-ts or build server", text: $draftName)
-                    .textFieldStyle(.roundedBorder).frame(maxWidth: 200)
+            if let status {
+                Text(status).font(.caption).foregroundStyle(.secondary)
             }
-            LabeledContent("SSH host / IP") {
-                TextField("alias, user@host, or 100.x.y.z", text: $draftSSHHost)
-                    .textFieldStyle(.roundedBorder).frame(maxWidth: 200)
-                    .onChange(of: draftSSHHost) { _, _ in result = nil }
-            }
-            HStack {
-                Button(testing ? "Validating…" : "Validate & add Host") { Task { await testAndAdd() } }
-                    .disabled(testing || draftSSHHost.trimmingCharacters(in: .whitespaces).isEmpty)
-                if testing { ProgressView().controlSize(.small).padding(.leading, 4) }
-                Spacer()
-                if let r = result {
-                    Label(r.ok ? "Host added" : "Host unavailable",
-                          systemImage: r.ok ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(r.ok ? Color.green : Color.orange)
-                        .font(.caption)
-                }
-            }
-            if let r = result {
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(r.steps) { s in
-                        Label(s.label, systemImage: s.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
-                            .foregroundStyle(s.ok ? Color.green : Color.red)
-                            .font(.caption)
-                    }
-                }
-            }
-            Text("Hosts execute agents through their registered Node and tmux. SSH is retained only for explicit attach/stop terminal actions. Pharos binds the SSH route to the Broker-reported Node identity when available.")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .task { await refresh() }
-    }
-
-    private func refresh() async {
-        peers = await Task.detached { PairingService.discoverPeers() }.value
-    }
-
-    private func testAndAdd() async {
-        testing = true
-        let host = draftSSHHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        let r = await Task.detached { PairingService.pair(host: host) }.value
-        result = r
-        testing = false
-        guard r.ok else { return }
-        let identity = r.hostIdentity
-        let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Pair the SSH route to the Broker's stable Host Node identity when
-        // this machine can currently see that Node. Later attach/stop/spawn
-        // operations use nodeID first and address fields only as fallback.
-        let nodeID = MeshNodeControl.activeNode(for: host)?.id
-        store.upsertExecutionHost(ExecutionHostProfile(
-            name: name.isEmpty ? (identity ?? host) : name,
-            sshHost: host,
-            nodeID: nodeID,
-            meshHostID: identity
-        ))
-        draftName = ""
-        draftSSHHost = ""
-    }
-}
-
-// MARK: - CLI
-
-private struct CLISettingsTab: View {
-    @State private var pharosStatus: String?
-    @State private var chatStatus: String?
-    @State private var skillStatus: String?
-    @State private var meshHookInstalled = false
-    @State private var meshHookStatus: String?
-    @State private var codexHookInstalled = false
-    @State private var codexHookStatus: String?
-
-    private enum SubTab: String, CaseIterable, Identifiable {
-        case cli = "CLI", claude = "Claude", codex = "Codex"
-        var id: String { rawValue }
-    }
-    // Snapshot mode can open a specific sub-tab (e.g. settings:cli:codex).
-    @State private var subtab: SubTab = SubTab(rawValue: (SnapshotMode.settingsSubTab ?? "").capitalized) ?? .cli
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Picker("", selection: $subtab) {
-                ForEach(SubTab.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 16).padding(.top, 12)
-            Form {
-                switch subtab {
-                case .cli:    cliSection
-                case .claude: claudeSection
-                case .codex:  codexSection
-                }
-            }
-            .formStyle(.grouped)
-        }
-        .onAppear {
-            meshHookInstalled = MeshHooks.userHookInstalled()
-            codexHookInstalled = MeshHooks.codexHookInstalled()
-        }
-    }
-
-    // MARK: CLI — symlink the pharos/chat binaries onto PATH
-
-    @ViewBuilder private var cliSection: some View {
-        Section("pharos — project & issue control") {
-            commandRow("pharos", status: $pharosStatus,
-                       help: "How agents drive Pharos: a Claude Code / Codex session shells out to read and update issues and post progress — e.g. `pharos list --json`, `pharos issue start <project> 3 claude`, `pharos overview`.")
-        }
-        Section("chat — agent chat room") {
-            commandRow("chat", status: $chatStatus,
-                       help: "Shorthand for `pharos mesh`: agents talk to each other — `chat join <room> <nick>`, `chat say <room> <nick> \"…\" @peer`. Same binary, invoked as `chat`.")
-        }
-    }
-
-    // MARK: Claude — mesh hooks + agent skills
-
-    @ViewBuilder private var claudeSection: some View {
-        Section("Mesh delivery hooks (Claude Code)") {
-            HStack {
-                Image(systemName: meshHookInstalled ? "checkmark.circle.fill" : "circle.dashed")
-                    .foregroundStyle(meshHookInstalled ? Color.green : Color.secondary)
-                Text(meshHookInstalled ? "Installed → ~/.claude/settings.json" : "Not installed")
-                    .font(.callout)
-                Spacer()
-                Button(meshHookInstalled ? "Reinstall / update" : "Install globally (~/.claude)") {
-                    _ = MeshHooks.installHooks(["--user"])
-                    meshHookInstalled = MeshHooks.userHookInstalled()
-                    meshHookStatus = meshHookInstalled
-                        ? "Installed — applies to newly started Claude sessions."
-                        : "Install failed — check ~/.claude/settings.json (a file with invalid JSON is never overwritten)."
-                }
-                .buttonStyle(.borderedProminent)
-                HelpBadge(text: "Installs the Claude Code hooks that power the agent mesh: Stop surfaces unread @mentions as normal hook feedback, SessionStart injects the session id, and structured lifecycle hooks report busy / blocked / idle / stopped / gone without reading terminal text. Permission, elicitation completion, tool failure, and API failure are tracked explicitly. Per-repo alternative: `pharos mesh install-hooks --project <dir>`. Safe globally — un-joined sessions no-op.")
-            }
-            if let s = meshHookStatus {
-                Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        Section("Agent skills (Claude Code)") {
-            if skillNames.isEmpty {
-                Text("(no bundled skills found)").font(.caption).foregroundStyle(.secondary)
-            } else {
-                ForEach(skillNames, id: \.self) { name in
-                    HStack {
-                        Image(systemName: "doc.text").foregroundStyle(.secondary)
-                        Text(name).font(.system(.body, design: .monospaced))
-                        Spacer()
-                        Button("Install") { skillStatus = SkillInstall.install(name, projectDir: nil).joined(separator: "\n") }
-                    }
-                }
-                HStack {
-                    Button("Install all → ~/.claude/skills") {
-                        skillStatus = SkillInstall.install("all", projectDir: nil).joined(separator: "\n")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    Spacer()
-                    HelpBadge(text: "Symlink the bundled skills into ~/.claude/skills so every Claude session auto-loads them. For a single repo, use `pharos skill install <name> --project <dir>`.")
-                }
-            }
-            if let s = skillStatus {
-                Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    // MARK: Codex — mesh hooks (skills TBD)
-
-    @ViewBuilder private var codexSection: some View {
-        Section("Mesh delivery hooks (Codex)") {
-            HStack {
-                Image(systemName: codexHookInstalled ? "checkmark.circle.fill" : "circle.dashed")
-                    .foregroundStyle(codexHookInstalled ? Color.green : Color.secondary)
-                Text(codexHookInstalled ? "Installed → ~/.codex/hooks.json" : "Not installed")
-                    .font(.callout)
-                Spacer()
-                Button(codexHookInstalled ? "Reinstall / update" : "Install (~/.codex)") {
-                    _ = MeshHooks.installHooks(["--codex"])
-                    codexHookInstalled = MeshHooks.codexHookInstalled()
-                    codexHookStatus = codexHookInstalled
-                        ? "Installed → ~/.codex/hooks.json. First run: Codex prompts to trust hooks — start it with --dangerously-bypass-hook-trust, or approve once."
-                        : "Install failed — check ~/.codex/hooks.json (invalid JSON is never overwritten)."
-                }
-                .buttonStyle(.borderedProminent)
-                HelpBadge(text: "Codex 状态完全由原生 lifecycle hooks 上报：SessionStart/Stop/SessionEnd、UserPromptSubmit、PreToolUse、PermissionRequest、PostToolUse、compact 和 subagent 事件分别更新状态；Stop 负责投递未读 @消息。Node 只验证 pane/process 是否可安全操作，不写状态。新 hook 需要重启 Codex 会话后生效。")
-            }
-            if let s = codexHookStatus {
-                Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        Section("Agent skills (Codex)") {
-            Text("Codex skill install isn't wired yet (tracked as Pharos#2 — write into AGENTS.md). Use the Claude tab for now.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var skillNames: [String] { SkillInstall.available() }
-
-    @ViewBuilder
-    private func commandRow(_ name: String, status: Binding<String?>, help: String) -> some View {
-        Text(CLIInstaller.commandSnippet(name))
-            .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-            .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-        HStack {
-            Button("Install `\(name)`") {
-                status.wrappedValue = CLIInstaller.install(name)
-                _ = MeshHooks.installHooks(["--user"])
-                _ = MeshHooks.installHooks(["--codex"])
-            }
-                .buttonStyle(.borderedProminent)
-            Button("Copy command") {
-                let pb = NSPasteboard.general; pb.clearContents(); pb.setString(CLIInstaller.commandSnippet(name), forType: .string)
-            }
-            .buttonStyle(.borderless)
-            Spacer()
-            HelpBadge(text: help)
-        }
-        if let s = status.wrappedValue {
-            Text(s).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }
-    }
-}
-
-extension AppearanceMode {
-    var colorScheme: ColorScheme? {
-        switch self {
-        case .system: return nil
-        case .light: return .light
-        case .dark: return .dark
+            Text("SSH remains an optional attach path. Peer mesh routing is owned by the Rust daemon.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }

@@ -1,8 +1,11 @@
 ---
-summary: 2026-11-11：Batch 3 S6 swift-client 已合入 rust/integrate-b3。
+summary: 2026-11-11：Phase E（删除 Swift 后端模块）在 rust/phase-e 完成；见 docs/handoff-phase-e.md。
 ---
-
 # 活跃任务交接
+
+**STATUS: PHASE-E-DONE — see docs/handoff-phase-e.md**
+**Phase E（merge captain / CLI agent）**：worktree `~/personal/pharos-wt/_phase-e` 分支 `rust/phase-e`（base `379febb` = integrate-b3 tip）。`git rm` 删除 Swift Mesh/Runtime/CodexAdapter/AgentCore/CSQLite 及 desktop-mesh 路径；client-only Package.swift。Gates 与证据见 `docs/handoff-phase-e.md`。未 push；未 FF `integrate/mesh2-into-main`。
+
 
 **STATUS: RUST-B3-MERGED — 648c22892a52a27812de44f75b306d5fd23b4234**
 **Batch 3 merge（merge captain）**：worktree `~/personal/pharos-wt/_merge-b3` 分支 `rust/integrate-b3`（base `9b5434f` = B2 tip）。`--no-ff` 合入 `rust/swift-client` @ `715c687`。保留 wiring-local：`Package.swift` `PharosClientKitTests` + `ContentView` backend flag。Captain 另提交：`webui/dsh-stream.js` ← WebCanvas fetch 版。Gates：`cargo fmt --check` / `clippy -D warnings` / `test --workspace` 绿；`swift build --target PharosClientKitTests` 绿；`ArchitectureBoundaryClientKitTests` 3/3 绿。**Full `Pharos` app target still blocked** by missing committed Mesh files (`HostSessionSchema.swift` / MeshCore sessionRPC) — not copied from dirty main checkout. 未触碰 `integrate/mesh2-into-main` WIP；未做 Phase E；未 push。
