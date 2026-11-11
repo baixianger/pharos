@@ -14,10 +14,14 @@ use pharos_api::{
     SessionProgress, SessionSummary, SessionTodo, SteerSessionRequest, ThreadMessage,
     ThreadSummary, TodoStatus, TurnStatus,
 };
+use pharos_hitl::{QuestionnaireAnswer, StoredDecision};
 use pharos_protocol::ThreadReceiptState;
 use tokio::sync::RwLock;
 
-use super::session::CreateSessionRequest;
+use super::session::{
+    CreateSessionRequest, SessionCapabilities, SessionConfigPatch, SessionConfigView,
+    SessionLifecycleResponse, standard_modes,
+};
 use super::thread::CreateThreadRequest;
 use super::{EventBus, SessionService, ThreadService};
 
@@ -234,7 +238,24 @@ struct FakeSessionState {
     history: HashMap<String, Vec<CanonicalTurn>>,
     progress: HashMap<String, SessionProgress>,
     projects: Vec<ProjectSummary>,
+    /// In-memory model/mode per session (fake adapter exposes both fields).
+    configs: HashMap<String, FakeSessionConfig>,
     next_turn: u32,
+}
+
+#[derive(Debug, Clone)]
+struct FakeSessionConfig {
+    model: String,
+    mode: String,
+}
+
+impl Default for FakeSessionConfig {
+    fn default() -> Self {
+        Self {
+            model: "fake-1".to_string(),
+            mode: "safe".to_string(),
+        }
+    }
 }
 
 impl FakeSessionService {
@@ -282,12 +303,15 @@ impl FakeSessionService {
             active_sessions_count: 1,
             related_session_ids: Some(vec![FAKE_SESSION_ID.into()]),
         }];
+        let mut configs = HashMap::new();
+        configs.insert(FAKE_SESSION_ID.to_string(), FakeSessionConfig::default());
         Self {
             inner: Arc::new(RwLock::new(FakeSessionState {
                 sessions,
                 history,
                 progress,
                 projects,
+                configs,
                 next_turn: 1,
             })),
             events,
@@ -450,13 +474,170 @@ impl SessionService for FakeSessionService {
         guard.sessions.insert(session_id.clone(), summary.clone());
         guard.history.entry(session_id.clone()).or_default();
         guard.progress.insert(
-            session_id,
+            session_id.clone(),
             SessionProgress {
                 goal: None,
                 todos: Vec::new(),
             },
         );
+        guard
+            .configs
+            .insert(session_id, FakeSessionConfig::default());
         Ok(summary)
+    }
+
+    async fn session_config(&self, session_id: &str) -> Result<SessionConfigView, PharosApiError> {
+        let guard = self.inner.read().await;
+        if !guard.sessions.contains_key(session_id) {
+            return Err(PharosApiError::SessionNotFound {
+                id: session_id.to_string(),
+            });
+        }
+        Ok(fake_config_view(session_id, guard.configs.get(session_id)))
+    }
+
+    async fn update_session_config(
+        &self,
+        session_id: &str,
+        patch: SessionConfigPatch,
+    ) -> Result<SessionConfigView, PharosApiError> {
+        patch
+            .validate()
+            .map_err(|message| PharosApiError::InvalidRequest { message })?;
+        let mut guard = self.inner.write().await;
+        if !guard.sessions.contains_key(session_id) {
+            return Err(PharosApiError::SessionNotFound {
+                id: session_id.to_string(),
+            });
+        }
+        let config = guard.configs.entry(session_id.to_string()).or_default();
+        if let Some(model) = &patch.model {
+            config.model = model.trim().to_string();
+        }
+        if let Some(mode) = &patch.mode {
+            config.mode = mode.trim().to_string();
+        }
+        let config = guard.configs.get(session_id).cloned();
+        Ok(fake_config_view(session_id, config.as_ref()))
+    }
+
+    async fn stop_session(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionLifecycleResponse, PharosApiError> {
+        self.set_status(session_id, SessionActivityStatus::Stopped)
+            .await?;
+        Ok(SessionLifecycleResponse {
+            ok: true,
+            session_id: session_id.to_string(),
+            status: "stopped".to_string(),
+        })
+    }
+
+    async fn revive_session(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionLifecycleResponse, PharosApiError> {
+        self.set_status(session_id, SessionActivityStatus::Idle)
+            .await?;
+        Ok(SessionLifecycleResponse {
+            ok: true,
+            session_id: session_id.to_string(),
+            status: "idle".to_string(),
+        })
+    }
+
+    async fn send_message_with_attachments(
+        &self,
+        session_id: &str,
+        request: SendSessionMessageRequest,
+        attachment_ids: Vec<String>,
+    ) -> Result<CanonicalTurn, PharosApiError> {
+        if attachment_ids.iter().any(|id| id.trim().is_empty()) {
+            return Err(PharosApiError::InvalidRequest {
+                message: "attachmentIds must not contain blank ids".into(),
+            });
+        }
+        // The fake adapter "accepts" attachments: they are validated by the
+        // HTTP layer and acknowledged here (no fake success for real adapters).
+        self.send_message(session_id, request).await
+    }
+
+    async fn resolve_approval_decision(
+        &self,
+        session_id: &str,
+        approval_id: &str,
+        decision: StoredDecision,
+        _answers: Option<&[QuestionnaireAnswer]>,
+    ) -> Result<(), PharosApiError> {
+        {
+            let guard = self.inner.read().await;
+            if !guard.sessions.contains_key(session_id) {
+                return Err(PharosApiError::SessionNotFound {
+                    id: session_id.to_string(),
+                });
+            }
+        }
+        match decision.to_api() {
+            Some(decision) => {
+                self.resolve_approval(
+                    session_id,
+                    ResolveApprovalRequest {
+                        approval_id: approval_id.to_string(),
+                        decision,
+                    },
+                )
+                .await
+            }
+            // `cancelled` means "stop the in-flight turn"; the fake adapter has
+            // no live turn to cancel, so it is acknowledged without publishing a
+            // (frozen-enum-incompatible) ApprovalResolved event.
+            None => Ok(()),
+        }
+    }
+}
+
+/// Build the fake adapter's honest supported configuration view.
+fn fake_config_view(session_id: &str, config: Option<&FakeSessionConfig>) -> SessionConfigView {
+    let default = FakeSessionConfig::default();
+    let config = config.unwrap_or(&default);
+    SessionConfigView {
+        session_id: session_id.to_string(),
+        supported: true,
+        supported_fields: vec!["model".to_string(), "mode".to_string()],
+        model: Some(config.model.clone()),
+        mode: Some(config.mode.clone()),
+        models: vec![config.model.clone()],
+        modes: standard_modes(),
+        capabilities: SessionCapabilities {
+            attachments: true,
+            commands: false,
+            stop: true,
+            revive: true,
+        },
+        readonly: false,
+    }
+}
+
+impl FakeSessionService {
+    async fn set_status(
+        &self,
+        session_id: &str,
+        status: SessionActivityStatus,
+    ) -> Result<(), PharosApiError> {
+        let mut guard = self.inner.write().await;
+        let Some(session) = guard.sessions.get_mut(session_id) else {
+            return Err(PharosApiError::SessionNotFound {
+                id: session_id.to_string(),
+            });
+        };
+        session.status = status;
+        session.updated_at = "2026-11-10T00:00:04Z".into();
+        let updated = session.clone();
+        drop(guard);
+        self.events
+            .publish(ClientEvent::SessionUpdated { session: updated });
+        Ok(())
     }
 }
 
@@ -506,4 +687,191 @@ impl FakeEventBus {
 pub mod ids {
     pub const THREAD: &str = super::FAKE_THREAD_ID;
     pub const SESSION: &str = super::FAKE_SESSION_ID;
+}
+
+#[cfg(test)]
+mod tests {
+    use pharos_hitl::StoredDecision;
+
+    use super::*;
+
+    fn fake() -> FakeSessionService {
+        FakeSessionService::new(EventBus::new(32))
+    }
+
+    #[tokio::test]
+    async fn fake_config_is_supported_and_patchable() {
+        let service = fake();
+        let view = service.session_config(ids::SESSION).await.expect("config");
+        assert!(view.supported);
+        assert_eq!(view.supported_fields, vec!["model", "mode"]);
+        assert_eq!(view.model.as_deref(), Some("fake-1"));
+        assert_eq!(view.mode.as_deref(), Some("safe"));
+        assert_eq!(view.models, vec!["fake-1"]);
+        assert_eq!(view.modes.len(), 2);
+        assert!(view.capabilities.attachments);
+        assert!(!view.capabilities.commands);
+        assert!(view.capabilities.stop);
+        assert!(view.capabilities.revive);
+        assert!(!view.readonly);
+
+        let updated = service
+            .update_session_config(
+                ids::SESSION,
+                SessionConfigPatch {
+                    model: Some("fake-2".into()),
+                    mode: Some("yolo".into()),
+                },
+            )
+            .await
+            .expect("update");
+        assert_eq!(updated.model.as_deref(), Some("fake-2"));
+        assert_eq!(updated.mode.as_deref(), Some("yolo"));
+        // Persisted for the in-memory session.
+        assert_eq!(
+            service
+                .session_config(ids::SESSION)
+                .await
+                .expect("config")
+                .mode
+                .as_deref(),
+            Some("yolo")
+        );
+        // Invalid patch is a client error, never silently accepted.
+        let error = service
+            .update_session_config(
+                ids::SESSION,
+                SessionConfigPatch {
+                    model: None,
+                    mode: Some("turbo".into()),
+                },
+            )
+            .await
+            .expect_err("invalid mode");
+        assert!(matches!(error, PharosApiError::InvalidRequest { .. }));
+        assert!(matches!(
+            service.session_config("missing").await.unwrap_err(),
+            PharosApiError::SessionNotFound { .. }
+        ));
+        assert!(matches!(
+            service
+                .update_session_config(
+                    "missing",
+                    SessionConfigPatch {
+                        model: Some("x".into()),
+                        mode: None,
+                    }
+                )
+                .await
+                .unwrap_err(),
+            PharosApiError::SessionNotFound { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn fake_stop_and_revive_toggle_status_and_publish() {
+        let events = EventBus::new(16);
+        let mut subscriber = events.subscribe();
+        let service = FakeSessionService::new(events);
+        let stopped = service.stop_session(ids::SESSION).await.expect("stop");
+        assert!(stopped.ok);
+        assert_eq!(stopped.status, "stopped");
+        assert_eq!(
+            service
+                .get_session(ids::SESSION)
+                .await
+                .expect("session")
+                .status,
+            SessionActivityStatus::Stopped
+        );
+        let revived = service.revive_session(ids::SESSION).await.expect("revive");
+        assert_eq!(revived.status, "idle");
+        assert_eq!(
+            service
+                .get_session(ids::SESSION)
+                .await
+                .expect("session")
+                .status,
+            SessionActivityStatus::Idle
+        );
+        let mut saw_updated = false;
+        for _ in 0..2 {
+            if let Ok(ClientEvent::SessionUpdated { .. }) = subscriber.recv().await {
+                saw_updated = true;
+            }
+        }
+        assert!(
+            saw_updated,
+            "lifecycle transitions must publish SessionUpdated"
+        );
+        assert!(matches!(
+            service.stop_session("missing").await.unwrap_err(),
+            PharosApiError::SessionNotFound { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn fake_accepts_attachment_ids() {
+        let service = fake();
+        let turn = service
+            .send_message_with_attachments(
+                ids::SESSION,
+                SendSessionMessageRequest {
+                    text: "with attachment".into(),
+                    request_id: None,
+                },
+                vec!["0123456789abcdef0123456789abcdef".into()],
+            )
+            .await
+            .expect("send with attachments");
+        assert_eq!(turn.session_id, ids::SESSION);
+        let error = service
+            .send_message_with_attachments(
+                ids::SESSION,
+                SendSessionMessageRequest {
+                    text: "bad".into(),
+                    request_id: None,
+                },
+                vec!["  ".into()],
+            )
+            .await
+            .expect_err("blank attachment id");
+        assert!(matches!(error, PharosApiError::InvalidRequest { .. }));
+        assert!(matches!(
+            service
+                .send_message_with_attachments(
+                    "missing",
+                    SendSessionMessageRequest {
+                        text: "x".into(),
+                        request_id: None,
+                    },
+                    vec!["id".into()],
+                )
+                .await
+                .unwrap_err(),
+            PharosApiError::SessionNotFound { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn fake_resolves_extended_decisions() {
+        let service = fake();
+        // `cancelled` is acknowledged without a frozen-enum event.
+        service
+            .resolve_approval_decision(ids::SESSION, "a-cancel", StoredDecision::Cancelled, None)
+            .await
+            .expect("cancel");
+        // Legacy decisions keep the existing resolution path.
+        service
+            .resolve_approval_decision(ids::SESSION, "a-legacy", StoredDecision::AllowedOnce, None)
+            .await
+            .expect("legacy");
+        assert!(matches!(
+            service
+                .resolve_approval_decision("missing", "a", StoredDecision::Cancelled, None)
+                .await
+                .unwrap_err(),
+            PharosApiError::SessionNotFound { .. }
+        ));
+    }
 }
