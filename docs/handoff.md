@@ -1,7 +1,90 @@
 ---
-summary: 2026-11-11：三个已验收 Rust 流（hitl-persist / web-real-sessions / thread-autoreply）已 --no-ff 合入 rust/integrate-dsh3；见本文件顶部。
+summary: 2026-11-11：跨 Host 会话（host.session.query/action）Rust 端到端落地（XHOST-DONE）；三个已验收 Rust 流（hitl-persist / web-real-sessions / thread-autoreply）已 --no-ff 合入 rust/integrate-dsh3。见本文件顶部。
 ---
 # 活跃任务交接
+
+**STATUS: XHOST-DONE — 689f3d1**
+**分支/worktree**：`rust/cross-host-sessions`，worktree `/workspace/pharos-rust/2026-11-11_dsh-wave2/wt/cross-host-sessions`，base `integrate/mesh2-into-main @ 54c6ff6`（= `rust/integrate-dsh3`，已含 hitl-persist / web-real-sessions / thread-autoreply 三流）。未 push、未 force/rebase/amend、未改写任何已有提交；只 `git fetch --all` 读过远端 ref。只在本 worktree 内改代码；未触碰其它 worktree/主 checkout，未碰 3080 dsh Host、其 token/ipc.sock/state、`~/.gemini`，未 ssh 到任何 Mac。团队：本流 Lead（protocol + replica 分发/授权 + loopback E2E + 集成 + 门禁 + 交接）、teammate `impl-client`（task-1：pharos-session 远端客户端/host bridge + pharos-http 合并服务）、teammate `impl-host`（task-2：agent-runtime mesh bring-up）。上面 STATUS 的 `689f3d1` 是最后一个代码提交；本交接为紧随其后的 docs-only 提交。**未改任何 Swift / `Sources/` / `webui/` / WebCanvas 资源**（`git diff --name-only 54c6ff6..HEAD` 只有 `rust/`）；未改 `pharos-http/src/router.rs`、`pharos-hitl`、`integrations/dsh-plugin-pharos`；`asset_sync` 测试仍绿。**Swift 未在 Linux 编译验证**（本机无 Swift；本流未触碰 Swift）。
+
+**做了什么（跨 Host 会话：一台 Host 经 Mesh 查询/操作另一台 Host 上的会话；对应 WIP salvage gap "Host session query/action：Missing end-to-end"）**
+1. **版本化 wire contract（`pharos-protocol`，additive，未 bump `CONTRACTS_VERSION=0.1.0`）**：新增 `pharos_protocol::host_session`。`host.session.query.v1`：`listSessions` / `getSession` / `sessionHistory`；`host.session.action.v1`：`sendMessage` / `steer` / `resolveApproval` / `stop`。请求/响应均带 `payloadVersion=1`（未知版本显式 `invalid-request`）、camelCase 字段与 WIP Swift `HostSessionSchema`/`queryKind`/`actionKind` 字符串对齐；session/approval/turn/message 上限校验；结构化错误体 `{code,message}`，错误码明确为 `unauthorized`（未配对/allowlist/trust group 不符）、`unknown-session`、`host-unreachable`（仅调用方本地合成）、`adapter-unavailable`、`invalid-request`、`unsupported-operation`、`internal`。hello 能力名 `host-session-query-v1` / `host-session-action-v1`。
+2. **被调 Host 侧分发 + 授权 + 审计（`pharos-replica` / `pharos-mesh`）**：`ReplicaHandle` 新增 `host.session.query/action` 分发；应用层通过新增 `HostSessionHandler` trait 注入（Rust 适配器保持很薄：不含 Thread 闭环，闭环仍在 `integrations/dsh-plugin-pharos`）。授权沿用既有 trust group + membership epoch，并新增 paired-peer allowlist（`pharos-mesh::open_handle` 从 `<data-dir>/peers.json` 载入 endpoint 列表；无 peers 时保持旧 trust-group 语义；不在 allowlist 的 peer 得到结构化 `unauthorized`）。动作幂等：`ActionReplayCache` 以 (peer endpoint, idempotencyKey) 为键、按"效果"（host+session+typed payload，忽略每次重试的 actionId）判定——同 effect 重试复用上次响应不重复执行、同 key 不同 payload 显式 `invalid-request`、失败不缓存、容量 256、跨 peer 隔离。审计 `HostSessionAudit` 只记录 operation/hostDeviceId/remote endpoint/sessionId/outcome，**不含消息正文、approval 内容或密钥**。新增 `MeshIrohEndpoint::close` + `ReplicaHandle::shutdown`，使"Host 离线"可在测试中确定性复现。
+3. **调用方（Rust）：远端会话客户端 + 本机会话列表合并（`pharos-session` / `pharos-http`）**：`pharos_session::remote` 提供 `RemoteSessionSource` trait 与 `MeshRemoteHostSessionSource`（经 `peer_host_session_query/action` 做 list/get/history/send/steer/approval）；远端会话 ID 命名空间为 `peer:<hostDeviceId>:<sessionId>`（响应里 `machine_id`=远端 host、`connection_route="mesh"`，避免与本地 ID 冲突）；错误映射显式：未授权→`OperationFailed("unauthorized: …")`、未知会话→`SessionNotFound`、Host 离线/超时→`BackendUnreachable{backend,reason}`、适配器不可用→`OperationFailed("remote host adapter unavailable: …")`、unsupported→`OperationFailed`。`pharos_session::host_bridge::SessionServiceHostHandler` 把 mesh 请求转给本机同步 `SessionService`（`stop` 明确 `Unsupported`，**绝不伪造成功**）。`pharos_http::services::RemoteSessionMergedService` 在现有 HTTP `SessionService` trait 层组合"本地 + 远端"：`GET /api/v1/sessions`、`GET /{id}`、`/history`、`POST /messages`、`/steer`、`/approval` 原路由直接复用（**没有新增/修改 `router.rs`**）；远端不可达使合并列表/库存返回 502 `backendUnreachable` 而不是静默丢弃或空成功；未知 `peer:` host→404；远端 progress 明确 `OperationFailed("remote session progress is not available")`。
+4. **daemon 侧接线（`agent-runtime`，最小改动）**：`--mesh-data-dir` / `--mesh-relay-disabled` 最小追加；`mesh_bridge::spawn` 起独立线程 + tokio runtime，经 `open_handle_with_host_sessions` 安装 `SessionServiceHostHandler`，返回 online 的 deviceId/endpointId，失败 exit 1（无静默成功）；`session_service::local_session_service` 默认接显式 `UnavailableSessionAdapter`（live 操作全部显式 AdapterError、读为空、history not-found），仅 `PHAROS_MESH_SESSION_ADAPTER=codex` 时接真实 Codex App Server，goals 落盘。`pharos-mesh-node` CLI 新增 `host-session-query` / `host-session-action` / `save-peer`，用于真机跨机验证与 allowlist 配置。
+
+**改了哪些 crate/文件（26 files, +5705/−44，全部在 `rust/`）**
+- `pharos-protocol/src/host_session.rs`（新，869 行）、`lib.rs`（模块声明）。
+- `pharos-replica/src/host_session.rs`（新：Handler trait/Fault/审计/replay cache）、`handle.rs`（分发+授权+幂等+审计+peer 方法+能力）、`rpc.rs`（`ReplicaRpcError::{HostSession,Unreachable}`）、`lib.rs`（导出）。
+- `pharos-mesh/src/lib.rs`（`open_handle_with_host_sessions`、`paired_peer_endpoint_ids`）、`src/bin/pharos_mesh_node.rs`（3 个新子命令 + 单测）。
+- `pharos-iroh/src/transport.rs`（`close`/`shutdown` + 离线测试）。
+- `pharos-session/src/{remote.rs,host_bridge.rs}`（新）、`lib.rs`、`Cargo.toml`；`service.rs` 仅把 trait bound 改为 `Send + Sync`（HostSessionHandler 需要 `Arc<dyn SessionService>`）。
+- `pharos-http/src/services/remote_session.rs`（新）、`services/mod.rs`（导出）。
+- `agent-runtime/src/{mesh_bridge.rs,session_service.rs,replica_bridge.rs}`、`main.rs`（仅追加 ~30 行）、`Cargo.toml`。
+- `rust/Cargo.lock`（经 cargo 更新）。
+- 未改：`pharos-api` 冻结 contracts、`router.rs`、`pharos-web`、Swift/WebCanvas/webui、`pharos-hitl`、dsh 插件。
+
+**新增测试（80 个新 test fn；workspace 222→303）**
+- `pharos-protocol/src/host_session.rs`：12 个 serde/校验测试（query/action 各 kind roundtrip、tagged response、payloadVersion 拒绝、sessionId 规则、text 上限、错误码 kebab 稳定性与结构体、summary/turn 映射名）。
+- `pharos-replica/src/host_session.rs`：7 个（replay 精确重试、新 actionId 重试、同 key 不同 payload 冲突、跨 peer 不串用、容量淘汰、审计行不含正文、Fault→Code）。
+- `pharos-iroh/src/transport.rs`：+1（关闭 endpoint 后 exchange 失败）。
+- `pharos-mesh/tests/host_session_smoke.rs`（新，4）：A 经 loopback iroh 列 B 会话/读历史/get/发消息到 B（B handler 收到）/steer/approval、retry 不重复投递、同 key 不同 payload 冲突、stop 显式 unsupported、错误 hostDeviceId 拒绝；allowlist 外 peer 与异 trust group 均 unauthorized；未启用 host session 的 host 显式 unsupported；B 关闭后 A 得 `Unreachable`（非空成功）。
+- `pharos-mesh/tests/remote_session_bridge.rs`（新，3）：生产 `MeshRemoteHostSessionSource` + `SessionServiceHostHandler` 全链路（列表/读史/发消息落 B 本机 SessionService、`peer:` 前缀/machine_id/connection_route、retry 幂等、steer/approval）、adapter 不可用 host 显式报错、离线 host → `BackendUnreachable`。
+- `pharos-mesh` bin：+2（approval decision 解析、endpoint id 解析）。
+- `pharos-session`：+24（remote 前缀/映射/错误映射、host_bridge query/action/stop/错误映射）。
+- `pharos-http`：`tests/remote_sessions.rs`（新，11，黑盒 `api_router` tower oneshot：合并列表前缀、history/messages/get、list 与 inventory 远端不可达 502 `backendUnreachable`、未知 peer host 404、远端 progress 显式 502、本地路由不受影响）+ 合并服务 lib 测试 9。
+- `agent-runtime`：+8（5 session_service：不可用 adapter 显式报错、goals 缺失降级等；2 replica_bridge；1 mesh_bridge 真实 loopback iroh：spawn 后 peer listSessions 返回本机服务会话）。
+
+**门禁结果（`rust/` 下，`CARGO_BUILD_JOBS=3`，最终代码 `689f3d1`）**
+- `cargo fmt --all -- --check` → **PASS**（exit 0，无输出）。
+- `cargo clippy --workspace --all-targets -- -D warnings` → **PASS**（exit 0，0 warning）。
+- `cargo test --workspace` → **PASS**（exit 0，**303 passed / 0 failed / 0 ignored，60 suites** 含 doc-tests；base `54c6ff6` 为 222）。本流关键 crate：pharos-protocol 15、pharos-replica 11、pharos-iroh 5、pharos-mesh 11（lib 1 + bin 2 + host_session_smoke 4 + remote_session_bridge 3 + peer_rpc_smoke 1）、pharos-session 26、pharos-http 64（lib 40 + approvals_api 9 + real_state_http 4 + remote_sessions 11）、agent-runtime 40、pharos-web 28+…（含 `asset_sync` 1 绿）。其余既有 crate 数字与 base 一致（hitl 19、adapter-codex 19+8、adapter-agy 4+1、adapter-cursor 8+2、adapter-dsh 9+1、thread 5、goals 1+1、grokbot 4+1、codex_hitl_live 1、store-schema 2、api 5、agent-core 2）。
+- 额外：本 worktree `git status --porcelain` 干净；`git diff --name-only 54c6ff6..HEAD | grep -v '^rust/'` 为空（未触碰 Swift/WebCanvas/webui）。
+
+**没做/未验证**
+- **真实跨机（mini↔Air）未验证**：规则禁止 ssh 到 Mac，本流只在 Linux loopback iroh（`RelayMode::Disabled` 直连）验证。Mac 上验证步骤见下（数据目录只用 `~/personal/pharos-msg-test/xhost-*`，绝不发到真实房间/3080 Host）：
+  ```bash
+  # 两台 Mac 各自 `cd rust && cargo build -p pharos-mesh -p pharos-agent-runtime`
+  # --- B 机（被调 Host，例：mini）---
+  B=~/personal/pharos-msg-test/xhost-b
+  ./target/debug/pharos-mesh-node init --data-dir "$B" --name mac-mini
+  ./target/debug/pharos-mesh-node print-endpoint --data-dir "$B"   # 记下 endpointId / endpointAddr；cat "$B/node-identity.json" 记 deviceId/trustGroupId
+  # 启动被调 Host（同 LAN 用 --mesh-relay-disabled 直连；跨网去掉该 flag）
+  PHAROS_MESH_SESSION_ADAPTER=codex ./target/debug/pharos-meshd \
+    --mesh-data-dir "$B" --mesh-relay-disabled \
+    --data-dir ~/personal/pharos-msg-test/xhost-b-agent \
+    --thread-data-dir ~/personal/pharos-msg-test/xhost-b-thread
+  # 期望 stderr: "pharos-agent-runtime: mesh host online device=… endpoint=…"
+  TICKET=$(./target/debug/pharos-mesh-node invite --data-dir "$B" --endpoint-id <B endpointId> --address-ticket '<B endpointAddr>')
+  # --- A 机（调用方，例：Air）---
+  A=~/personal/pharos-msg-test/xhost-a
+  ./target/debug/pharos-mesh-node accept --data-dir "$A" --invitation "$TICKET" --name mac-air
+  ./target/debug/pharos-mesh-node print-endpoint --data-dir "$A"   # 记 A 的 deviceId/endpointId 回填到 B
+  # --- 回 B：把 A 记为 paired peer（启用 host session allowlist）---
+  ./target/debug/pharos-mesh-node save-peer --data-dir "$B" --peer-device-id <A deviceId> --peer-endpoint-id <A endpointId> --name mac-air
+  # --- A 查询/操作 B 的会话 ---
+  ./target/debug/pharos-mesh-node host-session-query  --data-dir "$A" --peer-endpoint <B endpointId> --peer-addr '<B endpointAddr>' --host-device-id <B deviceId> --kind list
+  ./target/debug/pharos-mesh-node host-session-query  --data-dir "$A" --peer-endpoint <B> --peer-addr '<B addr>' --host-device-id <B deviceId> --kind history --session <sessionId>
+  ./target/debug/pharos-mesh-node host-session-action --data-dir "$A" --peer-endpoint <B> --peer-addr '<B addr>' --host-device-id <B deviceId> --session <sessionId> --action send --text 'hello from air'
+  ./target/debug/pharos-mesh-node host-session-action ... --action steer --text 'focus on tests'
+  ./target/debug/pharos-mesh-node host-session-action ... --action approve --approval-id <approvalId> --decision allowedOnce
+  ./target/debug/pharos-mesh-node host-session-action ... --action stop    # 期望明确的 unsupported-operation，而不是成功
+  # 离线语义：停掉 B 的 pharos-meshd 后重跑 --kind list，期望 "peer unreachable"，而不是空列表
+  ```
+  说明：`invite` 需要 controller role（`init` 默认给 controller/host/replica）；若 B 的 `peers.json` 非空则只有 allowlist 内 peer 可访问（可用 `save-peer` 配置第二个空 peers 的 B 目录做对照）；`/kind list` 需要 B 侧 live adapter 才有非空会话（`PHAROS_MESH_SESSION_ADAPTER=codex` 且本机有 codex CLI；否则列表为空但历史/动作显式报 adapter 不可用）。
+- **live Codex adapter 路径未验证**：`PHAROS_MESH_SESSION_ADAPTER=codex`（真实 Codex App Server 会话的远程 list/send）仅编译通过，未在本机 spawn vendor 进程验证；默认 `UnavailableSessionAdapter` 路径已测（显式报错、不伪造）。
+- **pharos-web 二进制未接线远程合并**：`RemoteSessionMergedService` 已在 Service 层可用并有 HTTP 黑盒测试，但默认 `pharos-web` 不打开 mesh handle / 不配置远端 host，所以真实 HTTP 进程的跨 Host 列表尚未接上（见"需要人决定"）；也未新增/修改路由。
+- **未做**：`host.session.events.v2` 事件流、远端 progress/configuration/attachment/approval-snapshot 查询（v1 契约不含；远端 progress 显式 unavailable）、`stop` 的实际执行（Host 明确 unsupported）、OpenAPI stub 追加、`CONTRACTS_VERSION` bump。
+- Swift ClientKit 的远端会话模型/前缀迁移未做（Linux 无法编译 Swift）。
+- 真实跨机时 iroh relay/NAT 行为、Mac launchd 托管、双机 token/信任撤销未验证。
+
+**需要人决定**
+1. `pharos-web` 二进制是否/如何接线远程 Host 会话（需要 mesh identity/data-dir、peer 端点与 endpointAddr 配置 UX；且当前"任一远端离线即整体 502"的诚实语义会让默认列表受远端可用性影响）。
+2. 合并列表语义：任一远端不可达即整体 502（当前，绝不静默丢 host）vs 部分列表 + 按 host 状态/错误字段（需要 `pharos-api` 契约变更）。
+3. `stop`：wire 契约已含 `stop`，但本机 `SessionService` 无 stop，Host 如实返回 `unsupported-operation`；是否实现真正 stop/interrupt 语义（adapter `interrupt` + 状态收敛）。
+4. 会话 ID 命名空间：本流用 `peer:<hostDeviceId>:<sessionId>`；WIP Swift 用 `peer:<host>:codex:` 等 agent 后缀。Swift ClientKit 迁移时需统一（以及 approval/turn id 前缀规则）。
+5. allowlist 的配对闭环：`accept` 只在 accept 侧写 inviter peer，inviter 记录 accepter 目前靠手工 `save-peer`；是否加配对回执自动落 `peers.json`，以及是否把"无 peers = 仅 trust-group"收紧为必须 allowlist。
+6. 是否把新 operation/能力写进 `pharos-api` OpenAPI stub、是否 bump `CONTRACTS_VERSION`（当前对 Phase 0 是 additive，未 bump）。
+7. 远端会话的 progress/goal/todo 与 approval 快照是否纳入下一版 wire 契约（当前 HTTP 侧显式 unavailable）。
 
 **STATUS: INTEGRATE-DSH3-DONE — 287a136fb274f781baae11c8e7782b5eb4795058**
 **分支/worktree**：`rust/integrate-dsh3`，worktree `/workspace/pharos-rust/2026-11-11_dsh-team/wt/integrate-dsh3`，base `integrate/mesh2-into-main @ 4e381a4`。未 push、未 force/rebase/amend、未改写任何已有提交；只 `git fetch` 过 remote refs。未触碰其它 worktree（hitl-persist / web-real-sessions / thread-autoreply 保持原 tip、未改）与主 checkout `/workspace/pharos-rust/2026-11-11_dsh-team/repo`。团队：Lead（本轮、merge1+集成测试+最终交接）、teammate `implementer`（merge2 + node/npm + 门禁）、teammate `verifier`（独立静态审查 + 全门禁复跑 + 真实二进制黑盒 smoke）。
