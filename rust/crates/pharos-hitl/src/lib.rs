@@ -11,8 +11,8 @@
 
 mod approval_store;
 mod channel;
-mod decision;
 mod codex_hitl;
+mod decision;
 mod error;
 mod pending;
 mod webhook;
@@ -22,12 +22,12 @@ pub use approval_store::{
     PruneReport, RESOLVED_RETENTION_SECS, RecordOutcome, ResolveOutcome, StoredApproval,
     StoredApprovalState, SystemWallClock, WallClock,
 };
-pub use decision::{QuestionnaireAnswer, StoredDecision, validate_decision};
 pub use channel::{
     HitlRequest, default_human_requests_dir, msg_test_root, publish_hitl_request, request_markdown,
     write_done_md, write_hitl_request,
 };
 pub use codex_hitl::{CodexHitlClient, PendingCodexApproval, prepare_hitl_codex_home};
+pub use decision::{QuestionnaireAnswer, StoredDecision, validate_decision};
 pub use error::HitlError;
 pub use pending::{
     HITL_TIMEOUT_SECS, HitlBridge, HitlDecision, HitlPending, HitlState, InstantClock, SystemClock,
