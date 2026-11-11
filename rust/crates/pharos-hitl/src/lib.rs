@@ -11,6 +11,7 @@
 
 mod approval_store;
 mod channel;
+mod decision;
 mod codex_hitl;
 mod error;
 mod pending;
@@ -21,6 +22,7 @@ pub use approval_store::{
     PruneReport, RESOLVED_RETENTION_SECS, RecordOutcome, ResolveOutcome, StoredApproval,
     StoredApprovalState, SystemWallClock, WallClock,
 };
+pub use decision::{QuestionnaireAnswer, StoredDecision, validate_decision};
 pub use channel::{
     HitlRequest, default_human_requests_dir, msg_test_root, publish_hitl_request, request_markdown,
     write_done_md, write_hitl_request,
