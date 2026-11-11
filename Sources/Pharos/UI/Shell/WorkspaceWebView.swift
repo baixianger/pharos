@@ -90,7 +90,8 @@ struct WorkspaceWebState: Encodable, Equatable {
     let approval: CanonicalApprovalRequest?
     var goal: CanonicalSessionGoal?
     var todos: [CanonicalSessionTodo] = []
-    var sessionConfiguration: [JSONValue]?
+    var sessionConfiguration: [SessionConfigControl] = []
+    var capabilities: [String: Bool] = [:]
     var supportsTextAttachments = false
     var configurationInFlight = false
     var inventoryIssues: [ClientSessionInventoryIssue] = []

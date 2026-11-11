@@ -84,7 +84,21 @@ public final class ThreadConversationViewModel {
             rosterMembers = []
             return
         }
-        let ids = Self.visibleAgentIDs(in: found, implicitHumanId: implicitHumanId)
+        // Prefer the Rust thread-members route: it carries live agent/machine/
+        // status/session state for exactly this Thread. Backends without the
+        // route (or an empty answer) fall back to the per-member settings fetch.
+        let fetched = (try? await clientService.fetchThreadMembers(threadId: threadId)) ?? []
+        let visible = fetched.filter { !Self.isImplicitHuman($0.name, implicitHumanId: implicitHumanId) }
+        let loaded = visible.isEmpty ? await legacyRosterMembers(for: found) : visible
+        guard rosterRevision == initialRevision else { return }
+        threadSummary = found
+        rosterMembers = loaded
+    }
+
+    /// Fallback roster for backends without `GET /threads/{id}/members`: settings
+    /// detail per visible member, never inventing live session state.
+    private func legacyRosterMembers(for summary: ClientThreadSummary) async -> [ClientMemberDetail] {
+        let ids = Self.visibleAgentIDs(in: summary, implicitHumanId: implicitHumanId)
         var loaded: [ClientMemberDetail] = []
         for id in ids {
             if let detail = try? await clientService.fetchMemberDetail(name: id) { loaded.append(detail) }
@@ -93,9 +107,13 @@ public final class ThreadConversationViewModel {
                                                  status: "unknown", avatarSeed: id))
             }
         }
-        guard rosterRevision == initialRevision else { return }
-        threadSummary = found
-        rosterMembers = loaded
+        return loaded
+    }
+
+    /// The human participant is implicit: it is shown by the composer identity,
+    /// never as a roster agent (RFC-006 §2 invariant).
+    private static func isImplicitHuman(_ name: String, implicitHumanId: String) -> Bool {
+        name == implicitHumanId || name == "human" || name == "tester"
     }
 
     public func startListeningToEvents() {

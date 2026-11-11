@@ -23,6 +23,10 @@ public final class SessionConversationViewModel {
     public var isTurnInProgress: Bool = false
     public private(set) var commandResult: String?
     public private(set) var configuration: ClientSessionConfiguration?
+    /// True when the configuration fetch failed, so the shell can report the
+    /// honest "Configuration unavailable" notice instead of pretending the
+    /// Session has no model/mode controls.
+    public private(set) var configurationLoadFailed = false
     public private(set) var supportsTextAttachments = false
     public private(set) var configurationInFlight = false
     private var configurationRevision = 0
@@ -104,9 +108,19 @@ public final class SessionConversationViewModel {
             let approval = try await clientService.fetchSessionApproval(sessionId: sessionId)
             guard generation == historyGeneration, !Task.isCancelled else { return }
             if approvalRevision == initialApprovalRevision { activeApproval = approval }
-            let config = try await clientService.fetchSessionConfiguration(sessionId: sessionId)
+            let config: ClientSessionConfiguration?
+            do {
+                config = try await clientService.fetchSessionConfiguration(sessionId: sessionId)
+            } catch {
+                guard generation == historyGeneration, !Task.isCancelled else { return }
+                configurationLoadFailed = true
+                throw error
+            }
             guard generation == historyGeneration, !Task.isCancelled else { return }
-            if initialConfigurationRevision == configurationRevision { configuration = config }
+            if initialConfigurationRevision == configurationRevision {
+                configuration = config
+                configurationLoadFailed = false
+            }
             let supportsText = await clientService.supportsSessionTextAttachments(sessionId: sessionId)
             guard generation == historyGeneration, !Task.isCancelled else { return }
             supportsTextAttachments = supportsText
@@ -151,8 +165,14 @@ public final class SessionConversationViewModel {
                 guard let self else { return }
                 do {
                     let config = try await clientService.fetchSessionConfiguration(sessionId: sessionId)
-                    if self.configurationRevision == revision { self.configuration = config }
-                } catch { self.activeError = (error as? PharosClientError) ?? .operationFailed(error.localizedDescription) }
+                    if self.configurationRevision == revision {
+                        self.configuration = config
+                        self.configurationLoadFailed = false
+                    }
+                } catch {
+                    self.configurationLoadFailed = true
+                    self.activeError = (error as? PharosClientError) ?? .operationFailed(error.localizedDescription)
+                }
             }
 
         case .turnStarted(let turn):
