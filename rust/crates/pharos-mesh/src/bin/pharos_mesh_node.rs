@@ -335,6 +335,28 @@ async fn run() -> Result<(), String> {
                 .map_err(err)?;
             println!("{}", serde_json::to_string_pretty(&response).map_err(err)?);
         }
+        "save-peer" => {
+            let data_dir = path_flag(&flags, "--data-dir")?;
+            let peer_device_id = str_flag(&flags, "--peer-device-id")?;
+            let peer_endpoint_id = str_flag(&flags, "--peer-endpoint-id")?;
+            let display_name = str_flag_or(&flags, "--name", "peer");
+            let endpoint_addr_json = flags.get("--peer-addr").cloned();
+            save_peer(
+                &data_dir,
+                &MeshPeerRecord {
+                    device_id: peer_device_id,
+                    endpoint_id: peer_endpoint_id,
+                    display_name,
+                    roles: vec!["host".into(), "replica".into()],
+                    endpoint_addr_json,
+                },
+            )
+            .map_err(err)?;
+            print_json(json!({
+                "status": "saved",
+                "peers": load_peers(&data_dir).map_err(err)?,
+            }))?;
+        }
         "status" => {
             let data_dir = path_flag(&flags, "--data-dir")?;
             let identity = load_identity(&data_dir).map_err(err)?;
@@ -447,7 +469,7 @@ fn str_flag_or(flags: &HashMap<String, String>, name: &str, default: &str) -> St
 }
 
 fn usage() -> String {
-    "usage: pharos-mesh-node <init|invite|accept|serve|hello|call|host-session-query|host-session-action|sync-pull|sync-push|status|print-endpoint> --data-dir DIR ...\n\n  host-session-query  --data-dir DIR --peer-endpoint ID --host-device-id ID [--peer-addr ADDR] [--kind list|get|history] [--session ID]\n  host-session-action --data-dir DIR --peer-endpoint ID --host-device-id ID --session ID [--action send|steer|approve|stop] [--text TEXT] [--approval-id ID] [--decision allowedOnce|allowedAlways|rejected] [--request-id ID] [--action-id ID] [--force]".into()
+    "usage: pharos-mesh-node <init|invite|accept|serve|hello|call|host-session-query|host-session-action|sync-pull|sync-push|status|print-endpoint|save-peer> --data-dir DIR ...\n\n  host-session-query  --data-dir DIR --peer-endpoint ID --host-device-id ID [--peer-addr ADDR] [--kind list|get|history] [--session ID]\n  host-session-action --data-dir DIR --peer-endpoint ID --host-device-id ID --session ID [--action send|steer|approve|stop] [--text TEXT] [--approval-id ID] [--decision allowedOnce|allowedAlways|rejected] [--request-id ID] [--action-id ID] [--force]\n  save-peer           --data-dir DIR --peer-device-id ID --peer-endpoint-id ID [--name NAME] [--peer-addr ADDR_JSON]".into()
 }
 
 fn err<E: std::fmt::Display>(e: E) -> String {
