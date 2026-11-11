@@ -223,13 +223,20 @@ impl MeshIrohEndpoint {
         })
     }
 
-    pub async fn shutdown(self) -> Result<(), MeshIrohError> {
+    /// Shut the accept router down and close the endpoint.
+    ///
+    /// Used by tests to simulate a host going offline; safe to call from `&self`.
+    pub async fn close(&self) -> Result<(), MeshIrohError> {
         self.router
             .shutdown()
             .await
             .map_err(|e| MeshIrohError::Iroh(e.to_string()))?;
         self.endpoint.close().await;
         Ok(())
+    }
+
+    pub async fn shutdown(self) -> Result<(), MeshIrohError> {
+        self.close().await
     }
 }
 
@@ -309,5 +316,32 @@ mod tests {
 
         client.shutdown().await.ok();
         server.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn closed_endpoint_is_unreachable() {
+        let server = MeshIrohEndpoint::bind(None, true)
+            .await
+            .expect("server bind");
+        let client = MeshIrohEndpoint::bind(None, true)
+            .await
+            .expect("client bind");
+        let peer = PeerDial {
+            endpoint_id: server.endpoint_id(),
+            addr: Some(server.endpoint_addr()),
+        };
+        server.close().await.expect("server close");
+        let result = client
+            .exchange(
+                &peer,
+                MeshTransportExchange {
+                    header: b"hello".to_vec(),
+                    body: None,
+                },
+                Duration::from_secs(2),
+            )
+            .await;
+        assert!(result.is_err(), "closed endpoint must not accept exchanges");
+        client.shutdown().await.ok();
     }
 }

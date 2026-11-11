@@ -291,11 +291,13 @@ impl ReplicaHandle {
             .map_err(|e| ReplicaRpcError::Store(e.to_string()))
     }
 
-    pub async fn shutdown(self: Arc<Self>) -> Result<(), ReplicaRpcError> {
-        // Endpoint shutdown requires ownership; Arc makes this best-effort.
-        // Callers in smoke tests drop processes instead.
-        let _ = self;
-        Ok(())
+    /// Close this handle's iroh endpoint. Tests use it to simulate a Host
+    /// going offline; production callers keep the handle alive for its process.
+    pub async fn shutdown(&self) -> Result<(), ReplicaRpcError> {
+        self.endpoint
+            .close()
+            .await
+            .map_err(|error| ReplicaRpcError::Runtime(error.to_string()))
     }
 
     async fn exchange<B: Serialize>(
