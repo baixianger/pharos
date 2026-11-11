@@ -256,6 +256,192 @@ enum APIDate {
     }
 }
 
+// MARK: - Wave-2 web endpoints (docs/2026-11-11_web-endpoints-api.md)
+
+/// `GET/PATCH /api/v1/sessions/{id}/config` response.
+struct APISessionConfig: Decodable, Sendable {
+    struct Mode: Decodable, Sendable {
+        let value: String
+        let name: String
+    }
+
+    struct Capabilities: Decodable, Sendable {
+        let attachments: Bool
+        let commands: Bool
+        let stop: Bool
+        let revive: Bool
+    }
+
+    let sessionId: String
+    let supported: Bool
+    let supportedFields: [String]
+    let model: String?
+    let mode: String?
+    let models: [String]
+    let modes: [Mode]
+    let capabilities: Capabilities
+    let readonly: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionId, supported, supportedFields, model, mode, models, modes, capabilities, readonly
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try container.decodeIfPresent(String.self, forKey: .sessionId) ?? ""
+        supported = try container.decodeIfPresent(Bool.self, forKey: .supported) ?? false
+        supportedFields = try container.decodeIfPresent([String].self, forKey: .supportedFields) ?? []
+        model = try container.decodeIfPresent(String.self, forKey: .model)
+        mode = try container.decodeIfPresent(String.self, forKey: .mode)
+        models = try container.decodeIfPresent([String].self, forKey: .models) ?? []
+        modes = try container.decodeIfPresent([Mode].self, forKey: .modes) ?? []
+        capabilities = try container.decodeIfPresent(Capabilities.self, forKey: .capabilities)
+            ?? Capabilities(attachments: false, commands: false, stop: false, revive: false)
+        readonly = try container.decodeIfPresent(Bool.self, forKey: .readonly) ?? true
+    }
+
+    func asClient() -> ClientSessionConfiguration {
+        ClientSessionConfiguration(
+            sessionId: sessionId,
+            supported: supported,
+            supportedFields: supportedFields,
+            model: model,
+            mode: mode,
+            models: models,
+            modes: modes.map { ClientSessionConfiguration.Mode(value: $0.value, name: $0.name) },
+            capabilities: ClientSessionConfiguration.Capabilities(
+                attachments: capabilities.attachments,
+                commands: capabilities.commands,
+                stop: capabilities.stop,
+                revive: capabilities.revive
+            ),
+            readonly: readonly
+        )
+    }
+}
+
+/// `POST /api/v1/sessions/{id}/stop|revive` response (decoded but not required).
+struct APISessionLifecycleResponse: Decodable, Sendable {
+    let ok: Bool?
+    let sessionId: String?
+    let status: String?
+}
+
+/// `GET/PATCH /api/v1/members/{id}` and `PUT /members/{id}/avatar` response.
+struct APIMemberSettingsView: Decodable, Sendable {
+    struct Avatar: Decodable, Sendable {
+        let avatarId: String?
+        let contentType: String?
+        let sizeBytes: Int?
+        let sha256: String?
+    }
+
+    let memberId: String?
+    let displayName: String?
+    let model: String?
+    let mode: String?
+    let avatarShape: String?
+    let avatarColor: String?
+    let avatar: Avatar?
+}
+
+/// `GET /api/v1/threads/{id}/members` one member.
+struct APIThreadMember: Decodable, Sendable {
+    let memberId: String
+    let nick: String?
+    let agentType: String?
+    let machineId: String?
+    let status: String?
+    let sessionId: String?
+    let settings: APIMemberSettingsView?
+
+    func asClient() -> ClientMemberDetail {
+        let name = nick ?? memberId
+        let displayName = settings?.displayName
+        return ClientMemberDetail(
+            name: name,
+            agent: agentType ?? "",
+            machine: machineId ?? "",
+            model: settings?.model ?? "",
+            mode: settings?.mode ?? "",
+            status: status ?? "",
+            tmuxSession: nil,
+            avatarSeed: displayName ?? nick ?? memberId,
+            displayName: displayName,
+            avatarShape: settings?.avatarShape,
+            avatarColor: settings?.avatarColor,
+            sessionId: sessionId
+        )
+    }
+}
+
+/// One attachment metadata item (`POST` upload / `GET` attachment/list).
+struct APIAttachment: Decodable, Sendable {
+    let attachmentId: String
+    let sessionId: String
+    let filename: String
+    let contentType: String
+    let sizeBytes: Int
+    let sha256: String
+    let createdAt: String
+
+    func asClient() -> ClientAttachment {
+        ClientAttachment(
+            attachmentId: attachmentId,
+            sessionId: sessionId,
+            filename: filename,
+            contentType: contentType,
+            sizeBytes: sizeBytes,
+            sha256: sha256,
+            createdAt: APIDate.parse(createdAt)
+        )
+    }
+}
+
+/// `GET /api/v1/sessions/{id}/attachments` response.
+struct APIAttachmentListResponse: Decodable, Sendable {
+    let attachments: [APIAttachment]
+}
+
+/// `POST /api/v1/sessions/{id}/attachments` request body.
+struct APIUploadAttachmentRequest: Encodable, Sendable {
+    let filename: String
+    let contentType: String
+    let dataBase64: String
+}
+
+/// `POST /api/v1/sessions/{id}/messages` body superset with `attachmentIds`.
+struct APISendSessionMessageWithAttachmentsRequest: Encodable, Sendable {
+    let text: String
+    let requestId: String?
+    let attachmentIds: [String]
+}
+
+/// `PUT /api/v1/threads/{id}/bindings/{member}` body.
+struct APIBindThreadSessionRequest: Encodable, Sendable {
+    let sessionId: String
+}
+
+/// `GET /api/v1/approvals?state=pending` snapshot response.
+struct APIApprovalListResponse: Decodable, Sendable {
+    /// Flat pending-approval items carry more fields (`state`, `createdAt`,
+    /// `expiresAt`); they are ignored by this DTO.
+    let approvals: [APIApprovalRequest]
+}
+
+/// `POST /api/v1/sessions/{id}/approval` questionnaire answer item.
+struct APIQuestionnaireAnswer: Encodable, Sendable, Equatable {
+    let questionId: String
+    let selected: [String]
+    let text: String?
+}
+
+/// `PUT /api/v1/members/{id}/avatar` body.
+struct APIUploadAvatarRequest: Encodable, Sendable {
+    let contentType: String
+    let dataBase64: String
+}
+
 extension SessionActivityStatus {
     init(apiValue: String) {
         switch apiValue {
@@ -300,7 +486,7 @@ extension ApprovalChoice {
         case .allowedOnce: return "allowedOnce"
         case .allowedAlways: return "allowedAlways"
         case .rejected: return "rejected"
-        case .cancelled: return nil
+        case .cancelled: return "cancelled"
         }
     }
 }

@@ -22,7 +22,7 @@ public final class SessionConversationViewModel {
     public var activeError: PharosClientError? { didSet { errorRevision += 1 } }
     public var isTurnInProgress: Bool = false
     public private(set) var commandResult: String?
-    public private(set) var configuration: [JSONValue]?
+    public private(set) var configuration: ClientSessionConfiguration?
     public private(set) var supportsTextAttachments = false
     public private(set) var configurationInFlight = false
     private var configurationRevision = 0

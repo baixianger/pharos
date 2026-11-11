@@ -179,7 +179,9 @@ public struct PharosMainShellView: View {
             turns: activeSession?.turns ?? [], streamingText: activeSession?.liveStreamingText ?? "",
             reasoningText: activeSession?.liveReasoningText ?? "", tools: activeSession?.liveTools ?? [],
             approval: activeSession?.activeApproval, goal: activeSession?.goal, todos: activeSession?.todos ?? [],
-            sessionConfiguration: activeSession?.configuration, supportsTextAttachments: activeSession?.supportsTextAttachments ?? false,
+            // TODO(client-polish shell): map ClientSessionConfiguration into the
+            // workspace control model; the shell-wiring commit owns that mapping.
+            sessionConfiguration: nil, supportsTextAttachments: activeSession?.supportsTextAttachments ?? false,
             configurationInFlight: activeSession?.configurationInFlight ?? false,
             inventoryIssues: inventoryIssues, commandResult: activeSession?.commandResult, submissionResults: submissionResults,
             projectSessions: sessions.filter { projectSessionIDs.contains($0.id) }.map(WorkspaceWebState.ProjectSession.init),
