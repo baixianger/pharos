@@ -357,6 +357,29 @@ impl<C: WallClock> ApprovalRegistry<C> {
         Ok(ResolveOutcome::Resolved(record.clone()))
     }
 
+    /// Undo a decision whose adapter/session dispatch failed, so the approval
+    /// stays retryable instead of being silently consumed. First-wins decisions
+    /// that already reached the adapter are not affected (callers only revert
+    /// their own failed dispatch).
+    pub fn revert_resolution(&mut self, approval_id: &str) -> Result<bool, ApprovalStoreError> {
+        let Some(record) = self.approvals.get_mut(approval_id) else {
+            return Ok(false);
+        };
+        if record.state != StoredApprovalState::Resolved {
+            return Ok(false);
+        }
+        let now = self.clock.now();
+        record.decision = None;
+        record.resolved_at = None;
+        let expires = parse_timestamp(&record.expires_at)?;
+        record.state = if now >= expires {
+            StoredApprovalState::Expired
+        } else {
+            StoredApprovalState::Pending
+        };
+        Ok(true)
+    }
+
     /// Remove a withdrawn approval entirely. Returns whether it existed.
     pub fn withdraw(&mut self, approval_id: &str) -> bool {
         self.approvals.remove(approval_id).is_some()
@@ -458,6 +481,15 @@ impl<C: WallClock> PendingApprovalStore<C> {
             self.persist(&registry)?;
         }
         Ok(outcome)
+    }
+
+    pub fn revert_resolution(&self, approval_id: &str) -> Result<bool, ApprovalStoreError> {
+        let mut registry = self.lock();
+        let reverted = registry.revert_resolution(approval_id)?;
+        if reverted {
+            self.persist(&registry)?;
+        }
+        Ok(reverted)
     }
 
     pub fn withdraw(&self, approval_id: &str) -> Result<bool, ApprovalStoreError> {
@@ -816,5 +848,33 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].approval_id, "a2");
         assert_eq!(store.list_pending(None).expect("all").len(), 2);
+    }
+    #[test]
+    fn failed_dispatch_revert_keeps_approval_retryable() {
+        let clock = TestClock::new();
+        let (_dir, path) = temp_store(clock.clone());
+        let store = PendingApprovalStore::open_with(
+            &path,
+            clock,
+            time::Duration::seconds(HITL_TIMEOUT_SECS as i64),
+        )
+        .expect("open");
+        store.record(&approval("a1")).expect("record");
+        store
+            .resolve("a1", ApprovalDecision::AllowedOnce)
+            .expect("resolve");
+        // The adapter/session dispatch failed afterwards: undo the decision.
+        assert!(store.revert_resolution("a1").expect("revert"));
+        let pending = store.list_pending(None).expect("list");
+        assert_eq!(pending.len(), 1, "reverted approval must be retryable");
+        assert_eq!(pending[0].state, StoredApprovalState::Pending);
+        // Reverting a still-pending or unknown approval is a no-op.
+        assert!(!store.revert_resolution("a1").expect("second revert"));
+        assert!(!store.revert_resolution("missing").expect("unknown revert"));
+        // The retry can take effect and is durable.
+        let outcome = store
+            .resolve("a1", ApprovalDecision::Rejected)
+            .expect("retry resolve");
+        assert!(matches!(outcome, ResolveOutcome::Resolved(_)));
     }
 }

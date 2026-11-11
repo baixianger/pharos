@@ -144,14 +144,23 @@ async fn resolve_approval(
         }
         .into());
     }
-    let response = state
-        .approvals
-        .resolve(&body.approval_id, body.decision)
-        .await?;
+    let approval_id = body.approval_id.clone();
+    let response = state.approvals.resolve(&approval_id, body.decision).await?;
     if !response.already_resolved {
         // Keep the existing session/adapter decision path; the durable store
-        // already recorded the decision so replays are exact no-ops.
-        state.sessions.resolve_approval(&id, body).await?;
+        // already recorded the decision so replays are exact no-ops. If the
+        // dispatch fails, undo the durable decision: a failed dispatch must not
+        // consume the approval silently (retry must be possible).
+        if let Err(error) = state.sessions.resolve_approval(&id, body).await {
+            if let Err(revert_error) = state.approvals.revert_decision(&approval_id).await {
+                tracing::error!(
+                    approval_id = %approval_id,
+                    ?revert_error,
+                    "failed to revert approval decision after session dispatch error"
+                );
+            }
+            return Err(error.into());
+        }
     }
     Ok(Json(response))
 }
@@ -580,5 +589,56 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(json["error"]["code"], "conflict");
+    }
+    #[tokio::test]
+    async fn failed_session_dispatch_leaves_approval_retryable() {
+        let dir = TempDir::new().expect("tempdir");
+        let store_path = dir.path().join("pending-approvals.json");
+        let state = fake_state(file_service(&dir));
+        // The durable store knows the session (an adapter announced it), but the
+        // fake session dispatcher does not: the resolve must fail downstream.
+        state
+            .approvals
+            .record(approval("orphan-1", "ghost-session"))
+            .await
+            .expect("record");
+        let app = api_router(state);
+
+        let (status, json) = post(
+            &app,
+            "/api/v1/sessions/ghost-session/approval",
+            json!({ "approvalId": "orphan-1", "decision": "allowedOnce" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(json["error"]["code"], "sessionNotFound");
+
+        // The failed dispatch must not consume the decision: still pending ...
+        let (_, json) = get(&app, "/api/v1/approvals?state=pending").await;
+        assert_eq!(
+            json["approvals"].as_array().expect("array").len(),
+            1,
+            "failed dispatch must leave the approval retryable"
+        );
+        // ... and durable across a restart, so a retry can still take effect.
+        let restarted = fake_state(Arc::new(
+            FileApprovalService::open(&store_path).expect("reopen"),
+        ));
+        let pending = restarted
+            .approvals
+            .list_pending(None)
+            .await
+            .expect("list pending");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].state, "pending");
+        let retry = restarted
+            .approvals
+            .resolve("orphan-1", ApprovalDecision::AllowedOnce)
+            .await
+            .expect("retry resolve");
+        assert!(
+            !retry.already_resolved,
+            "a decision consumed by a failed dispatch would make the retry a no-op"
+        );
     }
 }

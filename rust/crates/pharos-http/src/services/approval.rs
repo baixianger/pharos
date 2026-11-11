@@ -93,6 +93,10 @@ pub trait ApprovalService: Send + Sync {
         decision: ApprovalDecision,
     ) -> Result<ResolveApprovalResponse, PharosApiError>;
 
+    /// Undo a just-recorded decision when the downstream session/adapter
+    /// dispatch failed, so the approval stays pending and retryable.
+    async fn revert_decision(&self, approval_id: &str) -> Result<(), PharosApiError>;
+
     /// Drop a withdrawn approval.
     async fn withdraw(&self, approval_id: &str) -> Result<(), PharosApiError>;
 
@@ -231,6 +235,13 @@ impl<C: WallClock> ApprovalService for InMemoryApprovalService<C> {
         map_resolve_outcome(approval_id, outcome)
     }
 
+    async fn revert_decision(&self, approval_id: &str) -> Result<(), PharosApiError> {
+        self.lock()
+            .revert_resolution(approval_id)
+            .map_err(store_error)?;
+        Ok(())
+    }
+
     async fn withdraw(&self, approval_id: &str) -> Result<(), PharosApiError> {
         self.lock().withdraw(approval_id);
         Ok(())
@@ -304,6 +315,13 @@ impl<C: WallClock> ApprovalService for FileApprovalService<C> {
             .resolve(approval_id, decision)
             .map_err(store_error)?;
         map_resolve_outcome(approval_id, outcome)
+    }
+
+    async fn revert_decision(&self, approval_id: &str) -> Result<(), PharosApiError> {
+        self.store
+            .revert_resolution(approval_id)
+            .map_err(store_error)?;
+        Ok(())
     }
 
     async fn withdraw(&self, approval_id: &str) -> Result<(), PharosApiError> {
