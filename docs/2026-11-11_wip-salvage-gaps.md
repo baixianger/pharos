@@ -36,3 +36,50 @@ The statements above that “there is no current-approval snapshot after page lo
 - `GET /api/v1/approvals?state=pending[&sessionId=]` exposes the durable snapshot; `POST /api/v1/sessions/{id}/approval` persists the decision (200 with `alreadyResolved`, 404 `approvalNotFound`, 400 session mismatch, 409 expired) and reverts the durable decision if downstream session/adapter dispatch fails so it stays retryable.
 - `webui/transport.js` and `Sources/Pharos/Resources/WebCanvas/transport.js` (byte-identical copies) fetch that snapshot on page load and on every WebSocket `open`, dedupe live events by `approvalId`, and reconnect with backoff instead of requiring a reload.
 - Not done: Swift ClientKit “current approval snapshot” request/models (no macOS verification on Linux); real adapter/session wiring (the `pharos-web` binary still uses fake S1/S2 services).
+
+## Update 2026-11-11 — web workspace endpoints (`rust/web-endpoints`)
+
+The "Unavailable workspace operations" statements above are superseded for the
+following operations by branch `rust/web-endpoints` (see
+`docs/2026-11-11_web-endpoints-api.md` for the contract). All routes are inside
+`api_router`/`app_router_with_token` (bearer auth) and are listed in the
+OpenAPI output; stores are versioned, atomically-written files under the Host
+`--data-dir`, and a corrupt store is a hard startup error (never a silent
+reset):
+
+- **Thread ↔ session binding**: `GET/PUT/DELETE /api/v1/threads/{id}/bindings[/{member}]`,
+  `GET /api/v1/threads/{id}/members` (replica members ∪ bound members with
+  durable settings). The binding is the read surface delivery routing can
+  consume; agent-runtime delivery logic is unchanged.
+- **Session configuration**: `GET/PATCH /api/v1/sessions/{id}/config`
+  (model/mode, supported fields + honest capability flags). Adapters that
+  cannot apply a field return `502 unsupportedField` with the field id — never a
+  fake save. The current Codex adapter exposes no writable configuration, so
+  real live sessions report an empty view / explicit unsupported write.
+- **Extended approval decisions**: the existing
+  `POST /api/v1/sessions/{id}/approval` body is now a superset of the frozen
+  one: `decision: "cancelled"` and `questionnaireAnswers`. Persistence reuses
+  `pharos-hitl`'s `PendingApprovalStore` (first-wins idempotency, 45m expiry,
+  revert-on-failed-dispatch), extended with the `StoredDecision` model.
+- **Member settings / avatars**: `GET/PATCH /api/v1/members/{id}`,
+  `GET/PUT/DELETE /api/v1/members/{id}/avatar` (png/jpeg, ≤512 KiB, stored in
+  the data dir, survives restart).
+- **Attachment upload**: `POST /api/v1/sessions/{id}/attachments` (base64 JSON,
+  allowlisted content types, ≤10 MiB), metadata/content/list reads, and
+  `attachmentIds` references on `POST /sessions/{id}/messages`. Adapters that
+  cannot consume attachments answer `502 unsupportedField` — the message is not
+  reported as sent.
+- **stop/revive**: `POST /api/v1/sessions/{id}/stop|revive`; no adapter
+  currently advertises these, so the real backend answers explicit
+  `502 unsupportedOperation` while the fake test service exercises the success
+  path.
+- **Front end**: `webui/` and `Sources/Pharos/Resources/WebCanvas/` (byte
+  identical, `asset_sync` green) now load/refresh these surfaces and dispatch
+  the writes; previously "unavailable" buttons call the new routes, and
+  capability-gated controls stay disabled when the server reports no support.
+  Session **command** execution and project creation remain unavailable (no
+  endpoint; UI still says so honestly).
+
+Not done: real vendor end-to-end (the live Codex adapter still exposes no
+config/attachment/stop capabilities, so those paths are honest 502s there);
+Swift ClientKit models for the new endpoints (Linux box: Swift not compiled).
