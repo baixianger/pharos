@@ -528,10 +528,25 @@ impl<C: WallClock> PendingApprovalStore<C> {
         let tmp = self
             .path
             .with_extension(format!("tmp.{}", std::process::id()));
-        fs::write(&tmp, bytes).map_err(|source| ApprovalStoreError::Io {
-            path: tmp.clone(),
-            source,
-        })?;
+        {
+            use std::io::Write;
+
+            let mut file = fs::File::create(&tmp).map_err(|source| ApprovalStoreError::Io {
+                path: tmp.clone(),
+                source,
+            })?;
+            file.write_all(&bytes)
+                .map_err(|source| ApprovalStoreError::Io {
+                    path: tmp.clone(),
+                    source,
+                })?;
+            // Flush to disk before the atomic rename so a crash cannot leave the
+            // target pointing at empty/partial data.
+            file.sync_all().map_err(|source| ApprovalStoreError::Io {
+                path: tmp.clone(),
+                source,
+            })?;
+        }
         fs::rename(&tmp, &self.path).map_err(|source| ApprovalStoreError::Io {
             path: self.path.clone(),
             source,
@@ -551,8 +566,11 @@ fn load_entries(path: &Path) -> Result<Vec<StoredApproval>, ApprovalStoreError> 
         }
     };
     if bytes.iter().all(u8::is_ascii_whitespace) {
-        // Empty file (e.g. interrupted manual edit) — no records, not corrupt.
-        return Ok(Vec::new());
+        // An existing but empty store file is not a fresh store: refusing to
+        // guess avoids silently discarding a truncated record set.
+        return Err(ApprovalStoreError::Corrupt {
+            detail: format!("{}: store file is empty", path.display()),
+        });
     }
     let file: StoreFile =
         serde_json::from_slice(&bytes).map_err(|err| ApprovalStoreError::Corrupt {
@@ -786,6 +804,18 @@ mod tests {
         fs::write(&path, br#"{"version":99,"approvals":[]}"#).expect("write");
         let error = PendingApprovalStore::open(&path).expect_err("must fail");
         assert!(matches!(error, ApprovalStoreError::Corrupt { .. }));
+    }
+
+    #[test]
+    fn empty_store_file_is_corrupt_not_a_silent_fresh_store() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("pending-approvals.json");
+        fs::write(&path, b"  \n\t ").expect("write empty-ish file");
+        let error = PendingApprovalStore::open(&path).expect_err("must fail");
+        assert!(matches!(error, ApprovalStoreError::Corrupt { .. }));
+        // A missing file is still a legitimate fresh store.
+        let fresh = PendingApprovalStore::open(dir.path().join("missing.json")).expect("fresh");
+        assert!(fresh.list_pending(None).expect("list").is_empty());
     }
 
     #[test]
