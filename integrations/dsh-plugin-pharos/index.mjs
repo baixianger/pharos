@@ -78,6 +78,22 @@ function optionsArchived(options) {
   return Boolean(options?.archived)
 }
 
+function errorText(error) {
+  return error == null ? 'unknown error' : String(error?.message ?? error)
+}
+
+// A failed ack is the last-resort way to stop a delivery from stranding as
+// `injected`. If that request also fails we log it (or hand it to the caller's
+// hook) and keep processing the poll: throwing would abort every remaining
+// delivery in the same tick.
+function reportDeliveryError(options, message) {
+  if (typeof options?.onError === 'function') {
+    try { options.onError(message) } catch {}
+    return
+  }
+  process.stderr.write(`dsh-plugin-pharos-runtime: ${message}\n`)
+}
+
 // One delivery poll -> the canonical 4-stage ack loop:
 //   delivery.poll
 //   -> ack injected     (best effort; a lost injected ack must not block followup)
@@ -85,6 +101,10 @@ function optionsArchived(options) {
 //   -> ack consumed     (durable inbox took ownership; assistant completion is NOT implied)
 // If followup throws, the delivery is acked failed with the error detail, so a
 // delivery is never left looking injected/consumed when it was not handed off.
+// The consumed ack is attempted inside the same try/catch: if it fails after a
+// successful followup the delivery is also acked failed (with a detail saying
+// the intake may have happened), because the runtime only re-polls
+// queued/accepted and would otherwise strand the message as `injected` forever.
 // An archived session is acked failed with no followup. Returns true when the
 // poll returned pending deliveries, false when there was nothing to do or the
 // poll itself failed (no ack is sent in that case).
@@ -120,28 +140,37 @@ export async function handleDeliveryPoll(agent, binding, rpc = runtimeRPC, optio
       await callRuntimeRPC(rpc, 'delivery.ack', { deliveryID: delivery.id, state: 'injected' })
     } catch {}
 
-    let followupError = null
+    // Followup + consumed ack are one unit: a lost consumed ack means the
+    // delivery must be closed as failed, never left at injected.
+    let handedOff = false
     try {
       const injected = agent.followup(buildUserMessage(deliveryText(delivery.payload)))
       if (injected && typeof injected.then === 'function') await injected
-    } catch (error) {
-      followupError = error
-    }
-
-    if (followupError) {
+      handedOff = true
       await callRuntimeRPC(rpc, 'delivery.ack', {
         deliveryID: delivery.id,
-        state: 'failed',
-        detail: String(followupError?.message ?? followupError),
+        state: 'consumed',
+        detail: CONSUMED_DETAIL,
       })
-      continue
+    } catch (error) {
+      // Never claim success. The detail distinguishes "nothing was handed
+      // off" from "the intake may already own it but the ack was lost".
+      const detail = handedOff
+        ? `followup accepted but consumed ack failed: ${errorText(error)}`
+        : errorText(error)
+      try {
+        await callRuntimeRPC(rpc, 'delivery.ack', {
+          deliveryID: delivery.id,
+          state: 'failed',
+          detail,
+        })
+      } catch (ackError) {
+        reportDeliveryError(
+          options,
+          `delivery ${delivery.id}: failed ack also failed: ${errorText(ackError)}`,
+        )
+      }
     }
-
-    await callRuntimeRPC(rpc, 'delivery.ack', {
-      deliveryID: delivery.id,
-      state: 'consumed',
-      detail: CONSUMED_DETAIL,
-    })
   }
   return true
 }

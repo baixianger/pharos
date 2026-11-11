@@ -110,6 +110,101 @@ test('an async followup rejection is acked failed as well', async () => {
   })
 })
 
+test('a consumed-ack failure after a successful followup is acked failed with a truthful detail', async () => {
+  const calls = []
+  const followups = []
+  const rpc = async (method, params) => {
+    calls.push({ method, params })
+    if (method === 'delivery.poll') {
+      return [{ id: 'del-4', payload: JSON.stringify({ body: 'hi', sender: 'Pai' }) }]
+    }
+    // The durable inbox accepted the message, but the consumed ack is lost.
+    if (method === 'delivery.ack' && params.state === 'consumed') throw new Error('socket dropped')
+    return { ok: true }
+  }
+  const agent = { followup: message => followups.push(message) }
+
+  // Must not throw out of the per-delivery handler.
+  const handled = await handleDeliveryPoll(agent, { conversationID: 'conv-4' }, rpc)
+
+  assert.equal(handled, true)
+  assert.equal(followups.length, 1)
+  assert.equal(followups[0].content[0].text, '[Pharos Thread Message from Pai]\nhi')
+  assert.deepEqual(calls.map(call => `${call.method}:${call.params?.state ?? ''}`), [
+    'delivery.poll:',
+    'delivery.ack:injected',
+    'delivery.ack:consumed',
+    'delivery.ack:failed',
+  ])
+  assert.equal(calls[3].params.deliveryID, 'del-4')
+  assert.equal(calls[3].params.state, 'failed')
+  // Truthful: the intake may have happened, so the detail says so.
+  assert.match(calls[3].params.detail, /followup accepted but consumed ack failed/)
+  assert.match(calls[3].params.detail, /socket dropped/)
+})
+
+test('a failed failed-ack is logged and does not abort the rest of the poll', async () => {
+  const calls = []
+  const errors = []
+  const rpc = async (method, params) => {
+    calls.push({ method, params })
+    if (method === 'delivery.poll') {
+      return [
+        { id: 'del-bad', payload: 'first' },
+        { id: 'del-good', payload: 'second' },
+      ]
+    }
+    // The last-resort failed ack throws too (runtime gone).
+    if (method === 'delivery.ack' && params.deliveryID === 'del-bad' && params.state === 'failed') {
+      throw new Error('runtime gone')
+    }
+    return { ok: true }
+  }
+  const followups = []
+  const agent = {
+    followup(message) {
+      if (message.content[0].text === 'first') throw new Error('agent busy')
+      followups.push(message)
+    },
+  }
+
+  const handled = await handleDeliveryPoll(agent, 'conv-double-fail', rpc, {
+    onError: message => errors.push(message),
+  })
+
+  assert.equal(handled, true)
+  // The second delivery still ran through its full happy path.
+  assert.equal(followups.length, 1)
+  assert.equal(followups[0].content[0].text, 'second')
+  assert.ok(calls.some(call => call.method === 'delivery.ack'
+    && call.params.deliveryID === 'del-good'
+    && call.params.state === 'consumed'))
+  assert.equal(errors.length, 1)
+  assert.match(errors[0], /del-bad/)
+  assert.match(errors[0], /failed ack also failed/)
+  assert.match(errors[0], /runtime gone/)
+})
+
+test('a failed failed-ack logs to stderr when no onError hook is given', async () => {
+  const chunks = []
+  const originalWrite = process.stderr.write
+  process.stderr.write = chunk => { chunks.push(String(chunk)); return true }
+  try {
+    const rpc = async (method, params) => {
+      if (method === 'delivery.poll') return [{ id: 'del-stderr', payload: 'hello' }]
+      if (method === 'delivery.ack' && params.state === 'failed') throw new Error('runtime gone')
+      return { ok: true }
+    }
+    const agent = { followup: () => { throw new Error('agent busy') } }
+    assert.equal(await handleDeliveryPoll(agent, 'conv-stderr', rpc), true)
+  } finally {
+    process.stderr.write = originalWrite
+  }
+  assert.equal(chunks.length, 1)
+  assert.match(chunks[0], /dsh-plugin-pharos-runtime: delivery del-stderr/)
+  assert.match(chunks[0], /runtime gone/)
+})
+
 test('an archived session is acked failed with detail and never followed up', async () => {
   const calls = []
   const agent = fakeAgent(calls)

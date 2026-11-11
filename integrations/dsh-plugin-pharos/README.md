@@ -22,12 +22,16 @@ it does not claim that an assistant turn completed.
    render as `[Pharos Thread Message from <sender>]\n<body>`; anything else is
    injected verbatim.
 4. ack `consumed` only after the durable inbox accepted the message. If
-   `followup` throws (sync or async), the delivery is acked `failed` with the
-   error detail instead. An archived session is acked `failed` without a
-   followup.
+   `followup` throws (sync or async), or the `consumed` ack itself fails after a
+   successful followup, the delivery is acked `failed` with a truthful detail
+   instead, so it never strands at `injected` (the runtime only re-polls
+   queued/accepted). A lost `failed` ack is logged and does not abort the poll.
+   An archived session is acked `failed` without a followup.
 
 The loop is exported as `handleDeliveryPoll(agent, binding, rpc, options)` so it
-can be tested with a fake agent and RPC shim. `__testing` exposes the helpers.
+can be tested with a fake agent and RPC shim. `options.onError(message)` receives
+last-resort `failed`-ack errors (default: stderr). `__testing` exposes the
+helpers.
 
 ## Driver capabilities
 
