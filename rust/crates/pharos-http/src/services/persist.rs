@@ -284,6 +284,104 @@ fn sha256(input: &[u8]) -> [u8; 32] {
     digest
 }
 
+// ---------------------------------------------------------------------------
+// base64 (dependency-free, strict standard alphabet with padding)
+// ---------------------------------------------------------------------------
+
+fn base64_value(byte: u8) -> Result<u8, String> {
+    match byte {
+        b'A'..=b'Z' => Ok(byte - b'A'),
+        b'a'..=b'z' => Ok(byte - b'a' + 26),
+        b'0'..=b'9' => Ok(byte - b'0' + 52),
+        b'+' => Ok(62),
+        b'/' => Ok(63),
+        _ => Err(format!(
+            "invalid character (byte 0x{byte:02x}); expected A-Z, a-z, 0-9, +, / or '='"
+        )),
+    }
+}
+
+/// Decode strict standard base64 (`A-Za-z0-9+/`, `=` padding, no whitespace).
+///
+/// Empty input decodes to empty bytes. Malformed input (wrong length, padding
+/// in the middle, non-alphabet characters) is an error: callers must answer
+/// `400 invalidRequest` instead of storing silently truncated bytes. The
+/// decoded size limit is the caller's responsibility (attachments 10 MiB,
+/// avatars 512 KiB).
+pub fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
+    let bytes = input.as_bytes();
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    if bytes.len() % 4 != 0 {
+        return Err("length must be a multiple of 4".to_string());
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    let total = bytes.len() / 4;
+    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+        let last = index + 1 == total;
+        if !last && chunk.contains(&b'=') {
+            return Err("padding before the final quartet".to_string());
+        }
+        match chunk {
+            [c0, c1, b'=', b'='] => {
+                let value0 = base64_value(*c0)?;
+                let value1 = base64_value(*c1)?;
+                out.push((value0 << 2) | (value1 >> 4));
+            }
+            [c0, c1, c2, b'='] => {
+                let value0 = base64_value(*c0)?;
+                let value1 = base64_value(*c1)?;
+                let value2 = base64_value(*c2)?;
+                out.push((value0 << 2) | (value1 >> 4));
+                out.push((value1 << 4) | (value2 >> 2));
+            }
+            [b'=', ..] => return Err("leading padding".to_string()),
+            [c0, c1, c2, c3] => {
+                let value0 = base64_value(*c0)?;
+                let value1 = base64_value(*c1)?;
+                let value2 = base64_value(*c2)?;
+                let value3 = base64_value(*c3)?;
+                out.push((value0 << 2) | (value1 >> 4));
+                out.push((value1 << 4) | (value2 >> 2));
+                out.push((value2 << 6) | value3);
+            }
+            _ => unreachable!("chunks_exact(4) always yields four bytes"),
+        }
+    }
+    Ok(out)
+}
+
+/// Encode bytes as standard padded base64 (tests and future clients).
+pub fn encode_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        match chunk {
+            [b0, b1, b2] => {
+                out.push(ALPHABET[(b0 >> 2) as usize] as char);
+                out.push(ALPHABET[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+                out.push(ALPHABET[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+                out.push(ALPHABET[(b2 & 0x3f) as usize] as char);
+            }
+            [b0, b1] => {
+                out.push(ALPHABET[(b0 >> 2) as usize] as char);
+                out.push(ALPHABET[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+                out.push(ALPHABET[((b1 & 0x0f) << 2) as usize] as char);
+                out.push('=');
+            }
+            [b0] => {
+                out.push(ALPHABET[(b0 >> 2) as usize] as char);
+                out.push(ALPHABET[((b0 & 0x03) << 4) as usize] as char);
+                out.push('=');
+                out.push('=');
+            }
+            _ => unreachable!("chunks(3) yields 1..=3 bytes"),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,6 +478,48 @@ mod tests {
             sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
         );
+    }
+
+    #[test]
+    fn base64_round_trips_known_vectors() {
+        for (raw, encoded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(encode_base64(raw.as_bytes()), encoded);
+            assert_eq!(decode_base64(encoded).expect("decode"), raw.as_bytes());
+        }
+        assert_eq!(
+            decode_base64("aGVsbG8sIHdvcmxkIQ==").expect("hello"),
+            b"hello, world!".to_vec()
+        );
+        assert_eq!(decode_base64("AAEC").expect("bytes"), vec![0u8, 1, 2]);
+    }
+
+    #[test]
+    fn base64_rejects_malformed_input() {
+        for bad in [
+            "a",
+            "ab",
+            "abc",
+            "!!!!",
+            "aGVsbG8",
+            "aGVsbG8==",
+            "ab=c",
+            "YWJj\n",
+            "aG=sbG8=",
+            "====",
+        ] {
+            assert!(
+                decode_base64(bad).is_err(),
+                "{bad:?} must be rejected as invalid base64"
+            );
+        }
     }
 
     #[test]
