@@ -75,13 +75,15 @@ pub fn final_answer_text(items: &[Value]) -> Option<String> {
 
 /// Reply text for a turn: prefer the `final_answer` agent message, else fall
 /// back to the last non-empty `agentMessage` (older Codex versions omitted
-/// `phase`). Never joins multiple messages.
+/// `phase`). Explicitly `commentary` messages are never treated as the reply,
+/// and multiple messages are never joined.
 pub fn assistant_reply_text(items: &[Value]) -> Option<String> {
     final_answer_text(items).or_else(|| {
         items
             .iter()
             .rev()
             .filter(|item| item.get("type").and_then(Value::as_str) == Some("agentMessage"))
+            .filter(|item| item.get("phase").and_then(Value::as_str) != Some("commentary"))
             .filter_map(|item| item.get("text").and_then(Value::as_str))
             .find(|text| !text.trim().is_empty())
             .map(str::to_owned)
@@ -350,6 +352,12 @@ mod tests {
             json!({"type": "agentMessage", "text": "final", "phase": "final_answer"}),
         ];
         assert_eq!(assistant_reply_text(&mixed).as_deref(), Some("final"));
+        // Explicit commentary is never the reply, even for legacy fallback.
+        let commentary_only = vec![
+            json!({"type": "agentMessage", "text": "working on it", "phase": "commentary"}),
+            json!({"type": "userMessage", "text": "hi"}),
+        ];
+        assert_eq!(assistant_reply_text(&commentary_only), None);
         assert_eq!(assistant_reply_text(&[]), None);
     }
 }

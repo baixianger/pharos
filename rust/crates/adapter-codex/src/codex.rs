@@ -61,6 +61,20 @@ impl CodexSessionAdapter {
         })
     }
 
+    /// Build an adapter over an arbitrary transport (recorded/fake in tests).
+    pub fn from_transport(transport: CodexTransport) -> Self {
+        Self {
+            transport,
+            sessions: HashMap::new(),
+            active_turns: HashMap::new(),
+        }
+    }
+
+    /// Underlying transport (test assertions only; no live I/O on `Recorded`).
+    pub fn transport(&self) -> &CodexTransport {
+        &self.transport
+    }
+
     pub fn raw_request(
         &mut self,
         id: Value,
@@ -100,19 +114,11 @@ impl CodexSessionAdapter {
                 let items = turn
                     .get("items")
                     .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                let assistant_text = items
-                    .iter()
-                    .filter_map(|item| {
-                        if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
-                            item.get("text").and_then(Value::as_str).map(str::to_owned)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                // Only the final answer counts as the reply: never join every
+                // agentMessage (that leaks streamed commentary into the reply).
+                let assistant_text = crate::reply::assistant_reply_text(items).unwrap_or_default();
                 let vendor_error = turn.get("error").and_then(extract_vendor_error);
                 Some(TurnOutcome {
                     turn_id,

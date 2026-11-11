@@ -21,4 +21,7 @@ pub use session::{
     InterruptOutcome, PromptMode, SessionAdapter, StartSessionRequest, StartedSession, StartedTurn,
     TurnOutcome, TurnStatus,
 };
-pub use transport::{AppServerTransport, CodexTransport, DaemonProxyAppServer, StdioAppServer};
+pub use transport::{
+    AppServerTransport, CodexTransport, DaemonProxyAppServer, RecordedAppServer, RecordedRequest,
+    StdioAppServer,
+};

@@ -1,7 +1,9 @@
 mod daemon_proxy;
+mod recorded;
 mod stdio;
 
 pub use daemon_proxy::DaemonProxyAppServer;
+pub use recorded::{RecordedAppServer, RecordedRequest};
 pub use stdio::StdioAppServer;
 
 use crate::error::AdapterError;
@@ -21,6 +23,22 @@ pub trait AppServerTransport: Send {
 pub enum CodexTransport {
     Stdio(StdioAppServer),
     DaemonProxy(DaemonProxyAppServer),
+    /// Scripted in-memory transport for recorded-event tests (no live service).
+    Recorded(RecordedAppServer),
+}
+
+impl CodexTransport {
+    pub fn recorded(server: RecordedAppServer) -> Self {
+        Self::Recorded(server)
+    }
+
+    /// Scripted transport accessor for assertions in tests.
+    pub fn as_recorded(&self) -> Option<&RecordedAppServer> {
+        match self {
+            Self::Recorded(server) => Some(server),
+            _ => None,
+        }
+    }
 }
 
 impl AppServerTransport for CodexTransport {
@@ -28,6 +46,7 @@ impl AppServerTransport for CodexTransport {
         match self {
             Self::Stdio(inner) => inner.request(id, method, params),
             Self::DaemonProxy(inner) => inner.request(id, method, params),
+            Self::Recorded(inner) => inner.request(id, method, params),
         }
     }
 
@@ -35,6 +54,7 @@ impl AppServerTransport for CodexTransport {
         match self {
             Self::Stdio(inner) => inner.take_notifications(),
             Self::DaemonProxy(inner) => inner.take_notifications(),
+            Self::Recorded(inner) => inner.take_notifications(),
         }
     }
 
@@ -42,6 +62,7 @@ impl AppServerTransport for CodexTransport {
         match self {
             Self::Stdio(inner) => inner.close(),
             Self::DaemonProxy(inner) => inner.close(),
+            Self::Recorded(inner) => inner.close(),
         }
     }
 }
