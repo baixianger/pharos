@@ -4,7 +4,7 @@ summary: 2026-11-11：三个已验收 Rust 流（hitl-persist / web-real-session
 # 活跃任务交接
 
 **STATUS: WEBAPI-DONE — dac9f1447d7edb674c54bccae94a6bf1252307ac**
-**分支/worktree**：`rust/web-endpoints`，worktree `/workspace/pharos-rust/2026-11-11_dsh-wave2/wt/web-endpoints`，base `integrate/mesh2-into-main @ 54c6ff6`（= `rust/integrate-dsh3`，已含 hitl-persist / web-real-sessions / thread-autoreply 三流）。共 26 个提交，未 push、未 force/rebase/amend、未改写历史；只改本 worktree，未触碰其它 worktree（cross-host-sessions / live-e2e 保持原 tip）与主 checkout。团队：Lead（契约、pharos-hitl 决定模型、SessionService 能力扩展、router/handlers/openapi、HTTP 集成测试、门禁、真实二进制 smoke、handoff）、teammate `server-impl`（持久化 stores、fake/real 能力实现、pharos-web 双模式接线、真实 HTTP e2e 测试）、teammate `frontend-impl`（webui+WebCanvas 接线、node 测试、独立复核）。
+**分支/worktree**：`rust/web-endpoints`，worktree `/workspace/pharos-rust/2026-11-11_dsh-wave2/wt/web-endpoints`，base `integrate/mesh2-into-main @ 54c6ff6`（= `rust/integrate-dsh3`，已含 hitl-persist / web-real-sessions / thread-autoreply 三流）。本 handoff 提交之前共 26 个提交，未 push、未 force/rebase/amend、未改写历史；只改本 worktree，未触碰其它 worktree（cross-host-sessions / live-e2e 保持原 tip）与主 checkout。团队：Lead（契约、pharos-hitl 决定模型、SessionService 能力扩展、router/handlers/openapi、HTTP 集成测试、门禁、真实二进制 smoke、handoff）、teammate `server-impl`（持久化 stores、fake/real 能力实现、pharos-web 双模式接线、真实 HTTP e2e 测试）、teammate `frontend-impl`（webui+WebCanvas 接线、node 测试、独立复核）。
 
 **做了什么（补齐 docs/2026-11-11_wip-salvage-gaps.md 的 "Unavailable workspace operations"）**
 - **统一契约**：新增 `docs/2026-11-11_web-endpoints-api.md`（路由/JSON 形状/持久化文件/错误码/测试矩阵）；`docs/2026-11-11_wip-salvage-gaps.md` 增加"Update 2026-11-11 — web workspace endpoints"段，声明上述不可用项已被本流取代。所有新路由都挂在 `api_router`（`app_router_with_token` 的 bearer 层覆盖全部 API，`/health` 与静态资源仍免鉴权），并补进 `/openapi.json`。
