@@ -278,7 +278,11 @@ mod tests {
         (status, body_json(response).await)
     }
 
-    async fn post(app: &Router, uri: &str, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+    async fn post(
+        app: &Router,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
         let response = app
             .clone()
             .oneshot(
@@ -481,17 +485,21 @@ mod tests {
             FileApprovalService::open(&store_path).expect("reopen"),
         ));
         assert_eq!(
-            restarted.approvals.get("a1").await.expect("get").map(|a| a.state),
+            restarted
+                .approvals
+                .get("a1")
+                .await
+                .expect("get")
+                .map(|a| a.state),
             Some("resolved".to_string())
         );
-        assert_eq!(
+        assert!(
             restarted
                 .approvals
                 .resolve("a1", ApprovalDecision::Rejected)
                 .await
                 .expect("replay")
-                .already_resolved,
-            true
+                .already_resolved
         );
     }
 

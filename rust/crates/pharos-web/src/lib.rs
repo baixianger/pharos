@@ -68,10 +68,10 @@ pub fn resolve_data_dir(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
     if let Some(path) = explicit {
         return Ok(path);
     }
-    if let Ok(from_env) = std::env::var("PHAROS_DATA_DIR") {
-        if !from_env.trim().is_empty() {
-            return Ok(PathBuf::from(from_env));
-        }
+    if let Ok(from_env) = std::env::var("PHAROS_DATA_DIR")
+        && !from_env.trim().is_empty()
+    {
+        return Ok(PathBuf::from(from_env));
     }
     let home = std::env::var("HOME")
         .map_err(|_| "cannot resolve data dir: HOME unset (pass --data-dir or PHAROS_DATA_DIR)")?;
@@ -105,8 +105,12 @@ pub fn persistent_app_state(data_dir: &Path) -> Result<AppState, String> {
     std::fs::create_dir_all(data_dir)
         .map_err(|err| format!("create data dir {}: {err}", data_dir.display()))?;
     let store_path = data_dir.join(PENDING_APPROVALS_FILE);
-    let approvals = FileApprovalService::open(&store_path)
-        .map_err(|err| format!("open pending approval store {}: {err}", store_path.display()))?;
+    let approvals = FileApprovalService::open(&store_path).map_err(|err| {
+        format!(
+            "open pending approval store {}: {err}",
+            store_path.display()
+        )
+    })?;
     info!(
         store = %store_path.display(),
         "pending approvals persisted to disk"

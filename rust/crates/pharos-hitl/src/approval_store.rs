@@ -161,10 +161,9 @@ fn format_timestamp(ts: OffsetDateTime) -> Result<String, ApprovalStoreError> {
 }
 
 fn parse_timestamp(raw: &str) -> Result<OffsetDateTime, ApprovalStoreError> {
-    OffsetDateTime::parse(raw, &Rfc3339)
-        .map_err(|err| ApprovalStoreError::Corrupt {
-            detail: format!("bad timestamp {raw:?}: {err}"),
-        })
+    OffsetDateTime::parse(raw, &Rfc3339).map_err(|err| ApprovalStoreError::Corrupt {
+        detail: format!("bad timestamp {raw:?}: {err}"),
+    })
 }
 
 /// Pure in-memory approval state machine (no IO). Shared by the file store and
@@ -207,7 +206,10 @@ impl<C: WallClock> ApprovalRegistry<C> {
     }
 
     /// Store (or refresh) a pending approval announced by an adapter/session.
-    pub fn record(&mut self, request: &ApprovalRequest) -> Result<RecordOutcome, ApprovalStoreError> {
+    pub fn record(
+        &mut self,
+        request: &ApprovalRequest,
+    ) -> Result<RecordOutcome, ApprovalStoreError> {
         if request.approval_id.trim().is_empty() {
             return Err(ApprovalStoreError::Invalid(
                 "approval id must not be empty".into(),
@@ -338,7 +340,9 @@ impl<C: WallClock> ApprovalRegistry<C> {
             return Ok(ResolveOutcome::NotFound);
         };
         match record.state {
-            StoredApprovalState::Resolved => return Ok(ResolveOutcome::AlreadyResolved(record.clone())),
+            StoredApprovalState::Resolved => {
+                return Ok(ResolveOutcome::AlreadyResolved(record.clone()));
+            }
             StoredApprovalState::Expired => return Ok(ResolveOutcome::Expired(record.clone())),
             StoredApprovalState::Pending => {}
         }
@@ -430,10 +434,7 @@ impl<C: WallClock> PendingApprovalStore<C> {
         Ok(items)
     }
 
-    pub fn get(
-        &self,
-        approval_id: &str,
-    ) -> Result<Option<StoredApproval>, ApprovalStoreError> {
+    pub fn get(&self, approval_id: &str) -> Result<Option<StoredApproval>, ApprovalStoreError> {
         let mut registry = self.lock();
         let report = registry.prune()?;
         let record = registry.get(approval_id)?;
@@ -482,9 +483,10 @@ impl<C: WallClock> PendingApprovalStore<C> {
             version: APPROVAL_STORE_VERSION,
             approvals: registry.entries(),
         };
-        let bytes = serde_json::to_vec_pretty(&file).map_err(|err| ApprovalStoreError::Corrupt {
-            detail: format!("serialize approval store: {err}"),
-        })?;
+        let bytes =
+            serde_json::to_vec_pretty(&file).map_err(|err| ApprovalStoreError::Corrupt {
+                detail: format!("serialize approval store: {err}"),
+            })?;
         if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
             fs::create_dir_all(parent).map_err(|source| ApprovalStoreError::Io {
                 path: parent.to_path_buf(),
@@ -520,9 +522,10 @@ fn load_entries(path: &Path) -> Result<Vec<StoredApproval>, ApprovalStoreError> 
         // Empty file (e.g. interrupted manual edit) — no records, not corrupt.
         return Ok(Vec::new());
     }
-    let file: StoreFile = serde_json::from_slice(&bytes).map_err(|err| ApprovalStoreError::Corrupt {
-        detail: format!("{}: {err}", path.display()),
-    })?;
+    let file: StoreFile =
+        serde_json::from_slice(&bytes).map_err(|err| ApprovalStoreError::Corrupt {
+            detail: format!("{}: {err}", path.display()),
+        })?;
     if file.version != APPROVAL_STORE_VERSION {
         return Err(ApprovalStoreError::Corrupt {
             detail: format!(
