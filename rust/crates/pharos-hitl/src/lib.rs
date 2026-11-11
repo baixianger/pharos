@@ -9,12 +9,18 @@
 //! Interface issue: `pharos-codex-adapter` stdio transport currently auto-accepts
 //! server approval requests and hardcodes `approvalPolicy=never` — see handoff.
 
+mod approval_store;
 mod channel;
 mod codex_hitl;
 mod error;
 mod pending;
 mod webhook;
 
+pub use approval_store::{
+    APPROVAL_STORE_VERSION, ApprovalRegistry, ApprovalStoreError, PendingApprovalStore, PruneReport,
+    RecordOutcome, RESOLVED_RETENTION_SECS, ResolveOutcome, StoredApproval, StoredApprovalState,
+    SystemWallClock, WallClock,
+};
 pub use channel::{
     HitlRequest, default_human_requests_dir, msg_test_root, publish_hitl_request, request_markdown,
     write_done_md, write_hitl_request,
