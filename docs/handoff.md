@@ -7,7 +7,7 @@ summary: 2026-11-11：Batch 3 S6 swift-client 已合入 rust/integrate-b3。
 **STATUS: RUST-B3-MERGED — 648c22892a52a27812de44f75b306d5fd23b4234**
 **Batch 3 merge（merge captain）**：worktree `~/personal/pharos-wt/_merge-b3` 分支 `rust/integrate-b3`（base `9b5434f` = B2 tip）。`--no-ff` 合入 `rust/swift-client` @ `715c687`。保留 wiring-local：`Package.swift` `PharosClientKitTests` + `ContentView` backend flag。Captain 另提交：`webui/dsh-stream.js` ← WebCanvas fetch 版。Gates：`cargo fmt --check` / `clippy -D warnings` / `test --workspace` 绿；`swift build --target PharosClientKitTests` 绿；`ArchitectureBoundaryClientKitTests` 3/3 绿。**Full `Pharos` app target still blocked** by missing committed Mesh files (`HostSessionSchema.swift` / MeshCore sessionRPC) — not copied from dirty main checkout. 未触碰 `integrate/mesh2-into-main` WIP；未做 Phase E；未 push。
 
-**Branch tip:** `rust/integrate-b3` @ `6e201a80ff9cf8cadbc5072d12b2de340892a773` (includes webui sync + this handoff after commit).
+**Branch tip:** `rust/integrate-b3` @ `725babd079c361e0b918830facd4c41ea97e2d07` (includes handoff).
 
 **STATUS: RUST-B2-MERGED — 144cab6e3485d47bca45c2514a388b7167e03b71**
 **Branch tip:** `rust/integrate-b2` (includes handoff/fmt; run `git rev-parse rust/integrate-b2`).
