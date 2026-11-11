@@ -5,6 +5,20 @@ use pharos_api::{
     PharosApiError, ReplyThreadMessageRequest, ReplyThreadMessageResponse,
     SendThreadMessageRequest, ThreadMessage, ThreadSummary,
 };
+use serde::{Deserialize, Serialize};
+
+/// `POST /api/v1/threads` body — create (or return) a durable Thread.
+///
+/// `thread_id` doubles as the Thread display title (PHASE0 `rooms.name`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateThreadRequest {
+    pub thread_id: String,
+    /// Members to join immediately (e.g. `["human", "grokbot"]`). When empty,
+    /// the server joins its default sender identity only.
+    #[serde(default)]
+    pub member_ids: Vec<String>,
+}
 
 /// S1 thread read/reply surface used by HTTP handlers.
 #[async_trait]
@@ -26,4 +40,17 @@ pub trait ThreadService: Send + Sync {
         thread_id: &str,
         request: ReplyThreadMessageRequest,
     ) -> Result<ReplyThreadMessageResponse, PharosApiError>;
+
+    /// Create a durable Thread (idempotent: an existing id is returned as-is).
+    ///
+    /// Default: services that cannot create threads must report an explicit
+    /// error rather than pretend success.
+    async fn create_thread(
+        &self,
+        _request: CreateThreadRequest,
+    ) -> Result<ThreadSummary, PharosApiError> {
+        Err(PharosApiError::OperationFailed {
+            message: "thread creation is not supported by this service".into(),
+        })
+    }
 }

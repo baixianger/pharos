@@ -17,6 +17,8 @@ use pharos_api::{
 use pharos_protocol::ThreadReceiptState;
 use tokio::sync::RwLock;
 
+use super::session::CreateSessionRequest;
+use super::thread::CreateThreadRequest;
 use super::{EventBus, SessionService, ThreadService};
 
 const FAKE_THREAD_ID: &str = "fake-thread-1";
@@ -186,6 +188,36 @@ impl ThreadService for FakeThreadService {
             reply_id,
             reply_to,
         })
+    }
+
+    async fn create_thread(
+        &self,
+        request: CreateThreadRequest,
+    ) -> Result<ThreadSummary, PharosApiError> {
+        let thread_id = request.thread_id.trim();
+        if thread_id.is_empty() {
+            return Err(PharosApiError::InvalidRequest {
+                message: "threadId must not be empty".into(),
+            });
+        }
+        let mut guard = self.inner.write().await;
+        if let Some(existing) = guard.threads.get(thread_id) {
+            return Ok(existing.clone());
+        }
+        let summary = ThreadSummary {
+            thread_id: thread_id.to_string(),
+            title: thread_id.to_string(),
+            member_ids: if request.member_ids.is_empty() {
+                vec!["human".into(), "grokbot".into()]
+            } else {
+                request.member_ids
+            },
+            unread_count: 0,
+            last_activity_at: "2026-11-10T00:00:00Z".into(),
+        };
+        guard.threads.insert(thread_id.to_string(), summary.clone());
+        guard.messages.entry(thread_id.to_string()).or_default();
+        Ok(summary)
     }
 }
 
@@ -389,6 +421,42 @@ impl SessionService for FakeSessionService {
                 unavailable_agents: vec![],
             },
         })
+    }
+
+    async fn create_session(
+        &self,
+        request: CreateSessionRequest,
+    ) -> Result<SessionSummary, PharosApiError> {
+        if request.workspace_path.trim().is_empty() {
+            return Err(PharosApiError::InvalidRequest {
+                message: "workspacePath must not be empty".into(),
+            });
+        }
+        let mut guard = self.inner.write().await;
+        let session_id = format!("fake-session-{}", guard.sessions.len() + 1);
+        let summary = SessionSummary {
+            session_id: session_id.clone(),
+            machine_id: "fake-host".into(),
+            agent_type: "fake".into(),
+            workspace_path: request.workspace_path,
+            title: format!("Fake Session {}", guard.sessions.len() + 1),
+            status: SessionActivityStatus::Idle,
+            latest_message_preview: None,
+            updated_at: "2026-11-10T00:00:00Z".into(),
+            avatar_seed: "fake".into(),
+            inventory_stale: Some(false),
+            connection_route: Some("fake".into()),
+        };
+        guard.sessions.insert(session_id.clone(), summary.clone());
+        guard.history.entry(session_id.clone()).or_default();
+        guard.progress.insert(
+            session_id,
+            SessionProgress {
+                goal: None,
+                todos: Vec::new(),
+            },
+        );
+        Ok(summary)
     }
 }
 
