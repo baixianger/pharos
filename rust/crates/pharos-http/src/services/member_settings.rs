@@ -221,13 +221,6 @@ fn validate_avatar_upload(content_type: &str, bytes: &[u8]) -> Result<(), StoreE
     Ok(())
 }
 
-fn avatar_extension(content_type: &str) -> &'static str {
-    match content_type {
-        "image/jpeg" => "jpg",
-        _ => "png",
-    }
-}
-
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()

@@ -40,7 +40,7 @@ pub use member_settings::{
     MEMBER_SETTINGS_FILE, MemberAvatarView, MemberSettingsPatch, MemberSettingsService,
     MemberSettingsView, StoredAvatar,
 };
-pub use persist::StoreError;
+pub use persist::{StoreError, decode_base64, encode_base64};
 pub use real::{RealOptions, RealServiceError, SessionAdapterChoice, build_real_app_state};
 pub use real_session::RealSessionService;
 pub use real_thread::RealThreadService;
