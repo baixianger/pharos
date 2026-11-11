@@ -200,7 +200,10 @@
         mode: typeof config?.mode === 'string' ? config.mode : '',
         models: Array.isArray(config?.models) ? config.models : []
       } : null,
-      sessionConfiguration: tab === 'sessions' ? sessionControls(config) : [],
+      // Only a selected Session has configuration. With an empty Session list
+      // there is nothing to report — an "unavailable" notice there would be a
+      // false alarm, not an honest status.
+      sessionConfiguration: tab === 'sessions' && selection ? sessionControls(config) : [],
       supportsTextAttachments: tab === 'sessions' && config?.capabilities?.attachments === true,
       capabilities: tab === 'sessions' ? (config?.capabilities ?? {}) : {},
       attachments: tab === 'sessions' ? attachments : [],
