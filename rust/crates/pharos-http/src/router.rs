@@ -4,14 +4,16 @@ use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use pharos_api::{
-    HealthResponse, PharosApiError, ReplyThreadMessageRequest, ResolveApprovalRequest,
-    SendSessionMessageRequest, SendThreadMessageRequest, SteerSessionRequest, openapi_stub_json,
-    routes,
+    HealthResponse, PharosApiError, ReplyThreadMessageRequest, SendSessionMessageRequest,
+    SendThreadMessageRequest, SteerSessionRequest, openapi_stub_json, routes,
 };
 
 use crate::approvals::{APPROVALS_ROUTE, list_approvals};
-use crate::error::ApiResult;
-use crate::services::{CreateSessionRequest, CreateThreadRequest, ResolveApprovalResponse};
+use crate::error::{ApiError, ApiResult};
+use crate::services::{
+    CreateSessionRequest, CreateThreadRequest, ExtendedResolveApprovalResponse,
+    ResolveApprovalDecisionRequest,
+};
 use crate::state::AppState;
 use crate::ws::events_ws_handler;
 
@@ -127,8 +129,8 @@ async fn steer_session(
 async fn resolve_approval(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(body): Json<ResolveApprovalRequest>,
-) -> ApiResult<Json<ResolveApprovalResponse>> {
+    Json(body): Json<ResolveApprovalDecisionRequest>,
+) -> ApiResult<Json<ExtendedResolveApprovalResponse>> {
     // The durable snapshot is authoritative: an unknown approval id is not
     // silently "resolved", it is reported as not found.
     let Some(approval) = state.approvals.get(&body.approval_id).await? else {
@@ -153,13 +155,29 @@ async fn resolve_approval(
         .into());
     }
     let approval_id = body.approval_id.clone();
-    let response = state.approvals.resolve(&approval_id, body.decision).await?;
+    let response = state
+        .approvals
+        .resolve_with(
+            &approval_id,
+            body.decision,
+            body.questionnaire_answers.clone(),
+        )
+        .await?;
     if !response.already_resolved {
         // Keep the existing session/adapter decision path; the durable store
         // already recorded the decision so replays are exact no-ops. If the
         // dispatch fails, undo the durable decision: a failed dispatch must not
         // consume the approval silently (retry must be possible).
-        if let Err(error) = state.sessions.resolve_approval(&id, body).await {
+        if let Err(error) = state
+            .sessions
+            .resolve_approval_decision(
+                &id,
+                &approval_id,
+                body.decision,
+                body.questionnaire_answers.as_deref(),
+            )
+            .await
+        {
             if let Err(revert_error) = state.approvals.revert_decision(&approval_id).await {
                 tracing::error!(
                     approval_id = %approval_id,
@@ -167,7 +185,7 @@ async fn resolve_approval(
                     "failed to revert approval decision after session dispatch error"
                 );
             }
-            return Err(error.into());
+            return Err(ApiError::from_capability_error(error));
         }
     }
     Ok(Json(response))
