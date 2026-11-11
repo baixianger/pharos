@@ -23,12 +23,17 @@ test('web transport reads Rust data and makes unavailable operations visible', a
     '/api/v1/sessions/s/messages': { turnId: 't' },
   };
   const window = { pharosWorkspace: { update: value => snapshots.push(value) } };
-  class FakeWebSocket { constructor() {} }
+  let socket;
+  class FakeWebSocket { constructor() { socket = this; } }
   const fetch = async (path, options) => { calls.push({ path, options }); return { ok: true, json: async () => data[path] }; };
   vm.runInNewContext(script, { window, fetch, document: { getElementById: () => ({}) }, matchMedia: () => ({ matches: false }), location: { protocol: 'http:', host: 'localhost' }, WebSocket: FakeWebSocket, encodeURIComponent });
   window.pharosTransport.start();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(snapshots.at(-1).selection, 's');
+  socket.onmessage({ data: JSON.stringify({ eventType: 'approvalRequired', approval: { approvalId: 'a', sessionId: 's', availableChoices: ['allowedOnce'] } }) });
+  assert.equal(snapshots.at(-1).approval.availableChoices[0], 'allowed_once');
+  socket.onmessage({ data: JSON.stringify({ eventType: 'approvalWithdrawn', approvalId: 'a' }) });
+  assert.equal(snapshots.at(-1).approval, null);
   await window.pharosTransport.dispatch('send', { id: 's', tab: 'sessions', text: 'hello', requestID: 'r', files: [] });
   assert.equal(JSON.parse(calls.find(c => c.path.endsWith('/messages')).options.body).requestId, 'r');
   await window.pharosTransport.dispatch('sessionConfig', {});

@@ -49,9 +49,9 @@
   async function dispatch(action, payload = {}) {
     if (bridge) { bridge.postMessage({ action, payload }); return; }
     try {
-      if (action === 'selectTab') { state.error = null; state.tab = payload.tab; state.selection = null; await refresh(); }
-      else if (action === 'selectRow') { state.error = null; state.selection = payload.id; await refresh(); }
-      else if (action === 'openProjectSession') { state.tab = 'sessions'; state.selection = payload.sessionId; await refresh(); }
+      if (action === 'selectTab') { state.error = null; state.approval = null; state.tab = payload.tab; state.selection = null; await refresh(); }
+      else if (action === 'selectRow') { state.error = null; state.approval = null; state.selection = payload.id; await refresh(); }
+      else if (action === 'openProjectSession') { state.approval = null; state.tab = 'sessions'; state.selection = payload.sessionId; await refresh(); }
       else if (action === 'dismissError') { state.error = null; publish(); }
       else if (action === 'send') {
         if (payload.files?.length) unavailable('Session attachments');
