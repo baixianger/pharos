@@ -12,6 +12,10 @@ pharos-protocol = { workspace = true }
 pharos-codex-adapter = { path = "../adapter-codex" }
 pharos-goals = { path = "../pharos-goals" }
 pharos-hitl = { path = "../pharos-hitl" }
+# Cross-host session bridge: callee-side HostSessionHandler + caller-side
+# RemoteSessionSource both live in this crate.
+pharos-replica = { path = "../pharos-replica" }
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = "2"
