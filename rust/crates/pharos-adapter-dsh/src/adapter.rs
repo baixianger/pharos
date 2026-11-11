@@ -15,6 +15,12 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Runtime driver capabilities the DSH plugin registers so the Host Runtime's
+/// delivery liveness/reply inspection (`delivery.inspect-members`,
+/// `delivery.inspect-dsh-bindings`) reports the DSH session as able to receive
+/// and post the correlated reply.
+pub const RUNTIME_DRIVER_CAPABILITIES: &[&str] = &["delivery.poll", "mesh.reply-once-v1"];
+
 /// `~/personal/pharos-msg-test` root used by live gates.
 pub fn msg_test_root() -> PathBuf {
     let home = std::env::var_os("HOME")
@@ -117,13 +123,19 @@ impl SessionAdapter for DshSessionAdapter {
         AdapterManifest {
             id: "pharos.dsh".into(),
             kind: AdapterKind::Dsh,
-            capabilities: vec![
-                "delivery.poll".into(),
-                "session.list".into(),
-                "message.send".into(),
-                "session.observe".into(),
-                "turn.interrupt".into(),
-            ],
+            capabilities: RUNTIME_DRIVER_CAPABILITIES
+                .iter()
+                .map(|capability| (*capability).to_owned())
+                .chain(
+                    [
+                        "session.list",
+                        "message.send",
+                        "session.observe",
+                        "turn.interrupt",
+                    ]
+                    .map(str::to_owned),
+                )
+                .collect(),
         }
     }
 
@@ -353,5 +365,27 @@ mod tests {
     fn msg_test_root_ends_with_pharos_msg_test() {
         let root = msg_test_root();
         assert!(root.ends_with("pharos-msg-test"));
+    }
+
+    #[test]
+    fn runtime_contract_capabilities_cover_poll_and_correlated_reply() {
+        assert!(RUNTIME_DRIVER_CAPABILITIES.contains(&"delivery.poll"));
+        assert!(RUNTIME_DRIVER_CAPABILITIES.contains(&"mesh.reply-once-v1"));
+    }
+
+    #[test]
+    fn failure_results_never_fabricate_completion_or_assistant_text() {
+        // Thin honesty contract: without an observed successful turn the adapter
+        // reports Failed (never Completed) and no assistant text to relay.
+        let results = [
+            DeliveryDispatchResult::failed("d1", "dispatch unavailable"),
+            DeliveryDispatchResult::failed_turn("d1", "turn_1", "turn failed"),
+            DeliveryDispatchResult::interrupted("d1", "turn_2", "aborted"),
+        ];
+        for result in results {
+            assert_ne!(result.state, DeliveryState::Completed);
+            assert_eq!(result.state, DeliveryState::Failed);
+            assert_eq!(result.assistant_text, None);
+        }
     }
 }
