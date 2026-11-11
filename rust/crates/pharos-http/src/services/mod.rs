@@ -8,6 +8,7 @@
 //!   production backends.
 
 mod approval;
+mod bindings;
 mod event_bus;
 pub mod fake;
 mod persist;
