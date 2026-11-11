@@ -1,0 +1,71 @@
+Building for debugging...
+[Computing dependencies]
+[Using on-disk description]
+[4 / 103]
+[4 / 29] PharosLightTests-product
+[5 / 10] PharosTests-product
+[6 / 14]
+[7 / 14]
+[9 / 14] PharosTests-product
+/Users/baixianger/personal/pharos/Tests/PharosTests/MeshHostSessionRPCTests.swift:900:13: warning: initialization of immutable value 'miniID' was never used; consider replacing with assignment to '_' or removing it [#NoUsage]
+ 898 |             throw XCTSkip("Set PHAROS_REAL_PEER_RUNTIME_REVERSE_TEST=<mini-host-device-uuid>")
+ 899 |         }
+ 900 |         let miniID = MeshDeviceID(rawValue: miniUUID)
+     |             `- warning: initialization of immutable value 'miniID' was never used; consider replacing with assignment to '_' or removing it [#NoUsage]
+ 901 |         let replica = try MeshLocalReplica.openDefault(headless: true)
+ 902 |         guard let group = try replica.activeTrustGroup(),
+
+[#NoUsage]: <https://docs.swift.org/compiler/documentation/diagnostics/no-usage>
+[14 / 17] PharosTests-product
+[16 / 20] PharosTests-product
+[18 / 20] PharosTests-product
+Build complete! (5,08 secs)
+Test Suite 'Selected tests' started at 2026-11-10 14:08:35.712.
+Test Suite 'PharosTests.xctest' started at 2026-11-10 14:08:35.713.
+Test Suite 'MeshHostSessionRPCTests' started at 2026-11-10 14:08:35.713.
+Test Case '-[PharosTests.MeshHostSessionRPCTests testRealAirToMiniRuntimeSubmitReplyOnceWhenEnabled]' started.
+Test Case '-[PharosTests.MeshHostSessionRPCTests testRealAirToMiniRuntimeSubmitReplyOnceWhenEnabled]' passed (3.854 seconds).
+Test Suite 'MeshHostSessionRPCTests' passed at 2026-11-10 14:08:39.567.
+	 Executed 1 test, with 0 failures (0 unexpected) in 3.854 (3.854) seconds
+Test Suite 'PharosTests.xctest' passed at 2026-11-10 14:08:39.567.
+	 Executed 1 test, with 0 failures (0 unexpected) in 3.854 (3.854) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:08:39.567.
+	 Executed 1 test, with 0 failures (0 unexpected) in 3.854 (3.855) seconds
+XHOST air→mini Agy Session on mini: 3e0857bb-5da5-4f08-a3b2-c0b869534c40
+XHOST air→mini conversation=3d883884-8d53-4c29-bca0-420beb7f917a member=xhost-mini-0a8722f0
+XHOST air→mini room=xhost-mini-0a8722f0 message=D53ED50E-3115-474B-A829-B12A32AC2EB0
+XHOST air→mini Peer submit: {"jsonrpc":"2.0","id":"xhost-rev-0a8722f0","result":{"conversationID":"3d883884-8d53-4c29-bca0-420beb7f917a","delivery":{"attempts":0,"conversationID":"3d883884-8d53-4c29-bca0-420beb7f917a","createdAt":"2026-11-10T13:08:38.643102Z","detail":null,"id":"560ae050-b2b5-42dc-b6d5-e2fa62310600","idempotencyKey":"mesh:D53ED50E-3115-474B-A829-B12A32AC2EB0:xhost-mini-0a8722f0","nextAttemptAt":0.0,"payload":"{\"room\":\"xhost-mini-0a8722f0\",\"body\":\"@agent Reply exactly PHAROS_XHOST_MINI_DONE_0a8722f0. Do not use tools or access files. Prefix with host=xiang-mac-mini.\",\"messageID\":\"D53ED50E-3115-474B-A829-B12A32AC2EB0\",\"meshMessage\":{\"id\":\"D53ED50E-3115-474B-A829-B12A32AC2EB0\",\"from\":\"human\",\"targetMemberIDs\":[\"xhost-mini-0a8722f0\"],\"authorMemberID\":\"human@C0CEB328-B91A-4C25-8251-F3FE9F2481E8\",\"ts\":1794316118.2151031,\"to\":[\"agent\"],\"room\":\"xhost-mini-0a8722f0\",\"text\":\"@agent Reply exactly PHAROS_XHOST_MINI_DONE_0a8722f0. Do not use tools or access files. Prefix with host=xiang-mac-mini.\"},\"sender\":\"human\"}","replyState":null,"state":"queued","targetMemberId":"xhost-mini-0a8722f0","turnId":null,"updatedAt":"2026-11-10T13:08:38.643102Z"},"deliveryID":"560ae050-b2b5-42dc-b6d5-e2fa62310600","submitted":true}}
+XHOST air→mini delivery=560ae050-b2b5-42dc-b6d5-e2fa62310600 agy-bytes=31
+XHOST air→mini host-reply: ok reply-fdb7662c279fcfb71c7d8c77a94964178d8626e6c6d6daae571c7d70cfa1dd4a 
+XHOST air→mini air-history observes reply
+XHOST air→mini DONE mini=C0CEB328-B91A-4C25-8251-F3FE9F2481E8 room=xhost-mini-0a8722f0 message=D53ED50E-3115-474B-A829-B12A32AC2EB0 reply=reply-fdb7662c279fcfb71c7d8c77a94964178d8626e6c6d6daae571c7d70cfa1dd4a delivery=560ae050-b2b5-42dc-b6d5-e2fa62310600 marker=PHAROS_XHOST_MINI_DONE_0a8722f0
+Test Suite 'Selected tests' started at 2026-11-10 14:08:39.655.
+Test Suite 'PharosMeshProtocolTests.xctest' started at 2026-11-10 14:08:39.656.
+Test Suite 'PharosMeshProtocolTests.xctest' passed at 2026-11-10 14:08:39.656.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:08:39.656.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 14:08:39.721.
+Test Suite 'PharosMeshIrohTests.xctest' started at 2026-11-10 14:08:39.722.
+Test Suite 'PharosMeshIrohTests.xctest' passed at 2026-11-10 14:08:39.722.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:08:39.722.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 14:08:39.783.
+Test Suite 'PharosMeshIdentityTests.xctest' started at 2026-11-10 14:08:39.783.
+Test Suite 'PharosMeshIdentityTests.xctest' passed at 2026-11-10 14:08:39.783.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:08:39.784.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 14:08:39.846.
+Test Suite 'PharosMeshCoreTests.xctest' started at 2026-11-10 14:08:39.846.
+Test Suite 'PharosMeshCoreTests.xctest' passed at 2026-11-10 14:08:39.846.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:08:39.846.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 14:08:39.909.
+Test Suite 'PharosLightTests.xctest' started at 2026-11-10 14:08:39.910.
+Test Suite 'PharosLightTests.xctest' passed at 2026-11-10 14:08:39.910.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:08:39.910.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds

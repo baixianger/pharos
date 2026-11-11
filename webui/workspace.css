@@ -1,0 +1,141 @@
+/* Pharos controls and the macOS window host, layered over the reference rules. */
+html, body, #grok-ui-mockup { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+.symbol-bank { position: absolute; width: 0; height: 0; }
+#grok-ui-mockup { background: var(--gb-pane); }
+#grok-ui-mockup .gb-app { height: 100%; min-height: 0; }
+#grok-ui-mockup :is(.gb-sidebar, .gb-chat, .gb-details) { min-height: 0; }
+#grok-ui-mockup :is(.gb-transcript, .gb-bot-list, .gb-detail-content) { min-height: 0; overflow-y: auto; }
+#grok-ui-mockup .gb-composer-wrap { position: relative; }
+#grok-ui-mockup .gb-attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 12px; }
+#grok-ui-mockup .gb-attachments[hidden] { display: none; }
+#grok-ui-mockup .gb-attachment { border: 1px solid var(--gb-border, #ddd); border-radius: 8px; padding: 4px 8px; background: transparent; color: inherit; cursor: pointer; }
+#grok-ui-mockup .gb-attachment-error { padding: 4px 12px; color: #b24a40; font-size: 12px; }
+#grok-ui-mockup .dsh-stream { flex: 1; }
+#grok-ui-mockup .gb-window-drag { flex: 1; min-width: 72px; height: 34px; }
+#grok-ui-mockup button { cursor: default; }
+#grok-ui-mockup button:focus-visible { outline: 2px solid var(--gb-accent); outline-offset: 2px; }
+#grok-ui-mockup button > svg, #grok-ui-mockup .gb-avatar-edit-overlay > svg, #grok-ui-mockup .gb-event > svg {
+    width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round;
+    stroke-linejoin: round; fill: none;
+}
+#grok-ui-mockup .pharos-nav { margin: -18px 0 -16px; justify-content: center; flex: none; }
+#grok-ui-mockup .pharos-nav button { font-size: 12px; padding: 4px 8px; }
+#grok-ui-mockup .gb-compact .pharos-nav { display: none; }
+#grok-ui-mockup .gb-sidebar:has([data-action=rail-nav][aria-expanded=true]) .pharos-nav {
+    position: absolute; z-index: 7; bottom: 48px; left: 76px; display: flex; width: max-content;
+    flex-direction: column; margin: 0; padding: 6px; background: var(--gb-elevated);
+    border: 1px solid var(--gb-border); border-radius: 14px; box-shadow: 0 4px 18px #0002;
+}
+#grok-ui-mockup .gb-bot .gb-avatar { width: 36px; height: 36px; }
+#grok-ui-mockup .gb-composer.is-expanded { height: auto; border-radius: 18px; align-items: flex-end; }
+#grok-ui-mockup .gb-composer-menu { left: 16px; }
+#grok-ui-mockup .gb-message-text { white-space: pre-wrap; }
+#grok-ui-mockup .gb-message-author { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--gb-muted); margin-bottom: 4px; }
+#grok-ui-mockup .gb-message-author .gb-avatar { width: 22px; height: 22px; }
+#grok-ui-mockup .gb-reply { display: grid; gap: 2px; margin: 4px 0 7px; padding: 5px 9px; border-left: 2px solid var(--gb-accent); background: var(--gb-pane); border-radius: 4px; font-size: 11px; min-width: 0; }
+#grok-ui-mockup .gb-reply-author { color: var(--gb-accent); font-weight: 600; }
+#grok-ui-mockup .gb-reply-preview { color: var(--gb-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+#grok-ui-mockup .gb-message .gb-attachment { display: block; margin-top: 6px; }
+#grok-ui-mockup .gb-message.user { position: relative; }
+#grok-ui-mockup .gb-receipt { position: absolute; top: calc(100% + 1px); right: 8px; color: var(--gb-muted); font-size: 10px; white-space: nowrap; }
+#grok-ui-mockup #roster-search { width: 100%; margin: -4px 0 -14px; padding: 5px 8px; border: 1px solid var(--gb-border); border-radius: 8px; }
+#grok-ui-mockup #conversation-error { background: var(--gb-hover); border-radius: 10px; padding: 8px; margin: 0 16px; display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+#grok-ui-mockup .gb-terminal { overflow: auto; padding: 8px; background: var(--gb-sidebar); border-radius: 10px; font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+#grok-ui-mockup .gb-setting-row > span { min-width: 0; overflow-wrap: anywhere; }
+#grok-ui-mockup .gb-detail-content { padding-bottom: 12px; }
+#grok-ui-mockup .gb-detail-content .gb-settings-group + .gb-settings-label { margin-top: 16px; }
+#grok-ui-mockup .gb-thread-binding-label { margin-top: 16px; }
+#grok-ui-mockup .gb-thread-binding { display: grid; gap: 8px; padding: 10px; }
+#grok-ui-mockup .gb-thread-binding select { width: 100%; text-overflow: ellipsis; }
+
+@media (min-width: 793px) and (max-width: 983px) {
+    #grok-ui-mockup .gb-compact:not(.gb-no-details) {
+        grid-template-columns: 88px minmax(0, 1fr) clamp(280px, calc(100% - 512px), 320px);
+    }
+    #grok-ui-mockup .gb-compact .gb-details { position: static; width: auto; box-shadow: none; }
+}
+@media (max-width: 703px) {
+    #grok-ui-mockup .pharos-nav { display: none; }
+    #grok-ui-mockup .gb-sidebar { padding-top: 34px; gap: 6px; }
+    #grok-ui-mockup .gb-user { padding-block: 6px; }
+}
+
+/* Thread rosters share the sidebar row, with a group tile in the compact rail. */
+#grok-ui-mockup .thread-roster-row {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+    padding-inline-end: 8px; border-radius: 14px;
+}
+#grok-ui-mockup .thread-roster-row:is(.selected, :hover, :focus-within) { background: var(--gb-hover); }
+#grok-ui-mockup .thread-roster-row .gb-bot { background: transparent; }
+#grok-ui-mockup .thread-member-stack { display: flex; align-items: center; padding-inline-start: 6px; }
+#grok-ui-mockup .gb-avatar.thread-member-avatar {
+    width: var(--member-size); height: var(--member-size); flex: none;
+}
+#grok-ui-mockup .thread-member-stack > * { margin-inline-start: -6px; }
+#grok-ui-mockup .thread-member-stack > :first-child { margin-inline-start: 0; }
+#grok-ui-mockup .thread-member-stack > .gb-avatar {
+    border-radius: 50%; background: var(--gb-sidebar);
+}
+#grok-ui-mockup button.thread-members-overflow, #grok-ui-mockup .thread-grid-overflow {
+    display: grid; place-items: center; padding: 0; border-radius: 50%;
+    background: var(--gb-elevated); border: 0.5px solid var(--gb-border); color: var(--gb-muted);
+    font: 600 13px/1 -apple-system, sans-serif;
+}
+#grok-ui-mockup button.thread-members-overflow { width: 24px; height: 24px; z-index: 1; }
+#grok-ui-mockup .thread-member-grid {
+    display: none; width: 39px; height: 39px; flex: none; border-radius: 10px;
+    background: var(--gb-hover); place-content: center; grid-template-columns: repeat(2, 17px); gap: 2px;
+}
+#grok-ui-mockup .thread-member-grid[data-count="1"] { grid-template-columns: 17px; }
+#grok-ui-mockup .thread-grid-overflow { width: 17px; height: 17px; font-size: 11px; }
+#grok-ui-mockup #thread-overflow {
+    position: fixed; z-index: 10; width: min(230px, calc(100vw - 16px)); max-height: min(310px, calc(100vh - 16px));
+    padding: 10px; overflow: auto; border-radius: 16px; border: 0.5px solid var(--gb-border);
+    background: var(--gb-elevated); box-shadow: 0 8px 25px #0002;
+}
+#grok-ui-mockup .thread-overflow-heading { color: var(--gb-muted); font-size: 12px; margin: 0 0 6px 4px; }
+#grok-ui-mockup .thread-overflow-list { list-style: none; padding: 0; margin: 0; }
+#grok-ui-mockup .thread-overflow-item {
+    display: flex; align-items: center; gap: 7px; padding: 3px 4px;
+    animation: thread-member-fly-in 240ms cubic-bezier(.22,1,.36,1) var(--member-delay) both;
+}
+#grok-ui-mockup .thread-overflow-item > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes thread-member-fly-in {
+    from { opacity: 0; transform: translateX(-16px) scale(.85); }
+    to { opacity: 1; transform: translateX(0) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+    #grok-ui-mockup .thread-overflow-item { animation: none; }
+}
+#grok-ui-mockup .gb-compact .thread-roster-row { display: block; padding: 0; }
+#grok-ui-mockup .gb-compact .thread-member-stack { display: none; }
+#grok-ui-mockup .gb-compact .thread-member-grid { display: grid; }
+@media (max-width: 703px) {
+    #grok-ui-mockup .thread-roster-row { display: block; padding: 0; }
+    #grok-ui-mockup .thread-member-stack { display: none; }
+    #grok-ui-mockup .thread-member-grid { display: grid; }
+}
+#grok-ui-mockup .gb-vnc-preview {
+    min-height: 92px; display: grid; align-content: center; justify-items: center; gap: 4px;
+    background: var(--gb-sidebar); border: 0.5px solid var(--gb-border); border-radius: 12px;
+    margin: 10px 0 14px;
+}
+#grok-ui-mockup .gb-project-stream { gap: 12px; }
+#grok-ui-mockup .gb-project-session { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; padding: 12px 14px; text-align: left; color: inherit; background: transparent; border: 0; cursor: pointer; }
+#grok-ui-mockup .gb-project-session + .gb-project-session { border-top: 1px solid var(--gb-border); }
+#grok-ui-mockup .gb-project-session:hover { background: var(--gb-hover); }
+
+#grok-ui-mockup #session-inventory-issues { padding: 4px 12px; color: var(--gb-muted); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+#grok-ui-mockup .gb-compact #session-inventory-issues { text-align: center; font-size: 0; }
+#grok-ui-mockup .gb-compact #session-inventory-issues::before { content: "!"; font-size: 14px; font-weight: 700; }
+
+#grok-ui-mockup #session-config-controls { display:flex; flex-wrap:wrap; gap:8px; padding:4px 24px; }
+#grok-ui-mockup #session-config-controls[hidden] { display:none; }
+#grok-ui-mockup .gb-session-config { display:flex; align-items:center; gap:5px; color:var(--gb-muted); font-size:11px; }
+#grok-ui-mockup .gb-session-config-notice { align-self:center; color:var(--gb-muted); font-size:11px; }
+
+#grok-ui-mockup .gb-permission-confirm { position:absolute; inset:0; z-index:15; display:grid; place-items:center; background:#0006; }
+#grok-ui-mockup .gb-permission-confirm[hidden] { display:none; }
+#grok-ui-mockup .gb-permission-confirm-card { max-width:360px; margin:20px; padding:20px; border:1px solid var(--gb-border); border-radius:16px; background:var(--gb-elevated); color:var(--gb-text); }
+#grok-ui-mockup .gb-permission-confirm-card p { line-height:1.5; font-size:13px; }
+#grok-ui-mockup .gb-permission-confirm-actions { display:flex; justify-content:flex-end; gap:8px; }

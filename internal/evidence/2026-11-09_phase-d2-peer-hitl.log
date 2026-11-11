@@ -1,0 +1,61 @@
+Building for debugging...
+[Computing dependencies]
+[Using on-disk description]
+[1 / 2] swift-crypto_Crypto
+[1 / 40] PharosMeshIroh-product
+[2 / 7] PharosTests-product
+[3 / 11]
+[4 / 11]
+[6 / 11] PharosTests-product
+[9 / 12] PharosTests-product
+[11 / 15] PharosTests-product
+[13 / 15] PharosTests-product
+Build complete! (3,89 secs)
+Test Suite 'Selected tests' started at 2026-11-10 11:51:31.622.
+Test Suite 'PharosTests.xctest' started at 2026-11-10 11:51:31.623.
+Test Suite 'MeshHostSessionRPCTests' started at 2026-11-10 11:51:31.623.
+Test Case '-[PharosTests.MeshHostSessionRPCTests testRealAirPeerHitlWithHumanProxyWhenEnabled]' started.
+/Users/baixianger/personal/pharos/Tests/PharosTests/MeshHostSessionRPCTests.swift:537: -[PharosTests.MeshHostSessionRPCTests testRealAirPeerHitlWithHumanProxyWhenEnabled] : Test skipped - human-proxy .done.md not received within timeout; Peer HITL not-tested
+Test Case '-[PharosTests.MeshHostSessionRPCTests testRealAirPeerHitlWithHumanProxyWhenEnabled]' skipped (929.473 seconds).
+Test Suite 'MeshHostSessionRPCTests' passed at 2026-11-10 12:07:01.097.
+	 Executed 1 test, with 1 test skipped and 0 failures (0 unexpected) in 929.473 (929.474) seconds
+Test Suite 'PharosTests.xctest' passed at 2026-11-10 12:07:01.097.
+	 Executed 1 test, with 1 test skipped and 0 failures (0 unexpected) in 929.473 (929.474) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:07:01.097.
+	 Executed 1 test, with 1 test skipped and 0 failures (0 unexpected) in 929.473 (929.475) seconds
+Peer HITL Codex Session on air: 01a1c515-a457-7600-b369-b2a5c4ac0107
+Peer HITL seed completed=true
+Peer HITL inventory lists Session=true total=237
+Peer HITL prompt path peerSend=true
+Peer HITL approval id=peer:24c6f9b2-4cbc-4a03-8379-cf72de5ffcdf:01a1c515-a457-7600-b369-b2a5c4ac0107:approval:n:10 kind=toolPermission(toolName: "commandExecution", params: ["cwd": /Users/baixianger/personal/pharos-msg-test/peer-hitl/work, "command": /bin/zsh -lc 'printf PHAROS_PEER_HITL_OK'], explanation: Optional("May I run this harmless printf command to test Peer HITL?"))
+Peer HITL human-request written: /Users/baixianger/personal/pharos-msg-test/human-requests/2026-11-10T105159Z_peer-air-codex-hitl.md
+Test Suite 'Selected tests' started at 2026-11-10 12:07:01.290.
+Test Suite 'PharosMeshProtocolTests.xctest' started at 2026-11-10 12:07:01.291.
+Test Suite 'PharosMeshProtocolTests.xctest' passed at 2026-11-10 12:07:01.291.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:07:01.291.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:07:01.547.
+Test Suite 'PharosMeshIrohTests.xctest' started at 2026-11-10 12:07:01.548.
+Test Suite 'PharosMeshIrohTests.xctest' passed at 2026-11-10 12:07:01.548.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:07:01.548.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:07:01.648.
+Test Suite 'PharosMeshIdentityTests.xctest' started at 2026-11-10 12:07:01.649.
+Test Suite 'PharosMeshIdentityTests.xctest' passed at 2026-11-10 12:07:01.649.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:07:01.649.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:07:01.946.
+Test Suite 'PharosMeshCoreTests.xctest' started at 2026-11-10 12:07:01.947.
+Test Suite 'PharosMeshCoreTests.xctest' passed at 2026-11-10 12:07:01.947.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:07:01.947.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 12:07:02.301.
+Test Suite 'PharosLightTests.xctest' started at 2026-11-10 12:07:02.302.
+Test Suite 'PharosLightTests.xctest' passed at 2026-11-10 12:07:02.302.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 12:07:02.302.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds

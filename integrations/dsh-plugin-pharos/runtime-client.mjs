@@ -13,7 +13,7 @@ const defaultSocketPath = path.join(
 
 export class PharosRuntimeClient {
   constructor({
-    socketPath = process.env.PHAROS_RUNTIME_SOCKET || defaultSocketPath,
+    socketPath = process.env.PHAROS_RUNTIME_SOCKET || process.env.PHAROS_AGENT_RUNTIME_SOCKET || defaultSocketPath,
     timeoutMS = 5_000,
   } = {}) {
     this.socketPath = socketPath
@@ -72,5 +72,14 @@ export class PharosRuntimeClient {
   launchPoll(kind) { return this.call('launch.poll', { kind }) }
   launchAck({ launchID, state, detail, sessionID }) {
     return this.call('launch.ack', { launchID, state, detail, sessionID })
+  }
+  // Additive Rust agent-runtime RPC: post exactly one idempotent Thread reply
+  // correlated to the original delivery message. `messageId` is the original
+  // Mesh message anchor; omitting it makes the call *not* replay-safe (the
+  // runtime resolves the newest unreplied directed message server-side).
+  threadReply({ room, asMember, text, messageId } = {}) {
+    const params = { room, asMember, text }
+    if (messageId !== undefined && messageId !== null) params.messageId = messageId
+    return this.call('thread.reply', params)
   }
 }

@@ -1,0 +1,11 @@
+[package]
+name = "pharos-store-schema"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "RFC-007 Phase 0: on-disk schema version, table names, migrations (CONTRACTS_VERSION=0.1.0)"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,13 @@
+Peer HITL E2E (2026-11-10 12:07 Europe/Copenhagen)
+human=pharos-proxy requested; .done.md NOT received within 900s → not-tested for proxy loop.
+
+Proved (real mini→air Peer Host RPC):
+- Codex Session 01a1c515-a457-7600-b369-b2a5c4ac0107 in ~/personal/pharos-msg-test/peer-hitl/work
+- seed completed=true
+- peer inventory listed Session=true (total=237)
+- peer sendSessionMessage succeeded
+- peer fetchSessionApproval returned commandExecution for exact `printf PHAROS_PEER_HITL_OK`
+- human-request: ~/personal/pharos-msg-test/human-requests/2026-11-10T105159Z_peer-air-codex-hitl.md
+
+Blocked: human-proxy .done.md timeout. Approval may still be pending on air Session.
+Evidence: internal/evidence/2026-11-09_phase-d2-peer-hitl.log

@@ -1,10 +1,6 @@
 import SwiftUI
 
-/// Content of the Pharos menu-bar extra (`.menu` style). Mirrors the iOS tab
-/// layout: the first group is four expandable submenus for the workspace
-/// surfaces (projects · issues · agents · chat rooms) — each opens to the
-/// surface itself or drills into a specific item; the second group is Command
-/// Palette and Settings; the last item quits.
+/// Content of the Pharos menu-bar extra (`.menu` style).
 struct MenuBarView: View {
     let store: ProjectStore
     @Environment(\.openSettings) private var openSettings
@@ -24,7 +20,6 @@ struct MenuBarView: View {
     }
 
     var body: some View {
-        // Header — live project + agent counts.
         let count = store.projects.count
         let running = store.projects.filter { store.hasRunningAgent($0) }.count
         Text("Pharos — \(count) project\(count == 1 ? "" : "s")" +
@@ -33,7 +28,6 @@ struct MenuBarView: View {
 
         Divider()
 
-        // Group 1 — workspace surfaces, each an expandable submenu.
         projectsMenu
         issuesMenu
         agentsMenu
@@ -41,7 +35,6 @@ struct MenuBarView: View {
 
         Divider()
 
-        // Group 2 — command palette + settings.
         Button { activateApp(); store.requestPalette() } label: {
             Label("Command Palette…", systemImage: "command")
         }
@@ -54,12 +47,9 @@ struct MenuBarView: View {
 
         Divider()
 
-        // Group 3 — quit.
         Button("Quit Pharos") { NSApplication.shared.terminate(nil) }
             .keyboardShortcut("q", modifiers: [.command])
     }
-
-    // MARK: Group 1 submenus
 
     private var projectsMenu: some View {
         Menu {
@@ -112,8 +102,7 @@ struct MenuBarView: View {
                         if let room = agent.rooms.first { store.requestOpenRoom(room) }
                         else { store.requestMenuNav(.agents) }
                     } label: {
-                        Text("\(stateDot(agent.state))  @\(agent.nick)"
-                             + (agent.rooms.first.map { " · \($0)" } ?? ""))
+                        Text("@\(agent.nick)" + (agent.rooms.first.map { " · \($0)" } ?? ""))
                     }
                 }
             }
@@ -139,21 +128,6 @@ struct MenuBarView: View {
         }
     }
 
-    // MARK: helpers
-
-    /// A small colored status glyph for an agent's mesh state.
-    private func stateDot(_ raw: String?) -> String {
-        switch raw.flatMap(MeshSessionState.init(rawValue:)) {
-        case .busy: "🟠"
-        case .blocked: "🔴"
-        case .stopped, .idle: "🟢"
-        case .gone: "⚪️"
-        case nil: "⚫️"
-        }
-    }
-
-    /// Bring the main window forward, then hand the surface request to
-    /// ContentView, which owns the split-view selection.
     private func navigate(_ target: MenuNavTarget) {
         activateApp()
         store.requestMenuNav(target)
@@ -161,8 +135,6 @@ struct MenuBarView: View {
 
     private func activateApp() {
         NSApplication.shared.activate(ignoringOtherApps: true)
-        // Bring an existing main window forward. If the user closed every
-        // window, the queued nav request still applies when one reopens.
         NSApplication.shared.windows
             .first { $0.canBecomeMain && $0.level == .normal }?
             .makeKeyAndOrderFront(nil)

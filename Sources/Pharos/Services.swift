@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import PharosRuntime
 
 /// Thin wrapper around `Process` for shelling out to git / open.
 enum Shell {
@@ -355,19 +354,9 @@ enum LaunchService {
     /// interprets what it means for the vendor. Best-effort: when the runtime
     /// socket is unavailable the caller keeps the terminal launch as fallback.
     static func submitRuntimeLaunch(kind: AgentKind, modeID: String?, project: Project) {
-        let params: [String: Any] = [
-            "kind": kind.rawValue,
-            "presetID": modeID ?? "",
-            "projectPath": project.localPath ?? "",
-            "title": project.name,
-            "idempotencyKey": UUID().uuidString,
-        ]
-        let request: [String: Any] = [
-            "jsonrpc": "2.0", "id": 1, "method": "launch.submit", "params": params,
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: request),
-              let raw = String(data: data, encoding: .utf8) else { return }
-        _ = try? AgentRuntimeClient.send(raw)
+        // Phase E: launch.submit lives in the Rust daemon; the Swift client no
+        // longer speaks the local Runtime UDS protocol.
+        _ = (kind, modeID, project)
     }
 
     static func revealInFinder(_ path: String) {

@@ -1,0 +1,63 @@
+=== gate series start 2026-11-10T22:00:35+01:00 ===
+
+=== RUN 1 2026-11-10T22:00:35+01:00 ===
+   Compiling pharos-adapter-dsh v0.1.0 (/home/box/personal/pharos-wt/adapter-dsh/rust/crates/pharos-adapter-dsh)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.90s
+     Running tests/product_roundtrip.rs (target/debug/deps/product_roundtrip-fdf9a6d736fa02b8)
+
+running 1 test
+Host product-path DSH Session (Rust): session-a5615bb0-6482-433b-908e-07c1c4526fb3
+Host DSH product-path seed turn=turn_1
+Host DSH product-path seed outcome: status=Completed raw=completed error=None preview="PHAROS_RUST_ADAPTER_DSH_SEED"
+Host DSH product-path delivery: state=Completed detail=DSH turn turn_2 completed turn=Some("turn_2") assistant=Some("PHAROS_RUST_ADAPTER_DSH_DONE")
+Host DSH product-path turns snapshot: turn_1:completed:err=-:preview="PHAROS_RUST_ADAPTER_DSH_SEED" | turn_2:completed:err=-:preview="PHAROS_RUST_ADAPTER_DSH_DONE"
+Host DSH interrupt: turn=Some("turn_3") status=Some(Interrupted)
+Host DSH product-path: route=accepted phase=replied runtime-completed=1 workdir=/home/box/personal/pharos-msg-test/peer-phase-a/rust-adapter-dsh-1794344436628999942/dsh-work
+test product_roundtrip_and_interrupt_never_completed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.12s
+
+RUN 1 PASS
+
+=== RUN 2 2026-11-10T22:00:42+01:00 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running tests/product_roundtrip.rs (target/debug/deps/product_roundtrip-fdf9a6d736fa02b8)
+
+running 1 test
+Host product-path DSH Session (Rust): session-9ec95ab5-b2a4-4ea1-932a-4585b438ba42
+Host DSH product-path seed turn=turn_1
+Host DSH product-path seed outcome: status=Completed raw=completed error=None preview="PHAROS_RUST_ADAPTER_DSH_SEED"
+Host DSH product-path delivery: state=Completed detail=DSH turn turn_2 completed turn=Some("turn_2") assistant=Some("PHAROS_RUST_ADAPTER_DSH_DONE")
+Host DSH product-path turns snapshot: turn_1:completed:err=-:preview="PHAROS_RUST_ADAPTER_DSH_SEED" | turn_2:completed:err=-:preview="PHAROS_RUST_ADAPTER_DSH_DONE"
+Host DSH interrupt: turn=Some("turn_3") status=Some(Interrupted)
+Host DSH product-path: route=accepted phase=replied runtime-completed=1 workdir=/home/box/personal/pharos-msg-test/peer-phase-a/rust-adapter-dsh-1794344442888456403/dsh-work
+test product_roundtrip_and_interrupt_never_completed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.05s
+
+RUN 2 PASS
+
+=== RUN 3 2026-11-10T22:00:53+01:00 ===
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+     Running tests/product_roundtrip.rs (target/debug/deps/product_roundtrip-fdf9a6d736fa02b8)
+
+running 1 test
+Host product-path DSH Session (Rust): session-14b2c046-87f5-49c2-b29a-69e7c94d3af8
+Host DSH product-path seed turn=turn_1
+Host DSH product-path seed outcome: status=Completed raw=completed error=None preview="PHAROS_RUST_ADAPTER_DSH_SEED"
+Host DSH product-path delivery: state=Completed detail=DSH turn turn_2 completed turn=Some("turn_2") assistant=Some("PHAROS_RUST_ADAPTER_DSH_DONE")
+Host DSH product-path turns snapshot: turn_1:completed:err=-:preview="PHAROS_RUST_ADAPTER_DSH_SEED" | turn_2:completed:err=-:preview="PHAROS_RUST_ADAPTER_DSH_DONE"
+Host DSH interrupt: turn=Some("turn_3") status=Some(Interrupted)
+Host DSH product-path: route=accepted phase=replied runtime-completed=1 workdir=/home/box/personal/pharos-msg-test/peer-phase-a/rust-adapter-dsh-1794344454091178730/dsh-work
+test product_roundtrip_and_interrupt_never_completed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.70s
+
+RUN 3 PASS
+
+SUMMARY pass=3 fail=0
+   3544 /usr/local/lib/nodejs/node /home/box/.local/bin/dsh web --no-open --port 3080 --public-url https://grok-bot.tail849fa3.ts.net/ --trusted-host grok-bot.tail849fa3.ts.net
+1240657 rg dsh web --no-open --port 3080
+/home/box/personal/pharos-msg-test/peer-phase-a/rust-adapter-dsh-1794344454091178730
+/home/box/personal/pharos-msg-test/peer-phase-a/rust-adapter-dsh-1794344442888456403
+/home/box/personal/pharos-msg-test/peer-phase-a/rust-adapter-dsh-1794344436628999942

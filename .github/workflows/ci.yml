@@ -28,7 +28,8 @@ jobs:
         run: |
           Scripts/package_app.sh release
           test -x Pharos.app/Contents/MacOS/Pharos
-          test -x Pharos.app/Contents/Helpers/pharos-mesh
+          test -x Pharos.app/Contents/Helpers/pharos
+          test -x Pharos.app/Contents/Helpers/pharos-meshd
           codesign --verify --deep --strict Pharos.app
 
   ios:
@@ -81,8 +82,7 @@ jobs:
         run: |
           Scripts/package_deb.sh \
             0.0.0-ci amd64 \
-            dist/linux-amd64/pharos-mesh dist \
-            dist/linux-amd64/libiroh_ffi.so
+            dist/linux-amd64/pharos dist
           dpkg-deb --info dist/pharos-mesh_0.0.0-ci_amd64.deb
           dpkg-deb --contents dist/pharos-mesh_0.0.0-ci_amd64.deb
 
@@ -91,4 +91,4 @@ jobs:
           docker run --rm --platform linux/amd64 \
             -v "$PWD/dist:/packages:ro" debian:bookworm-slim \
             sh -c 'apt-get update && apt-get install -y /packages/pharos-mesh_0.0.0-ci_amd64.deb && \
-              ldd /usr/bin/pharos-mesh && pharos-mesh --help >/dev/null'
+              ldd /usr/bin/pharos && pharos --help >/dev/null && pharos-mesh --help >/dev/null'

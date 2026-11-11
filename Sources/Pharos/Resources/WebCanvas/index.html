@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pharos Session Stream</title>
+  <link rel="stylesheet" href="dsh-stream.css">
+  <style>html,body{height:100%;margin:0}.dsh-stream *{box-sizing:border-box}.dsh-stream [hidden]{display:none!important}</style>
+  <script defer src="markdown-it.min.js"></script>
+  <script defer src="transport.js"></script>
+  <script defer src="dsh-stream.js"></script>
+</head>
+<body class="dsh-stream theme-dark">
+        <div id="stream-container">
+          <div id="dsh-command-result" class="dsh-hint" role="status" hidden></div>
+          <div id="dsh-error" class="dsh-error" role="alert" hidden><span></span><button type="button" class="dsh-button" data-action="dismissError">Dismiss</button></div>
+          <div id="dsh-empty" class="dsh-hint" hidden></div>
+          <div id="turns-list" hidden></div>
+          <div id="live-turn" class="turn-container" hidden>
+            <div id="live-reasoning" hidden></div>
+            <div id="live-tools" class="turn-container" hidden></div>
+            <div id="live-assistant-text" class="assistant-row dsh-markdown" hidden></div>
+            <div id="dsh-running" class="dsh-running" role="status" hidden>Working…</div>
+          </div>
+          <div id="live-approval-slot" hidden></div>
+        </div>
+</body>
+</html>

@@ -6,10 +6,11 @@ VERSION=${1:-}
 ARCH=${2:-}
 BINARY=${3:-}
 OUTPUT_DIR=${4:-"$ROOT/dist"}
-IROH_LIBRARY=${5:-"$(dirname "$BINARY")/libiroh_ffi.so"}
+# Phase E: optional 5th arg kept for call-site compat; iroh-ffi is no longer packaged.
+_UNUSED_IROH_LIBRARY=${5:-}
 
 usage() {
-  echo "usage: Scripts/package_deb.sh VERSION amd64|arm64 BINARY [OUTPUT_DIR] [IROH_LIBRARY]" >&2
+  echo "usage: Scripts/package_deb.sh VERSION amd64|arm64 BINARY [OUTPUT_DIR]" >&2
   exit 2
 }
 
@@ -17,7 +18,6 @@ usage() {
 [[ "$VERSION" =~ ^[0-9][0-9A-Za-z.+:~-]*$ ]] || { echo "error: invalid Debian version: $VERSION" >&2; exit 2; }
 case "$ARCH" in amd64|arm64) ;; *) usage ;; esac
 [[ -x "$BINARY" ]] || { echo "error: executable not found: $BINARY" >&2; exit 1; }
-[[ -f "$IROH_LIBRARY" ]] || { echo "error: Iroh library not found: $IROH_LIBRARY" >&2; exit 1; }
 command -v dpkg-deb >/dev/null || { echo "error: dpkg-deb is required" >&2; exit 1; }
 
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/pharos-deb.XXXXXX")
@@ -27,11 +27,16 @@ PKG="$STAGE/pharos-mesh"
 install -d \
   "$PKG/DEBIAN" \
   "$PKG/usr/bin" \
-  "$PKG/usr/lib" \
   "$PKG/usr/lib/systemd/system" \
   "$PKG/usr/share/doc/pharos-mesh"
-install -m 0755 "$BINARY" "$PKG/usr/bin/pharos-mesh"
-install -m 0644 "$IROH_LIBRARY" "$PKG/usr/lib/libiroh_ffi.so"
+install -m 0755 "$BINARY" "$PKG/usr/bin/pharos"
+ln -sf pharos "$PKG/usr/bin/pharos-mesh"
+if [[ -x "$(dirname "$BINARY")/pharos-meshd" ]]; then
+  install -m 0755 "$(dirname "$BINARY")/pharos-meshd" "$PKG/usr/bin/pharos-meshd"
+fi
+if [[ -x "$(dirname "$BINARY")/pharos-web" ]]; then
+  install -m 0755 "$(dirname "$BINARY")/pharos-web" "$PKG/usr/bin/pharos-web"
+fi
 install -m 0644 "$ROOT/Packaging/debian/pharos-mesh.service" \
   "$PKG/usr/lib/systemd/system/pharos-mesh.service"
 install -m 0644 "$ROOT/docs/MESH_HEADLESS.md" "$PKG/usr/share/doc/pharos-mesh/README.md"
@@ -47,16 +52,13 @@ Section: devel
 Priority: optional
 Architecture: $ARCH
 Maintainer: Pai <baixianger@gmail.com>
-Depends: adduser, libc6, libsqlite3-0, libstdc++6
+Depends: adduser, libc6, libsqlite3-0, libstdc++6, ca-certificates
 Recommends: qrencode
 Installed-Size: $INSTALLED_SIZE
 Homepage: https://github.com/baixianger/pharos
-Description: Headless local-first Mesh replica and CLI for Pharos
- Pharos Mesh stores signed project, chat, attachment, and command data in a
- per-device replica synchronized over identity-addressed Iroh connections. This
- package installs the portable replica CLI, Iroh runtime library, system
- service, and opt-in host-command runtime. The retired TCP Broker is available
- only as an explicit migration rollback path.
+Description: Pharos Rust backend CLI and daemon helpers
+ Phase E ships the Rust \`pharos\` CLI (compat symlink \`pharos-mesh\`) plus
+ optional \`pharos-meshd\` / \`pharos-web\` helpers. The Swift Mesh backend is gone.
 EOF
 mkdir -p "$OUTPUT_DIR"
 OUT="$OUTPUT_DIR/pharos-mesh_${VERSION}_${ARCH}.deb"

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file: 'unsafe-inline'; img-src 'self' file: data:; connect-src 'self' ws: wss:">
+  <title>Pharos</title>
+  <link rel="stylesheet" href="grok-mockup.css">
+  <link rel="stylesheet" href="dsh-stream.css">
+  <link rel="stylesheet" href="workspace.css">
+  <script defer src="grok-avatar.js"></script>
+  <script defer src="grok-avatar-mount.js"></script>
+  <script defer src="markdown-it.min.js"></script>
+  <script defer src="transport.js"></script>
+  <script defer src="dsh-stream.js"></script>
+  <script defer src="workspace.js"></script>
+</head>
+<body>
+<svg class="symbol-bank" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <symbol id="sidebar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></symbol>
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+  <symbol id="send" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
+  <symbol id="check" viewBox="0 0 24 24"><path d="m4 12 5 5L20 6"/></symbol>
+  <symbol id="edit" viewBox="0 0 24 24"><path d="m14 6 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/></symbol>
+  <symbol id="settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2.5" fill="var(--gb-elevated)"/><circle cx="15" cy="17" r="2.5" fill="var(--gb-elevated)"/></symbol>
+  <symbol id="views" viewBox="0 0 24 24"><rect x="3" y="4" width="7" height="7" rx="1"/><rect x="14" y="4" width="7" height="7" rx="1"/><rect x="3" y="15" width="7" height="5" rx="1"/><path d="M14 17.5h7"/></symbol>
+</svg>
+<div id="grok-ui-mockup" data-theme="light">
+  <main class="gb-app gb-no-details">
+    <aside class="gb-sidebar" aria-label="Workspace">
+      <div class="gb-side-top">
+        <div class="gb-window-drag"></div>
+        <button type="button" class="gb-icon" aria-label="Collapse sidebar" data-action="compact"><svg><use href="#sidebar"/></svg></button>
+        <button type="button" class="gb-icon gb-search" aria-label="Search conversations" data-action="search"><svg><use href="#search"/></svg></button>
+        <button type="button" class="gb-icon gb-new" aria-label="Add project" data-action="addProject"><svg><use href="#plus"/></svg></button>
+      </div>
+      <button type="button" class="gb-mainbot" data-action="main-bot">
+        <span class="gb-avatar" id="main-avatar"></span><span>Main Bot</span>
+      </button>
+      <div class="gb-tabs pharos-nav" aria-label="Workspace views">
+        <button type="button" data-tab="sessions" aria-selected="true">Sessions</button>
+        <button type="button" data-tab="threads" aria-selected="false">Threads</button>
+        <button type="button" data-tab="projects" aria-selected="false">Projects</button>
+      </div>
+      <input type="search" id="roster-search" aria-label="Search conversations" placeholder="Search…" hidden>
+      <div id="session-inventory-issues" role="status" hidden></div>
+      <div class="gb-bot-list" aria-label="Conversations"></div>
+      <div class="gb-rail-actions">
+        <button type="button" class="gb-icon" aria-label="Toggle sidebar" data-action="compact"><svg><use href="#sidebar"/></svg></button>
+        <button type="button" class="gb-icon" aria-label="Add project" data-action="addProject"><svg><use href="#plus"/></svg></button>
+        <button type="button" class="gb-icon" aria-label="Workspace views" aria-expanded="false" data-action="rail-nav"><svg><use href="#views"/></svg></button>
+      </div>
+      <div class="gb-user">
+        <span class="gb-user-mark">P</span><span>Pharos</span>
+        <button type="button" class="gb-icon" aria-label="Settings" data-action="settings"><svg><use href="#settings"/></svg></button>
+      </div>
+    </aside>
+    <section class="gb-chat" aria-label="Conversation">
+      <div class="gb-chat-header">
+        <button type="button" class="gb-chat-pill" aria-label="Conversation details" aria-expanded="false" data-action="details">
+          <span class="gb-avatar gb-current"></span><span class="gb-bot-name"></span>
+        </button>
+      </div>
+      <div id="conversation-error" role="alert" hidden><span></span><button type="button" data-action="dismissError">Dismiss</button></div>
+      <div class="gb-transcript" id="thread-stream" aria-label="Thread messages" hidden></div>
+      <div class="dsh-stream" id="session-stream" aria-label="Session messages" hidden>
+        <div id="stream-container">
+          <div id="dsh-command-result" class="dsh-hint" role="status" hidden></div>
+          <div id="dsh-error" class="dsh-error" role="alert" hidden><span></span><button type="button" class="dsh-button" data-action="dismissError">Dismiss</button></div>
+          <div id="dsh-empty" class="dsh-hint" hidden></div>
+          <div id="turns-list" hidden></div>
+          <div id="live-turn" class="turn-container" hidden>
+            <div id="live-reasoning" hidden></div>
+            <div id="live-tools" class="turn-container" hidden></div>
+            <div id="live-assistant-text" class="assistant-row dsh-markdown" hidden></div>
+            <div id="dsh-running" class="dsh-running" role="status" hidden>Working…</div>
+          </div>
+        </div>
+      </div>
+      <div class="gb-transcript" id="empty-stream"><div class="gb-timestamp"></div></div>
+      <div id="dsh-composer-dock" aria-label="Session requests" hidden>
+        <div id="dsh-progress" hidden></div>
+        <div id="live-approval-slot" hidden></div>
+      </div>
+      <div class="gb-transcript gb-project-stream" id="project-stream" aria-label="Project sessions" hidden></div>
+      <div id="permission-confirm" class="gb-permission-confirm" role="dialog" aria-modal="true" aria-labelledby="permission-confirm-title" hidden>
+        <div class="gb-permission-confirm-card">
+          <strong id="permission-confirm-title">Change permissions</strong>
+          <p id="permission-confirm-description"></p>
+          <div class="gb-permission-confirm-actions"><button type="button" class="gb-button" data-action="cancelPermission">Cancel</button><button type="button" class="gb-button" data-action="confirmPermission">Continue</button></div>
+        </div>
+      </div>
+      <div id="session-config-controls" aria-label="Session configuration" hidden></div>
+      <div class="gb-composer-wrap">
+        <div class="gb-attachments" aria-label="Attachments" hidden></div>
+        <div class="gb-attachment-error" role="status" hidden></div>
+        <input type="file" id="session-files" multiple hidden>
+        <form class="gb-composer">
+          <button type="button" class="gb-icon" aria-label="Composer actions" aria-expanded="false" data-action="composer-menu"><svg><use href="#plus"/></svg></button>
+          <textarea rows="1" aria-label="Message"></textarea>
+          <button type="submit" class="gb-icon gb-primary" aria-label="Send message"><svg><use href="#send"/></svg></button>
+        </form>
+        <div class="gb-composer-menu" hidden></div>
+      </div>
+    </section>
+    <aside class="gb-details" aria-label="Conversation details">
+      <div class="gb-details-top">
+        <button type="button" class="gb-icon" aria-label="Close details" data-action="close-details"><svg><use href="#close"/></svg></button>
+      </div>
+      <button type="button" class="gb-profile" aria-label="Edit avatar" data-action="avatar-editor">
+        <span class="gb-avatar gb-current"></span>
+        <span class="gb-avatar-edit-overlay"><svg><use href="#edit"/></svg></span>
+        <span class="gb-profile-name gb-bot-name"></span>
+      </button>
+      <div class="gb-profile-tabs" aria-label="Details tabs">
+        <button type="button" class="active" data-detail="details">Details</button>
+        <button type="button" data-detail="library">Library</button>
+        <button type="button" data-detail="computer">Computer</button>
+      </div>
+      <div class="gb-avatar-editor" hidden aria-label="Avatar editor">
+        <div class="gb-editor-head"><span>Bot</span><button type="button" class="gb-muted gb-small" data-action="reset-avatar">Reset</button></div>
+        <div class="gb-editor-body">
+          <div class="gb-editor-shapes" aria-label="Character shape"></div>
+          <div class="gb-editor-colors" aria-label="Character color"></div>
+        </div>
+      </div>
+      <div class="gb-detail-content"></div>
+    </aside>
+  </main>
+  <aside id="thread-overflow" aria-label="Additional thread members" hidden></aside>
+</div>
+</body>
+</html>

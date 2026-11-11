@@ -1,0 +1,205 @@
+/* Transcript geometry and colors adapted from DeepSeek Harness 0.2.2-rc.1.
+   Source modules: ChatView, UserMessageBubble, ReasoningRow, ToolRow,
+   TurnProcessNodeView, AssistantMarkdown, ApprovalPanel and the DSW theme. */
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) {
+  --dsh-base: #151517;
+  --dsh-ink: #f9fafb;
+  --dsh-secondary: #cfd3d6;
+  --dsh-muted: #adb2b8;
+  --dsh-caption: #81858c;
+  --dsh-bubble: #2c2c2e;
+  --dsh-code: #1b1b1c;
+  --dsh-border: #ffffff0f;
+  --dsh-divider: #ffffff1f;
+  --dsh-table-divider: #ffffff29;
+  --dsh-accent: #7aaaff;
+  --dsh-danger: #ef4444;
+  --dsh-warn: #f59e0b;
+  --dsh-warn-fill: #27241f;
+  --dsh-radius-sm: 8px;
+  --dsh-radius-md: 12px;
+  --dsh-radius-lg: 16px;
+  --dsh-radius-xl: 20px;
+  --dsh-code-font: ui-monospace, SFMono-Regular, Menlo, monospace;
+  min-height: 0;
+  overflow: auto;
+  background: var(--dsh-base);
+  color: var(--dsh-ink);
+  font: 400 14px/24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  scrollbar-color: var(--dsh-divider) transparent;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+:is(#session-stream, #dsh-composer-dock, .dsh-stream).theme-light {
+  --dsh-base: #fff;
+  --dsh-ink: #0f1115;
+  --dsh-secondary: #61666b;
+  --dsh-muted: #81858c;
+  --dsh-caption: #adb2b8;
+  --dsh-bubble: #edf3fe;
+  --dsh-code: #f9fafb;
+  --dsh-border: #0000000a;
+  --dsh-divider: #0000001a;
+  --dsh-table-divider: #0000001f;
+  --dsh-accent: #4176e6;
+  --dsh-warn-fill: #fef5e7;
+}
+
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) *, :is(#session-stream, #dsh-composer-dock, .dsh-stream) *::before, :is(#session-stream, #dsh-composer-dock, .dsh-stream) *::after { box-sizing: border-box; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) [hidden] { display: none !important; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) #stream-container {
+  width: min(748px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 16px 0;
+  display: grid;
+  gap: 12px;
+}
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) #turns-list { display: grid; gap: 12px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .turn-container, :is(#session-stream, #dsh-composer-dock, .dsh-stream) .process-body { min-width: 0; display: grid; gap: 4px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .turn-container > .user-row + :not(.user-row, .turn-process) { margin-top: 8px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .turn-container > .turn-process + .assistant-row { margin-top: 12px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .user-row { display: flex; justify-content: flex-end; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .user-bubble {
+  max-width: min(525px, 82%);
+  padding: 10px 16px;
+  border-radius: var(--dsh-radius-xl);
+  background: var(--dsh-bubble);
+  color: var(--dsh-ink);
+  font: inherit;
+  line-height: 22px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .assistant-row { min-width: 0; color: var(--dsh-ink); }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown { min-width: 0; overflow-wrap: anywhere; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown > * { margin: 0; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown > * + * { margin-top: 16px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown :is(h1, h2, h3, h4, h5, h6) { margin: 0; font-weight: 600; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown > :is(h1, h2, h3, h4, h5, h6):not(:first-child) { margin-top: 16px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown h1 { font-size: 21px; line-height: 30px; font-weight: 700; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown h2 { font-size: 19px; line-height: 28px; font-weight: 700; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown h3 { font-size: 18px; line-height: 26px; font-weight: 700; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown :is(h4, h5, h6) { font-size: 14px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown :is(ol, ul) { padding-inline-start: 18px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown li + li { margin-top: 6px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown blockquote { padding-inline-start: 12px; border-inline-start: 2px solid var(--dsh-divider); color: var(--dsh-secondary); }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown hr { border: 0; border-top: 0.5px solid var(--dsh-divider); }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown a { color: var(--dsh-accent); text-underline-offset: 2px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown code { font: 12px/18px var(--dsh-code-font); }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown :not(pre) > code { background: var(--dsh-code); border: 0.5px solid var(--dsh-border); border-radius: var(--dsh-radius-sm); padding: 0 5px; font-size: .875em; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-markdown pre { padding: 12px 16px; border-radius: var(--dsh-radius-md); border: 0.5px solid var(--dsh-border); background: var(--dsh-code); overflow: auto; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-table-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-table-scroll:focus-visible { outline: 1.5px solid var(--dsh-accent); outline-offset: -2px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-table-scroll table { border-collapse: collapse; width: max-content; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-table-scroll :is(th, td) {
+  min-width: 100px;
+  max-width: min(30vw, 320px);
+  padding: 10px 16px;
+  border-bottom: 0.5px solid var(--dsh-divider);
+  font: 400 13px/22px -apple-system, sans-serif;
+}
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-table-scroll th { border-color: var(--dsh-table-divider); font-weight: 500; text-align: start; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-table-scroll :is(th, td):first-child { padding-inline-start: 0; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-table-scroll td:last-child { padding-inline-end: 0; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-table-scroll code { font-size: 11px; }
+
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) details { min-width: 0; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) summary { list-style: none; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) summary::-webkit-details-marker { display: none; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) summary:focus-visible { outline: 1.5px solid var(--dsh-accent); outline-offset: 2px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .process-header, :is(#session-stream, #dsh-composer-dock, .dsh-stream) .disclosure-header {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  color: var(--dsh-muted);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) :is(.process-header, .disclosure-header):hover { color: var(--dsh-secondary); }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .process-header { min-height: 33px; padding-bottom: 8px; gap: 4px; border-bottom: 0.5px solid var(--dsh-divider); }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .process-body { gap: 0; padding-top: 8px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .process-body > .assistant-row { color: var(--dsh-secondary); }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .disclosure-header { height: 24px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .disclosure-icon { display: inline-grid; place-items: center; flex: 0 0 16px; margin-inline-end: 6px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .disclosure-icon svg { width: 14px; height: 14px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .disclosure-icon .chevron { display: none; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) :is(details[open] > summary, summary:hover, summary:focus-visible) .disclosure-icon .row-icon { display: none; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) :is(details[open] > summary, summary:hover, summary:focus-visible) .disclosure-icon .chevron { display: block; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) details[open] > summary .chevron { transform: rotate(90deg); }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .disclosure-title { flex: none; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .disclosure-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: 13px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .disclosure-separator { flex: 0 0 2px; height: 2px; border-radius: 1px; background: var(--dsh-caption); margin-inline: 8px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .disclosure-status { flex: none; font: 12px/18px var(--dsh-code-font); margin-inline-start: 8px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) [data-failed] :is(.disclosure-preview, .disclosure-status) { color: var(--dsh-danger); }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .reasoning-row[open] > summary :is(.disclosure-separator, .disclosure-preview) { display: none; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .reasoning-body { padding: 4px 0 4px 22px; color: var(--dsh-secondary); font-size: 13px; line-height: 22px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .tool-body {
+  margin: 4px 0 4px 4px;
+  border: 0.5px solid var(--dsh-border);
+  border-radius: var(--dsh-radius-lg);
+  background: var(--dsh-code);
+  font: 11px/16px var(--dsh-code-font);
+  color: var(--dsh-secondary);
+  overflow: hidden;
+}
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .tool-section { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 14px; padding: 12px 16px; max-height: 150px; overflow: auto; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .tool-section + .tool-section { border-top: 0.5px solid var(--dsh-divider); }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .tool-label { color: var(--dsh-caption); }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .tool-section pre { min-width: 0; margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-hint { color: var(--dsh-muted); font-size: 13px; line-height: 18px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-running { color: var(--dsh-muted); font-size: 12px; line-height: 22px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-running::before { display: inline-block; content: ""; width: 6px; height: 6px; margin-inline-end: 8px; vertical-align: 1px; border-radius: 50%; background: var(--dsh-accent); animation: dsh-pulse 1.6s ease-in-out infinite; }
+@keyframes dsh-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { :is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-running::before { animation: none; } }
+
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-approval-card { border: 1px solid #f7ad31; border-radius: var(--dsh-radius-xl); background: var(--dsh-base); overflow: hidden; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .approval-strip { padding: 10px 16px; background: var(--dsh-warn-fill); color: var(--dsh-warn); font-size: 13px; line-height: 18px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .approval-body { padding: 12px 16px 0; display: grid; gap: 6px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .approval-title { color: var(--dsh-ink); font-size: 15px; font-weight: 500; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .approval-command { min-width: 0; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/18px var(--dsh-code-font); color: var(--dsh-secondary); }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) fieldset.approval-command { border: 0.5px solid var(--dsh-divider); border-radius: 8px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .approval-option { display: flex; gap: 8px; align-items: center; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .approval-actions { padding: 12px 16px; display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) button.dsh-button { background: var(--dsh-base); color: var(--dsh-secondary); border: 0.5px solid var(--dsh-divider); border-radius: 8px; padding: 3px 10px; font: 13px/22px -apple-system, sans-serif; cursor: pointer; }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) button.dsh-button.primary { background: var(--dsh-accent); border-color: transparent; color: var(--dsh-base); }
+:is(#session-stream, #dsh-composer-dock, .dsh-stream) .dsh-error { display: flex; justify-content: space-between; gap: 8px; align-items: center; color: var(--dsh-danger); font-size: 13px; }
+
+
+#dsh-composer-dock {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  width: min(748px, calc(100% - 32px));
+  max-height: min(42vh, 340px);
+  margin: 0 auto 8px;
+  overflow: hidden;
+  background: transparent;
+}
+
+#dsh-progress { display: grid; gap: 4px; margin-bottom: 6px; min-height: 0; overflow: auto; }
+#dsh-composer-dock:has(#live-approval-slot:not([hidden])) #dsh-progress { flex: none; max-height: min(116px, 14vh); }
+#dsh-composer-dock #live-approval-slot, #dsh-composer-dock .dsh-approval-card { display: flex; flex-direction: column; min-height: 0; }
+#dsh-composer-dock .approval-body { min-height: 0; overflow: auto; align-content: start; padding-bottom: 4px; }
+#dsh-composer-dock :is(.approval-strip, .approval-actions) { flex: none; }
+#dsh-composer-dock .dsh-progress-row {
+  background: var(--dsh-code);
+  border: 0.5px solid var(--dsh-border);
+  border-radius: var(--dsh-radius-md);
+  padding: 4px 10px;
+}
+#dsh-composer-dock .dsh-progress-row > summary { color: var(--dsh-secondary); }
+#dsh-composer-dock .dsh-progress-row .disclosure-status { margin-inline-start: auto; padding-inline-start: 8px; }
+#dsh-composer-dock :is(.dsh-goal-text, .dsh-todo-list) { margin: 2px 0 4px 22px; font-size: 13px; }
+#dsh-composer-dock .dsh-goal-text { overflow-wrap: anywhere; white-space: pre-wrap; }
+#dsh-composer-dock .dsh-todo-list { list-style: none; padding: 0; }
+#dsh-composer-dock .dsh-todo-item { display: flex; align-items: baseline; gap: 8px; }
+#dsh-composer-dock .dsh-todo-status { color: var(--dsh-accent); }
+#dsh-composer-dock .dsh-todo-priority { color: var(--dsh-secondary); font-size: 11px; }
+:is(#dsh-composer-dock, .dsh-stream) input.approval-free-text {
+  width: 100%; border: 0.5px solid var(--dsh-divider); border-radius: var(--dsh-radius-sm);
+  background: var(--dsh-base); padding: 4px 8px; margin-top: 6px; color: var(--dsh-ink);
+}
+
+:is(#session-stream, .dsh-stream) #dsh-command-result { white-space: pre-wrap; overflow-wrap: anywhere; }

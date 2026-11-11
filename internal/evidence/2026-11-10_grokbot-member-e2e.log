@@ -1,0 +1,57 @@
+Building for debugging...
+[Computing dependencies]
+[Using on-disk description]
+[4 / 99]
+[4 / 38] pharos-mesh-product
+[5 / 10] PharosTests-product
+[6 / 14]
+[7 / 14]
+[9 / 14] PharosTests-product
+[14 / 18] PharosTests-product
+[16 / 18] PharosTests-product
+Build complete! (2,93 secs)
+Test Suite 'Selected tests' started at 2026-11-10 14:20:02.216.
+Test Suite 'PharosTests.xctest' started at 2026-11-10 14:20:02.216.
+Test Suite 'GrokbotMemberLiveTests' started at 2026-11-10 14:20:02.216.
+Test Case '-[PharosTests.GrokbotMemberLiveTests testRealGrokbotThreadMentionReplyWhenEnabled]' started.
+Test Case '-[PharosTests.GrokbotMemberLiveTests testRealGrokbotThreadMentionReplyWhenEnabled]' passed (23.377 seconds).
+Test Suite 'GrokbotMemberLiveTests' passed at 2026-11-10 14:20:25.594.
+	 Executed 1 test, with 0 failures (0 unexpected) in 23.377 (23.378) seconds
+Test Suite 'PharosTests.xctest' passed at 2026-11-10 14:20:25.594.
+	 Executed 1 test, with 0 failures (0 unexpected) in 23.377 (23.378) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:20:25.594.
+	 Executed 1 test, with 0 failures (0 unexpected) in 23.377 (23.378) seconds
+Grokbot member Thread=grokbot-41349f97 message=FEEC7B7B-BB0C-4AE6-8743-AE1ADC2E41F4
+Grokbot human-request written: 2026-11-10T132002Z_grokbot-thread-mention.md
+Grokbot injected delivery=4f6afe55-03f7-4665-80c8-dbf1fd7e2721 thread=grokbot-41349f97
+Grokbot member DONE thread=grokbot-41349f97 message=FEEC7B7B-BB0C-4AE6-8743-AE1ADC2E41F4 reply=reply-4c10d3ecd4cefa9e7ebfcd14c916ae9a13cb37475b3632bda29c45ffd3831952 completed=1 marker=PHAROS_GROKBOT_MEMBER_DONE_41349f97
+Test Suite 'Selected tests' started at 2026-11-10 14:20:25.678.
+Test Suite 'PharosMeshProtocolTests.xctest' started at 2026-11-10 14:20:25.679.
+Test Suite 'PharosMeshProtocolTests.xctest' passed at 2026-11-10 14:20:25.679.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:20:25.679.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 14:20:25.740.
+Test Suite 'PharosMeshIrohTests.xctest' started at 2026-11-10 14:20:25.740.
+Test Suite 'PharosMeshIrohTests.xctest' passed at 2026-11-10 14:20:25.740.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:20:25.740.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 14:20:25.801.
+Test Suite 'PharosMeshIdentityTests.xctest' started at 2026-11-10 14:20:25.802.
+Test Suite 'PharosMeshIdentityTests.xctest' passed at 2026-11-10 14:20:25.802.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:20:25.802.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 14:20:25.863.
+Test Suite 'PharosMeshCoreTests.xctest' started at 2026-11-10 14:20:25.864.
+Test Suite 'PharosMeshCoreTests.xctest' passed at 2026-11-10 14:20:25.864.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:20:25.864.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'Selected tests' started at 2026-11-10 14:20:25.928.
+Test Suite 'PharosLightTests.xctest' started at 2026-11-10 14:20:25.929.
+Test Suite 'PharosLightTests.xctest' passed at 2026-11-10 14:20:25.929.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-11-10 14:20:25.929.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds

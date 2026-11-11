@@ -1,5 +1,30 @@
 import Foundation
-import PharosMeshProtocol
+import SwiftUI
+
+/// Legacy attachment metadata kept for Codable compatibility with older
+/// projects.json values. Phase E no longer links PharosMeshProtocol.
+struct MeshAttachment: Codable, Hashable, Sendable, Identifiable {
+    var id: String
+    var name: String
+    var mimeType: String
+    var byteSize: Int
+    var sha256: String
+}
+
+/// Agent session record for dashboard inventory rollup.
+struct DashboardAgentSession: Hashable, Sendable, Identifiable {
+    let session: String
+    let sshHost: String?
+    var id: String { "\(sshHost ?? "local")|\(session)" }
+
+    static func unregistered(running: Set<String>, remoteHosts: [String: String],
+                             registered: Set<Self>) -> [Self] {
+        running.compactMap { session in
+            let value = Self(session: session, sshHost: remoteHosts[session])
+            return registered.contains(value) ? nil : value
+        }.sorted { $0.id < $1.id }
+    }
+}
 
 /// A custom command button the user attaches to a project.
 struct Playbook: Identifiable, Codable, Hashable {
@@ -578,6 +603,16 @@ enum AppearanceMode: String, CaseIterable, Identifiable, Codable {
         case .system: return "System"
         case .light: return "Light"
         case .dark: return "Dark"
+        }
+    }
+}
+
+extension AppearanceMode {
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
         }
     }
 }

@@ -30,7 +30,12 @@ pub struct AdapterError {
 
 impl AdapterResponse {
     pub fn success(id: Value, result: Value) -> Self {
-        Self { jsonrpc: None, id, result: Some(result), error: None }
+        Self {
+            jsonrpc: None,
+            id,
+            result: Some(result),
+            error: None,
+        }
     }
 
     pub fn failure(id: Value, message: impl Into<String>) -> Self {
@@ -38,7 +43,10 @@ impl AdapterResponse {
             jsonrpc: None,
             id,
             result: None,
-            error: Some(AdapterError { code: -32603, message: message.into() }),
+            error: Some(AdapterError {
+                code: -32603,
+                message: message.into(),
+            }),
         }
     }
 }
@@ -49,9 +57,8 @@ mod tests {
 
     #[test]
     fn request_defaults_missing_params_to_null() {
-        let request: AdapterRequest = serde_json::from_str(
-            r#"{"id":"one","method":"thread/list"}"#,
-        ).unwrap();
+        let request: AdapterRequest =
+            serde_json::from_str(r#"{"id":"one","method":"thread/list"}"#).unwrap();
         assert_eq!(request.params, Value::Null);
     }
 

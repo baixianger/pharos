@@ -1,0 +1,17 @@
+=== mini→box headless Runtime 2026-11-10T13:13:00Z ===
+commit=86a45077d380730b0675f0dac760300b8e25c3d8
+member=xhost-box-ed4b878e marker=PHAROS_XHOST_BOX_DONE_ed4b878e
+note: Linux box has no Swift; Peer Host sync-serve not-tested; headless pharos-meshd+agy via SSH
+BOX_AGY_SESSION=f2e23eca-bb34-4540-a77a-4e33d1d2bffa
+BOX_CONVERSATION=8d987c85-42dd-4737-a301-b4f849ac638f
+BOX_SUBMIT={"conversationID":"8d987c85-42dd-4737-a301-b4f849ac638f","delivery":{"attempts":0,"conversationID":"8d987c85-42dd-4737-a301-b4f849ac638f","createdAt":"2026-11-10T13:13:13.104233764Z","detail":null,"id":"22d34d3e-614a-4bb8-83c6-e5e1a3d29c42","idempotencyKey":"mesh:C4C28A20-05F9-4F6B-ADED-5F9205BE96CE:xhost-box-ed4b878e","nextAttemptAt":0.0,"payload":"{\"body\": \"@agent Reply exactly PHAROS_XHOST_BOX_DONE_ed4b878e. Do not use tools or access files. Prefix with host=grok-bot.\", \"room\": \"xhost-box-ed4b878e\", \"messageID\": \"C4C28A20-05F9-4F6B-ADED-5F9205BE96CE\", \"sender\": \"human\", \"meshMessage\": {\"id\": \"C4C28A20-05F9-4F6B-ADED-5F9205BE96CE\", \"from\": \"human\", \"room\": \"xhost-box-ed4b878e\", \"text\": \"@agent Reply exactly PHAROS_XHOST_BOX_DONE_ed4b878e. Do not use tools or access files. Prefix with host=grok-bot.\", \"ts\": 1794316393.103939, \"to\": [\"agent\"], \"targetMemberIDs\": [\"xhost-box-ed4b878e\"], \"authorMemberID\": \"human@mini\"}}","replyState":null,"state":"queued","targetMemberId":"xhost-box-ed4b878e","turnId":null,"updatedAt":"2026-11-10T13:13:13.104233764Z"},"deliveryID":"22d34d3e-614a-4bb8-83c6-e5e1a3d29c42","submitted":true}
+BOX_DELIVERY=22d34d3e-614a-4bb8-83c6-e5e1a3d29c42
+BOX_REPLY_TEXT=host=grok-bot PHAROS_XHOST_BOX_DONE_ed4b878e
+BOX_RUNTIME_COMPLETED=1
+BOX_HOST=grok-bot-vm-51054904
+BOX_UNAME=Linux-x86_64
+BOX_COMMIT=86a45077d380730b0675f0dac760300b8e25c3d8
+BOX_SWIFT_HOST=not-tested (Linux; no Swift toolchain / pharos-mesh Host)
+BOX_PEER_RPC=not-tested (requires Swift sync-serve --host)
+XHOST mini→box HEADLESS DONE marker=PHAROS_XHOST_BOX_DONE_ed4b878e delivery=22d34d3e-614a-4bb8-83c6-e5e1a3d29c42 submitted=true
+EXIT:0

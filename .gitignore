@@ -24,6 +24,8 @@ DerivedData/
 .keys/
 *.p8
 secrets/
+human-proxy-webhook.env
+**/human-proxy-webhook.env
 
 # Editor
 .vscode/
