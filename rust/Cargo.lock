@@ -2464,10 +2464,17 @@ dependencies = [
  "pharos-agent-core",
  "pharos-api",
  "pharos-codex-adapter",
+ "pharos-goals",
+ "pharos-mesh",
+ "pharos-protocol",
+ "pharos-session",
  "pharos-thread",
  "serde",
  "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
  "time",
+ "tokio",
  "uuid",
 ]
 

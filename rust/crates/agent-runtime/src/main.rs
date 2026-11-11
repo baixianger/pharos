@@ -50,7 +50,23 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let options = Options::parse()?;
+    let session_data_dir = options.data_dir.clone();
     let runtime = Runtime::start(options.data_dir, options.thread_data_dir)?;
+    // Optional cross-host session Host: serve this host's SessionService to
+    // paired peers over the mesh. Startup failures are fatal and explicit.
+    if let Some(mesh_data_dir) = options.mesh_data_dir {
+        let service = session_service::local_session_service(&session_data_dir);
+        let host = mesh_bridge::spawn(
+            mesh_bridge::MeshBridgeOptions {
+                data_dir: mesh_data_dir,
+                runtime_socket: options.socket.clone(),
+                relay_disabled: options.mesh_relay_disabled,
+            },
+            service,
+        )
+        .map_err(|error| format!("mesh host bring-up failed: {error}"))?;
+        eprintln!("pharos-agent-runtime: {}", host.describe());
+    }
     if let Some(socket) = options.socket {
         serve_socket(socket, runtime.clone())?;
     }
@@ -68,6 +84,10 @@ struct Options {
     socket: Option<PathBuf>,
     data_dir: PathBuf,
     thread_data_dir: PathBuf,
+    /// When set, run as a cross-host session Host on this mesh data directory.
+    mesh_data_dir: Option<PathBuf>,
+    /// Disable iroh relays for the mesh endpoint (LAN / loopback runs).
+    mesh_relay_disabled: bool,
 }
 
 impl Options {
@@ -76,6 +96,8 @@ impl Options {
         let mut socket = None;
         let mut data_dir = default_data_dir();
         let mut thread_data_dir = default_thread_data_dir();
+        let mut mesh_data_dir = None;
+        let mut mesh_relay_disabled = false;
         let mut arguments = env::args().skip(1);
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
@@ -95,6 +117,12 @@ impl Options {
                             .ok_or("--thread-data-dir requires a path")?,
                     )
                 }
+                "--mesh-data-dir" => {
+                    mesh_data_dir = Some(PathBuf::from(
+                        arguments.next().ok_or("--mesh-data-dir requires a path")?,
+                    ))
+                }
+                "--mesh-relay-disabled" => mesh_relay_disabled = true,
                 _ => return Err(format!("unknown argument: {argument}")),
             }
         }
@@ -106,6 +134,8 @@ impl Options {
             socket,
             data_dir,
             thread_data_dir,
+            mesh_data_dir,
+            mesh_relay_disabled,
         })
     }
 }

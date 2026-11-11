@@ -13,9 +13,18 @@ path = "src/main.rs"
 [dependencies]
 pharos-agent-core.workspace = true
 pharos-api.workspace = true
+pharos-goals.workspace = true
+pharos-mesh = { path = "../pharos-mesh" }
+pharos-protocol.workspace = true
+pharos-session.workspace = true
 pharos-thread.workspace = true
 pharos-codex-adapter = { path = "../adapter-codex" }
 serde_json.workspace = true
 serde.workspace = true
+thiserror.workspace = true
 time.workspace = true
+tokio.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
