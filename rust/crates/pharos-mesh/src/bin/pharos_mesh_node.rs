@@ -14,6 +14,10 @@ use pharos_mesh::{
     init_node, issue_invitation, load_identity, load_peers, load_signing_key, open_handle,
     save_peer, verify_acceptance,
 };
+use pharos_protocol::host_session::{
+    HostApprovalDecision, HostSessionActionPayload, HostSessionActionRequest,
+    HostSessionQueryRequest,
+};
 use serde_json::json;
 
 #[tokio::main]
@@ -190,6 +194,85 @@ async fn run() -> Result<(), String> {
                 .map_err(err)?;
             println!("{}", serde_json::to_string_pretty(&response).map_err(err)?);
         }
+        "host-session-query" => {
+            let (data_dir, peer, host_device_id, relay_disabled) = host_session_peer(&flags)?;
+            let kind = str_flag_or(&flags, "--kind", "list");
+            let request = match kind.as_str() {
+                "list" => HostSessionQueryRequest::list_sessions(host_device_id),
+                "get" => HostSessionQueryRequest::get_session(
+                    host_device_id,
+                    str_flag(&flags, "--session")?,
+                ),
+                "history" => HostSessionQueryRequest::session_history(
+                    host_device_id,
+                    str_flag(&flags, "--session")?,
+                ),
+                other => {
+                    return Err(format!(
+                        "unknown --kind {other:?} (expected list|get|history)"
+                    ));
+                }
+            };
+            let handle = open_handle(data_dir, None, relay_disabled)
+                .await
+                .map_err(err)?;
+            let response = handle
+                .peer_host_session_query(peer, request, Duration::from_secs(30))
+                .await
+                .map_err(err)?;
+            print_json(response)?;
+        }
+        "host-session-action" => {
+            let (data_dir, peer, host_device_id, relay_disabled) = host_session_peer(&flags)?;
+            let session_id = str_flag(&flags, "--session")?;
+            let action_kind = str_flag_or(&flags, "--action", "send");
+            let action = match action_kind.as_str() {
+                "send" => HostSessionActionPayload::SendMessage {
+                    text: str_flag(&flags, "--text")?,
+                    request_id: flags.get("--request-id").cloned(),
+                },
+                "steer" => HostSessionActionPayload::Steer {
+                    text: str_flag(&flags, "--text")?,
+                },
+                "approve" | "resolve-approval" => HostSessionActionPayload::ResolveApproval {
+                    approval_id: str_flag(&flags, "--approval-id")?,
+                    decision: parse_approval_decision(&str_flag_or(
+                        &flags,
+                        "--decision",
+                        "allowedOnce",
+                    ))?,
+                },
+                "stop" => HostSessionActionPayload::Stop {
+                    force: flags.contains_key("--force"),
+                },
+                other => {
+                    return Err(format!(
+                        "unknown --action {other:?} (expected send|steer|approve|stop)"
+                    ));
+                }
+            };
+            let action_id = str_flag_or(&flags, "--action-id", &uuid::Uuid::new_v4().to_string());
+            let idempotency_key = str_flag_or(
+                &flags,
+                "--idempotency-key",
+                &uuid::Uuid::new_v4().to_string(),
+            );
+            let request = HostSessionActionRequest::new(
+                action_id,
+                host_device_id,
+                session_id,
+                idempotency_key,
+                action,
+            );
+            let handle = open_handle(data_dir, None, relay_disabled)
+                .await
+                .map_err(err)?;
+            let response = handle
+                .peer_host_session_action(peer, request, Duration::from_secs(60))
+                .await
+                .map_err(err)?;
+            print_json(response)?;
+        }
         "sync-push" => {
             let data_dir = path_flag(&flags, "--data-dir")?;
             let peer_endpoint = str_flag(&flags, "--peer-endpoint")?;
@@ -302,6 +385,29 @@ fn peer_dial(endpoint_id: &str, addr: Option<&str>) -> Result<PeerDial, String> 
     Ok(PeerDial { endpoint_id, addr })
 }
 
+fn host_session_peer(
+    flags: &HashMap<String, String>,
+) -> Result<(PathBuf, PeerDial, String, bool), String> {
+    let data_dir = path_flag(flags, "--data-dir")?;
+    let peer_endpoint = str_flag(flags, "--peer-endpoint")?;
+    let peer_addr = flags.get("--peer-addr").cloned();
+    let host_device_id = str_flag(flags, "--host-device-id")?;
+    let relay_disabled = flags.contains_key("--relay-disabled");
+    let peer = peer_dial(&peer_endpoint, peer_addr.as_deref())?;
+    Ok((data_dir, peer, host_device_id, relay_disabled))
+}
+
+fn parse_approval_decision(raw: &str) -> Result<HostApprovalDecision, String> {
+    match raw {
+        "allowedOnce" | "allowed-once" => Ok(HostApprovalDecision::AllowedOnce),
+        "allowedAlways" | "allowed-always" => Ok(HostApprovalDecision::AllowedAlways),
+        "rejected" => Ok(HostApprovalDecision::Rejected),
+        other => Err(format!(
+            "unknown --decision {other:?} (expected allowedOnce|allowedAlways|rejected)"
+        )),
+    }
+}
+
 fn parse_flags(args: &[String]) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let mut i = 0;
@@ -341,7 +447,7 @@ fn str_flag_or(flags: &HashMap<String, String>, name: &str, default: &str) -> St
 }
 
 fn usage() -> String {
-    "usage: pharos-mesh-node <init|invite|accept|serve|hello|call|sync-pull|sync-push|status|print-endpoint> --data-dir DIR ...".into()
+    "usage: pharos-mesh-node <init|invite|accept|serve|hello|call|host-session-query|host-session-action|sync-pull|sync-push|status|print-endpoint> --data-dir DIR ...\n\n  host-session-query  --data-dir DIR --peer-endpoint ID --host-device-id ID [--peer-addr ADDR] [--kind list|get|history] [--session ID]\n  host-session-action --data-dir DIR --peer-endpoint ID --host-device-id ID --session ID [--action send|steer|approve|stop] [--text TEXT] [--approval-id ID] [--decision allowedOnce|allowedAlways|rejected] [--request-id ID] [--action-id ID] [--force]".into()
 }
 
 fn err<E: std::fmt::Display>(e: E) -> String {
@@ -359,4 +465,34 @@ fn now_ts() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approval_decisions_accept_wire_and_kebab_names() {
+        assert_eq!(
+            parse_approval_decision("allowedOnce").unwrap(),
+            HostApprovalDecision::AllowedOnce
+        );
+        assert_eq!(
+            parse_approval_decision("allowed-always").unwrap(),
+            HostApprovalDecision::AllowedAlways
+        );
+        assert_eq!(
+            parse_approval_decision("rejected").unwrap(),
+            HostApprovalDecision::Rejected
+        );
+        assert!(parse_approval_decision("yes").is_err());
+    }
+
+    #[test]
+    fn peer_dial_parses_endpoint_id() {
+        let key = pharos_iroh::SecretKey::generate();
+        let endpoint = key.public();
+        let dial = peer_dial(&endpoint.to_string(), None).unwrap();
+        assert_eq!(dial.endpoint_id, endpoint);
+    }
 }
