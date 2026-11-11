@@ -5,11 +5,6 @@ import PharosClientKit
 /// A high-fidelity WebKit canvas rendering the DeepSeek Harness (DSH) style agent conversation stream.
 /// Features DeepSeek blue `#4176E6`, collapsible brain reasoning accordion, monospace tool execution cards,
 /// live typing cursor, and interactive approval cards.
-///
-/// On the rust-api path (`daemonBaseURL` set), WebKit loads the daemon-served UI at
-/// `http://127.0.0.1:<port>/` and product mutations (e.g. approval resolve) go through
-/// `fetch` to `/api/v1/...`. The legacy `pharosBridge` handler remains only as a
-/// compatibility shim for the desktop-mesh / file:// path.
 public struct PharosWebCanvasView: NSViewRepresentable {
     public let turns: [CanonicalTurn]
     public let liveStreamingText: String
@@ -17,8 +12,6 @@ public struct PharosWebCanvasView: NSViewRepresentable {
     public let activeApproval: CanonicalApprovalRequest?
     public let isTurnInProgress: Bool
     public let onResolveApproval: (ApprovalDecision) -> Void
-    /// When non-nil, load the S4 daemon Web UI instead of bundled file:// WebCanvas.
-    public let daemonBaseURL: URL?
 
     public init(
         turns: [CanonicalTurn],
@@ -26,11 +19,7 @@ public struct PharosWebCanvasView: NSViewRepresentable {
         liveReasoningText: String = "",
         activeApproval: CanonicalApprovalRequest? = nil,
         isTurnInProgress: Bool = false,
-        onResolveApproval: @escaping (ApprovalDecision) -> Void = { _ in },
-        daemonBaseURL: URL? = {
-            let config = PharosAPIConfiguration.resolve()
-            return config.backendKind == .rustAPI ? config.webUIURL : nil
-        }()
+        onResolveApproval: @escaping (ApprovalDecision) -> Void = { _ in }
     ) {
         self.turns = turns
         self.liveStreamingText = liveStreamingText
@@ -38,7 +27,6 @@ public struct PharosWebCanvasView: NSViewRepresentable {
         self.activeApproval = activeApproval
         self.isTurnInProgress = isTurnInProgress
         self.onResolveApproval = onResolveApproval
-        self.daemonBaseURL = daemonBaseURL
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -47,7 +35,6 @@ public struct PharosWebCanvasView: NSViewRepresentable {
 
     public func makeNSView(context: Context) -> WKWebView {
         let userContent = WKUserContentController()
-        // Compatibility shim only — product calls prefer fetch (see dsh-stream.js).
         userContent.add(context.coordinator, name: "pharosBridge")
 
         let config = WKWebViewConfiguration()
@@ -59,7 +46,7 @@ public struct PharosWebCanvasView: NSViewRepresentable {
         webView.enclosingScrollView?.drawsBackground = false
 
         context.coordinator.webView = webView
-        context.coordinator.loadContent()
+        context.coordinator.loadHTML()
 
         return webView
     }
@@ -78,19 +65,13 @@ public struct PharosWebCanvasView: NSViewRepresentable {
         private var lastStreamingText = ""
         private var lastReasoningText = ""
         private var lastApprovalId: String? = nil
+        private var lastInProgress = false
 
         init(_ parent: PharosWebCanvasView) {
             self.parent = parent
         }
 
-        func loadContent() {
-            // Phase D / S6: prefer daemon-served Web UI at S4 base URL.
-            if let daemonURL = parent.daemonBaseURL {
-                NSLog("PharosWebCanvasView: loading daemon UI \(daemonURL.absoluteString)")
-                webView?.load(URLRequest(url: daemonURL))
-                return
-            }
-
+        func loadHTML() {
             var htmlURL: URL? = nil
 
             // 1. Check Bundle.module (SwiftPM resource bundle)
@@ -144,6 +125,10 @@ public struct PharosWebCanvasView: NSViewRepresentable {
 
         func syncState(force: Bool = false) {
             guard isLoaded, let webView = webView else { return }
+            if force || parent.isTurnInProgress != lastInProgress {
+                lastInProgress = parent.isTurnInProgress
+                webView.evaluateJavaScript("window.pharosAPI.setRunning(\(lastInProgress));", completionHandler: nil)
+            }
 
             // 1. Sync turns
             if force || parent.turns.count != lastTurnCount {
@@ -168,25 +153,15 @@ public struct PharosWebCanvasView: NSViewRepresentable {
                 webView.evaluateJavaScript("window.pharosAPI.setLiveText(\"\(escaped)\");", completionHandler: nil)
             }
 
-            // 4. Sync approval (+ session context for fetch-based resolve on daemon path)
+            // 4. Sync approval
             let currentApprovalId = parent.activeApproval?.approvalId
             if force || currentApprovalId != lastApprovalId {
                 lastApprovalId = currentApprovalId
                 if let approval = parent.activeApproval,
                    let jsonData = try? JSONEncoder().encode(approval),
                    let jsonString = String(data: jsonData, encoding: .utf8) {
-                    let sid = escapeForJS(approval.sessionId)
-                    let aid = escapeForJS(approval.approvalId)
-                    webView.evaluateJavaScript(
-                        "window.pharosAPI.setSessionContext && window.pharosAPI.setSessionContext(\"\(sid)\", \"\(aid)\");",
-                        completionHandler: nil
-                    )
                     webView.evaluateJavaScript("window.pharosAPI.setApproval(\(jsonString));", completionHandler: nil)
                 } else if currentApprovalId == nil {
-                    webView.evaluateJavaScript(
-                        "window.pharosAPI.setSessionContext && window.pharosAPI.setSessionContext(null, null);",
-                        completionHandler: nil
-                    )
                     webView.evaluateJavaScript("window.pharosAPI.setApproval(null);", completionHandler: nil)
                 }
             }

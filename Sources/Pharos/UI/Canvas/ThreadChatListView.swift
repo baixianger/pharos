@@ -255,6 +255,27 @@ public struct ThreadChatListView: View {
                 Text("Unverified")
                     .font(.system(size: 9))
                     .foregroundStyle(.orange)
+            case .deliveryUncertain:
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                Text("Delivery uncertain — check before retrying")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+            case .deliveryRejected:
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                Text("Delivery blocked — agent identity is ambiguous")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+            case .deliveryMixed:
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                Text("Some deliveries blocked or uncertain — check before retrying")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
             }
         }
     }

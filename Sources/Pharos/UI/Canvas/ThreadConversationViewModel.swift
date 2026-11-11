@@ -19,6 +19,8 @@ public final class ThreadConversationViewModel {
     public var isSending: Bool = false
 
     private var eventListeningTask: Task<Void, Never>?
+    private var historyRefreshTask: Task<Void, Never>?
+    private var rosterRevision = 0
 
     public init(
         threadId: String,
@@ -34,59 +36,73 @@ public final class ThreadConversationViewModel {
 
     isolated deinit {
         eventListeningTask?.cancel()
+        historyRefreshTask?.cancel()
     }
 
     // MARK: - Lifecycle & History Loading
 
+    static func visibleAgentIDs(in summary: ClientThreadSummary, implicitHumanId: String = "human") -> [String] {
+        var seen: Set<String> = [implicitHumanId, "human", "tester"]
+        return summary.memberIds.filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
     public func loadThreadData() async {
+        startListeningToEvents()
         do {
-            // 1. Fetch thread summaries to resolve title and roster member IDs
-            let allThreads = try await clientService.fetchThreads()
-            if let found = allThreads.first(where: { $0.threadId == threadId }) {
-                self.threadSummary = found
-
-                // Implicit human participant invariant (RFC-006 §2):
-                // Filter out the human user so only autonomous agent members appear in the roster.
-                let agentMemberIds = found.memberIds.filter { id in
-                    id != implicitHumanId && id != "human" && id != "tester"
-                }
-
-                var loadedMembers: [ClientMemberDetail] = []
-                for name in agentMemberIds {
-                    if let detail = try? await clientService.fetchMemberDetail(name: name) {
-                        loadedMembers.append(detail)
-                    } else {
-                        // Fallback placeholder member detail if not registered in central member registry
-                        loadedMembers.append(ClientMemberDetail(
-                            name: name,
-                            agent: name,
-                            machine: "mesh",
-                            model: "default",
-                            mode: "yolo",
-                            status: "active",
-                            avatarSeed: name
-                        ))
-                    }
-                }
-                self.rosterMembers = loadedMembers
-            }
-
-            // 2. Fetch existing plain chat bubble messages
+            try await refreshRoster()
             let history = try await clientService.fetchThreadMessages(threadId: threadId)
             self.messages = history
         } catch {
             self.activeError = (error as? PharosClientError) ?? .operationFailed(error.localizedDescription)
         }
 
-        startListeningToEvents()
+        historyRefreshTask?.cancel()
+        historyRefreshTask = Task { [weak self, clientService, threadId] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled, let self else { return }
+                do { try await self.refreshRoster() }
+                catch { self.activeError = (error as? PharosClientError) ?? .operationFailed(error.localizedDescription) }
+                guard !self.isSending else { continue }
+                do {
+                    let history = try await clientService.fetchThreadMessages(threadId: threadId)
+                    guard !Task.isCancelled, !self.isSending else { continue }
+                    self.messages = history
+                } catch {
+                    self.activeError = (error as? PharosClientError) ?? .operationFailed(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    func refreshRoster() async throws {
+        let initialRevision = rosterRevision
+        let allThreads = try await clientService.fetchThreads()
+        guard let found = allThreads.first(where: { $0.threadId == threadId }) else {
+            guard rosterRevision == initialRevision else { return }
+            threadSummary = nil
+            rosterMembers = []
+            return
+        }
+        let ids = Self.visibleAgentIDs(in: found, implicitHumanId: implicitHumanId)
+        var loaded: [ClientMemberDetail] = []
+        for id in ids {
+            if let detail = try? await clientService.fetchMemberDetail(name: id) { loaded.append(detail) }
+            else {
+                loaded.append(ClientMemberDetail(name: id, agent: id, machine: "mesh", model: "", mode: "",
+                                                 status: "unknown", avatarSeed: id))
+            }
+        }
+        guard rosterRevision == initialRevision else { return }
+        threadSummary = found
+        rosterMembers = loaded
     }
 
     public func startListeningToEvents() {
         eventListeningTask?.cancel()
-        eventListeningTask = Task { [weak self] in
-            guard let self else { return }
-            for await event in self.clientService.events() {
-                guard !Task.isCancelled else { break }
+        eventListeningTask = Task { [weak self, clientService] in
+            for await event in clientService.events() {
+                guard let self, !Task.isCancelled else { break }
                 self.handleClientEvent(event)
             }
         }
@@ -99,7 +115,15 @@ public final class ThreadConversationViewModel {
         case .threadMessageReceived(let msg):
             guard msg.threadId == threadId else { return }
             if let idx = messages.firstIndex(where: { $0.id == msg.id }) {
-                messages[idx] = msg
+                let existing = messages[idx]
+                if existing.senderId == implicitHumanId {
+                    messages[idx] = ClientThreadMessage(id: msg.id, threadId: msg.threadId,
+                        senderId: existing.senderId, senderName: existing.senderName,
+                        senderAvatarSeed: msg.senderAvatarSeed, text: msg.text, timestamp: msg.timestamp,
+                        receipt: msg.receipt, attachments: msg.attachments, replyTo: msg.replyTo)
+                } else {
+                    messages[idx] = msg
+                }
             } else {
                 messages.append(msg)
             }
@@ -117,12 +141,17 @@ public final class ThreadConversationViewModel {
                     text: existing.text,
                     timestamp: existing.timestamp,
                     receipt: receipt,
-                    attachments: existing.attachments
+                    attachments: existing.attachments,
+                    replyTo: existing.replyTo
                 )
             }
 
         case .memberStatusChanged(let name, let status):
-            if let idx = rosterMembers.firstIndex(where: { $0.name == name }) {
+            let matchingIDs = rosterMembers.indices.filter { rosterMembers[$0].avatarSeed == name }
+            let matchingNames = rosterMembers.indices.filter { rosterMembers[$0].name == name }
+            let idx = matchingIDs.count == 1 ? matchingIDs.first : (matchingNames.count == 1 ? matchingNames.first : nil)
+            if let idx {
+                rosterRevision += 1
                 let m = rosterMembers[idx]
                 rosterMembers[idx] = ClientMemberDetail(
                     name: m.name,
@@ -177,15 +206,30 @@ public final class ThreadConversationViewModel {
                 text: confirmedMsg.text,
                 timestamp: confirmedMsg.timestamp,
                 receipt: confirmedMsg.receipt,
-                attachments: confirmedMsg.attachments
+                attachments: confirmedMsg.attachments,
+                replyTo: confirmedMsg.replyTo
             )
-            if let idx = messages.firstIndex(where: { $0.id == optimisticId }) {
-                messages[idx] = finalMsg
-            }
+            confirmSentMessage(finalMsg, optimisticId: optimisticId)
             isSending = false
         } catch {
             self.activeError = (error as? PharosClientError) ?? .operationFailed(error.localizedDescription)
             isSending = false
+        }
+    }
+
+    /// The event stream can announce the committed message before the send
+    /// call returns. Reconcile by server ID, never by text or timestamp.
+    func confirmSentMessage(_ confirmed: ClientThreadMessage, optimisticId: String) {
+        if let existing = messages.firstIndex(where: { $0.id == confirmed.id }) {
+            let eventMessage = messages[existing]
+            messages[existing] = ClientThreadMessage(id: eventMessage.id, threadId: eventMessage.threadId,
+                senderId: confirmed.senderId, senderName: confirmed.senderName,
+                senderAvatarSeed: eventMessage.senderAvatarSeed, text: eventMessage.text,
+                timestamp: eventMessage.timestamp, receipt: eventMessage.receipt,
+                attachments: eventMessage.attachments, replyTo: eventMessage.replyTo)
+            messages.removeAll { $0.id == optimisticId && $0.id != confirmed.id }
+        } else if let optimistic = messages.firstIndex(where: { $0.id == optimisticId }) {
+            messages[optimistic] = confirmed
         }
     }
 
@@ -201,7 +245,8 @@ public final class ThreadConversationViewModel {
                 text: existing.text,
                 timestamp: existing.timestamp,
                 receipt: receipt,
-                attachments: existing.attachments
+                attachments: existing.attachments,
+                replyTo: existing.replyTo
             )
         }
     }
