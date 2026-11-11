@@ -1388,6 +1388,16 @@ impl Registry {
             .collect()
     }
 
+    /// Whether this Runtime can post the correlated reply for a conversation:
+    /// external drivers must advertise `mesh.reply-once-v1`, while the built-in
+    /// managed Codex worker relays the final answer itself.
+    fn conversation_reply_capable(&self, conversation: &ConversationRecord) -> bool {
+        let builtin_codex = conversation.kind == "codex"
+            && conversation.driver_id == "codex:app-server"
+            && conversation.ownership == "managed";
+        builtin_codex || self.driver_reply_capable(&conversation.driver_id)
+    }
+
     fn driver_reply_capable(&self, driver_id: &str) -> bool {
         self.snapshot
             .drivers
@@ -1423,7 +1433,7 @@ impl Registry {
                     "eligible": true,
                     "kind": conversation.kind,
                     "vendorSessionID": conversation.vendor_session_id,
-                    "replyCapable": self.driver_reply_capable(&conversation.driver_id),
+                    "replyCapable": self.conversation_reply_capable(conversation),
                 })
             } else {
                 json!({
@@ -1477,7 +1487,7 @@ impl Registry {
                     .as_deref()
                     .unwrap_or(&conversation.vendor_session_id)
                     == session
-                && self.driver_reply_capable(&conversation.driver_id)
+                && self.conversation_reply_capable(conversation)
         } else {
             false
         }
@@ -1517,6 +1527,18 @@ impl Registry {
         // Replaying the same ack is a no-op: a consumer that retried after a
         // lost response must not re-trigger reply/completion side effects.
         if record.state == state && record.detail == detail {
+            return value(record.clone());
+        }
+        // Acks only move a delivery forward. A misordered/duplicate consumer
+        // must never resurrect an already-consumed message (the Codex worker
+        // would re-inject the prompt) nor rewrite a terminal outcome.
+        let current_rank = delivery_state_rank(&record.state);
+        let requested_rank = delivery_state_rank(&state);
+        let current_terminal = matches!(record.state.as_str(), "completed" | "failed");
+        if (current_terminal && record.state != state)
+            || requested_rank < current_rank
+            || requested_rank == current_rank
+        {
             return value(record.clone());
         }
         record.state = state;
@@ -1668,6 +1690,17 @@ impl Registry {
             .map_err(|error| RuntimeError::internal(error.to_string()))?;
         write_atomic(&self.data_dir.join("agent-runtime-registry.json"), &data)
             .map_err(RuntimeError::internal)
+    }
+
+    /// Best-effort persistence that never hides a disk failure from the daemon
+    /// log (state marked in memory must not silently diverge from disk).
+    fn persist_or_log(&self) {
+        if let Err(error) = self.persist() {
+            eprintln!(
+                "pharos-agent-runtime: registry persist failed: {}",
+                error.message
+            );
+        }
     }
 
     fn publish(&mut self, kind: &str, payload: Value) {
@@ -1882,10 +1915,14 @@ fn finish_codex_delivery(
             }
             .into(),
         );
+    } else if turn_id.is_some() {
+        // The turn ran, but the envelope carried no usable room/message anchor:
+        // record that explicitly instead of leaving the reply silently unarmed.
+        delivery.reply_state = Some("missing-correlation".into());
     }
     delivery.updated_at = now_rfc3339();
     delivery.next_attempt_at = 0.0;
-    let _ = registry.persist();
+    registry.persist_or_log();
     registry.publish(
         "delivery.consumed",
         json!({"deliveryID": delivery_id, "kind": "codex"}),
@@ -2032,7 +2069,7 @@ fn finish_codex_reply(
     };
     delivery.updated_at = now_rfc3339();
     delivery.next_attempt_at = 0.0;
-    let _ = registry.persist();
+    registry.persist_or_log();
     registry.publish(
         "delivery.reply.changed",
         json!({"deliveryID": job.delivery_id, "state": state}),
@@ -2069,7 +2106,7 @@ fn record_codex_reply_failure(registry: &Arc<Mutex<Registry>>, job: &CodexReplyJ
     }
     let state = delivery.reply_state.clone().unwrap_or_default();
     let attempts = delivery.reply_attempts;
-    let _ = registry.persist();
+    registry.persist_or_log();
     registry.publish(
         "delivery.reply.changed",
         json!({"deliveryID": job.delivery_id, "state": state, "attempts": attempts}),
@@ -2109,7 +2146,7 @@ fn release_codex_delivery(
             };
         delivery.attempts
     };
-    let _ = registry.persist();
+    registry.persist_or_log();
     registry.publish(
         "delivery.requeued",
         json!({
@@ -2162,6 +2199,18 @@ fn enum_value(params: &Value, key: &str, allowed: &[&str]) -> Result<String, Run
         .contains(&value.as_str())
         .then_some(value)
         .ok_or_else(|| RuntimeError::invalid(key))
+}
+
+/// Delivery lifecycle ordering; `completed`/`failed` are both terminal.
+fn delivery_state_rank(state: &str) -> u8 {
+    match state {
+        "queued" => 0,
+        "accepted" => 1,
+        "injected" => 2,
+        "consumed" => 3,
+        "completed" | "failed" => 4,
+        _ => 0,
+    }
 }
 
 fn state_source_rank(source: &str) -> u8 {
@@ -3235,6 +3284,14 @@ mod tests {
         assert_eq!(first["state"], replay["state"]);
         assert_eq!(first["detail"], replay["detail"]);
         assert_eq!(registry.snapshot.deliveries.len(), 1);
+        // A misordered/duplicate consumer must not regress an acked delivery.
+        let regressed = registry
+            .invoke(
+                "delivery.ack",
+                &json!({"deliveryID": delivery_id, "state": "injected"}),
+            )
+            .unwrap();
+        assert_eq!(regressed["state"], "consumed");
         let events = registry
             .invoke("events.resume", &json!({"cursor": 0}))
             .unwrap();
@@ -3244,7 +3301,8 @@ mod tests {
             .iter()
             .filter(|event| event["kind"] == "delivery.acked")
             .count();
-        assert_eq!(acked, 2, "replayed identical ack must not publish again");
+        assert_eq!(acked, 2, "replayed/backward acks must not publish again");
+        assert_eq!(registry.snapshot.deliveries[0].state, "consumed");
         fs::remove_dir_all(directory).ok();
     }
 
@@ -3282,6 +3340,15 @@ mod tests {
             .unwrap();
         assert_eq!(routed["submitted"], true);
         assert_eq!(routed["delivery"]["targetMemberID"], "thread-codex");
+        // The runtime relays Codex final answers itself, so the builtin managed
+        // route is reply-capable even without a plugin driver capability.
+        let routes = registry
+            .invoke(
+                "delivery.inspect-members",
+                &json!({"memberIDs": ["thread-codex"]}),
+            )
+            .unwrap();
+        assert_eq!(routes["routes"][0]["replyCapable"], true);
         fs::remove_dir_all(directory).ok();
     }
 
@@ -3559,6 +3626,23 @@ mod tests {
             delivery_reply_state(&registry, &other).1.as_deref(),
             Some("no-final-answer")
         );
+
+        // Interrupted turns are terminal failures for reply purposes, never a
+        // posted reply and never a silent wait.
+        let interrupted = add_codex_delivery(&registry, "thread-codex", "room-a", "message-c");
+        finish_codex_delivery(&registry, &interrupted, Some("turn-three"));
+        let job = claim_reply(&registry, &interrupted);
+        apply_codex_reply(
+            &registry,
+            &mut sink,
+            &job,
+            &recorded_thread("turn-three", "interrupted", json!([])),
+        );
+        assert!(sink.posted.is_empty());
+        assert_eq!(
+            delivery_reply_state(&registry, &interrupted).1.as_deref(),
+            Some("turn-failed")
+        );
         fs::remove_dir_all(directory).ok();
     }
 
@@ -3615,6 +3699,31 @@ mod tests {
         assert_eq!(
             delivery_reply_state(&registry, &other).1.as_deref(),
             Some("missing-turn-id")
+        );
+        assert!(claim_codex_reply(&registry).is_none());
+
+        // The turn ran, but the payload had no room/message anchor: record the
+        // missing correlation explicitly instead of silently skipping the reply.
+        let uncorrelated = {
+            let mut guard = registry.lock().unwrap();
+            let conversation_id = guard.snapshot.conversations[0].id.clone();
+            guard
+                .invoke(
+                    "delivery.submit",
+                    &json!({
+                        "conversationID": conversation_id, "idempotencyKey": "direct-2",
+                        "payload": "wake"
+                    }),
+                )
+                .unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        finish_codex_delivery(&registry, &uncorrelated, Some("turn-plain"));
+        assert_eq!(
+            delivery_reply_state(&registry, &uncorrelated).1.as_deref(),
+            Some("missing-correlation")
         );
         assert!(claim_codex_reply(&registry).is_none());
         fs::remove_dir_all(directory).ok();
