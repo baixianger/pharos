@@ -500,4 +500,85 @@ mod tests {
         let mapped = map_session_error(SessionError::Adapter("boom".into()));
         assert!(matches!(mapped, PharosApiError::OperationFailed { .. }));
     }
+
+    #[tokio::test]
+    async fn http_routes_use_live_real_session_service() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let events = EventBus::new(16);
+        let sessions = RealSessionService::with_live_adapter(
+            Box::new(FakeAdapter),
+            goals(dir.path()),
+            events.clone(),
+            "codex",
+        );
+        sessions
+            .start_session("/tmp/pharos-live-ws", Some("yolo"))
+            .unwrap();
+        let state = crate::AppState::new(
+            Arc::new(crate::services::FakeThreadService::new(events.clone())),
+            Arc::new(sessions),
+            events,
+        );
+        let app = crate::router::api_router(state);
+
+        async fn json(
+            app: &axum::Router,
+            method: &str,
+            uri: &str,
+            body: &str,
+        ) -> (StatusCode, serde_json::Value) {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            (status, serde_json::from_slice(&bytes).unwrap())
+        }
+
+        let (status, list) = json(&app, "GET", "/api/v1/sessions", "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(list.as_array().unwrap().len(), 1);
+        assert_eq!(list[0]["sessionId"], "live-session-1");
+        assert_eq!(list[0]["agentType"], "codex");
+
+        let (status, history) =
+            json(&app, "GET", "/api/v1/sessions/live-session-1/history", "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(history, serde_json::json!([]));
+
+        let (status, turn) = json(
+            &app,
+            "POST",
+            "/api/v1/sessions/live-session-1/messages",
+            r#"{"text":"hello"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(turn["status"], "completed");
+        assert_eq!(turn["assistantText"][0], "PHAROS_FAKE_OK");
+
+        let (status, history) =
+            json(&app, "GET", "/api/v1/sessions/live-session-1/history", "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(history.as_array().unwrap().len(), 1);
+
+        let (status, progress) =
+            json(&app, "GET", "/api/v1/sessions/live-session-1/progress", "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(progress["todos"].as_array().unwrap().is_empty());
+    }
 }
