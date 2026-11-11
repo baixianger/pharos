@@ -9,10 +9,7 @@
 //! [`crate::services`] under the Host data dir.
 
 use crate::error::{ApiError, ApiResult};
-use crate::services::{
-    MemberSettingsPatch, MemberSettingsService, MemberSettingsView, StoreError, ThreadBinding,
-    ThreadBindingService,
-};
+use crate::services::{MemberSettingsPatch, MemberSettingsView, StoreError, ThreadBinding};
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, State};
@@ -26,6 +23,10 @@ use serde_json::{Value, json};
 pub const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 /// Hard cap for a decoded avatar (512 KiB).
 pub const MAX_AVATAR_BYTES: usize = 512 * 1024;
+/// Maximum accepted JSON body (base64-encoded 10 MiB attachment + slack). The
+/// handlers still enforce the decoded size limits; this only stops axum's
+/// default 2 MiB extractor limit from answering 413 for valid uploads.
+pub const MAX_ENCODED_BODY_BYTES: usize = 16 * 1024 * 1024;
 /// Upper bound for the encoded string itself, checked before decoding so a
 /// hostile body cannot force a huge allocation.
 fn max_encoded_len(decoded_max: usize) -> usize {
@@ -431,9 +432,12 @@ pub async fn get_attachment_content(
 
 // --- member settings / avatars ---------------------------------------------
 
-fn serialize_settings(mut settings: MemberSettingsView, bindings: Vec<ThreadBinding>) -> Value {
-    settings.bindings = bindings.iter().map(ThreadBinding::view).collect();
-    json!(settings)
+fn serialize_settings(settings: MemberSettingsView, bindings: Vec<ThreadBinding>) -> Value {
+    // The contract always exposes `bindings` (possibly empty); the store view
+    // skips empty vectors, so build the wire object explicitly.
+    let mut value = json!(settings);
+    value["bindings"] = json!(bindings.iter().map(ThreadBinding::view).collect::<Vec<_>>());
+    value
 }
 
 async fn settings_with_bindings(state: &AppState, member_id: &str) -> ApiResult<Value> {

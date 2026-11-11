@@ -87,6 +87,12 @@ pub fn api_router(state: AppState) -> Router {
                 .put(web_routes::put_member_avatar)
                 .delete(web_routes::delete_member_avatar),
         )
+        // Base64 JSON uploads need headroom over the 2 MiB axum default; the
+        // handlers enforce the real decoded limits (10 MiB attachment / 512 KiB
+        // avatar) and answer 400, not the extractor's opaque 413.
+        .layer(axum::extract::DefaultBodyLimit::max(
+            web_routes::MAX_ENCODED_BODY_BYTES,
+        ))
         .with_state(state)
 }
 
