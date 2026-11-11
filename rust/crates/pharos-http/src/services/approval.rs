@@ -10,9 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use async_trait::async_trait;
-use pharos_api::{
-    ApprovalDecision, ApprovalKind, ApprovalRequest, ClientEvent, PharosApiError,
-};
+use pharos_api::{ApprovalDecision, ApprovalKind, ApprovalRequest, ClientEvent, PharosApiError};
 use pharos_hitl::{
     ApprovalRegistry, ApprovalStoreError, HITL_TIMEOUT_SECS, PendingApprovalStore, RecordOutcome,
     ResolveOutcome, StoredApproval, SystemWallClock, WallClock,
@@ -128,10 +126,7 @@ fn decision_of(record: &StoredApproval) -> ApprovalDecision {
     record.decision.unwrap_or(ApprovalDecision::Rejected)
 }
 
-fn resolve_response(
-    record: StoredApproval,
-    already_resolved: bool,
-) -> ResolveApprovalResponse {
+fn resolve_response(record: StoredApproval, already_resolved: bool) -> ResolveApprovalResponse {
     ResolveApprovalResponse {
         ok: true,
         approval_id: record.approval_id.clone(),

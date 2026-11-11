@@ -21,10 +21,7 @@ fn approval(approval_id: &str) -> ApprovalRequest {
             params: json!({ "command": "printf PHAROS_HITL_PERSIST_OK" }),
             explanation: Some("e2e pending approval".to_string()),
         },
-        available_choices: Some(vec![
-            "allowedOnce".to_string(),
-            "rejected".to_string(),
-        ]),
+        available_choices: Some(vec!["allowedOnce".to_string(), "rejected".to_string()]),
     }
 }
 
@@ -158,7 +155,9 @@ async fn pending_approval_survives_restart_and_is_decided_once() {
     assert!(replay.already_resolved);
     assert_eq!(replay.decision, ApprovalDecision::AllowedOnce);
     assert!(
-        dir.path().join(pharos_web::PENDING_APPROVALS_FILE).is_file(),
+        dir.path()
+            .join(pharos_web::PENDING_APPROVALS_FILE)
+            .is_file(),
         "approval store file must exist in the data dir"
     );
 }

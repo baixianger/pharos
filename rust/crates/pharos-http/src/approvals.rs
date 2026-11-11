@@ -42,9 +42,7 @@ pub async fn list_approvals(
             .into());
         }
     }
-    let session_id = query
-        .session_id
-        .filter(|value| !value.trim().is_empty());
+    let session_id = query.session_id.filter(|value| !value.trim().is_empty());
     let approvals = state.approvals.list_pending(session_id).await?;
     Ok(Json(PendingApprovalListResponse { approvals }))
 }
