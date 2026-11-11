@@ -76,7 +76,7 @@ impl HostSessionHandler for RecordingHostSessions {
                     .iter()
                     .find(|session| session.session_id == session_id)
                     .cloned()
-                    .ok_or_else(|| HostSessionFault::UnknownSession(session_id))?;
+                    .ok_or(HostSessionFault::UnknownSession(session_id))?;
                 Ok(HostSessionQueryResponse::new(
                     host,
                     request.query_kind,
