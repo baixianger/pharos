@@ -41,7 +41,8 @@ pub trait ThreadService: Send + Sync {
         request: ReplyThreadMessageRequest,
     ) -> Result<ReplyThreadMessageResponse, PharosApiError>;
 
-    /// Create a durable Thread (idempotent: an existing id is returned as-is).
+    /// Create a durable Thread. Idempotent: an existing Thread id is reused and
+    /// requested members are joined if they are not already present.
     ///
     /// Default: services that cannot create threads must report an explicit
     /// error rather than pretend success.

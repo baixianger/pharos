@@ -57,6 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
     let webui_dir = pharos_web::resolve_webui_dir(args.webui_dir)?;
 
+    let explicit_data_dir = args.data_dir.is_some();
     let data_dir = match args.data_dir {
         Some(data_dir) => data_dir,
         None => pharos_web::default_data_dir()?,
@@ -87,6 +88,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let session_adapter = SessionAdapterChoice::parse(&args.session_adapter)?;
 
     let state = if args.fake {
+        if explicit_data_dir {
+            tracing::warn!(
+                "pharos-web --fake: --data-dir/PHAROS_WEB_DATA_DIR is ignored (nothing is persisted)"
+            );
+        }
+        if args.session_adapter != "none" {
+            tracing::warn!(
+                session_adapter = %args.session_adapter,
+                "pharos-web --fake: --session-adapter is ignored (fake in-memory sessions are used)"
+            );
+        }
         tracing::warn!(
             data_dir = %data_dir.display(),
             "pharos-web --fake: using in-memory FakeThreadService + FakeSessionService; data will NOT persist"

@@ -5,6 +5,8 @@
 //!
 //! - translates [`pharos_thread::ThreadError`] → [`PharosApiError`],
 //! - applies the server's sender identity (HTTP has no per-user identity yet),
+//! - normalizes the store's numeric epoch timestamps to RFC3339 for the API
+//!   (the browser `Date` parser rejects `"1794411586.349847555"`),
 //! - publishes `threadMessageReceived` frames to the WS [`EventBus`].
 
 use std::sync::Arc;
@@ -16,6 +18,8 @@ use pharos_api::{
 };
 use pharos_protocol::grokbot;
 use pharos_thread::{SenderIdentity, SqliteThreadStore, ThreadError};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 // Trait needed for the inherent store methods; aliased to avoid clashing with
 // the S4 HTTP `ThreadService` trait implemented below.
 use pharos_thread::ThreadService as CoreThreadService;
@@ -84,16 +88,23 @@ impl RealThreadService {
 #[async_trait]
 impl ThreadService for RealThreadService {
     async fn list_threads(&self) -> Result<Vec<ThreadSummary>, PharosApiError> {
-        self.store.list_threads().map_err(map_thread_error)
+        self.store
+            .list_threads()
+            .map(|threads| threads.into_iter().map(normalize_summary).collect())
+            .map_err(map_thread_error)
     }
 
     async fn get_thread(&self, thread_id: &str) -> Result<ThreadSummary, PharosApiError> {
-        self.store.get_thread(thread_id).map_err(map_thread_error)
+        self.store
+            .get_thread(thread_id)
+            .map(normalize_summary)
+            .map_err(map_thread_error)
     }
 
     async fn list_messages(&self, thread_id: &str) -> Result<Vec<ThreadMessage>, PharosApiError> {
         self.store
             .list_messages(thread_id, Some(MESSAGE_LIMIT), None)
+            .map(|messages| messages.into_iter().map(normalize_message).collect())
             .map_err(map_thread_error)
     }
 
@@ -109,6 +120,7 @@ impl ThreadService for RealThreadService {
             .store
             .send_message(thread_id, &self.sender, request)
             .map_err(map_thread_error)?;
+        let message = normalize_message(message);
         self.publish_message(&message);
         Ok(message)
     }
@@ -122,9 +134,7 @@ impl ThreadService for RealThreadService {
             .store
             .reply_message(thread_id, request)
             .map_err(map_thread_error)?;
-        if let Ok(messages) = self
-            .store
-            .list_messages(thread_id, Some(MESSAGE_LIMIT), None)
+        if let Ok(messages) = self.list_messages(thread_id).await
             && let Some(message) = messages.iter().find(|m| m.id == response.reply_id)
         {
             self.publish_message(message);
@@ -137,21 +147,91 @@ impl ThreadService for RealThreadService {
         request: CreateThreadRequest,
     ) -> Result<ThreadSummary, PharosApiError> {
         let thread_id = validate_thread_id(&request.thread_id)?;
-        // Idempotent: `ensure_room` returns an existing room unchanged.
+        // Validate every member before touching storage so a bad request cannot
+        // leave a half-created room behind.
+        let mut members = Vec::with_capacity(request.member_ids.len());
+        for member_id in &request.member_ids {
+            members.push(validate_member_id(member_id)?);
+        }
+        // Idempotent: an existing room is reused; requested members are joined
+        // if they are not already present.
         self.store
             .ensure_room(thread_id)
             .map_err(map_thread_error)?;
         self.join_member(thread_id, &self.sender.member_id)?;
-        for member_id in &request.member_ids {
-            if member_id.trim().is_empty() {
-                return Err(PharosApiError::InvalidRequest {
-                    message: "memberIds must not contain empty entries".into(),
-                });
-            }
-            self.join_member(thread_id, member_id.trim())?;
+        for member_id in members {
+            self.join_member(thread_id, member_id)?;
         }
-        self.store.get_thread(thread_id).map_err(map_thread_error)
+        self.store
+            .get_thread(thread_id)
+            .map(normalize_summary)
+            .map_err(map_thread_error)
     }
+}
+
+/// Normalize the store's numeric epoch timestamps (`"<secs>.<nanos>"`) to
+/// RFC3339 so browser `Date` parsing and the frozen API contract work. Values
+/// that are already RFC3339 (or unparsable) are passed through unchanged.
+pub fn normalize_timestamp(raw: &str) -> String {
+    let (secs_raw, frac_raw) = match raw.split_once('.') {
+        Some((secs, frac)) => (secs, frac),
+        None => (raw, ""),
+    };
+    let Ok(secs) = secs_raw.parse::<i64>() else {
+        return raw.to_string();
+    };
+    let mut nanos: i128 = 0;
+    if !frac_raw.is_empty() {
+        if !frac_raw.bytes().all(|byte| byte.is_ascii_digit()) {
+            return raw.to_string();
+        }
+        let digits: String = frac_raw.chars().take(9).collect();
+        let padded = format!("{digits:0<9}");
+        nanos = padded.parse::<i128>().unwrap_or(0);
+    }
+    let Ok(timestamp) = (secs as i128)
+        .checked_mul(1_000_000_000)
+        .and_then(|base| base.checked_add(nanos))
+        .ok_or(())
+    else {
+        return raw.to_string();
+    };
+    let Ok(datetime) = OffsetDateTime::from_unix_timestamp_nanos(timestamp) else {
+        return raw.to_string();
+    };
+    datetime
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| raw.to_string())
+}
+
+fn normalize_summary(mut summary: ThreadSummary) -> ThreadSummary {
+    summary.last_activity_at = normalize_timestamp(&summary.last_activity_at);
+    summary
+}
+
+fn normalize_message(mut message: ThreadMessage) -> ThreadMessage {
+    message.timestamp = normalize_timestamp(&message.timestamp);
+    message
+}
+
+fn validate_member_id(raw: &str) -> Result<&str, PharosApiError> {
+    let member_id = raw.trim();
+    if member_id.is_empty() {
+        return Err(PharosApiError::InvalidRequest {
+            message: "memberIds must not contain empty entries".into(),
+        });
+    }
+    if member_id.chars().count() > MAX_THREAD_ID_LEN {
+        return Err(PharosApiError::InvalidRequest {
+            message: format!("memberIds entries must be at most {MAX_THREAD_ID_LEN} characters"),
+        });
+    }
+    if member_id.chars().any(char::is_control) {
+        return Err(PharosApiError::InvalidRequest {
+            message: "memberIds entries must not contain control characters".into(),
+        });
+    }
+    Ok(member_id)
 }
 
 /// Resolve the nick / kind recorded for a member id.
@@ -380,5 +460,73 @@ mod tests {
             }
         }
         assert_eq!(published, 3);
+    }
+
+    #[test]
+    fn normalize_timestamp_formats_store_epoch_as_rfc3339() {
+        // The store emits `"<secs>.<nanos>"`; the browser Date parser needs
+        // RFC3339 (regression: real mode rendered "Invalid Date").
+        let normalized = normalize_timestamp("1794411586.349847555");
+        assert_eq!(normalized, "2026-11-11T15:39:46.349847555Z");
+        assert_eq!(normalize_timestamp("0"), "1970-01-01T00:00:00Z");
+        assert_eq!(normalize_timestamp("1.5"), "1970-01-01T00:00:01.5Z");
+        // Already-RFC3339 or unparsable values pass through untouched.
+        assert_eq!(
+            normalize_timestamp("2026-11-11T00:00:00Z"),
+            "2026-11-11T00:00:00Z"
+        );
+        assert_eq!(normalize_timestamp("not-a-timestamp"), "not-a-timestamp");
+        assert_eq!(normalize_timestamp("12.not-digits"), "12.not-digits");
+    }
+
+    #[tokio::test]
+    async fn api_timestamps_are_rfc3339() {
+        let service = service();
+        service
+            .create_thread(CreateThreadRequest {
+                thread_id: "thread-ts".into(),
+                member_ids: vec!["human".into(), "grokbot".into()],
+            })
+            .await
+            .unwrap();
+        let message = service
+            .send_message(
+                "thread-ts",
+                SendThreadMessageRequest {
+                    text: "hi".into(),
+                    target_member_ids: vec![],
+                    reply_to_message_id: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            message.timestamp.contains('T') && message.timestamp.ends_with('Z'),
+            "message timestamp must be RFC3339, got {}",
+            message.timestamp
+        );
+        let threads = service.list_threads().await.unwrap();
+        assert!(
+            threads[0].last_activity_at.contains('T'),
+            "lastActivityAt must be RFC3339, got {}",
+            threads[0].last_activity_at
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_member_id_does_not_create_thread() {
+        let service = service();
+        let error = service
+            .create_thread(CreateThreadRequest {
+                thread_id: "thread-bad-member".into(),
+                member_ids: vec!["human".into(), "   ".into()],
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, PharosApiError::InvalidRequest { .. }));
+        assert!(
+            service.list_threads().await.unwrap().is_empty(),
+            "a rejected member list must not leave a half-created room"
+        );
     }
 }

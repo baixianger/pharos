@@ -210,6 +210,12 @@ async fn real_thread_roundtrip_persists_across_restart() {
         assert!(!id.is_empty(), "message id must not be empty");
         assert_eq!(sent["senderId"], "human");
         assert_eq!(sent["text"], "hello");
+        assert!(
+            sent["timestamp"]
+                .as_str()
+                .is_some_and(|timestamp| timestamp.contains('T') && timestamp.ends_with('Z')),
+            "real-mode timestamp must be RFC3339 for the browser UI: {sent}"
+        );
         message_id = id;
 
         let (status, messages) = get_json(

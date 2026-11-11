@@ -36,10 +36,13 @@ const UNAUTHENTICATED_PATHS: &[&str] = &["/health"];
 pub struct AuthToken(Arc<str>);
 
 impl AuthToken {
-    /// Validate and wrap a token. Empty or whitespace-only tokens are rejected.
+    /// Validate and wrap a token. Empty or whitespace-only tokens are rejected;
+    /// surrounding whitespace is trimmed so the token is usable verbatim in an
+    /// `Authorization: Bearer …` header.
     pub fn new(token: impl Into<String>) -> Result<Self, String> {
         let token = token.into();
-        if token.trim().is_empty() {
+        let token = token.trim();
+        if token.is_empty() {
             return Err("auth token must not be empty or blank".to_string());
         }
         Ok(Self(Arc::from(token)))
@@ -248,6 +251,14 @@ mod tests {
         assert!(AuthToken::new("   ").is_err());
         assert!(AuthToken::new("\t\n ").is_err());
         assert!(AuthToken::new("token").is_ok());
+    }
+
+    #[test]
+    fn new_trims_surrounding_whitespace_so_headers_work() {
+        let padded = AuthToken::new("  padded-token \n").expect("padded token");
+        assert!(padded.matches("padded-token"));
+        assert!(!padded.matches("  padded-token \n"));
+        assert_eq!(padded.as_str(), "padded-token");
     }
 
     #[test]
