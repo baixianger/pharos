@@ -4,6 +4,10 @@
   let state;
   let collections = { sessions: [], threads: [], projects: [] };
   let generation = 0;
+  let socketGeneration = 0;
+  let reconnectTimer = null;
+  let reconnectDelay = 200;
+  const disconnected = 'Live updates disconnected; reconnecting…';
   const identity = { shape: 'sphere', color: 'black' };
   const enc = encodeURIComponent;
   const unavailable = action => { throw new Error(`${action} is unavailable: the Rust API does not expose this operation`); };
@@ -21,6 +25,32 @@
   }
   function turn(t) {
     return { ...t, steps: (t.assistantText || []).length ? [{ stepId: `${t.turnId}-step1`, stepNumber: 1, status: 'completed', blocks: t.assistantText.map((text, i) => ({ blockId: `${t.turnId}-${i}`, kind: { type: 'assistantText', text } })) }] : [] };
+  }
+  function normalizeApproval(approval) {
+    const choices = { allowedOnce: 'allowed_once', allowedAlways: 'allowed_always' };
+    return { ...approval, availableChoices: approval.availableChoices?.map(choice => choices[choice] || choice) };
+  }
+  function upsertApproval(approval) {
+    const normalized = normalizeApproval(approval);
+    const index = state.pendingApprovals.findIndex(item => item.approvalId === normalized.approvalId);
+    if (index === -1) state.pendingApprovals.push(normalized);
+    else state.pendingApprovals[index] = normalized;
+  }
+  function removeApproval(approvalId) {
+    state.pendingApprovals = state.pendingApprovals.filter(item => item.approvalId !== approvalId);
+  }
+  function pickApproval() {
+    if (!state.selection) return null;
+    const pending = state.pendingApprovals.filter(item => item.sessionId === state.selection);
+    pending.sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+    return pending[0] ?? null;
+  }
+  function syncApproval() { state.approval = pickApproval(); }
+  async function loadApprovals() {
+    const snapshot = await request('/api/v1/approvals?state=pending');
+    state.pendingApprovals = (Array.isArray(snapshot?.approvals) ? snapshot.approvals : []).map(normalizeApproval);
+    syncApproval();
+    publish();
   }
   async function refresh() {
     const current = ++generation;
@@ -44,14 +74,15 @@
       detail: selected ? { sessionID: selected.sessionId || '', agent: selected.agentType || '', host: selected.machineId || '', status: selected.status || '', workspace: selected.workspacePath || selected.projectPath || '', model: '', mode: '', models: [] } : null,
       projectHosts: selected?.trackedDevices || [], projectInventoryLoaded: !!selected?.relatedSessionIds,
       projectSessions: sessions.filter(s => selected?.relatedSessionIds?.includes(s.sessionId)) });
+    syncApproval();
     publish();
   }
   async function dispatch(action, payload = {}) {
     if (bridge) { bridge.postMessage({ action, payload }); return; }
     try {
-      if (action === 'selectTab') { state.error = null; state.approval = null; state.tab = payload.tab; state.selection = null; await refresh(); }
-      else if (action === 'selectRow') { state.error = null; state.approval = null; state.selection = payload.id; await refresh(); }
-      else if (action === 'openProjectSession') { state.approval = null; state.tab = 'sessions'; state.selection = payload.sessionId; await refresh(); }
+      if (action === 'selectTab') { state.error = null; state.tab = payload.tab; state.selection = null; await refresh(); }
+      else if (action === 'selectRow') { state.error = null; state.selection = payload.id; await refresh(); }
+      else if (action === 'openProjectSession') { state.tab = 'sessions'; state.selection = payload.sessionId; await refresh(); }
       else if (action === 'dismissError') { state.error = null; publish(); }
       else if (action === 'send') {
         if (payload.files?.length) unavailable('Session attachments');
@@ -67,6 +98,7 @@
         const decision = { allowed_once: 'allowedOnce', allowed_always: 'allowedAlways', rejected: 'rejected' }[payload.choice];
         if (!decision) unavailable('Approval choice');
         await request(`/api/v1/sessions/${enc(payload.sessionId)}/approval`, { approvalId: payload.approvalId, decision });
+        removeApproval(payload.approvalId);
         state.approval = null;
         await refresh();
       } else unavailable(action);
@@ -75,27 +107,63 @@
       state.error = error.message || String(error); publish();
     }
   }
-  function start() {
-    if (bridge || !document.getElementById('grok-ui-mockup')) return;
-    state = { tab: 'sessions', selection: null, title: 'Pharos', theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light', rows: [], identity, activity: 'idle', canSend: true, detail: null, turns: [], streamingText: '', reasoningText: '', tools: [], approval: null, goal: null, todos: [], messages: [], members: [], error: null, submissionResults: {} };
-    publish();
-    refresh().catch(error => { state.error = error.message; publish(); });
+  async function refreshLive() {
+    try {
+      await loadApprovals();
+      await refresh();
+    } catch (error) {
+      state.error = error.message || String(error);
+      publish();
+    }
+  }
+  function scheduleReconnect() {
+    if (reconnectTimer !== null) return;
+    const delay = reconnectDelay;
+    reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+    reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
+  }
+  function connect() {
+    if (bridge || !state) return;
+    const current = ++socketGeneration;
     const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${scheme}//${location.host}/api/v1/events`);
+    ws.onopen = () => {
+      if (current !== socketGeneration) return;
+      reconnectDelay = 200;
+      if (state.error === disconnected) state.error = null;
+      publish();
+      refreshLive();
+    };
     ws.onmessage = message => {
+      if (current !== socketGeneration) return;
       try {
         const event = JSON.parse(message.data);
-        if ((event.eventType === 'approvalRequired' || event.eventType === 'approvalUpdated') && event.approval?.sessionId === state.selection) {
-          const choices = { allowedOnce: 'allowed_once', allowedAlways: 'allowed_always' };
-          state.approval = { ...event.approval, availableChoices: event.approval.availableChoices?.map(choice => choices[choice] || choice) };
+        if ((event.eventType === 'approvalRequired' || event.eventType === 'approvalUpdated') && event.approval) {
+          upsertApproval(event.approval);
+          syncApproval();
           publish();
-        } else if ((event.eventType === 'approvalWithdrawn' || event.eventType === 'approvalResolved') && event.approvalId === state.approval?.approvalId) {
-          state.approval = null; publish();
+        } else if (event.eventType === 'approvalWithdrawn' || event.eventType === 'approvalResolved') {
+          removeApproval(event.approvalId);
+          syncApproval();
+          publish();
         }
       } catch { state.error = 'Invalid live event received'; publish(); }
       refresh().catch(error => { state.error = error.message; publish(); });
     };
-    ws.onclose = () => { state.error = 'Live updates disconnected; reload to reconnect'; publish(); };
+    ws.onclose = () => {
+      if (current !== socketGeneration) return;
+      state.error = disconnected;
+      publish();
+      scheduleReconnect();
+    };
+  }
+  function start() {
+    if (bridge || !document.getElementById('grok-ui-mockup')) return;
+    state = { tab: 'sessions', selection: null, title: 'Pharos', theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light', rows: [], identity, activity: 'idle', canSend: true, detail: null, turns: [], streamingText: '', reasoningText: '', tools: [], approval: null, pendingApprovals: [], goal: null, todos: [], messages: [], members: [], error: null, submissionResults: {} };
+    publish();
+    loadApprovals().catch(error => { state.error = error.message || String(error); publish(); });
+    refresh().catch(error => { state.error = error.message; publish(); });
+    connect();
   }
   window.pharosTransport = Object.freeze({ dispatch, start });
 })();

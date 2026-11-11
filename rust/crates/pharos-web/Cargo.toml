@@ -28,4 +28,5 @@ reqwest = { workspace = true, default-features = false, features = ["json", "rus
 tokio-tungstenite = { workspace = true, features = ["connect"] }
 futures-util = { workspace = true }
 serde_json = { workspace = true }
+tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync", "time"] }

@@ -3,6 +3,52 @@ summary: 2026-11-11：Phase E（删除 Swift 后端模块）在 rust/phase-e 完
 ---
 # 活跃任务交接
 
+**STATUS: HITL-PERSIST-DONE — 6f2a7c8**
+
+**分支/worktree**：`rust/hitl-persist`，worktree `/workspace/pharos-rust/2026-11-11_dsh-team/wt/hitl-persist`，base `integrate/mesh2-into-main @ 4e381a4`。未 push、未 force/rebase、未改写历史；未触碰其它 worktree 或主 checkout。前端由 teammate `frontend` 完成（`c65e076`），独立验证由 teammate `verifier` 完成（`6f2a7c8`）；本段由 Lead 汇总。
+
+**做了什么**
+- **持久化待审批（pharos-hitl）**：新增 `approval_store`（`PendingApprovalStore` 文件存储 + 可复用内存 `ApprovalRegistry`）。版本化 JSON envelope；原子写（temp + `sync_all` + rename）；文件损坏/空文件/不支持的 version 报错，绝不静默重置。`record` 为幂等 upsert：保留原 `createdAt`、不复活已决定审批、过期后可被重新宣告并重开 45m 窗口。`resolve` 幂等 first-wins：第一个 decision 生效，后续（即使 decision 不同）返回 `AlreadyResolved` 与原 decision；45m 超时（可注入 `WallClock`，测试无需 sleep）；prune 把过期 pending 标记 expired 并清理 24h 前的已决/过期记录；`withdraw`；`revert_resolution` 用于下游派发失败时撤销 durable decision 保持可重试。
+- **API（只追加，不改现有路由形状）**：新增 `GET /api/v1/approvals?state=pending[&sessionId=]` → `{"approvals":[{approvalId,sessionId,kind,availableChoices?,state:"pending",createdAt,expiresAt}]}`；`state` 仅支持 `pending`，其它值 400 `invalidRequest`；`sessionId` 可选过滤；`pharos-http` 的 OpenAPI stub 追加该 path（未改 `pharos-api` 冻结契约）。`POST /api/v1/sessions/{id}/approval` 现在更新持久状态：首次 200 `{ok,approvalId,state:"resolved",decision,alreadyResolved:false}`，重复/并发 200 `alreadyResolved:true` 且 decision 仍为第一个（exactly-once）；未知 id 404 `approvalNotFound`；session 不匹配 400 `invalidRequest`；已过期 409 `conflict`；下游 session/adapter 派发失败时先 `revert_decision` 回滚再返回原错误（失败不会静默吞掉审批，重试可再次派发）。
+- **事件接线（pharos-http）**：`AppState` 新增 `approvals: Arc<dyn ApprovalService>`（`AppState::new` 保持原签名并默认内存实现，新增 `with_approvals`）+ `spawn_approval_tap()`：订阅 `EventBus`，把 `ApprovalRequired/ApprovalUpdated/ApprovalResolved/ApprovalWithdrawn` 落盘。这样刷新/WS 重连可从快照恢复；`approvalResolved`/`ApprovalWithdrawn` 事件（无论来自 HTTP 还是 adapter）都会更新/删除持久状态。
+- **服务端接线（pharos-web）**：解析 data dir（`--data-dir` / `PHAROS_DATA_DIR` / macOS `Application Support/Pharos` / Linux `~/.local/state/pharos`）；`persistent_app_state()` 打开 `<data-dir>/pending-approvals.json`，打不开或损坏时进程启动报错（不静默退化成内存）；`serve`/`serve_ephemeral` 启动 approval tap；`pharos-web` 二进制改用持久 state，`fake_app_state()` 仍为内存（S4 acceptance 用）。
+- **前端（frontend）**：`webui/transport.js` 与 `Sources/Pharos/Resources/WebCanvas/transport.js` 字节一致同步修改：`start()` 时和每次 WS `onopen` 拉 `/api/v1/approvals?state=pending` 快照；按 `approvalId` 去重 upsert live 事件（`approvalRequired/Updated`），`approvalWithdrawn/Resolved` 移除；按当前 selection + `createdAt` 选最早 pending 展示；WS 断线 200ms→10s 指数退避自动重连（generation counter 忽略旧 socket），不再要求 reload；resolve 成功后本地移除。原生 WebKit bridge 路径保持只转发、不改。
+- **文档**：本段 + `docs/2026-11-11_wip-salvage-gaps.md` 末尾更新（原“没有 current-approval snapshot / 断线需 reload”描述对 pending approvals 已过期）。
+
+**改了哪些 crate/文件**
+- `rust/crates/pharos-hitl/`：`src/approval_store.rs`（新）、`src/lib.rs`。
+- `rust/crates/pharos-http/`：`src/approvals.rs`（新 handler + `APPROVALS_ROUTE`）、`src/services/approval.rs`（新 service/DTO/文件+内存实现）、`src/services/mod.rs`、`src/state.rs`、`src/router.rs`、`src/lib.rs`、`Cargo.toml`；`tests/approvals_api.rs`（新，verifier）。
+- `rust/crates/pharos-web/`：`src/lib.rs`、`src/main.rs`、`tests/approvals_persistence.rs`（新 e2e）、`Cargo.toml`；`rust/Cargo.lock`。
+- `webui/transport.js`、`Sources/Pharos/Resources/WebCanvas/transport.js`（字节一致）、`Tests/WebCanvas/transport.test.mjs`。
+- `docs/2026-11-11_wip-salvage-gaps.md`、`docs/handoff.md`。
+- 未改任何 `.swift` 文件。**Swift 未在 Linux 编译验证**；WebCanvas 资源仅随 HTTP 版同步修改，`asset_sync` 测试通过。
+
+**新增测试**
+- `pharos-hitl` approval_store 单元 11：reopen 持久化、幂等 resolve 保留首个 decision、resolved 不被晚到事件复活、45m 过期、过期重开窗口、损坏/不支持版本/空文件报错、withdraw、24h prune、session 过滤、失败派发 revert 可重试。
+- `pharos-http` 单元：`services::approval` 3（内存实现快照/会话过滤/幂等、apply_event、过期 conflict）+ `router` 10（快照+session 过滤、state=resolved 400、event tap 落盘、resolve 幂等并移出快照、未知 404、session mismatch 400、expired 409、失败派发 retryable、既有 health/openapi/threads 回归）。
+- `pharos-http/tests/approvals_api.rs`（verifier 独立黑盒）9：快照形状/排序/session 过滤、tap（Required/Updated/Resolved-unknown/Withdrawn）、AppState 重启同文件仍列出且校验 on-disk versioned JSON、幂等 first-wins + 不重复派发 + 晚到事件不复活、错误契约（404/400/422）、45m 边界 409、并发决定 exactly-once、既有路由/OpenAPI 保持、失败派发 pending+durable+真重试。
+- `pharos-web/tests/approvals_persistence.rs` 2（e2e）：event tap → GET snapshot → abort server → 新 AppState 同 data dir → 仍列出 → POST 决定一次 → 快照空 → 再重启仍 durable resolved；corrupt store 启动失败且不覆盖坏文件。原 acceptance + `asset_sync` 保持通过。
+- `Tests/WebCanvas/transport.test.mjs` 3：page-load 快照恢复、同 id 事件去重更新、resolved 移除、resolve POST body `{approvalId,decision}`、WS 重连后重新拉快照。
+
+**门禁结果（最终提交 6f2a7c8，`rust/` 下，`CARGO_BUILD_JOBS=3`）**
+- `cargo fmt --all -- --check`：PASS。
+- `cargo clippy --workspace --all-targets -- -D warnings`：PASS。
+- `cargo test --workspace`：PASS — 124 passed / 0 failed / 0 ignored（53 suites，含 doc-tests；本流新增 34 个 cargo 测试，JS 测试 2→3）。
+- `node --test Tests/WebCanvas/transport.test.mjs`：PASS 3/3；`diff -r webui Sources/Pharos/Resources/WebCanvas` 无差异（`asset_sync` 亦通过）。
+- `git status`：干净。
+
+**没做/未验证**
+- 真实浏览器/WebKit 交互未跑（Linux 无 Swift/WebKit）：前端只有 node `vm` 单测 + Rust HTTP/e2e 集成测试；WebCanvas 资源改动未在 macOS 编译验证（**Swift 未在 Linux 编译验证**）。
+- Swift ClientKit 的 “fetching the current approval snapshot” 未实现：本机无法编译验证，按“不确定就别改 Swift”保留缺口；其快照模型/请求仍需 S6 在 macOS 上实现。
+- 未接真实 adapter/session HITL E2E：`pharos-web` 仍用 fake S1/S2 服务；approval tap 按真实 `ClientEvent` 形状接线，但真实 Codex/DSH HITL 往返未跑。未做真实消息/真实房间测试。
+- 存储为单写者假设：无跨进程文件锁（两个进程同时写同一 store 会 last-writer-wins 丢记录）、无父目录 fsync（极端断电可能丢最后一次写，但不会读到半截文件）；`state` 只支持 `pending` 查询。
+- 未 push、未合入 `integrate/mesh2-into-main`（按规则）。
+
+**需要人决定**
+- 合并冲突面：本流与 `web-real-sessions` 流都会改 `pharos-http/src/state.rs`、`services/mod.rs`、`router.rs`、`pharos-web/src/*`；合并 captain 需按并集处理（本分支未 push，也未 FF 主分支）。
+- 行为变更：`POST /api/v1/sessions/{id}/approval` 对未知 approval id 现在返回 404 `approvalNotFound`（此前由 fake session service 直接返回 ok）。真实 session service 接入后若存在“审批事件未持久化但可决定”的旧路径，需要决定是维持 404（诚实）还是增加委托式回退。
+- 是否在 macOS 上补 Swift ClientKit 的 pending-approval snapshot 请求/模型，并把 `pharos-web` 从 fake S1/S2 切到真实服务（这决定该特性能否在真实产品路径上生效）。
+
 **STATUS: PHASE-E-DONE — see docs/handoff-phase-e.md**
 **Phase E（merge captain / CLI agent）**：worktree `~/personal/pharos-wt/_phase-e` 分支 `rust/phase-e`（base `379febb` = integrate-b3 tip）。`git rm` 删除 Swift Mesh/Runtime/CodexAdapter/AgentCore/CSQLite 及 desktop-mesh 路径；client-only Package.swift。Gates 与证据见 `docs/handoff-phase-e.md`。未 push；未 FF `integrate/mesh2-into-main`。
 

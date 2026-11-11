@@ -4,11 +4,14 @@ use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use pharos_api::{
-    HealthResponse, ReplyThreadMessageRequest, ResolveApprovalRequest, SendSessionMessageRequest,
-    SendThreadMessageRequest, SteerSessionRequest, openapi_stub_json, routes,
+    HealthResponse, PharosApiError, ReplyThreadMessageRequest, ResolveApprovalRequest,
+    SendSessionMessageRequest, SendThreadMessageRequest, SteerSessionRequest, openapi_stub_json,
+    routes,
 };
 
+use crate::approvals::{APPROVALS_ROUTE, list_approvals};
 use crate::error::ApiResult;
+use crate::services::ResolveApprovalResponse;
 use crate::state::AppState;
 use crate::ws::events_ws_handler;
 
@@ -18,6 +21,7 @@ pub fn api_router(state: AppState) -> Router {
         .route(routes::HEALTH, get(health))
         .route(routes::OPENAPI, get(openapi))
         .route(routes::EVENTS_WS, get(events_ws_handler))
+        .route(APPROVALS_ROUTE, get(list_approvals))
         .route("/api/v1/sessions", get(list_sessions))
         .route("/api/v1/sessions/{id}", get(get_session))
         .route("/api/v1/sessions/{id}/history", get(session_history))
@@ -42,7 +46,35 @@ async fn health() -> Json<HealthResponse> {
 }
 
 async fn openapi() -> Json<serde_json::Value> {
-    Json(openapi_stub_json())
+    let mut doc = openapi_stub_json();
+    // Additive: the frozen Phase-0 stub lacks the S2 approval snapshot route.
+    if let Some(paths) = doc.get_mut("paths").and_then(|value| value.as_object_mut()) {
+        paths.insert(
+            APPROVALS_ROUTE.to_string(),
+            serde_json::json!({
+                "get": {
+                    "operationId": "listPendingApprovals",
+                    "description": "Durable current pending HITL approvals (page load / WS reconnect snapshot)",
+                    "parameters": [
+                        {
+                            "name": "state",
+                            "in": "query",
+                            "required": false,
+                            "schema": { "type": "string", "enum": ["pending"] }
+                        },
+                        {
+                            "name": "sessionId",
+                            "in": "query",
+                            "required": false,
+                            "schema": { "type": "string" }
+                        }
+                    ],
+                    "responses": { "200": { "description": "PendingApprovalListResponse" } }
+                }
+            }),
+        );
+    }
+    Json(doc)
 }
 
 async fn list_sessions(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
@@ -88,9 +120,49 @@ async fn resolve_approval(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(body): Json<ResolveApprovalRequest>,
-) -> ApiResult<Json<serde_json::Value>> {
-    state.sessions.resolve_approval(&id, body).await?;
-    Ok(Json(serde_json::json!({ "ok": true })))
+) -> ApiResult<Json<ResolveApprovalResponse>> {
+    // The durable snapshot is authoritative: an unknown approval id is not
+    // silently "resolved", it is reported as not found.
+    let Some(approval) = state.approvals.get(&body.approval_id).await? else {
+        return Err(PharosApiError::ApprovalNotFound {
+            id: body.approval_id,
+        }
+        .into());
+    };
+    if approval.session_id != id {
+        return Err(PharosApiError::InvalidRequest {
+            message: format!(
+                "approval {} belongs to session {}, not {id}",
+                body.approval_id, approval.session_id
+            ),
+        }
+        .into());
+    }
+    if approval.state == "expired" {
+        return Err(PharosApiError::Conflict {
+            message: format!("approval {} expired", body.approval_id),
+        }
+        .into());
+    }
+    let approval_id = body.approval_id.clone();
+    let response = state.approvals.resolve(&approval_id, body.decision).await?;
+    if !response.already_resolved {
+        // Keep the existing session/adapter decision path; the durable store
+        // already recorded the decision so replays are exact no-ops. If the
+        // dispatch fails, undo the durable decision: a failed dispatch must not
+        // consume the approval silently (retry must be possible).
+        if let Err(error) = state.sessions.resolve_approval(&id, body).await {
+            if let Err(revert_error) = state.approvals.revert_decision(&approval_id).await {
+                tracing::error!(
+                    approval_id = %approval_id,
+                    ?revert_error,
+                    "failed to revert approval decision after session dispatch error"
+                );
+            }
+            return Err(error.into());
+        }
+    }
+    Ok(Json(response))
 }
 
 async fn session_progress(
@@ -153,14 +225,25 @@ async fn inventory(State(state): State<AppState>) -> ApiResult<Json<serde_json::
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
+    use pharos_api::{ApprovalDecision, ApprovalKind, ApprovalRequest, ClientEvent};
+    use serde_json::json;
+    use tempfile::TempDir;
     use tower::ServiceExt;
 
     use super::*;
-    use crate::services::{EventBus, FakeSessionService, FakeThreadService};
+    use crate::services::{EventBus, FakeSessionService, FakeThreadService, FileApprovalService};
+
+    fn fake_state(approvals: Arc<dyn crate::services::ApprovalService>) -> AppState {
+        let events = EventBus::new(32);
+        let threads = Arc::new(FakeThreadService::new(events.clone()));
+        let sessions = Arc::new(FakeSessionService::new(events.clone()));
+        AppState::with_approvals(threads, sessions, events, approvals)
+    }
 
     fn test_app() -> Router {
         let events = EventBus::new(32);
@@ -169,9 +252,60 @@ mod tests {
         api_router(AppState::new(threads, sessions, events))
     }
 
+    fn approval(approval_id: &str, session_id: &str) -> ApprovalRequest {
+        ApprovalRequest {
+            approval_id: approval_id.into(),
+            session_id: session_id.into(),
+            kind: ApprovalKind::ToolPermission {
+                tool_name: "shell".into(),
+                params: json!({ "command": "printf PHAROS_HITL_OK" }),
+                explanation: None,
+            },
+            available_choices: Some(vec!["allowedOnce".into(), "rejected".into()]),
+        }
+    }
+
+    fn file_service(dir: &TempDir) -> Arc<dyn crate::services::ApprovalService> {
+        Arc::new(
+            FileApprovalService::open(dir.path().join("pending-approvals.json"))
+                .expect("open approval store"),
+        )
+    }
+
     async fn body_json(response: axum::response::Response) -> serde_json::Value {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn get(app: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        (status, body_json(response).await)
+    }
+
+    async fn post(
+        app: &Router,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        (status, body_json(response).await)
     }
 
     #[tokio::test]
@@ -210,6 +344,7 @@ mod tests {
         assert_eq!(json["openapi"], "3.0.3");
         assert_eq!(json["info"]["version"], "0.1.0");
         assert!(json["paths"].get("/health").is_some());
+        assert!(json["paths"].get(APPROVALS_ROUTE).is_some());
     }
 
     #[tokio::test]
@@ -250,5 +385,260 @@ mod tests {
         let json = body_json(response).await;
         assert_eq!(json["error"]["code"], "threadNotFound");
         assert_eq!(json["contractsVersion"], "0.1.0");
+    }
+
+    #[tokio::test]
+    async fn snapshot_lists_pending_and_filters_by_session() {
+        let dir = TempDir::new().expect("tempdir");
+        let state = fake_state(file_service(&dir));
+        state
+            .approvals
+            .record(approval("a1", "session-1"))
+            .await
+            .expect("record a1");
+        state
+            .approvals
+            .record(approval("a2", "session-2"))
+            .await
+            .expect("record a2");
+        let app = api_router(state);
+
+        let (status, json) = get(&app, "/api/v1/approvals?state=pending").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["approvals"].as_array().expect("array").len(), 2);
+        assert_eq!(json["approvals"][0]["state"], "pending");
+        assert_eq!(json["approvals"][0]["availableChoices"][0], "allowedOnce");
+
+        let (status, json) = get(&app, "/api/v1/approvals?sessionId=session-2").await;
+        assert_eq!(status, StatusCode::OK);
+        let list = json["approvals"].as_array().expect("array");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["approvalId"], "a2");
+    }
+
+    #[tokio::test]
+    async fn snapshot_rejects_unsupported_state() {
+        let dir = TempDir::new().expect("tempdir");
+        let app = api_router(fake_state(file_service(&dir)));
+        let (status, json) = get(&app, "/api/v1/approvals?state=resolved").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"]["code"], "invalidRequest");
+    }
+
+    #[tokio::test]
+    async fn approval_tap_persists_event_into_snapshot() {
+        let dir = TempDir::new().expect("tempdir");
+        let state = fake_state(file_service(&dir));
+        let events = state.events.clone();
+        let _tap = state.spawn_approval_tap();
+        events.publish(ClientEvent::ApprovalRequired {
+            approval: approval("a1", "session-1"),
+        });
+        // Let the tap task drain the broadcast event.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let app = api_router(state);
+        let (status, json) = get(&app, "/api/v1/approvals?state=pending").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["approvals"].as_array().expect("array").len(), 1);
+        assert_eq!(json["approvals"][0]["approvalId"], "a1");
+    }
+
+    #[tokio::test]
+    async fn resolve_persists_idempotently_and_removes_from_snapshot() {
+        let dir = TempDir::new().expect("tempdir");
+        let store_path = dir.path().join("pending-approvals.json");
+        let state = fake_state(file_service(&dir));
+        state
+            .approvals
+            .record(approval("a1", "fake-session-1"))
+            .await
+            .expect("record");
+        state
+            .approvals
+            .record(approval("a2", "fake-session-1"))
+            .await
+            .expect("record");
+        let app = api_router(state);
+
+        let (status, json) = post(
+            &app,
+            "/api/v1/sessions/fake-session-1/approval",
+            json!({ "approvalId": "a1", "decision": "allowedOnce" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["alreadyResolved"], false);
+        assert_eq!(json["state"], "resolved");
+        assert_eq!(json["decision"], "allowedOnce");
+
+        // Second decision (different value) is an explicit no-op.
+        let (status, json) = post(
+            &app,
+            "/api/v1/sessions/fake-session-1/approval",
+            json!({ "approvalId": "a1", "decision": "rejected" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["alreadyResolved"], true);
+        assert_eq!(json["decision"], "allowedOnce");
+
+        // a1 gone from the snapshot, a2 still pending.
+        let (_, json) = get(&app, "/api/v1/approvals?state=pending").await;
+        let list = json["approvals"].as_array().expect("array");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["approvalId"], "a2");
+
+        // "Restart": a fresh AppState on the same file still knows a1 was resolved.
+        let restarted = fake_state(Arc::new(
+            FileApprovalService::open(&store_path).expect("reopen"),
+        ));
+        assert_eq!(
+            restarted
+                .approvals
+                .get("a1")
+                .await
+                .expect("get")
+                .map(|a| a.state),
+            Some("resolved".to_string())
+        );
+        assert!(
+            restarted
+                .approvals
+                .resolve("a1", ApprovalDecision::Rejected)
+                .await
+                .expect("replay")
+                .already_resolved
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_unknown_approval_is_not_found() {
+        let dir = TempDir::new().expect("tempdir");
+        let app = api_router(fake_state(file_service(&dir)));
+        let (status, json) = post(
+            &app,
+            "/api/v1/sessions/fake-session-1/approval",
+            json!({ "approvalId": "missing", "decision": "rejected" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(json["error"]["code"], "approvalNotFound");
+    }
+
+    #[tokio::test]
+    async fn resolve_session_mismatch_is_invalid_request() {
+        let dir = TempDir::new().expect("tempdir");
+        let state = fake_state(file_service(&dir));
+        state
+            .approvals
+            .record(approval("a1", "session-1"))
+            .await
+            .expect("record");
+        let app = api_router(state);
+        let (status, json) = post(
+            &app,
+            "/api/v1/sessions/session-2/approval",
+            json!({ "approvalId": "a1", "decision": "allowedOnce" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"]["code"], "invalidRequest");
+    }
+
+    #[tokio::test]
+    async fn resolve_expired_approval_is_conflict() {
+        use std::sync::Mutex;
+
+        use pharos_hitl::{PendingApprovalStore, WallClock};
+        use time::OffsetDateTime;
+        use time::format_description::well_known::Rfc3339;
+
+        #[derive(Debug, Clone)]
+        struct TestClock(Arc<Mutex<OffsetDateTime>>);
+        impl WallClock for TestClock {
+            fn now(&self) -> OffsetDateTime {
+                *self.0.lock().expect("clock")
+            }
+        }
+
+        let dir = TempDir::new().expect("tempdir");
+        let clock = TestClock(Arc::new(Mutex::new(
+            OffsetDateTime::parse("2026-11-11T10:00:00Z", &Rfc3339).expect("time"),
+        )));
+        let store = PendingApprovalStore::open_with(
+            dir.path().join("pending-approvals.json"),
+            clock.clone(),
+            time::Duration::seconds(pharos_hitl::HITL_TIMEOUT_SECS as i64),
+        )
+        .expect("store");
+        let state = fake_state(Arc::new(FileApprovalService::from_store(store)));
+        state
+            .approvals
+            .record(approval("a1", "fake-session-1"))
+            .await
+            .expect("record");
+        *clock.0.lock().expect("clock") +=
+            time::Duration::seconds(pharos_hitl::HITL_TIMEOUT_SECS as i64 + 1);
+        let app = api_router(state);
+        let (status, json) = post(
+            &app,
+            "/api/v1/sessions/fake-session-1/approval",
+            json!({ "approvalId": "a1", "decision": "allowedOnce" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["error"]["code"], "conflict");
+    }
+    #[tokio::test]
+    async fn failed_session_dispatch_leaves_approval_retryable() {
+        let dir = TempDir::new().expect("tempdir");
+        let store_path = dir.path().join("pending-approvals.json");
+        let state = fake_state(file_service(&dir));
+        // The durable store knows the session (an adapter announced it), but the
+        // fake session dispatcher does not: the resolve must fail downstream.
+        state
+            .approvals
+            .record(approval("orphan-1", "ghost-session"))
+            .await
+            .expect("record");
+        let app = api_router(state);
+
+        let (status, json) = post(
+            &app,
+            "/api/v1/sessions/ghost-session/approval",
+            json!({ "approvalId": "orphan-1", "decision": "allowedOnce" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(json["error"]["code"], "sessionNotFound");
+
+        // The failed dispatch must not consume the decision: still pending ...
+        let (_, json) = get(&app, "/api/v1/approvals?state=pending").await;
+        assert_eq!(
+            json["approvals"].as_array().expect("array").len(),
+            1,
+            "failed dispatch must leave the approval retryable"
+        );
+        // ... and durable across a restart, so a retry can still take effect.
+        let restarted = fake_state(Arc::new(
+            FileApprovalService::open(&store_path).expect("reopen"),
+        ));
+        let pending = restarted
+            .approvals
+            .list_pending(None)
+            .await
+            .expect("list pending");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].state, "pending");
+        let retry = restarted
+            .approvals
+            .resolve("orphan-1", ApprovalDecision::AllowedOnce)
+            .await
+            .expect("retry resolve");
+        assert!(
+            !retry.already_resolved,
+            "a decision consumed by a failed dispatch would make the retry a no-op"
+        );
     }
 }
