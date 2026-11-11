@@ -67,6 +67,7 @@
         const decision = { allowed_once: 'allowedOnce', allowed_always: 'allowedAlways', rejected: 'rejected' }[payload.choice];
         if (!decision) unavailable('Approval choice');
         await request(`/api/v1/sessions/${enc(payload.sessionId)}/approval`, { approvalId: payload.approvalId, decision });
+        state.approval = null;
         await refresh();
       } else unavailable(action);
     } catch (error) {
@@ -81,7 +82,19 @@
     refresh().catch(error => { state.error = error.message; publish(); });
     const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${scheme}//${location.host}/api/v1/events`);
-    ws.onmessage = () => refresh().catch(error => { state.error = error.message; publish(); });
+    ws.onmessage = message => {
+      try {
+        const event = JSON.parse(message.data);
+        if ((event.eventType === 'approvalRequired' || event.eventType === 'approvalUpdated') && event.approval?.sessionId === state.selection) {
+          const choices = { allowedOnce: 'allowed_once', allowedAlways: 'allowed_always' };
+          state.approval = { ...event.approval, availableChoices: event.approval.availableChoices?.map(choice => choices[choice] || choice) };
+          publish();
+        } else if ((event.eventType === 'approvalWithdrawn' || event.eventType === 'approvalResolved') && event.approvalId === state.approval?.approvalId) {
+          state.approval = null; publish();
+        }
+      } catch { state.error = 'Invalid live event received'; publish(); }
+      refresh().catch(error => { state.error = error.message; publish(); });
+    };
     ws.onclose = () => { state.error = 'Live updates disconnected; reload to reconnect'; publish(); };
   }
   window.pharosTransport = Object.freeze({ dispatch, start });
