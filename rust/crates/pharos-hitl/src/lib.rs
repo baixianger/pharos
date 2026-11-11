@@ -12,6 +12,7 @@
 mod approval_store;
 mod channel;
 mod codex_hitl;
+mod decision;
 mod error;
 mod pending;
 mod webhook;
@@ -26,6 +27,7 @@ pub use channel::{
     write_done_md, write_hitl_request,
 };
 pub use codex_hitl::{CodexHitlClient, PendingCodexApproval, prepare_hitl_codex_home};
+pub use decision::{QuestionnaireAnswer, StoredDecision, validate_decision};
 pub use error::HitlError;
 pub use pending::{
     HITL_TIMEOUT_SECS, HitlBridge, HitlDecision, HitlPending, HitlState, InstantClock, SystemClock,

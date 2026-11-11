@@ -21,13 +21,17 @@ use pharos_api::{
 };
 use pharos_codex_adapter::SessionAdapter;
 use pharos_goals::GoalsStore;
+use pharos_hitl::{QuestionnaireAnswer, StoredDecision};
 use pharos_protocol::AdapterKind;
 use pharos_session::{
     AdapterSessionService, EventSink, SessionError, SessionService as CoreSessionService,
 };
 
+use super::session::{
+    CreateSessionRequest, SessionConfigPatch, SessionConfigView, SessionLifecycleResponse,
+    unsupported_field, unsupported_operation,
+};
 use super::{EventBus, SessionService};
-use crate::services::session::CreateSessionRequest;
 
 /// Honest error message for live actions when no vendor adapter was configured.
 pub const NO_ADAPTER_MESSAGE: &str =
@@ -221,6 +225,113 @@ impl SessionService for RealSessionService {
         request: CreateSessionRequest,
     ) -> Result<SessionSummary, PharosApiError> {
         self.start_session(&request.workspace_path, request.mode.as_deref())
+    }
+
+    async fn session_config(&self, session_id: &str) -> Result<SessionConfigView, PharosApiError> {
+        // Unknown session (also every session in unconfigured mode) is an
+        // honest 404 rather than an invented configuration.
+        let _ = self.get_session(session_id).await?;
+        Ok(SessionConfigView::unsupported(session_id))
+    }
+
+    async fn update_session_config(
+        &self,
+        session_id: &str,
+        patch: SessionConfigPatch,
+    ) -> Result<SessionConfigView, PharosApiError> {
+        let _ = self.get_session(session_id).await?;
+        if let Err(message) = patch.validate() {
+            return Err(PharosApiError::InvalidRequest { message });
+        }
+        let field = if patch.model.is_some() {
+            "model"
+        } else {
+            "mode"
+        };
+        Err(unsupported_field(
+            field,
+            format!(
+                "the {} session adapter does not support updating session configuration",
+                self.agent_type
+            ),
+        ))
+    }
+
+    async fn stop_session(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionLifecycleResponse, PharosApiError> {
+        let _ = self.get_session(session_id).await?;
+        Err(unsupported_operation(
+            "stop",
+            format!(
+                "the {} session adapter does not support stopping sessions",
+                self.agent_type
+            ),
+        ))
+    }
+
+    async fn revive_session(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionLifecycleResponse, PharosApiError> {
+        let _ = self.get_session(session_id).await?;
+        Err(unsupported_operation(
+            "revive",
+            format!(
+                "the {} session adapter does not support reviving sessions",
+                self.agent_type
+            ),
+        ))
+    }
+
+    async fn send_message_with_attachments(
+        &self,
+        session_id: &str,
+        _request: SendSessionMessageRequest,
+        _attachment_ids: Vec<String>,
+    ) -> Result<CanonicalTurn, PharosApiError> {
+        let _ = self.get_session(session_id).await?;
+        // No configured adapter can consume attachment bytes: report the
+        // unsupported field instead of pretending the message was sent.
+        Err(unsupported_field(
+            "attachments",
+            format!(
+                "the {} session adapter cannot consume message attachments",
+                self.agent_type
+            ),
+        ))
+    }
+
+    async fn resolve_approval_decision(
+        &self,
+        session_id: &str,
+        approval_id: &str,
+        decision: StoredDecision,
+        _answers: Option<&[QuestionnaireAnswer]>,
+    ) -> Result<(), PharosApiError> {
+        if self.live.is_none() {
+            return Err(no_adapter_error());
+        }
+        match decision.to_api() {
+            Some(decision) => {
+                self.resolve_approval(
+                    session_id,
+                    ResolveApprovalRequest {
+                        approval_id: approval_id.to_string(),
+                        decision,
+                    },
+                )
+                .await
+            }
+            None => Err(unsupported_operation(
+                "cancel",
+                format!(
+                    "the {} session adapter cannot cancel in-flight turns",
+                    self.agent_type
+                ),
+            )),
+        }
     }
 }
 
@@ -580,5 +691,160 @@ mod tests {
             json(&app, "GET", "/api/v1/sessions/live-session-1/progress", "").await;
         assert_eq!(status, StatusCode::OK);
         assert!(progress["todos"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unconfigured_config_and_lifecycle_are_honest_404() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = RealSessionService::unconfigured(goals(dir.path()), EventBus::new(8));
+        for error in [
+            service.session_config("missing").await.unwrap_err(),
+            service
+                .update_session_config(
+                    "missing",
+                    SessionConfigPatch {
+                        model: Some("gpt-5".into()),
+                        mode: None,
+                    },
+                )
+                .await
+                .unwrap_err(),
+            service.stop_session("missing").await.unwrap_err(),
+            service.revive_session("missing").await.unwrap_err(),
+            service
+                .send_message_with_attachments(
+                    "missing",
+                    SendSessionMessageRequest {
+                        text: "x".into(),
+                        request_id: None,
+                    },
+                    vec!["id".into()],
+                )
+                .await
+                .unwrap_err(),
+        ] {
+            assert!(
+                matches!(error, PharosApiError::SessionNotFound { .. }),
+                "{error:?}"
+            );
+        }
+        // No live adapter: extended approval decision is an explicit 502, and
+        // `cancelled` is not silently turned into rejected.
+        for decision in [StoredDecision::AllowedOnce, StoredDecision::Cancelled] {
+            let error = service
+                .resolve_approval_decision("missing", "a1", decision, None)
+                .await
+                .unwrap_err();
+            match error {
+                PharosApiError::OperationFailed { message } => {
+                    assert!(message.contains("--session-adapter"), "{message}");
+                }
+                other => panic!("expected OperationFailed, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn live_adapter_reports_honest_unsupported_capabilities() {
+        let dir = tempfile::tempdir().unwrap();
+        let events = EventBus::new(16);
+        let service = RealSessionService::with_live_adapter(
+            Box::new(FakeAdapter),
+            goals(dir.path()),
+            events,
+            "codex",
+        );
+        let summary = service
+            .start_session("/tmp/pharos-ws", Some("yolo"))
+            .unwrap();
+        let session_id = summary.session_id;
+
+        // Known live session: honest empty config view (nothing invented).
+        let view = service.session_config(&session_id).await.expect("config");
+        assert!(!view.supported);
+        assert!(view.supported_fields.is_empty());
+        assert!(view.model.is_none());
+        assert!(view.mode.is_none());
+        assert!(view.models.is_empty());
+        assert!(view.modes.is_empty());
+        assert!(view.readonly);
+
+        let error = service
+            .update_session_config(
+                &session_id,
+                SessionConfigPatch {
+                    model: Some("gpt-5".into()),
+                    mode: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        match error {
+            PharosApiError::OperationFailed { message } => {
+                assert!(
+                    message.starts_with(crate::services::UNSUPPORTED_FIELD_PREFIX),
+                    "{message}"
+                );
+                assert!(message.contains("model"), "{message}");
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
+        }
+
+        let stop_error = service.stop_session(&session_id).await.unwrap_err();
+        match stop_error {
+            PharosApiError::OperationFailed { message } => {
+                assert!(
+                    message.starts_with(crate::services::UNSUPPORTED_OPERATION_PREFIX),
+                    "{message}"
+                );
+                assert!(message.contains("stop"), "{message}");
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
+        }
+        let revive_error = service.revive_session(&session_id).await.unwrap_err();
+        match revive_error {
+            PharosApiError::OperationFailed { message } => {
+                assert!(message.contains("revive"), "{message}");
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
+        }
+
+        let attachments_error = service
+            .send_message_with_attachments(
+                &session_id,
+                SendSessionMessageRequest {
+                    text: "with attachment".into(),
+                    request_id: None,
+                },
+                vec!["0123456789abcdef0123456789abcdef".into()],
+            )
+            .await
+            .unwrap_err();
+        match attachments_error {
+            PharosApiError::OperationFailed { message } => {
+                assert!(
+                    message.starts_with(crate::services::UNSUPPORTED_FIELD_PREFIX),
+                    "{message}"
+                );
+                assert!(message.contains("attachments"), "{message}");
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
+        }
+
+        // The live adapter has no cancel capability: honest unsupported op.
+        let cancel_error = service
+            .resolve_approval_decision(&session_id, "a1", StoredDecision::Cancelled, None)
+            .await
+            .unwrap_err();
+        match cancel_error {
+            PharosApiError::OperationFailed { message } => {
+                assert!(
+                    message.starts_with(crate::services::UNSUPPORTED_OPERATION_PREFIX),
+                    "{message}"
+                );
+                assert!(message.contains("cancel"), "{message}");
+            }
+            other => panic!("expected OperationFailed, got {other:?}"),
+        }
     }
 }

@@ -4,15 +4,18 @@ use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use pharos_api::{
-    HealthResponse, PharosApiError, ReplyThreadMessageRequest, ResolveApprovalRequest,
-    SendSessionMessageRequest, SendThreadMessageRequest, SteerSessionRequest, openapi_stub_json,
-    routes,
+    HealthResponse, PharosApiError, ReplyThreadMessageRequest, SendThreadMessageRequest,
+    SteerSessionRequest, openapi_stub_json, routes,
 };
 
 use crate::approvals::{APPROVALS_ROUTE, list_approvals};
-use crate::error::ApiResult;
-use crate::services::{CreateSessionRequest, CreateThreadRequest, ResolveApprovalResponse};
+use crate::error::{ApiError, ApiResult};
+use crate::services::{
+    CreateSessionRequest, CreateThreadRequest, ExtendedResolveApprovalResponse,
+    ResolveApprovalDecisionRequest,
+};
 use crate::state::AppState;
+use crate::web_routes;
 use crate::ws::events_ws_handler;
 
 /// Build the HTTP/WS API router (no static Web UI — that lives in `pharos-web`).
@@ -25,7 +28,10 @@ pub fn api_router(state: AppState) -> Router {
         .route("/api/v1/sessions", get(list_sessions).post(create_session))
         .route("/api/v1/sessions/{id}", get(get_session))
         .route("/api/v1/sessions/{id}/history", get(session_history))
-        .route("/api/v1/sessions/{id}/messages", post(send_session_message))
+        .route(
+            "/api/v1/sessions/{id}/messages",
+            post(web_routes::send_session_message),
+        )
         .route("/api/v1/sessions/{id}/steer", post(steer_session))
         .route("/api/v1/sessions/{id}/approval", post(resolve_approval))
         .route("/api/v1/sessions/{id}/progress", get(session_progress))
@@ -38,6 +44,55 @@ pub fn api_router(state: AppState) -> Router {
         .route("/api/v1/threads/{id}/reply", post(reply_thread))
         .route("/api/v1/projects", get(list_projects))
         .route("/api/v1/inventory/sessions", get(inventory))
+        // --- web-endpoints additions (kept in one block for merge friendliness)
+        .route(
+            "/api/v1/threads/{id}/members",
+            get(web_routes::thread_members),
+        )
+        .route(
+            "/api/v1/threads/{id}/bindings",
+            get(web_routes::list_thread_bindings),
+        )
+        .route(
+            "/api/v1/threads/{id}/bindings/{member}",
+            get(web_routes::get_thread_binding)
+                .put(web_routes::put_thread_binding)
+                .delete(web_routes::delete_thread_binding),
+        )
+        .route(
+            "/api/v1/sessions/{id}/config",
+            get(web_routes::get_session_config).patch(web_routes::patch_session_config),
+        )
+        .route("/api/v1/sessions/{id}/stop", post(web_routes::stop_session))
+        .route(
+            "/api/v1/sessions/{id}/revive",
+            post(web_routes::revive_session),
+        )
+        .route(
+            "/api/v1/sessions/{id}/attachments",
+            get(web_routes::list_session_attachments).post(web_routes::upload_session_attachment),
+        )
+        .route("/api/v1/attachments/{id}", get(web_routes::get_attachment))
+        .route(
+            "/api/v1/attachments/{id}/content",
+            get(web_routes::get_attachment_content),
+        )
+        .route(
+            "/api/v1/members/{id}",
+            get(web_routes::get_member).patch(web_routes::patch_member),
+        )
+        .route(
+            "/api/v1/members/{id}/avatar",
+            get(web_routes::get_member_avatar)
+                .put(web_routes::put_member_avatar)
+                .delete(web_routes::delete_member_avatar),
+        )
+        // Base64 JSON uploads need headroom over the 2 MiB axum default; the
+        // handlers enforce the real decoded limits (10 MiB attachment / 512 KiB
+        // avatar) and answer 400, not the extractor's opaque 413.
+        .layer(axum::extract::DefaultBodyLimit::max(
+            web_routes::MAX_ENCODED_BODY_BYTES,
+        ))
         .with_state(state)
 }
 
@@ -74,7 +129,97 @@ async fn openapi() -> Json<serde_json::Value> {
             }),
         );
     }
+    // Additive: web-endpoints routes (thread bindings, session config,
+    // lifecycle, attachments, member settings). The frozen stub above is not
+    // modified.
+    if let Some(paths) = doc.get_mut("paths").and_then(|value| value.as_object_mut()) {
+        for (path, spec) in web_endpoint_openapi_paths() {
+            paths.insert(path, spec);
+        }
+    }
     Json(doc)
+}
+
+/// OpenAPI path specs for the routes added by the web-endpoints stream.
+fn web_endpoint_openapi_paths() -> serde_json::Map<String, serde_json::Value> {
+    let mut paths = serde_json::Map::new();
+    let mut insert = |path: &str, value: serde_json::Value| {
+        paths.insert(path.to_string(), value);
+    };
+    insert(
+        "/api/v1/threads/{threadId}/members",
+        serde_json::json!({
+            "get": {"operationId": "listThreadMembers", "responses": {"200": {"description": "Thread member views (replica members + bound sessions + settings)"}}}
+        }),
+    );
+    insert(
+        "/api/v1/threads/{threadId}/bindings",
+        serde_json::json!({
+            "get": {"operationId": "listThreadSessionBindings", "responses": {"200": {"description": "{bindings: ThreadBinding[]}"}}}
+        }),
+    );
+    insert(
+        "/api/v1/threads/{threadId}/bindings/{member}",
+        serde_json::json!({
+            "get": {"operationId": "getThreadSessionBinding", "responses": {"200": {"description": "ThreadBinding"}, "404": {"description": "threadBindingNotFound"}}},
+            "put": {"operationId": "putThreadSessionBinding", "responses": {"200": {"description": "ThreadBinding"}, "400": {"description": "invalidRequest"}, "404": {"description": "threadNotFound | sessionNotFound"}}},
+            "delete": {"operationId": "deleteThreadSessionBinding", "responses": {"200": {"description": "{ok, threadId, member, removed}"}, "404": {"description": "threadBindingNotFound"}}}
+        }),
+    );
+    insert(
+        "/api/v1/sessions/{sessionId}/config",
+        serde_json::json!({
+            "get": {"operationId": "getSessionConfig", "responses": {"200": {"description": "SessionConfigView"}, "404": {"description": "sessionNotFound"}, "502": {"description": "unsupportedOperation"}}},
+            "patch": {"operationId": "patchSessionConfig", "responses": {"200": {"description": "SessionConfigView"}, "400": {"description": "invalidRequest"}, "404": {"description": "sessionNotFound"}, "502": {"description": "unsupportedField"}}}
+        }),
+    );
+    insert(
+        "/api/v1/sessions/{sessionId}/stop",
+        serde_json::json!({
+            "post": {"operationId": "stopSession", "responses": {"200": {"description": "SessionLifecycleResponse"}, "404": {"description": "sessionNotFound"}, "502": {"description": "unsupportedOperation"}}}
+        }),
+    );
+    insert(
+        "/api/v1/sessions/{sessionId}/revive",
+        serde_json::json!({
+            "post": {"operationId": "reviveSession", "responses": {"200": {"description": "SessionLifecycleResponse"}, "404": {"description": "sessionNotFound"}, "502": {"description": "unsupportedOperation"}}}
+        }),
+    );
+    insert(
+        "/api/v1/sessions/{sessionId}/attachments",
+        serde_json::json!({
+            "get": {"operationId": "listSessionAttachments", "responses": {"200": {"description": "{attachments: AttachmentMetadata[]}"}, "404": {"description": "sessionNotFound"}}},
+            "post": {"operationId": "uploadSessionAttachment", "responses": {"200": {"description": "AttachmentMetadata"}, "400": {"description": "invalidRequest"}, "404": {"description": "sessionNotFound"}}}
+        }),
+    );
+    insert(
+        "/api/v1/attachments/{attachmentId}",
+        serde_json::json!({
+            "get": {"operationId": "getAttachment", "responses": {"200": {"description": "AttachmentMetadata"}, "404": {"description": "attachmentNotFound"}}}
+        }),
+    );
+    insert(
+        "/api/v1/attachments/{attachmentId}/content",
+        serde_json::json!({
+            "get": {"operationId": "getAttachmentContent", "responses": {"200": {"description": "raw bytes"}, "404": {"description": "attachmentNotFound"}}}
+        }),
+    );
+    insert(
+        "/api/v1/members/{memberId}",
+        serde_json::json!({
+            "get": {"operationId": "getMemberSettings", "responses": {"200": {"description": "MemberSettingsView"}, "400": {"description": "invalidRequest"}}},
+            "patch": {"operationId": "patchMemberSettings", "responses": {"200": {"description": "MemberSettingsView"}, "400": {"description": "invalidRequest"}}}
+        }),
+    );
+    insert(
+        "/api/v1/members/{memberId}/avatar",
+        serde_json::json!({
+            "get": {"operationId": "getMemberAvatar", "responses": {"200": {"description": "raw image bytes"}, "404": {"description": "attachmentNotFound"}}},
+            "put": {"operationId": "putMemberAvatar", "responses": {"200": {"description": "MemberSettingsView"}, "400": {"description": "invalidRequest"}}},
+            "delete": {"operationId": "deleteMemberAvatar", "responses": {"200": {"description": "{ok, memberId}"}, "404": {"description": "attachmentNotFound"}}}
+        }),
+    );
+    paths
 }
 
 async fn list_sessions(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
@@ -106,15 +251,6 @@ async fn session_history(
     Ok(Json(serde_json::to_value(history).expect("serialize")))
 }
 
-async fn send_session_message(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(body): Json<SendSessionMessageRequest>,
-) -> ApiResult<Json<serde_json::Value>> {
-    let turn = state.sessions.send_message(&id, body).await?;
-    Ok(Json(serde_json::to_value(turn).expect("serialize")))
-}
-
 async fn steer_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -127,8 +263,8 @@ async fn steer_session(
 async fn resolve_approval(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(body): Json<ResolveApprovalRequest>,
-) -> ApiResult<Json<ResolveApprovalResponse>> {
+    Json(body): Json<ResolveApprovalDecisionRequest>,
+) -> ApiResult<Json<ExtendedResolveApprovalResponse>> {
     // The durable snapshot is authoritative: an unknown approval id is not
     // silently "resolved", it is reported as not found.
     let Some(approval) = state.approvals.get(&body.approval_id).await? else {
@@ -153,13 +289,29 @@ async fn resolve_approval(
         .into());
     }
     let approval_id = body.approval_id.clone();
-    let response = state.approvals.resolve(&approval_id, body.decision).await?;
+    let response = state
+        .approvals
+        .resolve_with(
+            &approval_id,
+            body.decision,
+            body.questionnaire_answers.clone(),
+        )
+        .await?;
     if !response.already_resolved {
         // Keep the existing session/adapter decision path; the durable store
         // already recorded the decision so replays are exact no-ops. If the
         // dispatch fails, undo the durable decision: a failed dispatch must not
         // consume the approval silently (retry must be possible).
-        if let Err(error) = state.sessions.resolve_approval(&id, body).await {
+        if let Err(error) = state
+            .sessions
+            .resolve_approval_decision(
+                &id,
+                &approval_id,
+                body.decision,
+                body.questionnaire_answers.as_deref(),
+            )
+            .await
+        {
             if let Err(revert_error) = state.approvals.revert_decision(&approval_id).await {
                 tracing::error!(
                     approval_id = %approval_id,
@@ -167,7 +319,7 @@ async fn resolve_approval(
                     "failed to revert approval decision after session dispatch error"
                 );
             }
-            return Err(error.into());
+            return Err(ApiError::from_capability_error(error));
         }
     }
     Ok(Json(response))

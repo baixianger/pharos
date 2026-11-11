@@ -12,15 +12,18 @@ pub mod error;
 pub mod router;
 pub mod services;
 pub mod state;
+pub mod web_routes;
 pub mod ws;
 
 pub use approvals::{APPROVALS_ROUTE, ApprovalsQuery, list_approvals};
 pub use router::api_router;
 pub use services::{
-    ApprovalService, CreateSessionRequest, CreateThreadRequest, EventBus, EventSubscriber,
-    FakeEventBus, FakeSessionService, FakeThreadService, FileApprovalService,
-    InMemoryApprovalService, PendingApprovalListResponse, PendingApprovalView, RealOptions,
-    RealServiceError, RealSessionService, RealThreadService, ResolveApprovalResponse,
-    SessionAdapterChoice, SessionService, ThreadService, build_real_app_state,
+    ApprovalService, ConfigModeOption, CreateSessionRequest, CreateThreadRequest, EventBus,
+    EventSubscriber, ExtendedResolveApprovalResponse, FakeEventBus, FakeSessionService,
+    FakeThreadService, FileApprovalService, InMemoryApprovalService, PendingApprovalListResponse,
+    PendingApprovalView, RealOptions, RealServiceError, RealSessionService, RealThreadService,
+    ResolveApprovalDecisionRequest, ResolveApprovalResponse, SessionAdapterChoice,
+    SessionCapabilities, SessionConfigPatch, SessionConfigView, SessionLifecycleResponse,
+    SessionService, ThreadService, build_real_app_state,
 };
 pub use state::AppState;

@@ -24,7 +24,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::{Router, response::Redirect, routing::get};
-use pharos_http::services::{RealOptions, SessionAdapterChoice, build_real_app_state};
+use pharos_http::services::{
+    AttachmentService, FileAttachmentService, FileMemberSettingsService, FileThreadBindingService,
+    MemberSettingsService, RealOptions, SessionAdapterChoice, THREAD_BINDINGS_FILE,
+    ThreadBindingService, build_real_app_state,
+};
 use pharos_http::{
     AppState, ApprovalService, EventBus, FakeSessionService, FakeThreadService,
     FileApprovalService, InMemoryApprovalService, api_router,
@@ -192,14 +196,67 @@ pub fn fake_app_state() -> AppState {
     app_state_with_approvals(Arc::new(InMemoryApprovalService::new()))
 }
 
+/// Open the durable web-endpoint stores (bindings / member settings + avatars /
+/// attachments) under `data_dir`.
+///
+/// A corrupt or unreadable store is surfaced as an error instead of silently
+/// falling back to memory or an empty store: a faked "persisted" success is
+/// worse than a failure. Never rewrites/truncates existing bytes on open.
+type SharedThreadBindingService = Arc<dyn ThreadBindingService>;
+type SharedMemberSettingsService = Arc<dyn MemberSettingsService>;
+type SharedAttachmentService = Arc<dyn AttachmentService>;
+
+fn open_web_stores(
+    data_dir: &Path,
+) -> Result<
+    (
+        SharedThreadBindingService,
+        SharedMemberSettingsService,
+        SharedAttachmentService,
+    ),
+    String,
+> {
+    std::fs::create_dir_all(data_dir)
+        .map_err(|err| format!("create data dir {}: {err}", data_dir.display()))?;
+    let bindings =
+        FileThreadBindingService::open(data_dir.join(THREAD_BINDINGS_FILE)).map_err(|err| {
+            format!(
+                "open thread bindings store under {}: {err}",
+                data_dir.display()
+            )
+        })?;
+    let members = FileMemberSettingsService::open_in(data_dir).map_err(|err| {
+        format!(
+            "open member settings store under {}: {err}",
+            data_dir.display()
+        )
+    })?;
+    let attachments = FileAttachmentService::open_in(data_dir)
+        .map_err(|err| format!("open attachments store under {}: {err}", data_dir.display()))?;
+    Ok((Arc::new(bindings), Arc::new(members), Arc::new(attachments)))
+}
+
 /// Construct AppState wired to **fake** S1/S2 services whose pending approvals
+/// AND web-endpoint stores (bindings / member settings / avatars / attachments)
 /// are persisted in `data_dir` (used by the explicit `--fake` binary mode).
 ///
-/// The fake Thread/Session state remains in memory; only HITL approvals are
-/// durable, exactly like the real mode.
+/// The fake Thread/Session state remains in memory; everything the web-endpoint
+/// routes persist is durable across restarts, exactly like the real mode.
 pub fn persistent_app_state(data_dir: &Path) -> Result<AppState, String> {
     let approvals = open_approval_store(data_dir)?;
-    Ok(app_state_with_approvals(Arc::new(approvals)))
+    let (bindings, members, attachments) = open_web_stores(data_dir)?;
+    let events = EventBus::new(64);
+    let threads = Arc::new(FakeThreadService::new(events.clone()));
+    let sessions = Arc::new(FakeSessionService::new(events.clone()));
+    Ok(AppState::with_extras(
+        threads,
+        sessions,
+        events,
+        Arc::new(approvals),
+        bindings,
+        members,
+        attachments,
+    ))
 }
 
 /// Construct AppState wired to the **real** durable S1/S2 backends plus the
@@ -217,12 +274,16 @@ pub fn real_app_state(data_dir: &Path, adapter: SessionAdapterChoice) -> Result<
             )
         })?;
     // Rebuild with the durable approval service while keeping the real
-    // S1/S2 services and the shared event bus.
-    Ok(AppState::with_approvals(
+    // S1/S2 services, the file-backed web-endpoint stores and the shared event
+    // bus.
+    Ok(AppState::with_extras(
         state.threads,
         state.sessions,
         state.events,
         Arc::new(approvals),
+        state.bindings,
+        state.members,
+        state.attachments,
     ))
 }
 
@@ -550,6 +611,165 @@ mod tests {
                 .expect("list after reopen")
                 .len(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn fake_mode_persists_web_stores_across_restart() {
+        use pharos_http::services::{MemberSettingsPatch, ThreadBinding, UploadedAttachment};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let state = persistent_app_state(dir.path()).expect("fake+durable state");
+            state
+                .bindings
+                .upsert(ThreadBinding::new(
+                    "thread-1",
+                    "human",
+                    "fake-session-1",
+                    None,
+                ))
+                .await
+                .expect("bind");
+            state
+                .members
+                .patch(
+                    "human",
+                    MemberSettingsPatch {
+                        display_name: Some("Pai".into()),
+                        avatar_shape: Some("circle".into()),
+                        ..MemberSettingsPatch::default()
+                    },
+                )
+                .await
+                .expect("patch member");
+            state
+                .attachments
+                .create(
+                    "fake-session-1",
+                    UploadedAttachment {
+                        filename: "notes.txt".into(),
+                        content_type: "text/plain".into(),
+                        bytes: b"persisted".to_vec(),
+                    },
+                )
+                .await
+                .expect("attachment");
+        }
+        assert!(dir.path().join("thread-bindings.json").is_file());
+        assert!(dir.path().join("member-settings.json").is_file());
+        assert!(dir.path().join("attachments").join("index.json").is_file());
+
+        let reopened = persistent_app_state(dir.path()).expect("reopened fake state");
+        assert!(
+            reopened
+                .bindings
+                .get("thread-1", "human")
+                .await
+                .expect("get binding")
+                .is_some()
+        );
+        assert_eq!(
+            reopened
+                .members
+                .get("human")
+                .await
+                .expect("get member")
+                .display_name,
+            Some("Pai".to_string())
+        );
+        let attachments = reopened
+            .attachments
+            .list_for_session("fake-session-1")
+            .await
+            .expect("list attachments");
+        assert_eq!(attachments.len(), 1);
+        let bytes = reopened
+            .attachments
+            .read(&attachments[0].attachment_id)
+            .await
+            .expect("read attachment")
+            .expect("present");
+        assert_eq!(bytes, b"persisted".to_vec());
+    }
+
+    #[tokio::test]
+    async fn real_mode_persists_web_stores_across_restart() {
+        use pharos_http::services::{MemberSettingsPatch, ThreadBinding, UploadedAttachment};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let state = real_app_state(dir.path(), SessionAdapterChoice::None).expect("real state");
+            state
+                .bindings
+                .upsert(ThreadBinding::new("thread-1", "grokbot", "session-1", None))
+                .await
+                .expect("bind");
+            state
+                .members
+                .patch(
+                    "grokbot",
+                    MemberSettingsPatch {
+                        display_name: Some("Grok".into()),
+                        ..MemberSettingsPatch::default()
+                    },
+                )
+                .await
+                .expect("patch member");
+            state
+                .attachments
+                .create(
+                    "session-1",
+                    UploadedAttachment {
+                        filename: "data.json".into(),
+                        content_type: "application/json".into(),
+                        bytes: b"{}".to_vec(),
+                    },
+                )
+                .await
+                .expect("attachment");
+        }
+        let reopened =
+            real_app_state(dir.path(), SessionAdapterChoice::None).expect("reopened real state");
+        assert!(
+            reopened
+                .bindings
+                .get("thread-1", "grokbot")
+                .await
+                .expect("get binding")
+                .is_some()
+        );
+        assert_eq!(
+            reopened
+                .members
+                .get("grokbot")
+                .await
+                .expect("get member")
+                .display_name,
+            Some("Grok".to_string())
+        );
+        assert_eq!(
+            reopened
+                .attachments
+                .list_for_session("session-1")
+                .await
+                .expect("list attachments")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn corrupt_web_store_is_an_error_in_both_modes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("member-settings.json"), b"{ not json")
+            .expect("write corrupt");
+        assert!(persistent_app_state(dir.path()).is_err());
+        assert!(real_app_state(dir.path(), SessionAdapterChoice::None).is_err());
+        assert_eq!(
+            std::fs::read(dir.path().join("member-settings.json")).expect("read"),
+            b"{ not json".to_vec(),
+            "corrupt bytes must be preserved for inspection"
         );
     }
 

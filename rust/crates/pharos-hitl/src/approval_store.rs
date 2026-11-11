@@ -20,12 +20,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use pharos_api::{ApprovalDecision, ApprovalKind, ApprovalRequest};
+use pharos_api::{ApprovalKind, ApprovalRequest};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+use crate::decision::{QuestionnaireAnswer, StoredDecision, validate_decision};
 use crate::pending::HITL_TIMEOUT_SECS;
 
 /// On-disk envelope version. Bump on incompatible layout changes.
@@ -93,7 +94,11 @@ pub struct StoredApproval {
     pub created_at: String,
     pub expires_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decision: Option<ApprovalDecision>,
+    pub decision: Option<StoredDecision>,
+    /// Structured questionnaire answers supplied with the decision (none for
+    /// plain tool-permission approvals).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub questionnaire_answers: Option<Vec<QuestionnaireAnswer>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_at: Option<String>,
 }
@@ -234,6 +239,7 @@ impl<C: WallClock> ApprovalRegistry<C> {
                 existing.created_at = format_timestamp(now)?;
                 existing.expires_at = format_timestamp(now + self.timeout)?;
                 existing.decision = None;
+                existing.questionnaire_answers = None;
                 existing.resolved_at = None;
             }
             return Ok(RecordOutcome::Refreshed);
@@ -247,6 +253,7 @@ impl<C: WallClock> ApprovalRegistry<C> {
             created_at: format_timestamp(now)?,
             expires_at: format_timestamp(now + self.timeout)?,
             decision: None,
+            questionnaire_answers: None,
             resolved_at: None,
         };
         self.approvals.insert(record.approval_id.clone(), record);
@@ -325,10 +332,28 @@ impl<C: WallClock> ApprovalRegistry<C> {
     }
 
     /// Apply a human decision idempotently: the first decision wins.
+    ///
+    /// Accepts the frozen [`pharos_api::ApprovalDecision`] as well as the
+    /// extended [`StoredDecision`] (e.g. `cancelled`).
     pub fn resolve(
         &mut self,
         approval_id: &str,
-        decision: ApprovalDecision,
+        decision: impl Into<StoredDecision>,
+    ) -> Result<ResolveOutcome, ApprovalStoreError> {
+        self.resolve_with(approval_id, decision.into(), None)
+    }
+
+    /// Apply a decision plus structured questionnaire answers.
+    ///
+    /// The first decision wins; a replayed decision never overwrites the
+    /// effective one. The decision/answers are validated against the stored
+    /// approval before anything is mutated, so an invalid combination leaves
+    /// the approval pending and retryable.
+    pub fn resolve_with(
+        &mut self,
+        approval_id: &str,
+        decision: StoredDecision,
+        answers: Option<Vec<QuestionnaireAnswer>>,
     ) -> Result<ResolveOutcome, ApprovalStoreError> {
         if approval_id.trim().is_empty() {
             return Err(ApprovalStoreError::Invalid(
@@ -336,6 +361,15 @@ impl<C: WallClock> ApprovalRegistry<C> {
             ));
         }
         let now = self.clock.now();
+        let Some(record) = self.approvals.get(approval_id).cloned() else {
+            return Ok(ResolveOutcome::NotFound);
+        };
+        validate_decision(
+            &record.kind,
+            record.available_choices.as_deref(),
+            decision,
+            answers.as_deref(),
+        )?;
         let Some(record) = self.approvals.get_mut(approval_id) else {
             return Ok(ResolveOutcome::NotFound);
         };
@@ -353,6 +387,7 @@ impl<C: WallClock> ApprovalRegistry<C> {
         }
         record.state = StoredApprovalState::Resolved;
         record.decision = Some(decision);
+        record.questionnaire_answers = answers;
         record.resolved_at = Some(format_timestamp(now)?);
         Ok(ResolveOutcome::Resolved(record.clone()))
     }
@@ -370,6 +405,7 @@ impl<C: WallClock> ApprovalRegistry<C> {
         }
         let now = self.clock.now();
         record.decision = None;
+        record.questionnaire_answers = None;
         record.resolved_at = None;
         let expires = parse_timestamp(&record.expires_at)?;
         record.state = if now >= expires {
@@ -470,10 +506,20 @@ impl<C: WallClock> PendingApprovalStore<C> {
     pub fn resolve(
         &self,
         approval_id: &str,
-        decision: ApprovalDecision,
+        decision: impl Into<StoredDecision>,
+    ) -> Result<ResolveOutcome, ApprovalStoreError> {
+        self.resolve_with(approval_id, decision.into(), None)
+    }
+
+    /// Apply an extended decision plus optional questionnaire answers.
+    pub fn resolve_with(
+        &self,
+        approval_id: &str,
+        decision: StoredDecision,
+        answers: Option<Vec<QuestionnaireAnswer>>,
     ) -> Result<ResolveOutcome, ApprovalStoreError> {
         let mut registry = self.lock();
-        let outcome = registry.resolve(approval_id, decision)?;
+        let outcome = registry.resolve_with(approval_id, decision, answers)?;
         if matches!(
             outcome,
             ResolveOutcome::Resolved(_) | ResolveOutcome::Expired(_)
@@ -692,7 +738,7 @@ mod tests {
         let ResolveOutcome::Resolved(record) = first else {
             panic!("first resolve must take effect, got {first:?}");
         };
-        assert_eq!(record.decision, Some(ApprovalDecision::AllowedOnce));
+        assert_eq!(record.decision, Some(StoredDecision::AllowedOnce));
 
         // Second decision (even a different one) must not take effect.
         let second = store
@@ -701,7 +747,7 @@ mod tests {
         let ResolveOutcome::AlreadyResolved(record) = second else {
             panic!("second resolve must be AlreadyResolved, got {second:?}");
         };
-        assert_eq!(record.decision, Some(ApprovalDecision::AllowedOnce));
+        assert_eq!(record.decision, Some(StoredDecision::AllowedOnce));
         assert!(store.list_pending(None).expect("list").is_empty());
 
         // And the resolved state is durable across a reopen.
@@ -906,5 +952,164 @@ mod tests {
             .resolve("a1", ApprovalDecision::Rejected)
             .expect("retry resolve");
         assert!(matches!(outcome, ResolveOutcome::Resolved(_)));
+    }
+
+    #[test]
+    fn cancelled_decision_persists_and_is_not_retryable() {
+        let clock = TestClock::new();
+        let (dir, path) = temp_store(clock.clone());
+        let mut request = approval("a1");
+        request.available_choices = Some(vec![
+            "allowedOnce".to_string(),
+            "rejected".to_string(),
+            "cancelled".to_string(),
+        ]);
+        {
+            let store = PendingApprovalStore::open_with(
+                &path,
+                clock.clone(),
+                time::Duration::seconds(HITL_TIMEOUT_SECS as i64),
+            )
+            .expect("open");
+            store.record(&request).expect("record");
+            let outcome = store
+                .resolve_with("a1", StoredDecision::Cancelled, None)
+                .expect("resolve cancelled");
+            assert!(matches!(outcome, ResolveOutcome::Resolved(_)));
+        }
+        // Reopen: the cancelled decision is durable, and a replay keeps it.
+        let store = PendingApprovalStore::open_with(
+            &path,
+            clock,
+            time::Duration::seconds(HITL_TIMEOUT_SECS as i64),
+        )
+        .expect("reopen");
+        let record = store.get("a1").expect("get").expect("record");
+        assert_eq!(record.state, StoredApprovalState::Resolved);
+        assert_eq!(record.decision, Some(StoredDecision::Cancelled));
+        let replay = store
+            .resolve("a1", ApprovalDecision::AllowedOnce)
+            .expect("replay");
+        match replay {
+            ResolveOutcome::AlreadyResolved(record) => {
+                assert_eq!(record.decision, Some(StoredDecision::Cancelled));
+            }
+            other => panic!("expected AlreadyResolved, got {other:?}"),
+        }
+        drop(dir);
+    }
+
+    #[test]
+    fn cancelled_decision_not_offered_is_rejected_and_left_pending() {
+        let clock = TestClock::new();
+        let (dir, path) = temp_store(clock.clone());
+        let store = PendingApprovalStore::open_with(
+            &path,
+            clock,
+            time::Duration::seconds(HITL_TIMEOUT_SECS as i64),
+        )
+        .expect("open");
+        store.record(&approval("a1")).expect("record");
+        let error = store
+            .resolve_with("a1", StoredDecision::Cancelled, None)
+            .expect_err("cancelled was not offered");
+        assert!(matches!(error, ApprovalStoreError::Invalid(_)));
+        let pending = store.list_pending(None).expect("list");
+        assert_eq!(pending.len(), 1, "invalid decision must not consume it");
+        assert_eq!(pending[0].state, StoredApprovalState::Pending);
+        drop(dir);
+    }
+
+    #[test]
+    fn questionnaire_answers_persist_with_decision_and_revert_clears_them() {
+        let clock = TestClock::new();
+        let (dir, path) = temp_store(clock.clone());
+        let mut request = approval("q1-approval");
+        request.kind = ApprovalKind::StructuredQuestionnaire {
+            intent: "pick".to_string(),
+            questions: vec![pharos_api::QuestionOption {
+                id: "q1".to_string(),
+                question: "Which env?".to_string(),
+                options: vec!["prod".to_string(), "staging".to_string()],
+                is_multi_select: false,
+            }],
+        };
+        request.available_choices = Some(vec!["allowedOnce".to_string(), "rejected".to_string()]);
+        let answers = vec![QuestionnaireAnswer {
+            question_id: "q1".to_string(),
+            selected: vec!["prod".to_string()],
+            text: None,
+        }];
+        {
+            let store = PendingApprovalStore::open_with(
+                &path,
+                clock.clone(),
+                time::Duration::seconds(HITL_TIMEOUT_SECS as i64),
+            )
+            .expect("open");
+            store.record(&request).expect("record");
+            store
+                .resolve_with(
+                    "q1-approval",
+                    StoredDecision::AllowedOnce,
+                    Some(answers.clone()),
+                )
+                .expect("resolve with answers");
+            // A failed downstream dispatch reverts both decision and answers.
+            assert!(store.revert_resolution("q1-approval").expect("revert"));
+            let pending = store.list_pending(None).expect("list");
+            assert_eq!(pending.len(), 1);
+            assert!(pending[0].questionnaire_answers.is_none());
+            store
+                .resolve_with(
+                    "q1-approval",
+                    StoredDecision::AllowedOnce,
+                    Some(answers.clone()),
+                )
+                .expect("retry resolve with answers");
+        }
+        let store = PendingApprovalStore::open_with(
+            &path,
+            clock,
+            time::Duration::seconds(HITL_TIMEOUT_SECS as i64),
+        )
+        .expect("reopen");
+        let record = store.get("q1-approval").expect("get").expect("record");
+        assert_eq!(record.decision, Some(StoredDecision::AllowedOnce));
+        assert_eq!(record.questionnaire_answers, Some(answers));
+        drop(dir);
+    }
+
+    #[test]
+    fn legacy_store_json_with_outcome_decision_still_loads() {
+        use serde_json::json;
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("pending-approvals.json");
+        // Shape written by builds before the extended decision model existed.
+        let legacy = json!({
+            "version": APPROVAL_STORE_VERSION,
+            "approvals": [{
+                "approvalId": "legacy-1",
+                "sessionId": "session-1",
+                "kind": {"type": "toolPermission", "toolName": "shell", "params": {}},
+                "availableChoices": ["allowedOnce", "rejected"],
+                "state": "resolved",
+                "createdAt": "2026-11-11T10:00:00Z",
+                "expiresAt": "2026-11-11T10:45:00Z",
+                "decision": "allowedOnce",
+                "resolvedAt": "2026-11-11T10:05:00Z"
+            }]
+        });
+        std::fs::write(&path, serde_json::to_vec_pretty(&legacy).expect("json")).expect("write");
+        let clock = TestClock::new();
+        let store = PendingApprovalStore::open_with(
+            &path,
+            clock,
+            time::Duration::seconds(HITL_TIMEOUT_SECS as i64),
+        )
+        .expect("legacy store must load");
+        let record = store.get("legacy-1").expect("get").expect("record");
+        assert_eq!(record.decision, Some(StoredDecision::AllowedOnce));
+        assert!(record.questionnaire_answers.is_none());
     }
 }

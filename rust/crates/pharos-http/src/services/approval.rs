@@ -12,8 +12,9 @@ use std::sync::{Mutex, MutexGuard};
 use async_trait::async_trait;
 use pharos_api::{ApprovalDecision, ApprovalKind, ApprovalRequest, ClientEvent, PharosApiError};
 use pharos_hitl::{
-    ApprovalRegistry, ApprovalStoreError, HITL_TIMEOUT_SECS, PendingApprovalStore, RecordOutcome,
-    ResolveOutcome, StoredApproval, SystemWallClock, WallClock,
+    ApprovalRegistry, ApprovalStoreError, HITL_TIMEOUT_SECS, PendingApprovalStore,
+    QuestionnaireAnswer, RecordOutcome, ResolveOutcome, StoredApproval, StoredDecision,
+    SystemWallClock, WallClock,
 };
 use serde::{Deserialize, Serialize};
 use time::Duration;
@@ -69,6 +70,37 @@ pub struct ResolveApprovalResponse {
     pub already_resolved: bool,
 }
 
+/// `POST /api/v1/sessions/{id}/approval` body — superset of the frozen
+/// `ResolveApprovalRequest`: adds the `cancelled` decision and structured
+/// questionnaire answers. Legacy bodies (`{approvalId, decision}`) are
+/// unchanged on the wire.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveApprovalDecisionRequest {
+    pub approval_id: String,
+    pub decision: StoredDecision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub questionnaire_answers: Option<Vec<QuestionnaireAnswer>>,
+}
+
+/// `POST /api/v1/sessions/{id}/approval` response for extended decisions.
+///
+/// Legacy fields (`ok`, `approvalId`, `state`, `decision`, `alreadyResolved`)
+/// keep their shapes; `questionnaireAnswers` is present only when answers were
+/// recorded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtendedResolveApprovalResponse {
+    pub ok: bool,
+    pub approval_id: String,
+    pub state: String,
+    pub decision: StoredDecision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub questionnaire_answers: Option<Vec<QuestionnaireAnswer>>,
+    /// True when an earlier decision already took effect (idempotent replay).
+    pub already_resolved: bool,
+}
+
 /// Durable approval surface mounted by the HTTP layer.
 #[async_trait]
 pub trait ApprovalService: Send + Sync {
@@ -97,6 +129,40 @@ pub trait ApprovalService: Send + Sync {
     /// dispatch failed, so the approval stays pending and retryable.
     async fn revert_decision(&self, approval_id: &str) -> Result<(), PharosApiError>;
 
+    /// Apply an extended decision (`cancelled`) plus structured questionnaire
+    /// answers. First decision wins, exactly like [`Self::resolve`].
+    ///
+    /// Default: maps freeze-compatible decisions onto [`Self::resolve`];
+    /// `cancelled` on a service without extended support is an explicit error.
+    async fn resolve_with(
+        &self,
+        approval_id: &str,
+        decision: StoredDecision,
+        answers: Option<Vec<QuestionnaireAnswer>>,
+    ) -> Result<ExtendedResolveApprovalResponse, PharosApiError> {
+        let Some(api_decision) = decision.to_api() else {
+            return Err(PharosApiError::OperationFailed {
+                message: "this approval service does not support cancelled decisions".into(),
+            });
+        };
+        // Answers cannot be carried through the legacy response; a service that
+        // does not override this method must not claim they were stored.
+        if answers.is_some_and(|answers| !answers.is_empty()) {
+            return Err(PharosApiError::OperationFailed {
+                message: "this approval service does not support questionnaire answers".into(),
+            });
+        }
+        let legacy = self.resolve(approval_id, api_decision).await?;
+        Ok(ExtendedResolveApprovalResponse {
+            ok: legacy.ok,
+            approval_id: legacy.approval_id,
+            state: legacy.state,
+            decision,
+            questionnaire_answers: None,
+            already_resolved: legacy.already_resolved,
+        })
+    }
+
     /// Drop a withdrawn approval.
     async fn withdraw(&self, approval_id: &str) -> Result<(), PharosApiError>;
 
@@ -121,13 +187,53 @@ pub trait ApprovalService: Send + Sync {
 }
 
 fn store_error(error: ApprovalStoreError) -> PharosApiError {
-    PharosApiError::OperationFailed {
-        message: error.to_string(),
+    match error {
+        // Bad field values / invalid decision combinations are client errors.
+        ApprovalStoreError::Invalid(message) => PharosApiError::InvalidRequest { message },
+        other => PharosApiError::OperationFailed {
+            message: other.to_string(),
+        },
     }
 }
 
 fn decision_of(record: &StoredApproval) -> ApprovalDecision {
-    record.decision.unwrap_or(ApprovalDecision::Rejected)
+    record
+        .decision
+        .and_then(StoredDecision::to_api)
+        .unwrap_or(ApprovalDecision::Rejected)
+}
+
+fn extended_response(
+    record: StoredApproval,
+    already_resolved: bool,
+) -> ExtendedResolveApprovalResponse {
+    ExtendedResolveApprovalResponse {
+        ok: true,
+        approval_id: record.approval_id.clone(),
+        state: record.state_str().to_string(),
+        decision: record.decision.unwrap_or(StoredDecision::Rejected),
+        questionnaire_answers: record.questionnaire_answers.clone(),
+        already_resolved,
+    }
+}
+
+fn map_resolve_outcome_ext(
+    approval_id: &str,
+    outcome: ResolveOutcome,
+) -> Result<ExtendedResolveApprovalResponse, PharosApiError> {
+    match outcome {
+        ResolveOutcome::Resolved(record) => Ok(extended_response(record, false)),
+        ResolveOutcome::AlreadyResolved(record) => Ok(extended_response(record, true)),
+        ResolveOutcome::Expired(record) => Err(PharosApiError::Conflict {
+            message: format!(
+                "approval {} expired at {}",
+                record.approval_id, record.expires_at
+            ),
+        }),
+        ResolveOutcome::NotFound => Err(PharosApiError::ApprovalNotFound {
+            id: approval_id.to_string(),
+        }),
+    }
 }
 
 fn resolve_response(record: StoredApproval, already_resolved: bool) -> ResolveApprovalResponse {
@@ -235,6 +341,19 @@ impl<C: WallClock> ApprovalService for InMemoryApprovalService<C> {
         map_resolve_outcome(approval_id, outcome)
     }
 
+    async fn resolve_with(
+        &self,
+        approval_id: &str,
+        decision: StoredDecision,
+        answers: Option<Vec<QuestionnaireAnswer>>,
+    ) -> Result<ExtendedResolveApprovalResponse, PharosApiError> {
+        let outcome = self
+            .lock()
+            .resolve_with(approval_id, decision, answers)
+            .map_err(store_error)?;
+        map_resolve_outcome_ext(approval_id, outcome)
+    }
+
     async fn revert_decision(&self, approval_id: &str) -> Result<(), PharosApiError> {
         self.lock()
             .revert_resolution(approval_id)
@@ -315,6 +434,19 @@ impl<C: WallClock> ApprovalService for FileApprovalService<C> {
             .resolve(approval_id, decision)
             .map_err(store_error)?;
         map_resolve_outcome(approval_id, outcome)
+    }
+
+    async fn resolve_with(
+        &self,
+        approval_id: &str,
+        decision: StoredDecision,
+        answers: Option<Vec<QuestionnaireAnswer>>,
+    ) -> Result<ExtendedResolveApprovalResponse, PharosApiError> {
+        let outcome = self
+            .store
+            .resolve_with(approval_id, decision, answers)
+            .map_err(store_error)?;
+        map_resolve_outcome_ext(approval_id, outcome)
     }
 
     async fn revert_decision(&self, approval_id: &str) -> Result<(), PharosApiError> {

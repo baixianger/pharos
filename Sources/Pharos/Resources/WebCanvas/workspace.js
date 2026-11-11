@@ -46,6 +46,14 @@
     window.pharosTransport.dispatch(name, payload);
   }
 
+  // The Rust transport reports the Session adapter's real capability flags;
+  // the native WebKit bridge (which has no `capabilities` key) keeps the
+  // long-standing agent-based fallback. Never offer an upload the server will reject.
+  function attachmentsAllowed() {
+    if (state.capabilities && typeof state.capabilities === "object") return state.capabilities.attachments === true;
+    return state.detail?.agent === "dsh" || state.supportsTextAttachments;
+  }
+
   function stableHash(text) {
     let hash = 2166136261;
     for (const char of text) hash = Math.imul(hash ^ char.codePointAt(0), 16777619);
@@ -306,6 +314,12 @@
       content.append(el("div", "gb-settings-label", "Files"));
       const list = el("div", "gb-library");
       const unique = new Map(attachments.map(file => [file.id, file]));
+      // Session attachments already accepted by the Rust attachment store
+      // (loaded from GET /api/v1/sessions/{id}/attachments when the adapter
+      // advertises attachment support).
+      for (const file of state.attachments ?? []) {
+        if (file?.attachmentId) unique.set("session:" + file.attachmentId, { filename: file.filename, mimeType: file.contentType });
+      }
       for (const { filePatch } of blocks) {
         if (filePatch) unique.set("patch:" + filePatch.path, { filename: filePatch.path, mimeType: "File change" });
       }
@@ -419,7 +433,10 @@
         const button = el("button", "gb-button", label);
         button.type = "button";
         button.dataset.action = action;
-        button.disabled = !detail.models.length;
+        // The Rust transport surfaces the adapter's capabilities: an operation it
+        // does not advertise stays disabled instead of faking success. The native
+        // bridge keeps its previously-configured fallback.
+        button.disabled = state.capabilities ? state.capabilities[action] !== true : !detail.models.length;
         lifecycle.append(button);
       }
       content.append(lifecycle);
@@ -530,7 +547,7 @@
     menu.replaceChildren();
     if (!open) return;
     if (state.tab === "sessions") {
-      if (state.detail?.agent === "dsh" || state.supportsTextAttachments) {
+      if (attachmentsAllowed()) {
         const attach = el("button", "gb-menuitem", state.detail?.agent === "dsh" ? "Add files…" : "Add text files…");
         attach.type = "button"; attach.dataset.action = "attach-files"; menu.append(attach);
       }
@@ -629,7 +646,7 @@
       if (reset || changed("error")) renderer.setError(state.error);
     }
     applyIdentity();
-    if (!app.classList.contains("gb-no-details") && (reset || changed("detail") || changed("turns") || changed("tools") || changed("messages") || changed("members") || changed("canBindThreadSession") || changed("threadBindingInFlight") || changed("threadBindingCandidates"))) renderDetails();
+    if (!app.classList.contains("gb-no-details") && (reset || changed("detail") || changed("turns") || changed("tools") || changed("messages") || changed("members") || changed("attachments") || changed("capabilities") || changed("canBindThreadSession") || changed("threadBindingInFlight") || changed("threadBindingCandidates"))) renderDetails();
     if (!$(".gb-avatar-editor").hidden && (changed("identity") || changed("theme"))) {
       renderEditor();
       if (changed("identity")) avatarMounts.get($(".gb-profile .gb-avatar"))?.mount.spin();
@@ -758,7 +775,7 @@
     resizeComposer();
   });
   fileInput.addEventListener("change", () => {
-    if (state.tab !== "sessions" || (state.detail?.agent !== "dsh" && !state.supportsTextAttachments) || state.selection !== fileSelectionSession) { fileInput.value = ""; return; }
+    if (state.tab !== "sessions" || !attachmentsAllowed() || state.selection !== fileSelectionSession) { fileInput.value = ""; return; }
     fileSelectionSession = null;
     const files = [...(attachmentDrafts.get(state.selection) ?? []), ...fileInput.files];
     fileInput.value = "";
@@ -789,7 +806,17 @@
     try {
       if (files.length) encodedFiles = await Promise.all(files.map(file => new Promise((resolve, reject) => {
         const reader = new FileReader();
-        reader.onload = () => resolve({ name: file.name, data: String(reader.result).split(",", 2)[1] });
+        reader.onload = () => {
+          const result = String(reader.result ?? "");
+          const separator = result.indexOf(",");
+          const header = separator === -1 ? "" : result.slice(0, separator);
+          const declared = /^data:([^;,]+)/.exec(header)?.[1];
+          resolve({
+            name: file.name,
+            contentType: declared || file.type || "",
+            data: separator === -1 ? result : result.slice(separator + 1)
+          });
+        };
         reader.onerror = () => reject(reader.error); reader.readAsDataURL(file);
       })));
     } catch (_) { pendingSubmissions.delete(id); if (state.selection === id && state.tab === tab) showAttachmentError("Unable to read attachment."); return; }

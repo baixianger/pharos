@@ -86,6 +86,62 @@ summary: 2026-11-11：跨 Host 会话（host.session.query/action）Rust 端到�
 6. 是否把新 operation/能力写进 `pharos-api` OpenAPI stub、是否 bump `CONTRACTS_VERSION`（当前对 Phase 0 是 additive，未 bump）。
 7. 远端会话的 progress/goal/todo 与 approval 快照是否纳入下一版 wire 契约（当前 HTTP 侧显式 unavailable）。
 
+# ---- web-endpoints 流交接（合并保留）----
+# 活跃任务交接
+
+**STATUS: WEBAPI-DONE — dac9f1447d7edb674c54bccae94a6bf1252307ac**
+**分支/worktree**：`rust/web-endpoints`，worktree `/workspace/pharos-rust/2026-11-11_dsh-wave2/wt/web-endpoints`，base `integrate/mesh2-into-main @ 54c6ff6`（= `rust/integrate-dsh3`，已含 hitl-persist / web-real-sessions / thread-autoreply 三流）。本 handoff 提交之前共 26 个提交，未 push、未 force/rebase/amend、未改写历史；只改本 worktree，未触碰其它 worktree（cross-host-sessions / live-e2e 保持原 tip）与主 checkout。团队：Lead（契约、pharos-hitl 决定模型、SessionService 能力扩展、router/handlers/openapi、HTTP 集成测试、门禁、真实二进制 smoke、handoff）、teammate `server-impl`（持久化 stores、fake/real 能力实现、pharos-web 双模式接线、真实 HTTP e2e 测试）、teammate `frontend-impl`（webui+WebCanvas 接线、node 测试、独立复核）。
+
+**做了什么（补齐 docs/2026-11-11_wip-salvage-gaps.md 的 "Unavailable workspace operations"）**
+- **统一契约**：新增 `docs/2026-11-11_web-endpoints-api.md`（路由/JSON 形状/持久化文件/错误码/测试矩阵）；`docs/2026-11-11_wip-salvage-gaps.md` 增加"Update 2026-11-11 — web workspace endpoints"段，声明上述不可用项已被本流取代。所有新路由都挂在 `api_router`（`app_router_with_token` 的 bearer 层覆盖全部 API，`/health` 与静态资源仍免鉴权），并补进 `/openapi.json`。
+- **（1）Thread↔会话绑定**：`GET/PUT/DELETE /api/v1/threads/{id}/bindings[/{member}]`、`GET /api/v1/threads/{id}/members`。持久化 `thread-bindings.json`（version 1，temp+fsync+rename 原子写；损坏/空/未知 version 启动即报错，绝不静默重置）；binding key=(threadId,member)，upsert 全量替换；PUT 校验 Thread 存在、member 名 `[A-Za-z0-9_-]{1,40}`、session 在现有 inventory 中；新增的成员名即"绑定即成员资格"（WIP UI "add existing local Session" 流程），`members` 返回 replica 成员 ∪ 已绑定成员 + 每成员持久化设置。只读 binding 列表即投递路由可消费的接口（本流不改 agent-runtime 投递逻辑）。
+- **（2）会话配置读写**：`GET/PATCH /api/v1/sessions/{id}/config`（model/mode、supportedFields、models/modes、capabilities{attachments,commands,stop,revive}、readonly）。诚实语义：适配器无法报告配置 → 空的 `supported:false` 视图（不发明 model/mode）；无法应用字段 → `502 unsupportedField` 带 `error.field`，绝不报告为已保存。当前无适配器声明可写配置（真实后端诚实 502；fake 测试服务覆盖成功路径）。
+- **（3）问卷回答 + 取消型审批决定**：`pharos-hitl` 新增 `StoredDecision`（含 `cancelled`）与 `QuestionnaireAnswer`，仍存于既有 `pending-approvals.json`（version 保持 1，旧记录可加载；旧三值 camelCase 序列化不变）。既有 `POST /api/v1/sessions/{id}/approval` 请求体成为线上兼容超集（`questionnaireAnswers` 可选、`decision` 可为 `cancelled`；仅当 adapter 的 `availableChoices` 含 `cancelled` 时接受，否则 400 且不消费审批）。沿用 hitl-persist 的 first-wins 幂等、45m 过期、downstream 派发失败 revert 保持可重试；问卷答案随决定持久化并可在重启后读回。
+- **（4）成员设置/头像**：`GET/PATCH /api/v1/members/{id}`、`GET/PUT/DELETE /api/v1/members/{id}/avatar`。`member-settings.json` + `avatars/<sha256>.<png|jpg>` 持久化在 data dir，重启后仍在；头像仅 png/jpeg、1..=512 KiB，非法类型/超限/base64 损坏 → 400；`member-settings.json` 损坏启动硬报错。成员视图含 `bindings`（跨 Thread 绑定汇总）。
+- **（5）附件上传**：`POST /api/v1/sessions/{id}/attachments`（base64 JSON，content-type 白名单、解码后 1..=10 MiB；axum body limit 放宽到 16 MiB 后由 handler 精确判 400）、`GET /api/v1/attachments/{id}[/content]`、`GET /api/v1/sessions/{id}/attachments`；`POST /sessions/{id}/messages` 增加可选 `attachmentIds`（冻结请求的超集，空=原样字节不变），引用必须存在且属于该 session；适配器不支持附件时 `502 unsupportedField{field:"attachments"}`，绝不当成已发送。
+- **（6）stop/revive**：`POST /api/v1/sessions/{id}/stop|revive`；无真实适配器声明该能力时明确 `502 unsupportedOperation{field}`（fake 测试服务覆盖成功路径）。
+- **（7）前端**：`webui/` 与 `Sources/Pharos/Resources/WebCanvas/` 同步改并逐字节一致（`asset_sync` 绿，`diff -r` 无输出）：refresh 读 config/members/bindings/identity/attachments，dispatch 把原先"不可用"按钮接到新接口（sessionConfig/model/mode、bindThreadSession、avatar/resetAvatar→PATCH /members/human、附件先上传再 attachmentIds、问卷/取消、stop/revive）；所有失败显示服务器错误文本、失败不更新本地状态；能力未建立（capabilities false）的控件保持禁用；会话命令（`/…`）与项目创建仍诚实显示不可用。`Tests/WebCanvas/transport.test.mjs` 14 项覆盖 fetch 路径/方法/请求体/诚实错误。
+- **未改**：`pharos-api` 冻结契约枚举（扩展错误码 `unsupportedField`/`unsupportedOperation`/`threadBindingNotFound`/`attachmentNotFound`/`memberNotFound` 放在 HTTP 层 `pharos-http/src/error.rs`）、`pharos-protocol`/`pharos-replica`/`pharos-mesh`、agent-runtime、integrations/dsh-plugin-pharos、pharos-adapter-dsh（保持薄）、任何 `.swift`（本机无 Swift，未编译验证）。
+
+**改了哪些 crate/文件**
+- `rust/crates/pharos-hitl/`：`src/decision.rs`(新)、`src/approval_store.rs`、`src/lib.rs`（+8 tests）。
+- `rust/crates/pharos-http/`：`src/error.rs`（扩展错误码枚举 + capability marker 映射）、`src/router.rs`（**新增路由集中在一个块** + openapi additive）、`src/web_routes.rs`(新，全部新 handler + 严格 base64)、`src/services/{persist,bindings,member_settings,attachments}.rs`(新持久化 stores)、`src/services/{mod,state,real,real_session,fake,session,approval}.rs`、`tests/web_endpoints.rs`(新，14 HTTP 集成测试)。
+- `rust/crates/pharos-web/`：`src/lib.rs`（real/fake 两模式都接 file-backed bindings/member settings/avatars/attachments；损坏 store 启动硬错）、`tests/web_endpoints_e2e.rs`(新，6 真实 socket 测试)。
+- `webui/`、`Sources/Pharos/Resources/WebCanvas/`、`Tests/WebCanvas/transport.test.mjs`。
+- `docs/2026-11-11_web-endpoints-api.md`(新)、`docs/2026-11-11_wip-salvage-gaps.md`、`internal/evidence/2026-11-11_rust-web-endpoints.md`(新)、`internal/evidence/2026-11-11_rust-web-endpoints-verify.md`(新，独立复核)。
+
+**新增测试**
+- `pharos-hitl`：decision 模型（legacy 序列化兼容、cancelled 仅当被 offer、问卷 question/option/重复校验、tool permission 不接受 answers）+ store（cancelled 持久化与重放 first-wins、未 offer 的 cancelled 不消费、问卷答案随决定持久化且 revert 清除、旧 JSON 记录可加载）。
+- `pharos-http`：三个持久化 store 的单测（原子写/重启/损坏硬错/校验/共享 blob、attachments 索引与 blob、成员设置校验、base64/SHA-256 向量）；`tests/web_endpoints.rs` 14 个（bindings CRUD+重启+400/404、thread members 合并与设置、config 读写+非法输入+404、unsupported 502 三件套、stop/revive、附件上传/内容/列表/引用/重启/超限/类型/404、成员设置+头像重启+校验+bindings、cancelled 持久化/幂等/未 offer 400、问卷答案持久化/重放/非法 question 400、派发失败 revert 可重试、legacy approval body + openapi 新路径）。
+- `pharos-web`：`tests/web_endpoints_e2e.rs` 6 个真实 HTTP socket 测试（fake 组合全量 round-trip + 全量重启持久化、每个写 body 的 400、404 扩展码、诚实 502、bearer 矩阵 401/200+Bearer+?token=、real 模式 member+avatar 重启、损坏 member-settings.json 拒绝且坏字节保留）。
+- 前端：`Tests/WebCanvas/transport.test.mjs` 14 passed。
+
+**门禁结果（在 `rust/` 下，`CARGO_BUILD_JOBS=3`，源码 HEAD `f9d5a9d`；其后的提交只改 docs/internal evidence，独立复核已确认 `git diff --stat f9d5a9d..00dd178` 无 Rust/前端改动）**
+- `cargo fmt --all -- --check` → **PASS**（exit 0，无输出）。
+- `cargo clippy --workspace --all-targets -- -D warnings` → **PASS**（exit 0，0 warning）。
+- `cargo test --workspace` → **PASS**（exit 0，**301 passed / 0 failed / 0 ignored，59 个 test suite**，doc-tests 0）。关键计数：pharos-http lib 79 + approvals_api 9 + real_state_http 4 + web_endpoints 14；pharos-web lib 31 + web_endpoints_e2e 6 + asset_sync 1；pharos-hitl lib 27；agent-runtime 32；adapter-codex 19+8；对比基线 222 tests → +79。
+- 额外：`node --test Tests/WebCanvas/transport.test.mjs` → 14 passed / 0 failed；`diff -r webui Sources/Pharos/Resources/WebCanvas` → 无输出；`git status` 干净（handoff 提交前）。
+- 独立复核（teammate `frontend-impl`，证据 `internal/evidence/2026-11-11_rust-web-endpoints-verify.md`）：三条门禁以相同数字复跑 PASS（301/59）；真实二进制 `pharos-web`（temp data dir + 随机高位端口 27138 + 随机 token，`--fake`，从未碰 3080/~/.dsh/ipc.sock/~/.gemini/user data）：**77/77 smoke 断言 PASS**，含 auth 矩阵、member/avatar 写入+重启后仍在、config/stop、附件上传/内容/列表/引用、binding+members、openapi 新路径、400 invalidRequest/404 sessionNotFound/404 attachmentNotFound、token 不入日志；事后进程 SIGTERM、端口关闭、temp dir 删除。
+- Lead 另做一次独立真实二进制 smoke（同一模式，端口 39319）：全部通过，data dir 落盘文件为 `attachments/<id>`、`attachments/index.json`、`avatars/<sha256>.png`、`member-settings.json`、`thread-bindings.json`；重启后 member 设置/头像字节/binding/附件索引仍在（fake 会话 config 重播种为 safe，属 in-memory fake 的预期行为，已在文档说明）。
+
+**没做/未验证**
+- 真实 vendor 适配器（Codex/DSH 等）没有 config 写入、附件消息摄入、stop/revive 能力：真实后端这些路径是诚实的 502（只有显式 `--fake` 测试服务覆盖成功路径）。真实 vendor 的 Web 工作区 E2E 未跑（live-e2e 流负责真实 vendor）。
+- 真实二进制下的"取消型审批 + 问卷答案"未做黑盒 smoke（`--fake` 没有通过 HTTP 播种 pending approval 的路径）；由已提交的 Rust HTTP/集成测试 + node 精确 body 测试覆盖，未声称是 smoke 结果。
+- 会话**命令执行**（`/…`）与项目创建仍无端点，UI 继续禁用/诚实报不可用（本流任务清单未包含）。
+- Swift ClientKit 未加新接口模型；本机 Linux 无 Swift 工具链，**Swift 未在 Linux 编译验证**（本流未触碰任何 `.swift` 文件）。
+- 多文件附件上传中途失败会留下已上传的 blob/index 条目（没有附件 DELETE 端点），但消息发送不会被报告为成功；WebKit/macOS 真实渲染未验证（Linux 无 WebKit，仅 node vm 测试 + Rust HTTP/e2e）。
+- 未 push、未合入/FF `integrate/mesh2-into-main`、未做 Phase E。
+
+**需要人决定**
+1. 是否/何时把 `rust/web-endpoints`（26 commits，HEAD `dac9f14`）合入 `integrate/mesh2-into-main` 或现有 `rust/integrate-dsh3`，以及何时 push（本流按规则未 push）。
+2. 真实 vendor 适配器是否要补 config 写入 / 附件摄入 / stop-revive 能力（补了才不只是诚实 502）；若要补，建议在 adapter trait 上做 capability + 方法（本流刻意未改 adapter-codex，避免与 live-e2e 流冲突）。
+3. 会话命令执行与项目创建 API 是否列入下一批（当前 UI 明确不可用）。
+4. 绑定语义确认：PUT binding 允许"新成员名"（绑定即成员资格、无需先在 replica 中 join），这是 WIP UI "add existing local Session" 流程所需；若希望严格只允许既有 thread 成员，需要再提供一个 join/member-create API（contract 已写明当前语义）。
+5. 多文件附件上传部分失败的清理策略：是否增加 DELETE attachment 端点/孤儿清理任务。
+6. Swift ClientKit 新模型是否由后续有 macOS 的流补（本机无法编译验证）。
+- 合并提示：`router.rs` 的新路由全部集中在一个 `// --- web-endpoints additions` 块（在 `.with_state` 之前）；cross-host-sessions 若按约定只在 router.rs 末尾最小追加，冲突面仅限该块附近。
+
+
 **STATUS: INTEGRATE-DSH3-DONE — 287a136fb274f781baae11c8e7782b5eb4795058**
 **分支/worktree**：`rust/integrate-dsh3`，worktree `/workspace/pharos-rust/2026-11-11_dsh-team/wt/integrate-dsh3`，base `integrate/mesh2-into-main @ 4e381a4`。未 push、未 force/rebase/amend、未改写任何已有提交；只 `git fetch` 过 remote refs。未触碰其它 worktree（hitl-persist / web-real-sessions / thread-autoreply 保持原 tip、未改）与主 checkout `/workspace/pharos-rust/2026-11-11_dsh-team/repo`。团队：Lead（本轮、merge1+集成测试+最终交接）、teammate `implementer`（merge2 + node/npm + 门禁）、teammate `verifier`（独立静态审查 + 全门禁复跑 + 真实二进制黑盒 smoke）。
 
