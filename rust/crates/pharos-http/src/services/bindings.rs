@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::persist::{StoreError, now_rfc3339, read_versioned_store, write_json_atomic};
@@ -84,23 +85,25 @@ pub struct ThreadBindingView {
 ///
 /// Handlers validate Thread/session existence and membership through the Thread
 /// / Session services; this store only owns the durable mapping itself.
+#[async_trait]
 pub trait ThreadBindingService: Send + Sync {
     /// All bindings of a Thread, deterministic (`member` order). Unknown Thread
     /// ids simply have no bindings.
-    fn list(&self, thread_id: &str) -> Result<Vec<ThreadBinding>, StoreError>;
+    async fn list(&self, thread_id: &str) -> Result<Vec<ThreadBinding>, StoreError>;
 
     /// One binding, `None` when the pair is unbound.
-    fn get(&self, thread_id: &str, member: &str) -> Result<Option<ThreadBinding>, StoreError>;
+    async fn get(&self, thread_id: &str, member: &str)
+    -> Result<Option<ThreadBinding>, StoreError>;
 
     /// Create or replace the `(threadId, member)` binding. Returns the stored
     /// record (with `boundAt` filled in when the caller left it empty).
-    fn upsert(&self, binding: ThreadBinding) -> Result<ThreadBinding, StoreError>;
+    async fn upsert(&self, binding: ThreadBinding) -> Result<ThreadBinding, StoreError>;
 
     /// Remove a binding. `true` when a record existed.
-    fn remove(&self, thread_id: &str, member: &str) -> Result<bool, StoreError>;
+    async fn remove(&self, thread_id: &str, member: &str) -> Result<bool, StoreError>;
 
     /// All bindings for one member (ordered by `threadId`).
-    fn for_member(&self, member: &str) -> Result<Vec<ThreadBinding>, StoreError>;
+    async fn for_member(&self, member: &str) -> Result<Vec<ThreadBinding>, StoreError>;
 }
 
 type BindingMap = BTreeMap<(String, String), ThreadBinding>;
@@ -198,8 +201,9 @@ impl InMemoryThreadBindingService {
     }
 }
 
+#[async_trait]
 impl ThreadBindingService for InMemoryThreadBindingService {
-    fn list(&self, thread_id: &str) -> Result<Vec<ThreadBinding>, StoreError> {
+    async fn list(&self, thread_id: &str) -> Result<Vec<ThreadBinding>, StoreError> {
         let map = lock(&self.map);
         let mut items: Vec<ThreadBinding> = map
             .values()
@@ -210,22 +214,26 @@ impl ThreadBindingService for InMemoryThreadBindingService {
         Ok(items)
     }
 
-    fn get(&self, thread_id: &str, member: &str) -> Result<Option<ThreadBinding>, StoreError> {
+    async fn get(
+        &self,
+        thread_id: &str,
+        member: &str,
+    ) -> Result<Option<ThreadBinding>, StoreError> {
         let map = lock(&self.map);
         Ok(map.get(&key(thread_id, member)).cloned())
     }
 
-    fn upsert(&self, binding: ThreadBinding) -> Result<ThreadBinding, StoreError> {
+    async fn upsert(&self, binding: ThreadBinding) -> Result<ThreadBinding, StoreError> {
         let mut map = lock(&self.map);
         apply_upsert(&mut map, binding)
     }
 
-    fn remove(&self, thread_id: &str, member: &str) -> Result<bool, StoreError> {
+    async fn remove(&self, thread_id: &str, member: &str) -> Result<bool, StoreError> {
         let mut map = lock(&self.map);
         Ok(map.remove(&key(thread_id, member)).is_some())
     }
 
-    fn for_member(&self, member: &str) -> Result<Vec<ThreadBinding>, StoreError> {
+    async fn for_member(&self, member: &str) -> Result<Vec<ThreadBinding>, StoreError> {
         let map = lock(&self.map);
         let mut items: Vec<ThreadBinding> = map
             .values()
@@ -265,8 +273,9 @@ impl FileThreadBindingService {
     }
 }
 
+#[async_trait]
 impl ThreadBindingService for FileThreadBindingService {
-    fn list(&self, thread_id: &str) -> Result<Vec<ThreadBinding>, StoreError> {
+    async fn list(&self, thread_id: &str) -> Result<Vec<ThreadBinding>, StoreError> {
         let map = lock(&self.map);
         let mut items: Vec<ThreadBinding> = map
             .values()
@@ -277,19 +286,23 @@ impl ThreadBindingService for FileThreadBindingService {
         Ok(items)
     }
 
-    fn get(&self, thread_id: &str, member: &str) -> Result<Option<ThreadBinding>, StoreError> {
+    async fn get(
+        &self,
+        thread_id: &str,
+        member: &str,
+    ) -> Result<Option<ThreadBinding>, StoreError> {
         let map = lock(&self.map);
         Ok(map.get(&key(thread_id, member)).cloned())
     }
 
-    fn upsert(&self, binding: ThreadBinding) -> Result<ThreadBinding, StoreError> {
+    async fn upsert(&self, binding: ThreadBinding) -> Result<ThreadBinding, StoreError> {
         let mut map = lock(&self.map);
         let stored = apply_upsert(&mut map, binding)?;
         self.persist(&map)?;
         Ok(stored)
     }
 
-    fn remove(&self, thread_id: &str, member: &str) -> Result<bool, StoreError> {
+    async fn remove(&self, thread_id: &str, member: &str) -> Result<bool, StoreError> {
         let mut map = lock(&self.map);
         let removed = map.remove(&key(thread_id, member)).is_some();
         if removed {
@@ -298,7 +311,7 @@ impl ThreadBindingService for FileThreadBindingService {
         Ok(removed)
     }
 
-    fn for_member(&self, member: &str) -> Result<Vec<ThreadBinding>, StoreError> {
+    async fn for_member(&self, member: &str) -> Result<Vec<ThreadBinding>, StoreError> {
         let map = lock(&self.map);
         let mut items: Vec<ThreadBinding> = map
             .values()
@@ -318,23 +331,30 @@ mod tests {
         ThreadBinding::new(thread, member, session, Some("codex".into()))
     }
 
-    fn exercise_service(service: &dyn ThreadBindingService) {
+    async fn exercise_service(service: &dyn ThreadBindingService) {
         service
             .upsert(binding("t1", "human", "s1"))
+            .await
             .expect("upsert human");
         service
             .upsert(binding("t1", "grokbot", "s2"))
+            .await
             .expect("upsert grokbot");
         service
             .upsert(binding("t2", "human", "s3"))
+            .await
             .expect("upsert other thread");
 
-        let listed = service.list("t1").expect("list");
+        let listed = service.list("t1").await.expect("list");
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].member, "grokbot");
         assert_eq!(listed[1].member, "human");
 
-        let fetched = service.get("t1", "human").expect("get").expect("present");
+        let fetched = service
+            .get("t1", "human")
+            .await
+            .expect("get")
+            .expect("present");
         assert_eq!(fetched.session_id, "s1");
         assert_eq!(fetched.agent_type.as_deref(), Some("codex"));
         assert!(!fetched.bound_at.is_empty());
@@ -342,59 +362,69 @@ mod tests {
         // Rebind replaces the session id for the same pair.
         service
             .upsert(binding("t1", "human", "s4"))
+            .await
             .expect("rebind");
         assert_eq!(
             service
                 .get("t1", "human")
+                .await
                 .expect("get")
                 .expect("present")
                 .session_id,
             "s4"
         );
-        assert_eq!(service.list("t1").expect("list").len(), 2);
+        assert_eq!(service.list("t1").await.expect("list").len(), 2);
 
-        let member_bindings = service.for_member("human").expect("for member");
+        let member_bindings = service.for_member("human").await.expect("for member");
         assert_eq!(member_bindings.len(), 2);
         assert_eq!(member_bindings[0].thread_id, "t1");
         assert_eq!(member_bindings[1].thread_id, "t2");
 
-        assert!(service.remove("t1", "human").expect("remove"));
-        assert!(!service.remove("t1", "human").expect("remove again"));
-        assert!(service.get("t1", "human").expect("get").is_none());
-        assert_eq!(service.for_member("human").expect("for member").len(), 1);
+        assert!(service.remove("t1", "human").await.expect("remove"));
+        assert!(!service.remove("t1", "human").await.expect("remove again"));
+        assert!(service.get("t1", "human").await.expect("get").is_none());
+        assert_eq!(
+            service.for_member("human").await.expect("for member").len(),
+            1
+        );
     }
 
-    #[test]
-    fn in_memory_store_round_trips() {
+    #[tokio::test]
+    async fn in_memory_store_round_trips() {
         let service = InMemoryThreadBindingService::new();
-        exercise_service(&service);
+        exercise_service(&service).await;
     }
 
-    #[test]
-    fn blank_fields_are_rejected() {
+    #[tokio::test]
+    async fn blank_fields_are_rejected() {
         let service = InMemoryThreadBindingService::new();
         for bad in [
             ThreadBinding::new("", "human", "s1", None),
             ThreadBinding::new("t1", "", "s1", None),
             ThreadBinding::new("t1", "human", "   ", None),
         ] {
-            let error = service.upsert(bad).expect_err("blank field must fail");
+            let error = service
+                .upsert(bad)
+                .await
+                .expect_err("blank field must fail");
             assert!(matches!(error, StoreError::Invalid { .. }), "{error}");
         }
-        assert!(service.list("t1").expect("list").is_empty());
+        assert!(service.list("t1").await.expect("list").is_empty());
     }
 
-    #[test]
-    fn file_store_survives_reopen_and_remove_persists() {
+    #[tokio::test]
+    async fn file_store_survives_reopen_and_remove_persists() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(THREAD_BINDINGS_FILE);
         {
             let service = FileThreadBindingService::open(&path).expect("open");
             service
                 .upsert(binding("t1", "human", "s1"))
+                .await
                 .expect("upsert");
             service
                 .upsert(binding("t1", "grokbot", "s2"))
+                .await
                 .expect("upsert");
         }
         // File is materialized with the documented envelope shape.
@@ -405,42 +435,50 @@ mod tests {
         assert_eq!(json["bindings"][0]["threadId"], "t1");
 
         let reopened = FileThreadBindingService::open(&path).expect("reopen");
-        assert_eq!(reopened.list("t1").expect("list").len(), 2);
+        assert_eq!(reopened.list("t1").await.expect("list").len(), 2);
         assert_eq!(
             reopened
                 .get("t1", "grokbot")
+                .await
                 .expect("get")
                 .expect("present")
                 .session_id,
             "s2"
         );
-        assert!(reopened.remove("t1", "human").expect("remove"));
+        assert!(reopened.remove("t1", "human").await.expect("remove"));
         drop(reopened);
 
         let reopened_again = FileThreadBindingService::open(&path).expect("reopen again");
-        assert!(reopened_again.get("t1", "human").expect("get").is_none());
-        assert_eq!(reopened_again.list("t1").expect("list").len(), 1);
+        assert!(
+            reopened_again
+                .get("t1", "human")
+                .await
+                .expect("get")
+                .is_none()
+        );
+        assert_eq!(reopened_again.list("t1").await.expect("list").len(), 1);
     }
 
-    #[test]
-    fn missing_file_opens_as_empty_store_and_first_write_creates_it() {
+    #[tokio::test]
+    async fn missing_file_opens_as_empty_store_and_first_write_creates_it() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("nested").join(THREAD_BINDINGS_FILE);
         let service = FileThreadBindingService::open(&path).expect("open");
-        assert!(service.list("t1").expect("list").is_empty());
+        assert!(service.list("t1").await.expect("list").is_empty());
         assert!(!path.exists(), "open must not write an empty store");
         service
             .upsert(binding("t1", "human", "s1"))
+            .await
             .expect("upsert");
         assert!(path.is_file());
     }
 
-    #[test]
-    fn upsert_fills_missing_bound_at() {
+    #[tokio::test]
+    async fn upsert_fills_missing_bound_at() {
         let service = InMemoryThreadBindingService::new();
         let mut raw = binding("t1", "human", "s1");
         raw.bound_at.clear();
-        let stored = service.upsert(raw).expect("upsert");
+        let stored = service.upsert(raw).await.expect("upsert");
         assert!(!stored.bound_at.is_empty());
         assert!(stored.bound_at.ends_with('Z'));
     }
