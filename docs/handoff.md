@@ -1,6 +1,102 @@
 ---
-summary: 2026-11-11：Phase E（删除 Swift 后端模块）在 rust/phase-e 完成；见 docs/handoff-phase-e.md。
+summary: 2026-11-11：三个已验收 Rust 流（hitl-persist / web-real-sessions / thread-autoreply）已 --no-ff 合入 rust/integrate-dsh3；见本文件顶部。
 ---
+# 活跃任务交接
+
+**STATUS: INTEGRATE-DSH3-DONE — 287a136fb274f781baae11c8e7782b5eb4795058**
+**分支/worktree**：`rust/integrate-dsh3`，worktree `/workspace/pharos-rust/2026-11-11_dsh-team/wt/integrate-dsh3`，base `integrate/mesh2-into-main @ 4e381a4`。未 push、未 force/rebase/amend、未改写任何已有提交；只 `git fetch` 过 remote refs。未触碰其它 worktree（hitl-persist / web-real-sessions / thread-autoreply 保持原 tip、未改）与主 checkout `/workspace/pharos-rust/2026-11-11_dsh-team/repo`。团队：Lead（本轮、merge1+集成测试+最终交接）、teammate `implementer`（merge2 + node/npm + 门禁）、teammate `verifier`（独立静态审查 + 全门禁复跑 + 真实二进制黑盒 smoke）。
+
+**做了什么（三个已验收流的 merge captain，不加新功能）**
+- `daa81f7`（本流起始已有）：`git merge --no-ff rust/hitl-persist @ 7f9c741`（pending approval 持久化 + `GET /api/v1/approvals` + WebCanvas 重连）。
+- `7736b00`：`git merge --no-ff rust/web-real-sessions @ 8a0aeb9`。6 个冲突文件按语义合并，两边功能都保留：
+  - **默认真实服务**：`pharos-web` 走新增 `real_app_state()`（= `pharos_http::services::build_real_app_state` + durable approvals），`--fake` 仍是显式 opt-in（启动 WARN）。
+  - **任何模式都持久化 pending approvals**：`AppState` 始终带 `FileApprovalService(<data-dir>/pending-approvals.json)`（版本化 JSON，temp+fsync+rename 原子写，损坏/空文件/不支持 version 启动报错、绝不静默重置），且 `serve`/`serve_with_token`/`serve_ephemeral`/`serve_ephemeral_with_token` 全路径 `spawn_approval_tap()`。fake 模式 = 内存 fake Thread/Session + durable approvals（新语义，见"需要人决定"）。
+  - **单一 `--data-dir`**：优先级 `--data-dir` > `PHAROS_WEB_DATA_DIR`（主 env）> `PHAROS_DATA_DIR`（兼容 hitl 流旧 env）> 平台默认（macOS `~/Library/Application Support/Pharos`；Linux `$XDG_DATA_HOME/pharos`，否则 `~/.local/share/pharos`）。Thread replica `mesh/replica.sqlite3`、goals `mesh/goals.sqlite3`、`pending-approvals.json` 全在同一 data dir。（历史 HITL 段写的 Linux `~/.local/state/pharos` 已被本合并取代。）
+  - **router 两边追加路由全保留**：`POST /api/v1/threads`、`POST /api/v1/sessions`、`GET /api/v1/approvals?state=pending[&sessionId=]`、`POST /api/v1/sessions/{id}/approval` 的 durable 语义（幂等 first-wins、未知 404、session mismatch 400、过期 409、下游派发失败 revert 保持可重试）。token 鉴权在 `app_router_with_token` 包住整个 API router，故覆盖 approvals；`/health` 与静态 UI 免鉴权；非 loopback 无 token 拒绝启动（CLI + serve 双重校验）。
+  - `Cargo.lock` 用 `cargo metadata` 重新生成依赖并集（未手工拼）；两侧测试文件全部保留。
+- `adebf73`：合并专用集成测试（真实模式 pending approval 跨重启 + 非 loopback+token bearer），见下。
+- `287a136`：`git merge --no-ff rust/thread-autoreply @ f158b8b`。唯一冲突 `docs/handoff.md`（两边都在顶部插 STATUS 段）→ 取 ours 保持本文件其余内容，该流原 handoff 段已在本文件下方**完整恢复**。`rust/Cargo.lock` 由 git 自动合并后被 `cargo check` 验证为正确解析（仅 pharos-agent-runtime 依赖表 +3 个 workspace path crate）；agent-runtime/adapter-codex/pharos-adapter-dsh/dsh 插件整段零改写进入。
+- 3 个 merge commit（`daa81f7`/`7736b00`/`287a136`）均 `--no-ff` 双 parent；无 rebase/squash/amend；无 `.orig`/`.rej`/冲突标记残留。
+
+**改了哪些 crate/文件**
+- merge captain 手工解析：`rust/crates/pharos-http/{Cargo.toml,src/lib.rs,src/router.rs}`、`rust/crates/pharos-web/{Cargo.toml,src/lib.rs,src/main.rs}`（语义合并 + `real_app_state()`/data-dir env 优先级/`--fake` durable approvals/tap 全路径）、`rust/crates/pharos-web/tests/real_approvals.rs`（新）、`rust/Cargo.lock`、`docs/handoff.md`、`internal/evidence/2026-11-11_rust-integrate-dsh3-review.md`（verifier）。
+- 合并带入（两流原始实现，未改写）：`pharos-http/src/services/{real,real_thread,real_session}.rs`、`pharos-web/src/auth.rs`、`pharos-hitl/src/approval_store.rs`、`pharos-http/src/{approvals.rs,services/approval.rs}`、`adapter-codex/src/{reply.rs,transport/recorded.rs}`、`agent-runtime/src/reply_sink.rs`、`integrations/dsh-plugin-pharos/index.test.mjs` 等。
+- **未改任何 `.swift` 文件、未改 `Sources/Pharos/Resources/WebCanvas/`、未改 `webui/`**（`diff -r webui Sources/Pharos/Resources/WebCanvas` 无输出，`asset_sync` 绿）。**Swift 未在 Linux 编译验证**（本机无 Swift；本流未触碰 Swift，无需验证）。
+
+**新增测试**
+- `rust/crates/pharos-web/tests/real_approvals.rs`（2）：① 真实模式（非 `--fake`）`ApprovalRequired` → approval tap → 持久化 → HTTP snapshot → 停服 + 重启同 `--data-dir` 后 `GET /api/v1/approvals?state=pending` 仍在，且 `mesh/replica.sqlite3`+`mesh/goals.sqlite3`+`pending-approvals.json` 同目录；② 真 HTTP bind `0.0.0.0:<ephemeral>` + token → approvals snapshot/resolve 无 bearer 401、带 bearer 200、`/health` 200、`validate_bind` 无 token 拒绝。
+- `rust/crates/pharos-web/src/lib.rs` 单测新增/加强：real/fake 两模式 durable approval 跨 reopen、corrupt store 在两种模式都报错且不覆盖坏字节、`PHAROS_WEB_DATA_DIR` 优先于 `PHAROS_DATA_DIR`、legacy env 兼容/空值报错、token 覆盖 approvals snapshot 路由。
+- `rust/crates/pharos-http/src/router.rs`：保留两流全部测试并重建（14 个 router 测试：hitl 8 + web 2 + 既有 4）。
+- 两流原有测试全部保留、未削弱（数字见下）。
+
+**门禁结果（最终代码 HEAD `287a136`，`rust/` 下，`CARGO_BUILD_JOBS=3`）**
+- `cargo fmt --all -- --check` → **PASS**（exit 0，无输出）。
+- `cargo clippy --workspace --all-targets -- -D warnings` → **PASS**（exit 0，0 warning）。
+- `cargo test --workspace` → **PASS**（exit 0，**222 passed / 0 failed / 0 ignored，57 suites** 含 doc-tests）。关键计数：pharos-http lib 31 + approvals_api 9 + real_state_http 4；pharos-web lib 28 + real_approvals 2 + approvals_persistence 2 + real_sessions 3 + acceptance 1 + asset_sync 1；agent-runtime 32；adapter-codex 19+8；pharos-hitl 19；pharos-adapter-dsh 9+1。
+- 额外：`integrations/dsh-plugin-pharos` `npm test`/`node --test` → **18 passed**，`node --check index.mjs` OK；`Tests/WebCanvas` `node --test` → **3 passed**；`diff -r webui Sources/Pharos/Resources/WebCanvas` → exit 0 无输出；`git status` 干净。
+- 独立 verifier（teammate）复跑三条门禁数字一致，并做真实二进制黑盒 smoke **39/39 PASS**（mktemp 临时 data dir + 随机高位端口）：真实模式 pending approval 跨重启仍在、无 fake 数据泄漏；`--fake` 模式 resolve 后磁盘 store 变 resolved 且重启仍 resolved；`0.0.0.0`+`--token` 的 401/200/?token=/health 矩阵、无 token 拒启动 exit 1、token 不入日志；损坏 store 启动 exit 1 且坏字节保留；未碰真实房间/3080/ipc.sock/~/.gemini。证据：`internal/evidence/2026-11-11_rust-integrate-dsh3-review.md`；merge2 证据：`internal/evidence/2026-11-11_rust-integrate-dsh3-autoreply-merge.md`。
+
+**没做/未验证**
+- 真实 vendor E2E 未跑（继承两流，非本次合并回归）：真实 Codex app-server `thread/read` 的 `phase="final_answer"`、真实 DSH Host + Rust runtime 往返、`~/personal/pharos-msg-test` 真实消息、Codex worker crash 恢复 at-least-once 重投均未验证；未碰 3080 dsh Host/ipc.sock/~/.gemini。
+- 默认真实模式 + `--session-adapter none` 时没有 live Session adapter：session 列表为空、`POST /api/v1/sessions/{id}/approval` 会先落 durable decision 再被下游 502 `operationFailed` 回滚（approval 仍 pending 可重试）——这是 hitl"失败不吞审批"与 web"不伪造成功"的既定诚实语义，不是回归；因此默认真实二进制下 approvals 无法真正 resolve 直到配置 live adapter（需要人决定是否例外）。
+- WebKit/浏览器 UI 未在真实 macOS 验证（Linux 无 Swift/WebKit）；只有 node `vm` 单测 + Rust HTTP/e2e。
+- `webui`/WebCanvas 的 `transport.js` 不支持 bearer token（token 模式浏览器是 API-only）；共享 SQLite 无 WAL/busy_timeout；reply 重试可能重复 1 帧 WS（均为继承的非阻塞项）。
+- Swift ClientKit 的 pending-approval snapshot 请求/模型仍未实现（Linux 无法编译验证 Swift，按"不确定不改 Swift"保留缺口）。
+- 未 push、未合入/FF `integrate/mesh2-into-main`、未做 Phase E、未改 `pharos-api` 冻结契约（新路由未追加进 OpenAPI stub，approvals 路由除外）。
+
+**需要人决定**
+1. 是否把 `rust/integrate-dsh3` 提升进 `integrate/mesh2-into-main`（FF/merge + 何时 push）；本流按规则未 push。
+2. `--fake` 语义变更：现在 fake 模式也持久化 pending approvals（Thread/Session 仍是内存 fake），与旧"`--fake` 不落盘"描述不同；是否接受并在 UI/文档中固定。
+3. `PHAROS_DATA_DIR` 保留为 legacy 兼容还是废弃；Host canonical data-dir 根命名仍待统一（RFC-007 Q1/Q8）。
+4. `--session-adapter` 默认 `none` 还是检测到 codex CLI 后默认 `codex`；这决定默认真实二进制能否 resolve approvals。
+5. DSH 助手回复写回 Thread 的路径（canonical 插件 mesh 工具 vs Rust `thread.reply` RPC）；真实 Codex 0.167 若无 `final_answer` phase 是否允许"匹配 turn 的最后一条非空 agentMessage"兜底（thread-autoreply 流遗留，见下）。
+
+
+**STATUS: THREAD-AUTOREPLY-DONE — 7655e95**
+**Thread 自动回复（Codex + DSH）2026-11-11**：worktree `/workspace/pharos-rust/2026-11-11_dsh-team/wt/thread-autoreply`，分支 `rust/thread-autoreply`（base `integrate/mesh2-into-main` @ `4e381a4`）。共 10 个提交，未 push、未 rebase/amend/force、未改历史。
+
+**做了什么（投递 poll → 代理 followup → 最终答案 → 关联回复 → ack 闭环）**
+- **Rust agent-runtime 投递路由**（f7306f8）：`delivery.submit-member` 只投给**唯一存活**候选——conversation `online` + 非 archived + state 观察值新鲜（-5..=45s），且其 driver 声明 `delivery.poll` 且心跳新鲜（-5..=15s）；runtime 自带的 managed Codex（`codex:app-server`）不需要插件心跳。0 个候选 → `No managed conversation registered for member: …`；>1 个 → `-32602 Multiple active conversations registered for member: …`（绝不乱投/猜）。`idempotencyKey` 复用必须同 member+conversation+payload，否则 `-32602`。新增只读 RPC `delivery.inspect-members` / `delivery.inspect-dsh-binding` / `delivery.inspect-dsh-bindings`（300/512 上限校验，不建投递不落盘），`runtime.hello` capabilities 增加 `delivery-inspect-v1`、`dsh-binding-inspect-v1`、`dsh-binding-batch-inspect-v1`。
+- **Codex 最终答案 → 关联回复 → ack**（5e5f637 + 8f7f7cb/42064ed/87e9c98 加固）：把 `turn/start` 返回的 turn id 记录进投递（`turnId`），投递 `consumed` 后按 envelope 的 `room`/`messageID` + `targetMemberID` 布置 reply job；缺失则显式 `missing-turn-id`/`missing-member-id`/`missing-correlation`，绝不静默当成功。adapter worker 轮询 `thread/read(includeTurns=true)`，用 `pharos-codex-adapter::inspect_turn_reply` 只取**该 turn** 且 `status=completed` 的 `phase="final_answer"` 文本（commentary/别的 turn 永不泄漏）；成功时经 `HostReplySink` 的生产实现 `ThreadStoreReplySink` 调用 `pharos-thread` 的 `replyOnce`（room + member=`targetMemberID` + messageID=原消息）写回 Thread，回复 ID 由 (scope,room,member,原消息) 确定，崩溃重试返回同一 ID → 不会重复回复；`reply_state` 记 `posted`/`turn-failed`/`no-final-answer`/`answer-too-large`/`failed`/`turn-timeout`，sink 失败最多 5 次、未终结 turn 的等待预算 300 次轮询（约 10 分钟）后显式 `turn-timeout`，只有回复真正落盘才 `posted`。
+- **幂等/顺序加固**（8f7f7cb、42064ed）：`delivery.ack` 重复同状态是**真 no-op**（不重复发事件、不重复回复），且只允许状态前移——misordered/重复 consumer 不能把已 `consumed` 的投递退回 `injected` 让 Codex worker 重投；公开 `delivery.submit` 不能伪造 `targetMemberID`（必须是对应 conversation 的唯一存活路由）、archived conversation 不接受投递、幂等键复用校验 conversation/payload；`ready_codex_delivery_index` 不再向 archived Codex 会话注入；turn id 提取走受测 helper。
+- **adapter-codex 最终答案选择**（9f8bc20、e7b7d04）：新增 `src/reply.rs`（`ReplyInspection`、`inspect_turn_reply`、`final_answer_text`、`assistant_reply_text`）；`parse_turns`/`DeliveryWorker::dispatch` 不再拼接所有 agentMessage，改为“匹配 turn 的 `final_answer`，否则最后一条非空 agentMessage（legacy 无 phase）”，completed 无文本 → Failed、failed/interrupted → Failed（绝不 Completed）；新增 `CodexTransport::Recorded(RecordedAppServer)` 假 transport、`RecordedRequest`、`CodexSessionAdapter::from_transport`。
+- **DSH plugin 闭环对齐 canonical 427db7d（PIT-DS-05）**（790892d、7655e95）：`integrations/dsh-plugin-pharos` 循环改为 `delivery.poll` → ack `injected`（失败吞掉）→ `agent.followup(buildUserMessage(...))` → ack `consumed`；followup 抛错 → ack `failed`+detail；consumed-ack 在 followup 成功后抛错 → 再 ack `failed`（detail `followup accepted but consumed ack failed: …`），failed-ack 自身失败只记录不中断其余投递；archived session → failed 且不 followup；`consumed` 只表示 DSH durable inbox 接管、不宣称助手回合完成。移除 `@deepseek-ai/dsh-llm` 顶层依赖（本地 `buildUserMessage`，零依赖可测）；driver capabilities 增加 `delivery.poll` + `mesh.reply-once-v1`（Rust 侧 liveness/reply-capable 检查依赖它）；`package.json` 加 `node --test`。
+- **pharos-adapter-dsh 保持薄、不伪造**（cbb7425）：新增 `RUNTIME_DRIVER_CAPABILITIES`（`delivery.poll`/`mesh.reply-once-v1`）并用于 manifest；文档明确 adapter 只报告观测到的 terminal turn、不自己发 Thread 回复、不存在 fabricated `delivered`；测试保证 failure/interrupt 结果永不 Completed 且无 assistant_text。
+
+**改了哪些 crate / 文件**
+- `rust/crates/agent-runtime/`：`src/main.rs`（投递路由 + inspection + ack 顺序 + Codex reply loop + worker 接线）、新增 `src/reply_sink.rs`（`HostReplySink`/`ThreadStoreReplySink`/确定性 nick）、`Cargo.toml`（+pharos-api/pharos-thread/pharos-codex-adapter）；`rust/Cargo.lock`。
+- `rust/crates/adapter-codex/src/{reply.rs(new), lib.rs, codex.rs, delivery.rs, transport/mod.rs, transport/recorded.rs(new)}`、`tests/recorded_dispatch.rs`(new)。
+- `rust/crates/pharos-adapter-dsh/src/{adapter.rs, lib.rs}`。
+- `integrations/dsh-plugin-pharos/{index.mjs, index.test.mjs(new), package.json, package-lock.json, README.md}`。
+- 未改 `pharos-web`/`pharos-http` services、未改 `pharos-hitl`、未改 `pharos-thread` 源码、未改 Swift/WebCanvas。
+
+**新增测试（cargo test / node --test）**
+- `agent-runtime`：32 个 unit（新增 21：liveness/ambiguity/idempotency/inspection、ack no-op+顺序、reply correlation/restart、sink 重试、等待超时、大答案、direct-submit 防伪造、turn id 提取）；均用 /tmp 临时 registry + 录制 `thread/read` JSON + `RecordingReplySink`/内存 SqliteThreadStore，不调真实 Codex。
+- `adapter-codex`：lib 19（新增 14）+ `tests/recorded_dispatch.rs` 8（final-answer-only Completed、failed/interrupted→Failed、无文本→Failed、commentary-only→Failed、legacy phase-less→Completed、turn/start 错误→Failed 等），全部假 transport/录制事件。
+- `pharos-adapter-dsh`：lib 9（新增 2：runtime capability 契约、failure 不伪造 Completed）+ 1 integration。
+- `integrations/dsh-plugin-pharos`：`node --test` 18/18（新套件：4 阶段 ack 顺序/载荷、followup 抛错→failed、consumed-ack 抛错→failed、failed-ack 再失败被捕获、archived、空 poll、payload 渲染、buildUserMessage 形状、capabilities、name/inject/apply 保持）。
+
+**门禁（在 rust/ 下，最终代码提交 7655e95）**
+- `cargo fmt --all -- --check` → exit 0。
+- `CARGO_BUILD_JOBS=3 cargo clippy --workspace --all-targets -- -D warnings` → exit 0，无 warning。
+- `CARGO_BUILD_JOBS=3 cargo test --workspace` → exit 0；52 个 test suite 全绿，共 **135** 个测试（其中 agent-runtime 32、adapter-codex 19+8、pharos-adapter-dsh 9+1）。
+- `cd integrations/dsh-plugin-pharos && node --test` / `npm test` → **18 passed / 0 failed**；`node --check index.mjs` OK。
+- `git status` 干净（本 handoff 提交前）。
+
+**没做 / 没验证**
+- 未跑真实 Codex app-server E2E（真实 0.167 的 `thread/read` 是否带 `phase="final_answer"` 未验证；env-gated product test 未执行）。若 0.167 不带 phase，本实现会诚实落到 `no-final-answer`，不会乱发。
+- 未跑真实 DSH Host + Rust agent-runtime 端到端（插件测试为 fake agent/RPC shim）；未在 `~/personal/pharos-msg-test` 做真实消息投递/回复；未碰 3080 Host/ipc.sock/~/.gemini。
+- 应用启动器（Swift/GUI 或 supervisor）如何传 `--thread-data-dir`/`PHAROS_THREAD_DATA_DIR`、是否与 GUI/Host 共用同一 `replica.sqlite3` 未验证；默认 `$HOME/Library/Application Support/Pharos/Mesh`。
+- DSH 助手回复的实际写回路径（canonical 0.2.0 插件的 `pharos_mesh_send` 工具）不在本流；仓库内插件是 runtime-intake 包装，只负责 poll→followup→ack，助手正文回复需另接（见下）。
+- 未验证真实 Codex worker 崩溃恢复的 at-least-once 重投（turn/start `clientUserMessageId` 去重依赖 vendor 行为）；重复**回复**不会发生（replyOnce 稳定 ID），但 prompt 可能重投一次。
+- `delivery.submit` 仍是低层 API（本地 socket 0600，且 Peer allowlist 只放 `delivery.submit-member`），现已加 target/archived/幂等校验；如需彻底关闭可再加开关。
+- 未改 Swift/WebCanvas，无需 Swift 编译验证（本机 Linux 也无法编译 Swift）。
+
+**需要人决定**
+1. daemon 的 Thread 数据目录权威来源与启动参数（谁在 supervisor 里传 `--thread-data-dir`，是否与 GUI/Host 共用同一 `replica.sqlite3`）。
+2. DSH 助手回复写回 Thread 的路径：接 canonical 插件的 mesh 工具，还是给 Rust runtime 新增 `thread.reply` RPC 由插件调用（本流只做投递 intake 闭环）。
+3. 真实 Codex 0.167 若确实不带 `phase`，是否允许“匹配 turn 的最后一条非空 agentMessage”作为兜底（当前严格 final_answer，宁可 `no-final-answer` 也不乱发）。
+4. `delivery.submit` 是保留为可信本地 API（已加校验）还是彻底移除，以收窄本地 socket 攻击面。
 
 **STATUS: WEB-REAL-SESSIONS-DONE — 494435f**
 **Stream:** `rust/web-real-sessions`，worktree `/workspace/pharos-rust/2026-11-11_dsh-team/wt/web-real-sessions`，分支 `rust/web-real-sessions`（base `4e381a4` = integrate/mesh2-into-main）。未 push。未改 Swift / `Sources/Pharos/Resources/WebCanvas/` / `webui/` / `Package.swift`（本流无需 WebCanvas 变更，asset_sync 逐字节检查保持绿；Swift 未在 Linux 编译，因未触碰无需验证）。
