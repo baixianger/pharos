@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 pharos-agent-core.workspace = true
+pharos-api.workspace = true
+pharos-thread.workspace = true
+pharos-codex-adapter = { path = "../adapter-codex" }
 serde_json.workspace = true
 serde.workspace = true
 time.workspace = true
