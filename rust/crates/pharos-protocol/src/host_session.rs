@@ -117,7 +117,10 @@ impl HostSessionQueryRequest {
         }
     }
 
-    pub fn session_history(host_device_id: impl Into<String>, session_id: impl Into<String>) -> Self {
+    pub fn session_history(
+        host_device_id: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
         Self {
             payload_version: QUERY_VERSION,
             host_device_id: host_device_id.into(),
@@ -398,8 +401,7 @@ impl HostSessionActionRequest {
         validate_identifier("actionId", &self.action_id)?;
         validate_identifier("hostDeviceId", &self.host_device_id)?;
         validate_identifier("sessionId", &self.session_id)?;
-        if self.idempotency_key.is_empty()
-            || self.idempotency_key.len() > MAX_IDEMPOTENCY_KEY_BYTES
+        if self.idempotency_key.is_empty() || self.idempotency_key.len() > MAX_IDEMPOTENCY_KEY_BYTES
         {
             return Err(HostSessionErrorBody::invalid(
                 "idempotencyKey is required (<= 512 bytes)",
@@ -558,7 +560,9 @@ impl HostSessionErrorBody {
 
 fn validate_identifier(field: &str, value: &str) -> Result<(), HostSessionErrorBody> {
     if value.is_empty() {
-        return Err(HostSessionErrorBody::invalid(format!("{field} is required")));
+        return Err(HostSessionErrorBody::invalid(format!(
+            "{field} is required"
+        )));
     }
     if value.len() > MAX_IDENTIFIER_BYTES {
         return Err(HostSessionErrorBody::invalid(format!(
@@ -570,7 +574,9 @@ fn validate_identifier(field: &str, value: &str) -> Result<(), HostSessionErrorB
 
 fn validate_text(field: &str, value: &str, maximum: usize) -> Result<(), HostSessionErrorBody> {
     if value.trim().is_empty() {
-        return Err(HostSessionErrorBody::invalid(format!("{field} is required")));
+        return Err(HostSessionErrorBody::invalid(format!(
+            "{field} is required"
+        )));
     }
     if value.len() > maximum {
         return Err(HostSessionErrorBody::invalid(format!(

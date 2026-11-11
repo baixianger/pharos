@@ -10,8 +10,9 @@ pub use pairing::{
 };
 pub use pharos_iroh::{EndpointAddr, EndpointId, PHAROS_MESH_ALPN, PeerDial};
 pub use pharos_replica::{
-    HostRuntimeCallRequest, HostRuntimeCallResponse, HostRuntimeHello, ReplicaHandle,
-    ReplicaHandleConfig, ReplicaSyncPullRequest, ReplicaSyncPushRequest, SyncedMessage,
+    HostRuntimeCallRequest, HostRuntimeCallResponse, HostRuntimeHello, HostSessionFault,
+    HostSessionHandler, ReplicaHandle, ReplicaHandleConfig, ReplicaSyncPullRequest,
+    ReplicaSyncPushRequest, SyncedMessage,
 };
 
 use std::path::PathBuf;
@@ -147,12 +148,41 @@ pub fn load_peers(data_dir: &std::path::Path) -> Result<Vec<MeshPeerRecord>, Mes
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
 
+/// Paired-peer endpoint IDs recorded in `peers.json`.
+///
+/// Used as the host session allowlist: once a Host has paired peers, only they
+/// may query/act on its sessions. An absent/empty peer list keeps the legacy
+/// trust-group + membership-epoch authorization.
+pub fn paired_peer_endpoint_ids(
+    data_dir: &std::path::Path,
+) -> Result<Option<Vec<String>>, MeshError> {
+    let peers = load_peers(data_dir)?;
+    let ids: Vec<String> = peers
+        .into_iter()
+        .map(|peer| peer.endpoint_id)
+        .filter(|id| !id.is_empty())
+        .collect();
+    Ok(if ids.is_empty() { None } else { Some(ids) })
+}
+
 pub async fn open_handle(
     data_dir: PathBuf,
     runtime_socket: Option<PathBuf>,
     relay_disabled: bool,
 ) -> Result<Arc<ReplicaHandle>, MeshError> {
+    open_handle_with_host_sessions(data_dir, runtime_socket, relay_disabled, None).await
+}
+
+/// Open a replica handle that also serves cross-host session queries/actions
+/// through `handler` to the local SessionService.
+pub async fn open_handle_with_host_sessions(
+    data_dir: PathBuf,
+    runtime_socket: Option<PathBuf>,
+    relay_disabled: bool,
+    handler: Option<Arc<dyn HostSessionHandler>>,
+) -> Result<Arc<ReplicaHandle>, MeshError> {
     let identity = load_identity(&data_dir)?;
+    let allowed_peer_endpoint_ids = paired_peer_endpoint_ids(&data_dir)?;
     ReplicaHandle::open(ReplicaHandleConfig {
         data_dir,
         device_id: identity.device_id,
@@ -160,6 +190,8 @@ pub async fn open_handle(
         membership_epoch: identity.membership_epoch,
         runtime_socket,
         relay_disabled,
+        host_session_handler: handler,
+        allowed_peer_endpoint_ids,
     })
     .await
     .map_err(|e| MeshError::Replica(e.to_string()))

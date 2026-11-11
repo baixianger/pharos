@@ -6,6 +6,7 @@
 //! would be required for bit-identical Swift wire interop; Rust↔Rust XHOST uses
 //! these Phase 0 names.
 
+use pharos_protocol::host_session::HostSessionErrorCode;
 use pharos_protocol::{
     AGENT_RUNTIME_PROTOCOL_VERSION, AGENT_RUNTIME_SERVICE, HOST_RUNTIME_ALLOWED_METHODS,
     ReplicaRpcDisposition, ReplicaRpcOperation, runtime_methods,
@@ -26,6 +27,15 @@ pub enum ReplicaRpcError {
     Runtime(String),
     #[error("store: {0}")]
     Store(String),
+    /// Structured host session failure reported by the target host.
+    #[error("host session {}: {message}", code.as_str())]
+    HostSession {
+        code: HostSessionErrorCode,
+        message: String,
+    },
+    /// The peer could not be reached at the transport level (offline/timeout).
+    #[error("peer unreachable: {0}")]
+    Unreachable(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
