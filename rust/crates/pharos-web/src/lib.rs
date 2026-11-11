@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use axum::Router;
+use axum::{Router, response::Redirect, routing::get};
 use pharos_http::{AppState, EventBus, FakeSessionService, FakeThreadService, api_router};
 use pharos_store_schema::paths::WEBUI_DIR;
 use tower_http::services::{ServeDir, ServeFile};
@@ -61,7 +61,12 @@ pub fn app_router(state: AppState, webui_dir: &Path) -> Router {
     let static_files = ServeDir::new(webui_dir).append_index_html_on_directories(true);
     let fallback = ServeFile::new(index);
 
-    api_router(state).fallback_service(static_files.fallback(fallback))
+    api_router(state)
+        .route(
+            "/",
+            get(|| async { Redirect::temporary("/workspace.html") }),
+        )
+        .fallback_service(static_files.fallback(fallback))
 }
 
 /// Construct AppState wired to **fake** S1/S2 services (S4 acceptance default).

@@ -18,3 +18,7 @@ Portions of the user interface architecture, responsive 3-pane layout geometry, 
 - **Notices**:
   - Copyright (c) Grok Bot contributors.
   - Used in accordance with open-source licensing.
+
+### DeepSeek Harness and Markdown-it
+
+The Session transcript adapts DeepSeek Harness 0.2.2-rc.1 design. The bundled Markdown-it 15.0.2 browser build carries its MIT license in `markdown-it.LICENSE.txt`. The workspace also includes the Grok Bot 0.78.5 avatar kernel and related mockup CSS.
