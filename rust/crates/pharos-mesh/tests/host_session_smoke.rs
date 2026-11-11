@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use pharos_mesh::{
-    HostSessionFault, HostSessionHandler, MeshNodeIdentity, ReplicaHandle, ReplicaHandleConfig,
-    init_node, open_handle, PeerDial,
+    HostSessionFault, HostSessionHandler, MeshNodeIdentity, PeerDial, ReplicaHandle,
+    ReplicaHandleConfig, init_node, open_handle,
 };
 use pharos_protocol::host_session::{
     ACTION_CAPABILITY, HostApprovalDecision, HostSessionActionPayload, HostSessionActionRequest,
@@ -106,12 +106,11 @@ impl HostSessionHandler for RecordingHostSessions {
         if request.session_id != TARGET_SESSION {
             return Err(HostSessionFault::UnknownSession(request.session_id));
         }
-        let mut response =
-            pharos_protocol::host_session::HostSessionActionResponse::new(
-                &request.action_id,
-                &request.host_device_id,
-                &request.session_id,
-            );
+        let mut response = pharos_protocol::host_session::HostSessionActionResponse::new(
+            &request.action_id,
+            &request.host_device_id,
+            &request.session_id,
+        );
         match &request.action {
             HostSessionActionPayload::SendMessage { .. } => {
                 self.actions.lock().unwrap().push(request);
@@ -231,7 +230,12 @@ async fn peer_session_query_and_action_roundtrip() {
         .expect("hello");
     assert_eq!(hello.host_device_id, host_identity.device_id);
     assert!(hello.capabilities.iter().any(|cap| cap == QUERY_CAPABILITY));
-    assert!(hello.capabilities.iter().any(|cap| cap == ACTION_CAPABILITY));
+    assert!(
+        hello
+            .capabilities
+            .iter()
+            .any(|cap| cap == ACTION_CAPABILITY)
+    );
 
     // A lists B's sessions.
     let listed = client

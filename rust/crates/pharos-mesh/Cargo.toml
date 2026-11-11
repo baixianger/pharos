@@ -30,5 +30,7 @@ hex = "0.4"
 time = { workspace = true }
 
 [dev-dependencies]
+pharos-api = { workspace = true }
+pharos-session = { path = "../pharos-session" }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

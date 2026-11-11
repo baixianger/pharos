@@ -143,7 +143,7 @@ impl ActionReplayCache {
         else {
             return ReplayCheck::Fresh;
         };
-        if &entry.request == request {
+        if same_effect(&entry.request, request) {
             ReplayCheck::Replayed(entry.response.clone())
         } else {
             ReplayCheck::Conflict(HostSessionFault::InvalidRequest(
@@ -186,6 +186,13 @@ impl ActionReplayCache {
 /// Scope is the requesting peer endpoint: idempotency keys are per peer, so one
 /// peer cannot replay another peer's action. `\u{1f}` cannot appear in a
 /// validated endpoint id / key.
+/// Two actions have the same effect when they target the same host/session and
+/// carry the same typed payload (`actionId` is deliberately ignored: retries
+/// carry a fresh correlation id).
+fn same_effect(a: &HostSessionActionRequest, b: &HostSessionActionRequest) -> bool {
+    a.host_device_id == b.host_device_id && a.session_id == b.session_id && a.action == b.action
+}
+
 fn replay_key(scope: &str, idempotency_key: &str) -> String {
     format!("{scope}\u{1f}{idempotency_key}")
 }
@@ -225,6 +232,35 @@ mod tests {
         assert!(matches!(
             cache.check("peer-a", &request),
             ReplayCheck::Replayed(cached) if cached == response
+        ));
+    }
+
+    #[test]
+    fn replay_cache_replays_retry_with_new_action_correlation_id() {
+        let mut cache = ActionReplayCache::new(8);
+        let first = request("idem-1", "hello");
+        let response = HostSessionActionResponse::new("action-1", "host-b", "session-1");
+        cache.record("peer-a", first, response.clone());
+        // A retry may use a fresh action id as long as the effect is identical.
+        let mut retry = request("idem-1", "hello");
+        retry.action_id = "action-2".into();
+        assert!(matches!(
+            cache.check("peer-a", &retry),
+            ReplayCheck::Replayed(cached) if cached == response
+        ));
+    }
+
+    #[test]
+    fn replay_cache_does_not_replay_across_peers() {
+        let mut cache = ActionReplayCache::new(8);
+        cache.record(
+            "peer-a",
+            request("idem-1", "hello"),
+            HostSessionActionResponse::new("action-1", "host-b", "session-1"),
+        );
+        assert!(matches!(
+            cache.check("peer-b", &request("idem-1", "hello")),
+            ReplayCheck::Fresh
         ));
     }
 
