@@ -82,20 +82,20 @@ impl ApiError {
         let PharosApiError::OperationFailed { message } = &error else {
             return Self::Contract(error);
         };
-        if let Some(rest) = message.strip_prefix(crate::services::UNSUPPORTED_FIELD_PREFIX) {
-            if let Some((field, reason)) = rest.split_once("`: ") {
-                return Self::unsupported_field(field, reason);
-            }
+        if let Some(rest) = message.strip_prefix(crate::services::UNSUPPORTED_FIELD_PREFIX)
+            && let Some((field, reason)) = rest.split_once("`: ")
+        {
+            return Self::unsupported_field(field, reason);
         }
-        if let Some(rest) = message.strip_prefix(crate::services::UNSUPPORTED_OPERATION_PREFIX) {
-            if let Some((operation, reason)) = rest.split_once("`: ") {
-                return Self::Web {
-                    status: StatusCode::BAD_GATEWAY,
-                    code: "unsupportedOperation",
-                    message: reason.to_string(),
-                    field: Some(operation.to_string()),
-                };
-            }
+        if let Some(rest) = message.strip_prefix(crate::services::UNSUPPORTED_OPERATION_PREFIX)
+            && let Some((operation, reason)) = rest.split_once("`: ")
+        {
+            return Self::Web {
+                status: StatusCode::BAD_GATEWAY,
+                code: "unsupportedOperation",
+                message: reason.to_string(),
+                field: Some(operation.to_string()),
+            };
         }
         Self::Contract(error)
     }

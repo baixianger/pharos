@@ -92,7 +92,7 @@ pub fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
     if bytes.is_empty() {
         return Ok(Vec::new());
     }
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err("base64 length must be a multiple of 4".to_string());
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);

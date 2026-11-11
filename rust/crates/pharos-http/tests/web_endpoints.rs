@@ -25,8 +25,7 @@ use pharos_api::{
 use pharos_hitl::StoredDecision;
 use pharos_http::services::{
     FakeSessionService, FakeThreadService, FileApprovalService, FileAttachmentService,
-    FileMemberSettingsService, FileThreadBindingService, InMemoryApprovalService, SessionService,
-    THREAD_BINDINGS_FILE,
+    FileMemberSettingsService, FileThreadBindingService, SessionService, THREAD_BINDINGS_FILE,
 };
 use pharos_http::{AppState, EventBus, api_router};
 use serde_json::{Value, json};

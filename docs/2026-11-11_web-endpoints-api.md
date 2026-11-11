@@ -49,7 +49,10 @@ adds optional `decision` value `"cancelled"` and `questionnaireAnswers` to
 - `PUT /api/v1/threads/{threadId}/bindings/{member}`
   body `{"sessionId":"..."}` → `200 <binding>` (upsert)
   - 404 `threadNotFound` — unknown Thread
-  - 400 `invalidRequest` — blank `sessionId`, member not in `ThreadSummary.memberIds`
+  - 400 `invalidRequest` — blank `sessionId`, or `member` not matching
+    `[A-Za-z0-9_-]{1,40}` (this is how the UI "add a Session member" flow names
+    a brand-new member; the binding itself is that member's membership, so the
+    member does **not** have to pre-exist in `ThreadSummary.memberIds`)
   - 404 `sessionNotFound` — session is not in the current Session inventory
 - `DELETE /api/v1/threads/{threadId}/bindings/{member}`
   → `200 {"ok":true,"threadId","member","removed":true}`; 404 `threadBindingNotFound`
@@ -112,7 +115,8 @@ Semantics (reuse `PendingApprovalStore`):
   the adapter announced it.
 - questionnaire answers: each `questionId` must exist in
   `kind.questions`; each `selected` value must be one of that question's
-  `options` when options are non-empty (400 `invalidRequest` otherwise).
+  `options` when options are non-empty (400 `invalidRequest` otherwise). For a
+  free-text question (`options: []`) `selected: []` + `text` is accepted.
   Answers are persisted alongside the decision.
 - downstream session/adapter dispatch failure reverts the durable decision
   (same retryable semantics as today) — never a silent consumed decision.

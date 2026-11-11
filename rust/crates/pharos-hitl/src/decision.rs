@@ -108,14 +108,13 @@ pub fn validate_decision(
     decision: StoredDecision,
     answers: Option<&[QuestionnaireAnswer]>,
 ) -> Result<(), ApprovalStoreError> {
-    if decision == StoredDecision::Cancelled {
-        if let Some(choices) = available_choices {
-            if !choices.iter().any(|choice| choice == "cancelled") {
-                return Err(ApprovalStoreError::Invalid(
-                    "decision `cancelled` was not offered by the adapter".into(),
-                ));
-            }
-        }
+    if decision == StoredDecision::Cancelled
+        && let Some(choices) = available_choices
+        && !choices.iter().any(|choice| choice == "cancelled")
+    {
+        return Err(ApprovalStoreError::Invalid(
+            "decision `cancelled` was not offered by the adapter".into(),
+        ));
     }
 
     let Some(answers) = answers.filter(|answers| !answers.is_empty()) else {
@@ -191,7 +190,10 @@ mod tests {
     fn legacy_decisions_serialize_like_the_frozen_contract() {
         for (stored, api) in [
             (StoredDecision::AllowedOnce, ApprovalDecision::AllowedOnce),
-            (StoredDecision::AllowedAlways, ApprovalDecision::AllowedAlways),
+            (
+                StoredDecision::AllowedAlways,
+                ApprovalDecision::AllowedAlways,
+            ),
             (StoredDecision::Rejected, ApprovalDecision::Rejected),
         ] {
             assert_eq!(serde_json::to_value(stored).unwrap(), json!(api));
@@ -239,9 +241,7 @@ mod tests {
                 text: Some("ship it".into()),
             },
         ];
-        assert!(
-            validate_decision(&kind, None, StoredDecision::AllowedOnce, Some(&good)).is_ok()
-        );
+        assert!(validate_decision(&kind, None, StoredDecision::AllowedOnce, Some(&good)).is_ok());
 
         let unknown_question = vec![QuestionnaireAnswer {
             question_id: "nope".into(),
@@ -285,8 +285,6 @@ mod tests {
             selected: vec!["prod".into()],
             text: None,
         }];
-        assert!(
-            validate_decision(&kind, None, StoredDecision::Rejected, Some(&answers)).is_err()
-        );
+        assert!(validate_decision(&kind, None, StoredDecision::Rejected, Some(&answers)).is_err());
     }
 }

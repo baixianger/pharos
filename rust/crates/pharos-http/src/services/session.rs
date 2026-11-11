@@ -134,13 +134,13 @@ impl SessionConfigPatch {
                 ));
             }
         }
-        if let Some(mode) = &self.mode {
-            if !SESSION_MODES.contains(&mode.trim()) {
-                return Err(format!(
-                    "mode must be one of {:?}, got {mode:?}",
-                    SESSION_MODES
-                ));
-            }
+        if let Some(mode) = &self.mode
+            && !SESSION_MODES.contains(&mode.trim())
+        {
+            return Err(format!(
+                "mode must be one of {:?}, got {mode:?}",
+                SESSION_MODES
+            ));
         }
         Ok(())
     }
