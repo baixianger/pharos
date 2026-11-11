@@ -465,11 +465,8 @@ fn sync_codex_threads_at(
     })).is_err() { return }
 
     for thread in threads {
-        let Some(session_id) = thread
-            .get("sessionId")
-            .or_else(|| thread.get("id"))
-            .and_then(Value::as_str)
-        else {
+        // A fork can share a session root; requests address the concrete thread.
+        let Some(session_id) = thread.get("id").and_then(Value::as_str) else {
             continue;
         };
         let title = thread
@@ -2121,6 +2118,31 @@ mod tests {
             registry.invoke("conversation.state", &hook).unwrap()["applied"],
             false
         );
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn codex_forks_register_concrete_thread_ids() {
+        let directory = PathBuf::from(format!("/tmp/pharos-runtime-test-{}", new_id()));
+        let registry = Arc::new(Mutex::new(Registry::load(directory.clone()).unwrap()));
+        sync_codex_threads(
+            &registry,
+            &json!({"data": [
+                {"id": "fork-a", "sessionId": "root"},
+                {"id": "fork-b", "sessionId": "root"}
+            ]}),
+        );
+        let locked = registry.lock().unwrap();
+        let ids: Vec<_> = locked
+            .snapshot
+            .conversations
+            .iter()
+            .map(|conversation| conversation.vendor_session_id.as_str())
+            .collect();
+        assert!(ids.contains(&"fork-a"));
+        assert!(ids.contains(&"fork-b"));
+        assert!(!ids.contains(&"root"));
+        drop(locked);
         fs::remove_dir_all(directory).ok();
     }
 
