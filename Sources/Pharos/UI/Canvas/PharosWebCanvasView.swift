@@ -210,15 +210,7 @@ public struct PharosWebCanvasView: NSViewRepresentable {
             if action == "resolveApproval" {
                 if let payload = dict["payload"] as? [String: Any],
                    let choiceRaw = payload["choice"] as? String {
-                    let choice: ApprovalChoice
-                    switch choiceRaw {
-                    case "allowed_always":
-                        choice = .allowedAlways
-                    case "rejected":
-                        choice = .rejected
-                    default:
-                        choice = .allowedOnce
-                    }
+                    guard let choice = ApprovalChoice(rawValue: choiceRaw) else { return }
                     parent.onResolveApproval(ApprovalDecision(choice: choice))
                 }
             }
