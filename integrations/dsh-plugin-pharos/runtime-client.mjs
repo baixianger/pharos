@@ -13,7 +13,7 @@ const defaultSocketPath = path.join(
 
 export class PharosRuntimeClient {
   constructor({
-    socketPath = process.env.PHAROS_RUNTIME_SOCKET || defaultSocketPath,
+    socketPath = process.env.PHAROS_RUNTIME_SOCKET || process.env.PHAROS_AGENT_RUNTIME_SOCKET || defaultSocketPath,
     timeoutMS = 5_000,
   } = {}) {
     this.socketPath = socketPath
