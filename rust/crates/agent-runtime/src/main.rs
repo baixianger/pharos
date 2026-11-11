@@ -842,6 +842,9 @@ struct DeliveryRecord {
     target_member_id: Option<String>,
     #[serde(default)]
     reply_attempts: u32,
+    /// Polls spent waiting for the correlated turn to reach a terminal status.
+    #[serde(default)]
+    reply_polls: u32,
 }
 
 /// One agent-preset / launch-mode option a driver advertises for the
@@ -1228,6 +1231,34 @@ impl Registry {
                 "Unknown conversation: {conversation_id}"
             )));
         }
+        if self
+            .snapshot
+            .conversations
+            .iter()
+            .find(|value| value.id == conversation_id)
+            .and_then(|value| value.state.as_ref())
+            .is_some_and(|state| state.persistence == "archived")
+        {
+            return Err(RuntimeError::invalid(
+                "conversation is archived and cannot receive deliveries",
+            ));
+        }
+        let payload = required(params, "payload")?;
+        let target_member_id = optional(params, "targetMemberID");
+        // A direct submit may only attach a reply author that is the single live
+        // route into the named conversation; otherwise a local caller could
+        // forge reply authorship or inject into a stale session, bypassing the
+        // member-routed liveness/ambiguity checks.
+        if let Some(target) = target_member_id.as_deref() {
+            let candidates = self.delivery_candidates(target);
+            if !matches!(candidates.as_slice(), [index]
+                if self.snapshot.conversations[*index].id == conversation_id)
+            {
+                return Err(RuntimeError::invalid(
+                    "targetMemberID is not a live route to conversationID",
+                ));
+            }
+        }
         let key = required(params, "idempotencyKey")?;
         if let Some(existing) = self
             .snapshot
@@ -1235,6 +1266,16 @@ impl Registry {
             .iter()
             .find(|value| value.idempotency_key == key)
         {
+            // A replayed submit must identify the same conversation/payload (and
+            // reply author) it was minted for.
+            if existing.conversation_id != conversation_id
+                || existing.payload != payload
+                || existing.target_member_id != target_member_id
+            {
+                return Err(RuntimeError::invalid(
+                    "idempotencyKey already used for another delivery",
+                ));
+            }
             return value(existing);
         }
         let timestamp = now_rfc3339();
@@ -1242,7 +1283,7 @@ impl Registry {
             id: new_id(),
             conversation_id,
             idempotency_key: key,
-            payload: required(params, "payload")?,
+            payload,
             state: "queued".into(),
             created_at: timestamp.clone(),
             updated_at: timestamp,
@@ -1253,6 +1294,7 @@ impl Registry {
             reply_state: None,
             target_member_id: optional(params, "targetMemberID"),
             reply_attempts: 0,
+            reply_polls: 0,
         };
         let id = record.id.clone();
         self.snapshot.deliveries.push(record.clone());
@@ -1747,6 +1789,7 @@ fn ready_codex_delivery_index(registry: &Registry) -> Option<usize> {
             };
             conversation.kind == "codex"
                 && conversation.ownership == "managed"
+                && state.persistence != "archived"
                 && state.activity == "idle"
                 && matches!(state.attention.as_str(), "none" | "waitingForInput")
         })
@@ -1999,14 +2042,23 @@ fn dispatch_next_codex_reply(
         json!({"threadId": job.thread_id, "includeTurns": true}),
     ) {
         Ok(result) => result,
-        // Read failed; the claim backoff keeps the reply pending for a retry.
-        Err(_) => return,
+        // Read failed; retry until the bounded wait budget is exhausted, then
+        // record an explicit terminal timeout instead of pending forever.
+        Err(_) => {
+            if codex_reply_polls_exhausted(registry, &job.delivery_id) {
+                finish_codex_reply(registry, &job, "turn-timeout", None);
+            }
+            return;
+        }
     };
     apply_codex_reply(registry, sink, &job, &result);
 }
 
 const MAX_REPLY_BYTES: usize = 1024 * 1024;
 const MAX_REPLY_ATTEMPTS: u32 = 5;
+/// Polls a reply may wait for its turn to reach a terminal status before the
+/// relay records an explicit `turn-timeout` (2s claim backoff -> ~10 minutes).
+const MAX_REPLY_POLLS: u32 = 300;
 
 /// Pure reply decision over one recorded `thread/read` result: only the final
 /// answer of the exact turn that consumed the delivery is posted.
@@ -2018,7 +2070,11 @@ fn apply_codex_reply(
 ) {
     use pharos_codex_adapter::ReplyInspection;
     match pharos_codex_adapter::inspect_turn_reply(thread_read_result, &job.turn_id) {
-        ReplyInspection::Waiting => {}
+        ReplyInspection::Waiting => {
+            if codex_reply_polls_exhausted(registry, &job.delivery_id) {
+                finish_codex_reply(registry, job, "turn-timeout", None);
+            }
+        }
         ReplyInspection::Failed => finish_codex_reply(registry, job, "turn-failed", None),
         ReplyInspection::NoFinalAnswer => {
             finish_codex_reply(registry, job, "no-final-answer", None)
@@ -2153,6 +2209,25 @@ fn release_codex_delivery(
             "deliveryID": delivery_id, "kind": "codex", "attempts": attempts
         }),
     );
+}
+
+/// Bump the bounded wait counter for a reply whose turn is not terminal yet.
+fn codex_reply_polls_exhausted(registry: &Arc<Mutex<Registry>>, delivery_id: &str) -> bool {
+    let Ok(mut registry) = registry.lock() else {
+        return false;
+    };
+    let Some(delivery) = registry
+        .snapshot
+        .deliveries
+        .iter_mut()
+        .find(|value| value.id == delivery_id)
+    else {
+        return false;
+    };
+    delivery.reply_polls = delivery.reply_polls.saturating_add(1);
+    let exhausted = delivery.reply_polls >= MAX_REPLY_POLLS;
+    registry.persist_or_log();
+    exhausted
 }
 
 fn codex_delivery_prompt(payload: &str, _thread_id: &str) -> String {
@@ -3852,6 +3927,126 @@ mod tests {
             delivery_reply_state(&registry, &delivery_id).1.as_deref(),
             Some("answer-too-large")
         );
+        fs::remove_dir_all(directory).ok();
+    }
+    #[test]
+    fn direct_submit_cannot_forge_reply_author_or_target_archived_sessions() {
+        let (directory, registry) = codex_registry("direct-submit-guard");
+        let conversation_id = {
+            let mut guard = registry.lock().unwrap();
+            guard
+                .invoke(
+                    "driver.register",
+                    &json!({"driverID": "codex:app-server", "kind": "codex"}),
+                )
+                .unwrap();
+            let conversation = guard
+                .invoke(
+                    "conversation.register",
+                    &json!({
+                        "driverID": "codex:app-server", "vendorSessionID": "thread-codex",
+                        "kind": "codex", "ownership": "managed"
+                    }),
+                )
+                .unwrap();
+            let id = conversation["id"].as_str().unwrap().to_owned();
+            set_conversation_state(&mut guard, &id, "online", "persistent", 1);
+            id
+        };
+        let envelope = json!({"body":"hi","room":"room-a","messageID":"message-a"}).to_string();
+        // A caller cannot attach a reply author that is not the live route.
+        let forged = registry
+            .lock()
+            .unwrap()
+            .invoke(
+                "delivery.submit",
+                &json!({
+                    "conversationID": conversation_id, "idempotencyKey": "forged-1",
+                    "payload": envelope, "targetMemberID": "some-other-member"
+                }),
+            )
+            .unwrap_err();
+        assert!(forged.message.contains("not a live route"));
+        assert!(registry.lock().unwrap().snapshot.deliveries.is_empty());
+
+        // The genuine live route is accepted and the reply author is recorded.
+        let accepted = registry
+            .lock()
+            .unwrap()
+            .invoke(
+                "delivery.submit",
+                &json!({
+                    "conversationID": conversation_id, "idempotencyKey": "direct-ok",
+                    "payload": envelope, "targetMemberID": "thread-codex"
+                }),
+            )
+            .unwrap();
+        assert_eq!(accepted["targetMemberID"], "thread-codex");
+        // Replaying the key with a different payload is rejected.
+        let replay_conflict = registry
+            .lock()
+            .unwrap()
+            .invoke(
+                "delivery.submit",
+                &json!({
+                    "conversationID": conversation_id, "idempotencyKey": "direct-ok",
+                    "payload": "other", "targetMemberID": "thread-codex"
+                }),
+            )
+            .unwrap_err();
+        assert!(replay_conflict.message.contains("idempotencyKey"));
+
+        // Archived conversations are not delivery targets at all.
+        set_conversation_state(
+            &mut registry.lock().unwrap(),
+            &conversation_id,
+            "online",
+            "archived",
+            2,
+        );
+        let archived = registry
+            .lock()
+            .unwrap()
+            .invoke(
+                "delivery.submit",
+                &json!({
+                    "conversationID": conversation_id, "idempotencyKey": "archived-1",
+                    "payload": envelope
+                }),
+            )
+            .unwrap_err();
+        assert!(archived.message.contains("archived"));
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn codex_reply_wait_budget_ends_in_an_explicit_timeout() {
+        let (directory, registry) = codex_registry("reply-timeout");
+        let delivery_id = add_codex_delivery(&registry, "thread-codex", "room-a", "message-a");
+        finish_codex_delivery(&registry, &delivery_id, Some("turn-target"));
+        let running = recorded_thread(
+            "turn-target",
+            "inProgress",
+            json!([{"type": "agentMessage", "phase": "final_answer", "text": "premature"}]),
+        );
+        let mut sink = RecordingReplySink::default();
+        for attempt in 1..=MAX_REPLY_POLLS {
+            let job = claim_reply(&registry, &delivery_id);
+            apply_codex_reply(&registry, &mut sink, &job, &running);
+            if attempt < MAX_REPLY_POLLS {
+                assert_eq!(
+                    delivery_reply_state(&registry, &delivery_id).1.as_deref(),
+                    Some("pending")
+                );
+            }
+        }
+        assert_eq!(
+            delivery_reply_state(&registry, &delivery_id).1.as_deref(),
+            Some("turn-timeout"),
+            "a turn that never terminates must end in an explicit timeout"
+        );
+        assert!(sink.posted.is_empty());
+        assert!(claim_codex_reply(&registry).is_none());
         fs::remove_dir_all(directory).ok();
     }
 }
