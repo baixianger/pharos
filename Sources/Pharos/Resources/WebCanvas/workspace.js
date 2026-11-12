@@ -613,6 +613,10 @@
     }
     for (const name of $$(".gb-bot-name")) name.textContent = state.title;
     $(".gb-chat-pill").disabled = !state.selection;
+    // The details panel belongs to a selection. Leaving it open with nothing
+    // selected would report empty profile/member/configuration states that do
+    // not exist (e.g. "No thread members" with no thread).
+    if (!state.selection && !app.classList.contains("gb-no-details")) openDetails(false);
     $("#thread-stream").hidden = state.tab !== "threads" || !state.selection;
     $("#session-stream").hidden = state.tab !== "sessions";
     $("#project-stream").hidden = state.tab !== "projects" || !state.selection;

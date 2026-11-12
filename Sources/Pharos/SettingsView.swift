@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import PharosClientKit
 
 /// A small "?" that reveals an explanation — click for a popover (reliable and
 /// discoverable), plus a hover tooltip as a bonus — so section chrome can stay
@@ -262,6 +263,8 @@ private struct CLISettingsTab: View {
 
 private struct MachinesSettingsTab: View {
     @Environment(ProjectStore.self) private var store
+    @State private var backendCheck: String?
+    @State private var isCheckingBackend = false
 
     var body: some View {
         @Bindable var store = store
@@ -270,8 +273,28 @@ private struct MachinesSettingsTab: View {
                 Text("This Mac is a SwiftUI + WebKit client. Mesh sync, Runtime, and Thread/Session ownership live in `pharos-meshd` / `pharos-web`.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                LabeledContent("API base URL") {
+                    HStack(spacing: 6) {
+                        Text(PharosClientBackend.configuration.baseURL.absoluteString)
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                        HelpBadge(text: "Port 8787 is a shared local default and may belong to another app. Set `PHAROS_API_BASE_URL` to reach a different `pharos-web` instance.")
+                    }
+                }
                 LabeledContent("Client backend") {
                     Text("rust-api")
+                }
+                HStack(spacing: 10) {
+                    Button(isCheckingBackend ? "Checking…" : "Check backend") {
+                        Task { await checkBackend() }
+                    }
+                    .disabled(isCheckingBackend)
+                    if let backendCheck {
+                        Text(backendCheck)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 LabeledContent("Registry sync") {
                     switch store.registrySyncStatus {
@@ -287,6 +310,24 @@ private struct MachinesSettingsTab: View {
             HostsSettingsSection()
         }
         .formStyle(.grouped)
+    }
+
+    /// Probe the configured endpoint and report either the honest reachable
+    /// service identity or the actionable guidance (wrong app on port 8787,
+    /// unreachable, unhealthy, contract mismatch).
+    @MainActor
+    private func checkBackend() async {
+        isCheckingBackend = true
+        defer { isCheckingBackend = false }
+        let configuration = PharosClientBackend.configuration
+        let probe = await PharosClientBackend.makeHTTPClient(configuration: configuration).probeBackend()
+        if let guidance = PharosBackendDiagnostics.guidance(baseURL: configuration.baseURL, probe: probe) {
+            backendCheck = guidance
+        } else if case .reachable(let health) = probe {
+            backendCheck = "Reachable · \(health.service) · contracts \(health.contractsVersion)"
+        } else {
+            backendCheck = "Unreachable"
+        }
     }
 }
 

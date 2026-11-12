@@ -149,6 +149,14 @@ public struct ClientMemberDetail: Sendable, Codable, Equatable, Identifiable {
     public let status: String
     public let tmuxSession: String?
     public let avatarSeed: String
+    /// Persisted display name from `GET /api/v1/members/{id}` / thread members.
+    public let displayName: String?
+    /// Avatar shape token (e.g. `"cloud"`); nil when never configured.
+    public let avatarShape: String?
+    /// Avatar colour token (e.g. `"blue"`); nil when never configured.
+    public let avatarColor: String?
+    /// Bound session id, only known for Thread members (nil for plain member settings).
+    public let sessionId: String?
 
     public init(
         name: String,
@@ -158,7 +166,11 @@ public struct ClientMemberDetail: Sendable, Codable, Equatable, Identifiable {
         mode: String,
         status: String,
         tmuxSession: String? = nil,
-        avatarSeed: String
+        avatarSeed: String,
+        displayName: String? = nil,
+        avatarShape: String? = nil,
+        avatarColor: String? = nil,
+        sessionId: String? = nil
     ) {
         self.name = name
         self.agent = agent
@@ -168,6 +180,10 @@ public struct ClientMemberDetail: Sendable, Codable, Equatable, Identifiable {
         self.status = status
         self.tmuxSession = tmuxSession
         self.avatarSeed = avatarSeed
+        self.displayName = displayName
+        self.avatarShape = avatarShape
+        self.avatarColor = avatarColor
+        self.sessionId = sessionId
     }
 }
 
@@ -176,10 +192,52 @@ public struct ClientAvatarInfo: Sendable, Codable, Equatable {
     public let seed: String
     public let colorHex: String?
     public let customImageUri: String?
+    /// Avatar shape NAME accepted by `PATCH /api/v1/members/{id}` (e.g. `"cloud"`).
+    public let shape: String?
+    /// Avatar colour NAME accepted by `PATCH /api/v1/members/{id}` (e.g. `"blue"`).
+    public let color: String?
 
-    public init(seed: String, colorHex: String? = nil, customImageUri: String? = nil) {
+    public init(
+        seed: String,
+        colorHex: String? = nil,
+        customImageUri: String? = nil,
+        shape: String? = nil,
+        color: String? = nil
+    ) {
         self.seed = seed
         self.colorHex = colorHex
         self.customImageUri = customImageUri
+        self.shape = shape
+        self.color = color
+    }
+}
+
+/// One uploaded session attachment (`POST/GET /api/v1/sessions/{id}/attachments`).
+public struct ClientAttachment: Sendable, Codable, Equatable, Identifiable {
+    public var id: String { attachmentId }
+    public let attachmentId: String
+    public let sessionId: String
+    public let filename: String
+    public let contentType: String
+    public let sizeBytes: Int
+    public let sha256: String
+    public let createdAt: Date
+
+    public init(
+        attachmentId: String,
+        sessionId: String,
+        filename: String,
+        contentType: String,
+        sizeBytes: Int,
+        sha256: String,
+        createdAt: Date
+    ) {
+        self.attachmentId = attachmentId
+        self.sessionId = sessionId
+        self.filename = filename
+        self.contentType = contentType
+        self.sizeBytes = sizeBytes
+        self.sha256 = sha256
+        self.createdAt = createdAt
     }
 }

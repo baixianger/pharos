@@ -133,6 +133,41 @@ test('web transport reports an unsupported config view honestly and never invent
   assert.equal(calls.filter(call => call.path === '/api/v1/sessions/s/attachments').length, 0, 'no attachment fetch without the capability');
 });
 
+test('web transport publishes no configuration notice for an empty session list', async () => {
+  const data = webData({
+    '/api/v1/sessions': [],
+    '/api/v1/members/human': { memberId: 'human' }
+  });
+  const { window, calls, snapshots } = boot({ data });
+  window.pharosTransport.start();
+  await settle();
+  const state = snapshots.at(-1);
+  assert.deepEqual(plain(state.sessionConfiguration), [], 'no selection means no configuration controls');
+  assert.equal(calls.some(call => call.path.endsWith('/config')), false, 'no config endpoint is fetched without a selection');
+  assert.equal(
+    snapshots.some(snapshot => JSON.stringify(snapshot.sessionConfiguration ?? []).includes('Configuration unavailable')),
+    false,
+    'the false "Configuration unavailable" notice is never published'
+  );
+});
+
+test('web transport keeps the honest configuration notice when a selected session config fetch fails', async () => {
+  const data = webData();
+  const respond = call => call.method === 'GET' && call.path === '/api/v1/sessions/s/config'
+    ? fail(502, { code: 'unsupportedField', field: 'model', message: 'config is not supported by this adapter' }, 'Bad Gateway')
+    : undefined;
+  const { window, calls, snapshots } = boot({ data, respond });
+  window.pharosTransport.start();
+  await settle();
+  const state = snapshots.at(-1);
+  assert.ok(calls.some(call => call.path === '/api/v1/sessions/s/config' && call.method === 'GET'), 'the selected session config is fetched');
+  assert.deepEqual(plain(state.sessionConfiguration), [{ type: 'status', name: 'Configuration unavailable' }], 'a failed fetch is reported honestly');
+  assert.match(state.error, /502/, 'the HTTP status is surfaced');
+  assert.match(state.error, /config is not supported by this adapter/, 'the server error text is surfaced');
+  assert.equal(state.detail.model, '', 'no config means no invented model');
+  assert.equal(state.detail.mode, '');
+});
+
 test('web transport loads thread members, bindings and unbound binding candidates', async () => {
   const data = webData({
     '/api/v1/sessions': [session('s1'), session('s2'), session('s3')],

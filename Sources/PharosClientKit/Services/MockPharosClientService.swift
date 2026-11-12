@@ -1,7 +1,7 @@
 import Foundation
 
 /// In-memory implementation of `PharosClientService` for deterministic UI testing and previews.
-public actor MockPharosClientService: PharosClientService, HostSessionInventoryReporting, HostSessionInventorySnapshotReporting, HostProjectCheckoutReporting {
+public actor MockPharosClientService: PharosClientService, BackendHealthReporting, HostSessionInventoryReporting, HostSessionInventorySnapshotReporting, HostProjectCheckoutReporting {
     public var sessions: [ClientSessionSummary]
     private var inventoryIssues: [ClientSessionInventoryIssue] = []
     private var hostInventory = HostSessionInventoryStatus(supportedAgents: ["codex"], unavailableAgents: [])
@@ -16,7 +16,7 @@ public actor MockPharosClientService: PharosClientService, HostSessionInventoryR
         guard let hostCheckouts else { throw PharosClientError.operationFailed("Host checkout map is unavailable") }
         return hostCheckouts
     }
-    private var sessionConfigurations: [String: [JSONValue]] = [:]
+    private var sessionConfigurations: [String: ClientSessionConfiguration] = [:]
     public var threads: [ClientThreadSummary]
     public var projects: [ClientProjectSummary]
     public var sessionHistories: [String: [CanonicalTurn]]
@@ -55,20 +55,58 @@ public actor MockPharosClientService: PharosClientService, HostSessionInventoryR
     public func setInventoryIssues(_ issues: [ClientSessionInventoryIssue]) { inventoryIssues = issues }
     public func fetchSessionInventoryIssues() async -> [ClientSessionInventoryIssue] { inventoryIssues }
 
-    public func setMockSessionConfiguration(_ options: [JSONValue], sessionId: String) { sessionConfigurations[sessionId] = options }
-    public func fetchSessionConfiguration(sessionId: String) async throws -> [JSONValue]? { sessionConfigurations[sessionId] }
-    public func setSessionConfiguration(sessionId: String, configId: String, value: String) async throws -> [JSONValue] {
-        guard var options = sessionConfigurations[sessionId], let index = options.firstIndex(where: { $0.objectValue?["id"]?.stringValue == configId }),
-              var option = options[index].objectValue,
-              let choices = option["options"]?.arrayValue,
-              choices.contains(where: { $0.objectValue?["value"]?.stringValue == value }) else {
-            throw PharosClientError.operationFailed("Configuration option is unavailable")
+    public func setMockSessionConfiguration(_ configuration: ClientSessionConfiguration, sessionId: String) {
+        sessionConfigurations[sessionId] = configuration
+    }
+    public func fetchSessionConfiguration(sessionId: String) async throws -> ClientSessionConfiguration? {
+        sessionConfigurations[sessionId]
+    }
+    public func setSessionConfiguration(sessionId: String, configId: String, value: String) async throws -> ClientSessionConfiguration {
+        guard configId == "model" || configId == "mode" else {
+            throw PharosClientError.operationFailed("Unsupported Session configuration field: \(configId)")
         }
-        option["currentValue"] = .string(value)
-        options[index] = .object(option)
-        sessionConfigurations[sessionId] = options
+        guard !value.isEmpty else {
+            throw PharosClientError.operationFailed("Choose a \(configId) value first")
+        }
+        let current = sessionConfigurations[sessionId] ?? ClientSessionConfiguration(
+            sessionId: sessionId,
+            supported: true,
+            supportedFields: ["model", "mode"],
+            readonly: false
+        )
+        let updated = current.setting(field: configId, value: value)
+        sessionConfigurations[sessionId] = updated
         emitEvent(.sessionConfigurationUpdated(sessionId: sessionId))
-        return options
+        return updated
+    }
+
+    public func stopSession(sessionId: String) async throws {
+        guard sessions.contains(where: { $0.sessionId == sessionId }) else {
+            throw PharosClientError.sessionNotFound(sessionId)
+        }
+    }
+
+    public func reviveSession(sessionId: String) async throws {
+        guard sessions.contains(where: { $0.sessionId == sessionId }) else {
+            throw PharosClientError.sessionNotFound(sessionId)
+        }
+    }
+
+    public func fetchThreadMembers(threadId: String) async throws -> [ClientMemberDetail] {
+        guard let thread = threads.first(where: { $0.threadId == threadId }) else {
+            throw PharosClientError.threadNotFound(threadId)
+        }
+        return thread.memberIds.compactMap { members[$0] }
+    }
+
+    public func probeBackend() async -> BackendHealthProbe {
+        .reachable(
+            BackendHealth(
+                ok: true,
+                contractsVersion: PharosAPIConfiguration.contractsVersion,
+                service: "pharos-mock"
+            )
+        )
     }
 
     public func setHistoryGate(_ gate: (@Sendable () async throws -> Void)?) { historyGate = gate }
@@ -201,7 +239,11 @@ public actor MockPharosClientService: PharosClientService, HostSessionInventoryR
                 mode: mode,
                 status: member.status,
                 tmuxSession: member.tmuxSession,
-                avatarSeed: member.avatarSeed
+                avatarSeed: member.avatarSeed,
+                displayName: member.displayName,
+                avatarShape: member.avatarShape,
+                avatarColor: member.avatarColor,
+                sessionId: member.sessionId
             )
             members[name] = member
             emitEvent(.memberStatusChanged(name: name, status: member.status))
@@ -218,7 +260,11 @@ public actor MockPharosClientService: PharosClientService, HostSessionInventoryR
                 mode: member.mode,
                 status: member.status,
                 tmuxSession: member.tmuxSession,
-                avatarSeed: member.avatarSeed
+                avatarSeed: member.avatarSeed,
+                displayName: member.displayName,
+                avatarShape: member.avatarShape,
+                avatarColor: member.avatarColor,
+                sessionId: member.sessionId
             )
             members[name] = member
         }
@@ -234,7 +280,11 @@ public actor MockPharosClientService: PharosClientService, HostSessionInventoryR
                 mode: member.mode,
                 status: member.status,
                 tmuxSession: member.tmuxSession,
-                avatarSeed: avatar.seed
+                avatarSeed: avatar.seed,
+                displayName: member.displayName,
+                avatarShape: avatar.shape ?? member.avatarShape,
+                avatarColor: avatar.color ?? member.avatarColor,
+                sessionId: member.sessionId
             )
             members[name] = member
         }
@@ -250,7 +300,11 @@ public actor MockPharosClientService: PharosClientService, HostSessionInventoryR
                 mode: member.mode,
                 status: "stopped",
                 tmuxSession: member.tmuxSession,
-                avatarSeed: member.avatarSeed
+                avatarSeed: member.avatarSeed,
+                displayName: member.displayName,
+                avatarShape: member.avatarShape,
+                avatarColor: member.avatarColor,
+                sessionId: member.sessionId
             )
             members[name] = member
             emitEvent(.memberStatusChanged(name: name, status: "stopped"))
@@ -267,7 +321,11 @@ public actor MockPharosClientService: PharosClientService, HostSessionInventoryR
                 mode: member.mode,
                 status: "active",
                 tmuxSession: member.tmuxSession,
-                avatarSeed: member.avatarSeed
+                avatarSeed: member.avatarSeed,
+                displayName: member.displayName,
+                avatarShape: member.avatarShape,
+                avatarColor: member.avatarColor,
+                sessionId: member.sessionId
             )
             members[name] = member
             emitEvent(.memberStatusChanged(name: name, status: "active"))

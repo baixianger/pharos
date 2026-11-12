@@ -1,7 +1,73 @@
 ---
-summary: 2026-11-11：跨 Host 会话（host.session.query/action）Rust 端到端落地（XHOST-DONE）；三个已验收 Rust 流（hitl-persist / web-real-sessions / thread-autoreply）已 --no-ff 合入 rust/integrate-dsh3。见本文件顶部。
+summary: 2026-11-11：client-polish 把 Mac/Web 客户端接到已合入 main 的 wave-2 Rust web endpoints（Swift ClientKit + shell + webui + OpenAPI），门禁全绿（CLIENT-POLISH-DONE）。见本文件顶部。
 ---
 # 活跃任务交接
+
+**STATUS: CLIENT-POLISH-DONE — d2224e7**
+**分支/worktree**：`rust/client-polish`，worktree `/Users/baixianger/personal/pharos-wt/client-polish`，base `2a365eb`（与 `origin/main e3f8436` 同 tree）。未 push / force / rebase / amend / 改写历史 / 删分支；只在本 worktree 改代码，未触碰其它 worktree/主 checkout、3080 dsh Host 与其 token/ipc.sock、`~/.gemini`、用户 `~/.dsh/profiles/{web,desktop,headless}` 与 dsh workspace.json、`~/Library/Application Support/Pharos`；未 ssh 到 Air/公司电脑；8787（追思）未抢未停，18790/18791 评估测试服务只读/用其测试 data dir。团队（Agent Teams）：Lead（调查、契约决定、OpenAPI、审查、门禁、live smoke、交接）+ teammate `clientkit-http`（task-1：ClientKit HTTP 接线 + 单测）+ teammate `shell-web`（task-2：webui 空状态；task-3：Mac shell 接线 + 测试）。业务提交 4 个：`16eea30`（OpenAPI）、`73d741f`（webui）、`2c46356`（ClientKit）、`d2224e7`（shell）；上面 STATUS 的 `d2224e7` 是最后一个代码提交，本交接为紧随其后的 docs-only 提交。
+
+**做了什么（按任务优先顺序）**
+1. **Swift ClientKit 接 wave-2 endpoints（FINDINGS gap 1，最重要）**：`HttpPharosClientService` 不再对以下能力抛 "not on pharos-api 0.1.0"/"unavailable in the Rust API"：
+   - `GET/PATCH /api/v1/sessions/{id}/config` → 新 typed `ClientSessionConfiguration`（supported/supportedFields/model/mode/models/modes/capabilities/readonly）；502 `unsupportedField` 原样抛出、绝不报告为已保存。
+   - `POST /sessions/{id}/stop|revive` → 新 `stopSession/reviveSession(sessionId:)`（session id 语义）。`stopMember/reviveMember` 保留显式 name→sessionId 解析：精确 id → 唯一 title；0 个明确报错、多个拒绝歧义，不假装成功。
+   - 附件：`POST /sessions/{id}/attachments`、`GET /attachments/{id}[/content]`、`GET /sessions/{id}/attachments`；`sendSessionMessage(files:)` 先按 `capabilities.attachments` 门控（不支持时明确报错、不上传孤儿），再上传→`POST /messages {"attachmentIds":[…]}`；content-type 白名单与 webui transport.js 一致、1 B..10 MiB。
+   - 成员：`GET/PATCH /api/v1/members/{id}`（settings view；agent/machine/status 明确为空=未知，不编造）、`PUT /members/{id}/avatar`（png/jpeg data URI）、`fetchThreadMembers`（`GET /threads/{id}/members`）、avatar shape/colour 经 PATCH 持久化。
+   - Thread 绑定：`supportsThreadSessionBinding` 探测、candidates=全部 sessions、`PUT/DELETE /threads/{id}/bindings[/{member}]`、`unbindThreadSession`、`fetchThreadMembers`。
+   - 审批：`fetchSessionApproval` 走 `GET /api/v1/approvals?state=pending&sessionId=`；`resolveSessionApproval` 支持 `cancelled` 与 `questionnaireAnswers`（selected/free-text 拆分同 webui）。
+   - 健康探测：`BackendHealthReporting.probeBackend()` + 纯函数 `PharosBackendDiagnostics.guidance(baseURL:probe:)`，默认 8787 被其它本地应用占用时给出可发现、可操作的提示（URL、实际 service、`PHAROS_API_BASE_URL` 覆盖）。
+   - `executeSessionCommand` 继续诚实不可用（后端无路由）；未扩大假成功面。
+2. **Mac 客户端实际用上这些 API（FINDINGS gap 2）**：WebView 仍 `file://` + `pharosBridge`，故把 API 接进 shell/ViewModel：
+   - `WorkspaceWebState` 增加 typed `sessionConfiguration`（select/status，编码与 transport.js 一致）与 `capabilities`；`supportsTextAttachments` 来自 config。
+   - session details 的 model/mode/models 来自 `/sessions/{id}/config`，删除旧的"用 session title 当 member id + 猜 machine/agent"路径。
+   - model/mode/sessionConfig → `setSessionConfiguration`；stop/revive → `stopSession/reviveSession` 后 reload config+history；capabilities 门控（未建立能力的按钮禁用），502 只显示服务端文本。
+   - 附件入口按 `capabilities.attachments`；Thread roster 优先 `fetchThreadMembers`（无该路由时 fallback 旧逻辑）；绑定后重取 threads+thread data。
+   - 人类头像从 `/members/human` 载入作为行身份 fallback，编辑时先乐观渲染再持久化、失败回滚。
+   - 后台加载失败时 probe `/health` 显示 guidance；Settings ▸ Machines 显示 API base URL、8787 共享端口说明与 "Check backend" 探测按钮。
+3. **默认端口可发现性（FINDINGS gap 3 的最小诚实方案）**：客户端默认仍是 `http://127.0.0.1:8787`（未擅自改默认，见"需要人决定"#1），但连错进程时不再只报 connection error：health probe 区分 unreachable / 非 Pharos service / 契约版本不符，并在 UI 与 Settings 给出 `PHAROS_API_BASE_URL` 指引。只走 loopback、不抢 8787。
+4. **Web UI 空列表（FINDINGS gap 6）**：`webui/transport.js` 无 selection 时 `sessionConfiguration: []`，不再显示 "Configuration unavailable"（选中 session 的 config 真失败时仍诚实显示）；无 selection 关闭 selection-scoped details 面板。`webui/` 与 `Sources/Pharos/Resources/WebCanvas/` 逐字节一致。
+5. **OpenAPI（FINDINGS gap 5）**：`/openapi.json` 补上 router 已服务但冻结 stub 漏掉的 `POST /sessions`、`GET /sessions/{id}`、`/history`、`/steer`、`POST /threads`、`GET /threads/{id}`、`GET /inventory/sessions`（HTTP 层 additive merge，冻结 `pharos-api` stub 未改、已有 method 不被覆盖）；新增测试逐条枚举全部路由。slash command（gap 4）仍诚实不可用，未造假。
+
+**改了哪些文件**
+- Swift ClientKit：`Sources/PharosClientKit/Models/ClientSessionConfiguration.swift`（新）、`Models/ClientSummaries.swift`、`Services/{APIWireModels,HttpPharosClientService,PharosClientService,MockPharosClientService}.swift`。
+- Swift shell/UI：`Sources/Pharos/UI/Shell/{PharosMainShellView,WorkspaceWebView,WorkspaceStateMapping}.swift`、`UI/Canvas/{SessionConversationViewModel,ThreadConversationViewModel}.swift`、`SettingsView.swift`。
+- Web UI：`webui/{transport,workspace}.js` + 同步副本 `Sources/Pharos/Resources/WebCanvas/`。
+- Rust：`rust/crates/pharos-http/src/router.rs`（仅 openapi additive + 测试）。
+- 测试：`Tests/PharosClientKitTests/{HttpPharosClientServiceWiringTests(新),HttpPharosClientLiveSmokeTests}.swift`、`Tests/PharosTests/{WorkspaceStateMappingTests(新),WorkspaceWebViewPortTests}.swift`、`Tests/WebCanvas/transport.test.mjs`。
+- 证据：`internal/evidence/2026-11-11_client-polish.md`（新）。
+- **未改**：`pharos-api` 冻结契约、`pharos-hitl`、`agent-runtime`、adapter crates、`pharos-adapter-dsh`（仍很薄）、`integrations/dsh-plugin-pharos`、`Package.swift`、Phase E 已删除的 Swift 后端（未复活）。
+
+**新增测试（全部真实跑过）**
+- ClientKit：49 个 URLProtocol-stub 测试（每个新映射 + 诚实错误：无能力不上传、上传失败不发消息、502 透传、name→id 歧义、cancelled/问卷、健康诊断、executeSessionCommand 诚实不可用）+ live smoke 增加 wave-2 round-trip（env-gated）。
+- Swift shell：14 个纯映射测试（config→controls/capabilities/details、honest notice、健康 guidance）+ 1 个 roster fallback + WKWebView bridge 测试（真实编码 native state 驱动 bundled workspace.html 的 select/notice/附件菜单/Stop 门控）。
+- Web UI：2 个 node:test（空列表无假 unavailable、无 selection 不 fetch config；选中 session config 失败仍诚实），负向对照可复现旧 bug。
+
+**门禁结果（最终代码 `d2224e7`；`rust/` 下 `CARGO_BUILD_JOBS=3`）**
+- `cargo fmt --all -- --check` → **PASS**（exit 0）
+- `cargo clippy --workspace --all-targets -- -D warnings` → **PASS**（exit 0，0 warning）
+- `cargo test --workspace` → **PASS**（**400 passed / 0 failed / 0 ignored / 62 suites**，含 `asset_sync`）
+- 仓库根 `swift build` → **PASS**（0 warning）；`swift test`（全量）→ **PASS**：PharosTests **55** + PharosClientKitTests **58**（2 个 env-gated live smoke skipped），0 failed
+- `swift test --filter ArchitectureBoundary` → **PASS**（4/4）；`swift test --filter PharosClientKitTests` → **PASS**（58，2 skipped，0 failed）
+- `integrations/dsh-plugin-pharos` `npm test` → **PASS**（30/30）
+- `node --test Tests/WebCanvas/transport.test.mjs` → **PASS**（16/16）；`diff -r webui Sources/Pharos/Resources/WebCanvas` → 空
+- 独立 live：本 worktree 新构建 `pharos-web` 在 **18792**（临时测试 data dir，`--fake`）全新起：`/openapi.json` 27 paths、37 个期望 (path,method) 缺失 0；config PATCH/stop/revive/member avatar/binding 真实 HTTP 200 且落盘（跑完 SIGTERM，端口关闭）。Swift ClientKit live smoke 对 **18791** fake 测试服务：2/2 passed（config/stop/revive/member/附件上传→发送→列表→内容/绑定/审批快照/health）。未碰 8787/3080，未碰用户数据目录。证据 `internal/evidence/2026-11-11_client-polish.md`。
+
+**没做/未验证**
+- **未启动/人工驱动打包后的 macOS GUI**：评估阶段已知该机 GUI snapshot 不可靠（无 display/AX）。native→bundled workspace 契约由 WKWebView bridge 测试覆盖、HTTP 行为由单测+live smoke 覆盖，但没有一次人工 GUI 验收。
+- **真实 vendor adapter 成功路径未跑**：真实后端目前不声明 config 写入/附件摄入/stop-revive 能力，这些操作按设计诚实 502（ClientKit 502 透传有 stub 测试；成功路径只有 `--fake` 测试服务覆盖）。
+- **跨机 mini↔Air 真实会话未跑**（本流任务与规则不做）。
+- **8787 误连文本未通过 ClientKit 对真实 8787 进程实测**（仅 curl 确认其健康体非 Pharos；guidance 由单测覆盖）；默认端口未改。
+- `/openapi.json` live 验证用本 worktree 新二进制（18792）；评估阶段遗留的 18790/18791 旧进程仍按旧路由集合服务。
+- 未 push、未合并到 `integrate/mesh2-into-main`/`main`。
+
+**需要人决定**
+1. **默认端口**：客户端默认是否保持 `http://127.0.0.1:8787`（当前；已做 health probe/guidance/Settings 探测使连错可发现），还是改成专用端口并把 `pharos-web` 默认一起改（要同步文档，且不得抢占 8787 追思）。本流未擅自改默认。
+2. **slash 命令与项目创建**仍无 API：UI 保持诚实不可用。是否列入下一批端点（`POST /sessions/{id}/command`、项目创建）。
+3. **真实 vendor adapter 能力**：需 adapter 声明/实现 config 写入、附件摄入、stop/revive，否则真实后端这些路径仍只是诚实 502；建议在 adapter trait 上做 capability + 方法。
+4. **成员/头像语义**：`GET /members/{id}` 只是 settings view（agent/machine/status 未知）；人类头像全局存 `/members/human`，而 native 仍保留 per-row 本地 override。确认是否希望头像完全统一为全局 identity。
+5. **OpenAPI 归属**：新路径目前在 `pharos-http` 层 additive 合并（冻结 `pharos-api` stub 未改）；下次 `CONTRACTS_VERSION` bump 时是否并入冻结契约。
+6. `fetchMemberDetail(name:)` 的 session 行用法已删除（改用 session config / thread members）；若其它客户端仍依赖"member detail 带 live model/mode"，需要新端点。
+
+# ---- 以下为更早的流交接（合并保留）----
 
 **STATUS: XHOST-DONE — 689f3d1**
 **分支/worktree**：`rust/cross-host-sessions`，worktree `/workspace/pharos-rust/2026-11-11_dsh-wave2/wt/cross-host-sessions`，base `integrate/mesh2-into-main @ 54c6ff6`（= `rust/integrate-dsh3`，已含 hitl-persist / web-real-sessions / thread-autoreply 三流）。未 push、未 force/rebase/amend、未改写任何已有提交；只 `git fetch --all` 读过远端 ref。只在本 worktree 内改代码；未触碰其它 worktree/主 checkout，未碰 3080 dsh Host、其 token/ipc.sock/state、`~/.gemini`，未 ssh 到任何 Mac。团队：本流 Lead（protocol + replica 分发/授权 + loopback E2E + 集成 + 门禁 + 交接）、teammate `impl-client`（task-1：pharos-session 远端客户端/host bridge + pharos-http 合并服务）、teammate `impl-host`（task-2：agent-runtime mesh bring-up）。上面 STATUS 的 `689f3d1` 是最后一个代码提交；本交接为紧随其后的 docs-only 提交。**未改任何 Swift / `Sources/` / `webui/` / WebCanvas 资源**（`git diff --name-only 54c6ff6..HEAD` 只有 `rust/`）；未改 `pharos-http/src/router.rs`、`pharos-hitl`、`integrations/dsh-plugin-pharos`；`asset_sync` 测试仍绿。**Swift 未在 Linux 编译验证**（本机无 Swift；本流未触碰 Swift）。

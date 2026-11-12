@@ -137,7 +137,114 @@ async fn openapi() -> Json<serde_json::Value> {
             paths.insert(path, spec);
         }
     }
+    // Additive: routes the router has always served but the frozen Phase-0
+    // stub omits. Operations are merged into existing path objects so the
+    // methods the stub already documents (e.g. `GET /api/v1/sessions`,
+    // `GET /api/v1/threads`) stay intact instead of being replaced.
+    for (path, method, spec) in router_served_openapi_operations() {
+        merge_openapi_operation(&mut doc, path, method, spec);
+    }
     Json(doc)
+}
+
+/// OpenAPI operations served by [`api_router`] but absent from the frozen stub.
+fn router_served_openapi_operations() -> Vec<(&'static str, &'static str, serde_json::Value)> {
+    vec![
+        (
+            "/api/v1/sessions",
+            "post",
+            serde_json::json!({
+                "operationId": "createSession",
+                "responses": {
+                    "200": {"description": "SessionSummary"},
+                    "400": {"description": "invalidRequest"}
+                }
+            }),
+        ),
+        (
+            "/api/v1/sessions/{sessionId}",
+            "get",
+            serde_json::json!({
+                "operationId": "getSession",
+                "responses": {
+                    "200": {"description": "SessionSummary"},
+                    "404": {"description": "sessionNotFound"}
+                }
+            }),
+        ),
+        (
+            "/api/v1/sessions/{sessionId}/history",
+            "get",
+            serde_json::json!({
+                "operationId": "sessionHistory",
+                "responses": {
+                    "200": {"description": "CanonicalTurn[]"},
+                    "404": {"description": "sessionNotFound"}
+                }
+            }),
+        ),
+        (
+            "/api/v1/sessions/{sessionId}/steer",
+            "post",
+            serde_json::json!({
+                "operationId": "steerSession",
+                "responses": {
+                    "200": {"description": "ok"},
+                    "404": {"description": "sessionNotFound"}
+                }
+            }),
+        ),
+        (
+            "/api/v1/threads",
+            "post",
+            serde_json::json!({
+                "operationId": "createThread",
+                "responses": {
+                    "200": {"description": "ThreadSummary"},
+                    "400": {"description": "invalidRequest"}
+                }
+            }),
+        ),
+        (
+            "/api/v1/threads/{threadId}",
+            "get",
+            serde_json::json!({
+                "operationId": "getThread",
+                "responses": {
+                    "200": {"description": "ThreadSummary"},
+                    "404": {"description": "threadNotFound"}
+                }
+            }),
+        ),
+        (
+            "/api/v1/inventory/sessions",
+            "get",
+            serde_json::json!({
+                "operationId": "sessionInventory",
+                "responses": {
+                    "200": {"description": "Session inventory snapshot"}
+                }
+            }),
+        ),
+    ]
+}
+
+/// Merge one operation into a path object, creating the path when absent.
+fn merge_openapi_operation(
+    doc: &mut serde_json::Value,
+    path: &str,
+    method: &str,
+    spec: serde_json::Value,
+) {
+    let Some(paths) = doc.get_mut("paths").and_then(|value| value.as_object_mut()) else {
+        return;
+    };
+    let entry = paths
+        .entry(path.to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if let Some(entry) = entry.as_object_mut() {
+        entry.insert(method.to_string(), spec);
+    }
 }
 
 /// OpenAPI path specs for the routes added by the web-endpoints stream.
@@ -513,6 +620,74 @@ mod tests {
         assert_eq!(json["info"]["version"], "0.1.0");
         assert!(json["paths"].get("/health").is_some());
         assert!(json["paths"].get(APPROVALS_ROUTE).is_some());
+    }
+
+    /// `/openapi.json` must document every route `api_router` serves. This list
+    /// is written out by hand on purpose: it is the independent check that a
+    /// newly mounted route was not forgotten in the stub.
+    #[tokio::test]
+    async fn openapi_lists_every_router_served_route() {
+        let app = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/openapi.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        let expected: &[(&str, &str)] = &[
+            ("/health", "get"),
+            ("/api/v1/events", "get"),
+            ("/api/v1/approvals", "get"),
+            ("/api/v1/sessions", "get"),
+            ("/api/v1/sessions", "post"),
+            ("/api/v1/sessions/{sessionId}", "get"),
+            ("/api/v1/sessions/{sessionId}/history", "get"),
+            ("/api/v1/sessions/{sessionId}/messages", "post"),
+            ("/api/v1/sessions/{sessionId}/steer", "post"),
+            ("/api/v1/sessions/{sessionId}/approval", "post"),
+            ("/api/v1/sessions/{sessionId}/progress", "get"),
+            ("/api/v1/sessions/{sessionId}/config", "get"),
+            ("/api/v1/sessions/{sessionId}/config", "patch"),
+            ("/api/v1/sessions/{sessionId}/stop", "post"),
+            ("/api/v1/sessions/{sessionId}/revive", "post"),
+            ("/api/v1/sessions/{sessionId}/attachments", "get"),
+            ("/api/v1/sessions/{sessionId}/attachments", "post"),
+            ("/api/v1/attachments/{attachmentId}", "get"),
+            ("/api/v1/attachments/{attachmentId}/content", "get"),
+            ("/api/v1/threads", "get"),
+            ("/api/v1/threads", "post"),
+            ("/api/v1/threads/{threadId}", "get"),
+            ("/api/v1/threads/{threadId}/messages", "get"),
+            ("/api/v1/threads/{threadId}/messages", "post"),
+            ("/api/v1/threads/{threadId}/reply", "post"),
+            ("/api/v1/threads/{threadId}/members", "get"),
+            ("/api/v1/threads/{threadId}/bindings", "get"),
+            ("/api/v1/threads/{threadId}/bindings/{member}", "get"),
+            ("/api/v1/threads/{threadId}/bindings/{member}", "put"),
+            ("/api/v1/threads/{threadId}/bindings/{member}", "delete"),
+            ("/api/v1/members/{memberId}", "get"),
+            ("/api/v1/members/{memberId}", "patch"),
+            ("/api/v1/members/{memberId}/avatar", "get"),
+            ("/api/v1/members/{memberId}/avatar", "put"),
+            ("/api/v1/members/{memberId}/avatar", "delete"),
+            ("/api/v1/projects", "get"),
+            ("/api/v1/inventory/sessions", "get"),
+        ];
+        for (path, method) in expected {
+            let documented = json["paths"]
+                .get(*path)
+                .and_then(|operations| operations.get(*method))
+                .is_some();
+            assert!(
+                documented,
+                "/openapi.json is missing {method} {path}; add it to router_served_openapi_operations()"
+            );
+        }
     }
 
     #[tokio::test]
